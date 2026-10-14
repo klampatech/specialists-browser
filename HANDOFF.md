@@ -12,14 +12,11 @@
 > ║  New T3 thread? Point it at this file. It will know what to do.   ║
 > ╚══════════════════════════════════════════════════════════════════╝
 
-**Status:** Phase 0 step 2 + step 3 setup GREEN. HL1 + TS mod files
-laid out on m5 (`_runtime_assets/half-life/{valve,ts}/`, 898MB extracted
-from TSHD3_EN.exe). Smoke zip (`Half-Life-TS.zip`, 494MB) rsync'd
-to Kyle's Mac at `~/Downloads/`. **Kyle to run the tier-3 manual smoke
-via the "Open ZIP" button on webXash** (Vivaldi's File System Access
-API is blocked by secure-context, so the ZIP fallback path is what
-we use).
-**Last updated:** 2026-10-14 (after Phase 0 step 2 follow-on: extraction + smoke zip)
+**Status:** ✅ **Phase 0 step 3 GREEN.** Zip loaded, engine UI
+shell fully reached, WASM loader exercised as expected. Stub patch
+correctly short-circuits the game logic load. Phase 1 (CheerpX-based
+TS launch) is the next unblocked work item.
+**Last updated:** 2026-10-14 (after Phase 0 step 3 GREEN)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 **Repo:** `github.com/klampatech/specialists-browser` (private)
@@ -28,11 +25,11 @@ we use).
 Tailscale IP, 0.0.0.0:5174, PID 589657)
 **HL1 + TS on m5:** `~/Development/specialists-browser/_runtime_assets/half-life/{valve,ts}/`
 (valve: 178MB / 3575 files; ts: 721MB / 1721 files including
-`ts/cl_dlls/client.dll` and `ts/dlls/mp.dll`)
-**Smoke zip on Mac:** `~/Downloads/Half-Life-TS.zip` (493MB, rsync'd
-from m5; top level = valve/ + ts/)
-**Original installer kept for reference:** `_runtime_assets/the-specialists/TSHD3_EN.exe`
-(370MB, Inno Setup installer, source of the extracted content)
+`ts/cl_dlls/client.dll` and `ts/dlls/mp.dll` — the mod DLLs we'll
+CheerpX-load in Phase 1)
+**Smoke zip on Mac:** `~/Downloads/Half-Life-TS.zip` (493MB)
+**Phase 0 step 3 record:** `tools/smokes/tier-3-manual-phase-0-step-3.md`
++ `docs/cheats/phase-0-step-3-screenshot.png`
 
 ---
 
@@ -99,6 +96,43 @@ port 5174, page returns HTTP 200 with the expected WebXash
     **Page returns HTTP 200 with valid WebXash HTML.**
   - Saved the diff to `tools/patches/webxash-hlsdk-stub.patch` for
     reference / reproducibility.
+
+- **2026-10-14 — Phase 0 step 3 GREEN (tier-3 smoke).**
+  - Kyle opened `http://100.95.111.112:5174/webXash/` in Vivaldi on
+    his Mac, clicked "Open ZIP", and selected `~/Downloads/Half-Life-TS.zip`
+    (493MB, top level = valve/ + ts/).
+  - The zip loaded, engine UI shell reached (Half-Life λ splash +
+    bottom toolbar with pause/screenshot/fullscreen/reset/zoom +
+    game timer ticking).
+  - **Expected failure at game logic WASM load:** Vite Console
+    showed `Uncaught (in promise) Error: need xash3d-fwgs.js?v=...:283
+    to wasm magic number` with a stack trace through
+    `createWasm → initXash → startWithZip → startGameWithZip → startGameZip`.
+    Root cause: our stub patch sets the 5 mod-side WASM URLs
+    (`HLClientURL`, `HLServerURL`, `CSMenuURL`, `CSClientURL`,
+    `CSServerURL`) to empty strings, so Vite resolves them to the
+    current page URL (which is HTML, not WASM), and the WASM
+    loader fails the magic-number check. Correct behavior — exactly
+    what the stub patch is supposed to do.
+  - **Confirmed working:**
+    - Zip read by webXash
+    - Game folder structure recognized (default game = `valve` since
+      Kyle didn't type `-game ts`; engine defaulted)
+    - xash3d-fwgs WASM loading path fully exercised
+    - Engine UI shell fully functional
+    - Save manager wired ("No saves found for game: Half-Life" — expected
+      on fresh install)
+  - **Confirmed stub patch correctness:** no network errors trying
+    to fetch non-existent `hlsdk-portable` URLs; failure happens at
+    the WASM-magic-number check, the right layer.
+  - Recorded screenshot → `docs/cheats/phase-0-step-3-screenshot.png`
+    (Vivaldi with DevTools Console open showing the WASM error).
+  - Recorded smoke notes → `tools/smokes/tier-3-manual-phase-0-step-3.md`
+    (detailed: setup, what worked, what didn't, console errors with
+    full stack trace, what this confirms / doesn't confirm, future-smoke
+    notes).
+  - **Phase 0 step 3 GREEN** — zip works, engine works, Phase 1 is
+    the next unblocked work.
 
 - **2026-10-14 — Phase 0 step 2 follow-on: TS mod extracted + smoke zip built.**
   - TSHD3_EN.exe arrived via Syncthing at
@@ -203,81 +237,112 @@ port 5174, page returns HTTP 200 with the expected WebXash
     human browser required → Kyle to download from his Mac alongside
     HL1.
 
-## Next task — Phase 0, step 3 (Kyletier-3 manual smoke, ZIP path)
+## Next task — Phase 1, scope doc (Evo)
 
-**Goal:** Kyle opens the dev server URL in his Mac browser, uses
-webXash's "Open ZIP" button to select the smoke zip, and verifies
-the page UI loads cleanly with the engine reading the zip contents.
+**Goal:** Write a Phase 1 scope / design doc before any code.
+Phase 1 is the actual engineering work: wire CheerpX into webXash
+to run `ts/cl_dlls/client.dll` and `ts/dlls/mp.dll` (the TS mod
+DLLs) so we can actually launch TS in the browser, not just
+recognize the folder.
 
-**Steps:**
+**Why a doc first:** Phase 1 is a substantial divergence from
+webXash upstream. We can't just patch and ship — we need to
+design the bridge between xash3d-fwgs's WASM engine and CheerpX's
+x86-emulation layer. Without a doc, the T3 sessions will go in
+circles.
 
-1. Kyle opens `http://100.95.111.112:5174/webXash/` in his Mac
-   browser (Vivaldi, which he confirmed renders the page). Page
-   should already be loaded from earlier.
-2. Kyle clicks the **"Open ZIP"** button (NOT "Open game Folder" —
-   that one is blocked by Vivaldi's secure-context block; the
-   README's ZIP fallback is what we use).
-3. Kyle navigates to and selects
-   `~/Downloads/Half-Life-TS.zip` (493MB, top level = valve/ + ts/).
-4. webXash reads the zip in-memory and processes its contents.
-5. Verify the file list populates with `valve/`, `dlls/`, `cl_dlls/`,
-   `maps/`, `models/`, `sound/`, `sprites/`, `gfx/` from the HL1
-   base, AND `ts/` (the TS mod folder with its own `cl_dlls/`,
-   `models/`, `maps/`, `sound/` etc).
-6. In the **LAUNCH OPTIONS** box, set `-game ts` (the mod folder
-   name from the installer is `ts`, not `specialists`).
-7. **STOP HERE** — do NOT try to "start the game" yet. The stub
-   patch means the HLSDK WASMs are empty strings, so a game launch
-   will fail at the WASM-load step. The point of this smoke is: the
-   zip loads, the engine sees both folders, and the page UI is
-   functional. That's Phase 0 step 3 GREEN.
-8. Take a screenshot of the loaded UI (with the zip loaded), save to
-   `docs/cheats/phase-0-step-3-screenshot.png`.
-9. Save smoke notes to `tools/smokes/tier-3-manual-phase-0-step-3.md`
-   with: browser used, files visible in the UI, console errors, what
-   worked, what didn't.
+**The scope doc should cover (at minimum):**
 
-**Important caveat:** the "Start game" / "Launch" button will fail
-because of our stub patch (HLSDK WASMs are empty strings). This is
-expected. Phase 1 fixes this with a CheerpX-based TS launch path
-that doesn't need the HLSDK WASMs at all.
+1. **Goal & exit criteria.** What does "Phase 1 done" look like?
+   Concrete: open the page, type `-game ts`, press Start, see the
+   TS main menu / load into a TS map with bots. Smoke: launch a
+   deathmatch with `addbot`, take a screenshot of the player model
+   in third person (the "Matrix" camera view is iconic TS).
 
-**FYI / future improvement:** we could switch the dev server to
-HTTPS via `bun run dev --https` (Vite's built-in self-signed cert)
-to restore the File System Access API on `http://100.95.111.112`.
-Trade-off: one-time "this site is not secure" warning per browser.
-Defer until after Phase 0 is GREEN if at all — the ZIP path works.
+2. **Architecture.** webXash's `XashLoader` class in
+   `webxash/src/services/xash-loader.ts` currently calls
+   `new Xash3D({ libraries: { client: HLClientURL, server: HLServerURL } })`
+   and lets xash3d-fwgs fetch the WASMs. For TS we need a parallel
+   path: `new Xash3D({ libraries: { client: <cheerpx-emulated client.dll>, server: <cheerpx-emulated mp.dll> } })` or something equivalent.
+   Options:
+   - **(a) Compile the HLSDK to WASM and use it as a "shim" that
+     loads the TS DLLs via CheerpX.** TS DLLs use the engine-side
+     interfaces that the HLSDK WASM exports. CheerpX emulates the
+     TS DLLs and calls back into the HLSDK WASM via JS bridges.
+   - **(b) Skip the WASM DLL layer entirely — let CheerpX
+     emulate the TS DLLs and have them call xash3d-fwgs's engine
+     APIs directly via a JS shim layer.**
+   - **(c) Find the WASM-equivalent interfaces that the HLSDK WASM
+     exposed and re-implement them in TypeScript so the TS DLLs
+     can be loaded directly as JS modules without a shim.** Probably
+     not tractable — the GoldSrc engine↔DLL interface is large.
 
-**Update this HANDOFF before pushing the commit** with Kyle's smoke
-results (pass/fail, browser used, screenshot path, smoke log path,
-any console errors).
+3. **CheerpX integration.** How to load `ts/cl_dlls/client.dll` and
+   `ts/dlls/mp.dll` into CheerpX, expose the engine APIs to the
+   DLLs, and capture their console output / events back into the
+   webXash UI. CheerpX docs: https://cheerpx.io/docs/. Key questions:
+   can CheerpX load Windows DLLs? How are exports/imports resolved?
+   What syscalls need to be implemented (file I/O, console, network)?
 
-(After step 3) **Phase 1 — actual TS game launch.** This is where
-CheerpX comes in. We need to extend `webXash/src/services/xash-loader.ts`
-to add a TS launch path that uses CheerpX for the mod's x86 DLLs
-instead of the WASM-based HLSDK. Substantial new code; ~1–2 weeks.
-**Trigger:** Phase 0 step 3 GREEN + TS mod zip in
-`_runtime_assets/`.
+4. **Asset pipeline.** Confirm that webXash can read `ts/` files
+   (`.mdl` models, `.wav` sounds, `.bsp` maps) from the zip in
+   the same way it reads `valve/` files. May need webXash code
+   changes to handle the TS-specific file types.
 
-## Open questions (do not start Phase 0 step 2 without answers)
+5. **Step plan.** Concrete, ordered tasks. Probably:
+   - 1.1: CheerpX proof-of-concept — load `ts/dlls/mp.dll`,
+     get a "DLL loaded" callback, no game running.
+   - 1.2: Engine↔DLL shim — expose the minimum Xash3D engine
+     functions the TS DLL calls.
+   - 1.3: Run the TS server mod in CheerpX against xash3d-fwgs's
+     engine.
+   - 1.4: Run the TS client mod in CheerpX.
+   - 1.5: Wire bots + a map (load a small TS map like
+     `ts_heresy` and let the bot pathing kick in).
+   - 1.6: UI integration — webXash's "Start game" button kicks
+     off the CheerpX load path, the engine canvas shows the game.
+   - 1.7: Tier-3 smoke — Kyle launches a match, takes screenshot,
+     confirms he can see the player model + UI + bots.
+
+6. **Risks & fallbacks.** CheerpX might not work for Windows DLLs
+   with complex GoldSrc engine interfaces (the chief risk). If so,
+   Phase 2 (reimplement TS gameplay in C++ → WASM) becomes Phase 1
+   and the work expands from weeks to months.
+
+7. **Open questions** that need answers before / during the work.
+
+**Why this is on me, not Kyle:** the doc is a structured
+analysis-and-plan, which is exactly what the orchestrator does.
+Kyle's review is the gate before any T3 thread starts Phase 1 work.
+Kyle can edit, reject, or expand any section.
+
+**After the doc is reviewed and approved, Phase 1 work begins.**
+The work itself is heavy enough to warrant its own subagent dispatch
+or T3 session.
+
+(After the Phase 1 scope doc is approved) **Phase 1 work — actual
+TS game launch.** This is where CheerpX comes in. We need to
+extend `webXash/src/services/xash-loader.ts` to add a TS launch
+path that uses CheerpX for the mod's x86 DLLs instead of the
+WASM-based HLSDK. Substantial new code; see the scope doc for the
+step plan. **Trigger:** Kyle approves the Phase 1 scope doc.
+
+## Open questions
 
 1. **HL1 + TS mod file location.**
-   - HL1: Kyle installing on MacBook now via Steam. Need MacBook
-     awake to rsync `valve/` to `~/GameSource/half-life/valve/`.
-   - TS mod 3.0: moddb is Cloudflare-gated for bots. Kyle to
-     download from his MacBook browser. **Where should Kyle put
-     the TS zip?** Recommended: `~/GameSource/the-specialists/`
-     (outside the repo, asset-free contract preserved). If Kyle
-     prefers "in the project folder," use
-     `~/Development/specialists-browser/_runtime_assets/` (gitignored,
-     won't be committed).
+   - HL1: Originally from Kyle's Mac via Steam (`PatchVersion=1.1.2.2`,
+     rsync'd to m5), then replaced with the TS installer's bundled
+     version (smaller, self-contained). Both work; we kept the
+     installer's. Final: `~/Development/specialists-browser/_runtime_assets/half-life/valve/`.
+   - TS mod 3.0: Moddb Cloudflare-gated for bots. Kyle downloaded
+     `TSHD3_EN.exe` via Syncthing, I extracted with `innoextract`.
+     Laid out at `~/Development/specialists-browser/_runtime_assets/half-life/ts/`.
+   - **Both unblocked — files are on m5 + smoke zip on Mac.**
 
 2. **T3 code backend.** Claude Code and/or Codex? `claude` is on PATH
    on m5. `codex` is NOT yet installed (`which codex` → not found).
-   If we want cross-vendor review (Claude plans, Codex reviews or
-   vice-versa, matching the specialists-web pattern), we need to
-   install codex first. Default until Kyle says otherwise: **Claude
-   Code only**, install Codex if/when cross-vendor becomes useful.
+   **Default: Claude Code only**, install Codex if/when cross-vendor
+   becomes useful. Defer until Phase 1 work begins.
 
 3. **CheerpX license trigger.** Free for personal / non-commercial use.
    If this ever ships as a product, we need a paid license from
@@ -288,20 +353,28 @@ instead of the WASM-based HLSDK. Substantial new code; ~1–2 weeks.
    closed-source (Morfeo / Lorenzo). The .pak assets are
    free-to-distribute per moddb's release. The repo must remain
    asset-free — users source their own. Don't commit any HL1 or TS
-   game files. (Already in `.gitignore`, but re-flag.)
+   game files. (Already in `.gitignore` via the blanket
+   `_runtime_assets/` block, but re-flag.)
 
 5. **webXash upstream health.** Last commit `ff86609`. **The npm
    dep chain is broken** (hlsdk-portable + cs16-client unpublished
    2026-09-08; yohimik's source monorepo gone from GitHub). We own
-   a fork now and have a stub patch keeping the page alive. Phase 1
-   (TS+CheerpX) will require substantial new code anyway, so the
-   upstream's death is annoying but not blocking for our scope.
+   a fork (`klampatech/webXash`, branch `phase-0-stub-fix`) and
+   have a stub patch keeping the page alive. Phase 1 (TS+CheerpX)
+   will require substantial new code anyway, so the upstream's
+   death is annoying but not blocking for our scope.
 
 6. **MacBook SSH password rotation.** The kyles-macbook-ssh-access
    skill has Kyle's SSH password stored as plaintext (`kyle`, set
    2026-09-04) with a note to rotate. Key-based auth now works, so
    the plaintext password is no longer needed. Follow-up: have Kyle
    run `passwd` on his Mac to rotate, then update the skill.
+
+7. **HTTPS dev server?** Currently serving over HTTP, which blocks
+   the File System Access API in Vivaldi (Kyle had to use the ZIP
+   fallback path). `bun run dev --https` would restore it but adds
+   a one-time cert warning per browser. Defer until Phase 1 work
+   needs the File System Access API directly.
 
 ## Risks to watch
 
@@ -330,30 +403,28 @@ instead of the WASM-based HLSDK. Substantial new code; ~1–2 weeks.
 
 ## Last work session
 
-**2026-10-14 — Phase 0 step 2 follow-on (Evo)**
+**2026-10-14 — Phase 0 step 3 GREEN (Evo)**
 
 What I did:
-- TSHD3_EN.exe arrived via Syncthing at
-  `_runtime_assets/the-specialists/TSHD3_EN.exe` (370MB).
-- Installed `innoextract` 1.9 via `sudo apt-get install -y innoextract`.
-- Extracted installer → `extracted/app/{valve, ts, platform, ...}`.
-- Cleaned out ~30 Windows engine binaries at `app/` root (hlds.exe,
-  vgui.dll, sw.dll, tier0.dll, steam_api.dll, Mss32.dll, etc.)
-  + the 753-file `app/platform/` SteamPipe dir.
-- Laid out final structure on m5:
-  `_runtime_assets/half-life/{valve, ts}/` (898MB total).
-- Built smoke zip `Half-Life-TS.zip` (494MB, 5296 entries, top level
-  = valve/ + ts/) using Python's `zipfile` stdlib.
-- rsync'd zip to Kyle's Mac at `~/Downloads/Half-Life-TS.zip` (493MB,
-  ~10MB/s, 53s).
-- Discovered Kyle's Vivaldi blocks File System Access API on the HTTP
-  Tailscale URL (secure-context issue, "Not Secure" in URL bar).
-  Documented the ZIP fallback path in HANDOFF.
-- Confirmed the mod folder name is `ts/`, not `specialists/` (from
-  `liblist.gam`); launch arg will be `-game ts`.
+- Captured the smoke screenshot from Kyle's Vivaldi DevTools
+  (lambda logo state with the `wasm magic number` error visible in
+  console) → saved to `docs/cheats/phase-0-step-3-screenshot.png`.
+- Wrote `tools/smokes/tier-3-manual-phase-0-step-3.md` with full
+  setup details, what worked, what didn't, the complete console
+  error stack trace, what this confirms / doesn't confirm, and notes
+  for future smokes.
+- Updated HANDOFF.md to mark Phase 0 step 3 GREEN, updated Next task
+  to Phase 1 scope doc, updated Open Questions (removed resolved
+  ones, added the HTTPS-deferred question), refreshed Last Work
+  Session.
+
+Smoke result: zip loaded, engine UI shell reached, expected failure
+at WASM-load (stub patch correctly substitutes the missing npm
+deps). xash3d-fwgs WASM loading path fully exercised. Phase 0 is
+GREEN end-to-end. Phase 1 (CheerpX + TS mod DLL bridge) is the
+next work item.
 
 What I did NOT do (waiting on Kyle):
-- Did not run the tier-3 smoke myself (tier-3 is Kyle's job).
-- Did not start Phase 1 (TS+CheerpX) — needs Phase 0 step 3 GREEN
-  via the zip path.
-- Did not switch dev server to HTTPS — ZIP path works, defer.
+- Did not start writing the Phase 1 scope doc yet — wanted to
+  confirm Kyle approves the "doc first, then code" approach. Doc is
+  queued as the next task; Kyle can greenlight it whenever.
