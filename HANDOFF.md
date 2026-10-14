@@ -89,6 +89,37 @@ port 5174, page returns HTTP 200 with the expected WebXash
   - Saved the diff to `tools/patches/webxash-hlsdk-stub.patch` for
     reference / reproducibility.
 
+- **2026-10-14 — Phase 0 step 1.5: webXash forked (with caveats).**
+  - Forked `x8BitRain/webXash` to `klampatech/webXash` (500KB, default
+    `main`, parent confirmed).
+  - Pushed our `phase-0-stub-fix` branch (commit `e455923`) to the
+    fork. Switched the `webxash/` submodule's origin to the fork.
+  - **CRITICAL FINDING — npm dep chain is dead, not just outdated.**
+    `npm view hlsdk-portable` returns 404 with reason:
+    *"Unpublished on 2026-09-08T14:17:21Z."* Same for `cs16-client`.
+    The maintainers explicitly yanked these packages ~5 weeks before
+    this project started. There is no `npm install` path back.
+  - **Source repo for the WASMs is also gone.** `yohimik/webxash3d-fwgs`
+    (the Lerna monorepo that built and published the WASMs) returns
+    404 from the GitHub API. Cannot vendor prebuilt artifacts.
+  - **FWGS/hlsdk-portable** (the underlying HLSDK source) still
+    exists and is the canonical source for a from-source rebuild.
+    But a from-source rebuild to WASM via Emscripten is multi-day
+    work and not Phase 0 / 1 scope.
+  - **For our use case (TS via CheerpX), the missing WASMs are
+    irrelevant.** `hlsdk-portable` was the HL1 *vanilla* game-logic
+    WASM. The Specialists mod provides its own game logic as
+    closed-source x86 DLLs that CheerpX will run. We don't need
+    HL1 single-player launch for the TS path. The stub patch is the
+    right pragmatic fix for our scope.
+  - **Phase 0 step 1.5 effective outcome:** we own the dep chain
+    (fork), but the "real fix" is not vendoring — it's that the
+    upstream packages are gone, and we're going to need to
+    substantially customize the webXash launcher anyway for TS +
+    CheerpX. The fork gives us a stable base to iterate on.
+  - Updated `.gitmodules` to point at `klampatech/webXash`. Pushed
+    to GitHub. Vault mirror updated.
+
 - **2026-10-14 — Sourcing discovered blockers.**
   - HL1 not currently free-on-Steam (the 2023 25th-anniversary claim
     window closed). Kyle will install HL1 on MacBook via Steam and
@@ -97,69 +128,56 @@ port 5174, page returns HTTP 200 with the expected WebXash
     human browser required → Kyle to download from his Mac alongside
     HL1.
 
-## Next task — Phase 0, step 1.5 (BLOCKED on Kyle decision)
+## Next task — Phase 0, step 2 (waiting on Kyle)
 
-**Goal:** Decide how to handle the broken webXash upstream. Either
-fork + fix, or wait for upstream to republish.
+**Goal:** Land HL1 + TS mod files on m5 at the agreed paths, then
+verify the webXash page UI loads with the Filesystem Access API
+ready to accept them.
 
-Two options:
+**Steps (waiting on Kyle to wake his MacBook):**
 
-**(a) Fork `x8BitRain/webXash` to `klampatech/webXash`.**
-- Create the fork on GitHub.
-- Replace the 5 broken npm imports with the actual WASM bits checked
-  in to `public/` (we already have `xash3d-fwgs` engine bits there;
-  just need to add HLSDK + CS16-client WASMs — maybe vendor them
-  from `xash3d-fwgs`'s release tarballs or from `yohimik/webxash3d-fwgs`
-  which the upstream README links to).
-- Update the submodule pointer in this repo to the fork.
-- Drop the stub patch; replace with the actual fix.
+1. Verify Tailscale can see the MacBook again
+   (`tailscale status | grep kyles-macbook-pro`).
+2. `rsync` the HL1 `valve/` folder from MacBook to m5:
+   - Source: `/Users/kylelampa/Library/Application Support/Steam/steamapps/common/Half-Life/valve/`
+   - Dest: `~/GameSource/half-life/valve/` on m5
+3. Verify file count matches expectations (the README says the folder
+   should contain pak files, .mdl models, .wav sounds — many files,
+   typically ~500MB-1GB).
+4. (After TS mod zip lands) extract it to
+   `~/GameSource/the-specialists/`.
+5. Take a tier-3 manual smoke: open `http://127.0.0.1:5174/webXash/`
+   in a real browser (Kyle on his Mac via Tailscale if needed) and
+   verify the page renders the file-picker UI.
+6. Update HANDOFF.md with smoke results.
 
-**(b) Wait for upstream to republish the npm packages.**
-- File an issue at `x8BitRain/webXash` asking about the 404s.
-- Sit on step 1.5 until they fix it.
-- Lower short-term cost; higher long-term risk if upstream is dead.
+**Status now:** MacBook went to sleep 1 minute after Kyle said
+"halflife is downloaded" (per Tailscale: `offline, last seen 1m ago`).
+Need Kyle to wake the Mac.
 
-**Recommendation: (a) fork now.** Upstream's last commit
-(`ff86609 fix: only add reload listener after game starts`) is the
-only thing in their recent log; the broken npm packages suggest
-the project is no longer actively maintained. A fork gives us
-control and unblocks Phase 1 (real game launch).
+(After step 2) **Phase 0 step 3 — verify webXash page picks up
+local files.** Use the Filesystem Access API to point at the
+landed `~/GameSource/half-life/` folder. Try the `public/hl/`
+sample first as a no-network smoke (it's already vendored in
+`webxash/public/hl/`). Document the result.
 
-**Kyle's call:** fork now, or wait? Both are reasonable; the
-fork path takes maybe 1–2 hours including the WASM sourcing.
-
-(After step 1.5) **Phase 0 step 2 — load HL1 in the page.**
-
-**Goal:** Use webXash's Filesystem Access API to point the dev
-server at Kyle's HL1 `valve/` folder (on m5 at
-`~/GameSource/half-life/valve/`). Verify the engine launches and
-the HL1 title screen renders.
-
-Steps:
-1. Wait for Kyle to confirm HL1 is installed on MacBook + I `rsync`
-   the `valve/` folder to `~/GameSource/half-life/valve/` on m5.
-2. (Or use the public/hl/ sample first as a no-network smoke.)
-3. Open the dev server URL in a real browser (Kyle on his Mac via
-   Tailscale — VNC/CDP if needed).
-4. Use webXash's "Open game folder" UI to point at
-   `~/GameSource/half-life/valve/`.
-5. Verify the engine reports `cl_dlls/client_emscripten_wasm32.wasm`
-   found, valve folder recognized, and the engine reaches the HL1
-   title screen.
-6. Take a screenshot, save to `docs/cheats/phase-0-step-2.png`.
-7. Smoke log saved to `tools/smokes/tier-3-manual-phase-0-step-2.md`.
-
-Update this HANDOFF before pushing the commit.
+(After step 3) **Phase 1 — actual TS game launch.** This is where
+CheerpX comes in. We need to extend `webXash/src/services/xash-loader.ts`
+to add a TS launch path that uses CheerpX for the mod's x86 DLLs
+instead of the WASM-based HLSDK. Substantial new code; ~1–2 weeks.
 
 ## Open questions (do not start Phase 0 step 2 without answers)
 
 1. **HL1 + TS mod file location.**
-   - HL1: Kyle installing on MacBook now via Steam. I will pull
-     `valve/` over SSH to `~/GameSource/half-life/valve/` on m5.
+   - HL1: Kyle installing on MacBook now via Steam. Need MacBook
+     awake to rsync `valve/` to `~/GameSource/half-life/valve/`.
    - TS mod 3.0: moddb is Cloudflare-gated for bots. Kyle to
-     download from his MacBook browser and SSH the zip over. I
-     extract to `~/GameSource/the-specialists/`.
-   - **Both unblocked once Kyle installs HL1 + grabs the TS zip.**
+     download from his MacBook browser. **Where should Kyle put
+     the TS zip?** Recommended: `~/GameSource/the-specialists/`
+     (outside the repo, asset-free contract preserved). If Kyle
+     prefers "in the project folder," use
+     `~/Development/specialists-browser/_runtime_assets/` (gitignored,
+     won't be committed).
 
 2. **T3 code backend.** Claude Code and/or Codex? `claude` is on PATH
    on m5. `codex` is NOT yet installed (`which codex` → not found).
@@ -179,9 +197,12 @@ Update this HANDOFF before pushing the commit.
    asset-free — users source their own. Don't commit any HL1 or TS
    game files. (Already in `.gitignore`, but re-flag.)
 
-5. **webXash upstream health.** Last commit `ff86609`. Broken npm
-   deps suggest abandonment. Fork recommendation in step 1.5 above
-   is the default — Kyle to confirm.
+5. **webXash upstream health.** Last commit `ff86609`. **The npm
+   dep chain is broken** (hlsdk-portable + cs16-client unpublished
+   2026-09-08; yohimik's source monorepo gone from GitHub). We own
+   a fork now and have a stub patch keeping the page alive. Phase 1
+   (TS+CheerpX) will require substantial new code anyway, so the
+   upstream's death is annoying but not blocking for our scope.
 
 6. **MacBook SSH password rotation.** The kyles-macbook-ssh-access
    skill has Kyle's SSH password stored as plaintext (`kyle`, set
@@ -191,16 +212,16 @@ Update this HANDOFF before pushing the commit.
 
 ## Risks to watch
 
-- **webXash upstream is broken for fresh installs.** npm packages
-  `hlsdk-portable@0.1.2` and `cs16-client@0.1.2` are 404. Worked
-  around via stub patch (commit `e455923`). **Phase 0 step 1.5
-  needs Kyle's call** — fork or wait.
+- **webXash upstream is dead for fresh installs.** npm packages
+  unpublished 2026-09-08, source monorepo (yohimik/webxash3d-fwgs)
+  404s. Worked around via stub patch + fork ownership. Phase 1
+  needs a CheerpX-based TS launch path anyway, so this is contained.
 - **CheerpX may not work for x86 DLLs with complex dynamic linking.**
   GoldSrc DLLs use a heavy engine↔DLL interface (entity dispatch,
   engine-provided memory, cvar system). CheerpX docs focus on Linux
   user-mode executables; Windows DLL loading is a less-trodden path.
-  Phase 0 doesn't depend on this, but Phase 1 will hit it. Mitigation:
-  have the Phase 2 reimplementation plan ready before Phase 1.
+  Phase 1 will hit this. Mitigation: have the Phase 2
+  reimplementation plan ready before Phase 1.
 - **The October 2026 vibe-coded wave has zero multiplayer.** Don't
   expect a reference for Phase 3 — that's our own research, and the
   specialists-web WebTransport/WS layer is the existing reference.
@@ -216,23 +237,20 @@ Update this HANDOFF before pushing the commit.
 
 ## Last work session
 
-**2026-10-14 — Phase 0 step 1 (Evo)**
+**2026-10-14 — Phase 0 step 1.5 (Evo)**
 
 What I did:
-- Added `webXash` submodule at commit `ff86609`, branched to
-  `phase-0-stub-fix`, patched the 5 broken npm imports, committed
-  as `e455923`.
-- Installed bun 1.4.3 via `npm install -g bun`.
-- Booted Vite dev server on port 5174 (5173 held by unrelated python
-  http.server). Page returns HTTP 200, valid WebXash HTML.
-- Saved patch to `tools/patches/webxash-hlsdk-stub.patch`.
-- Verified The Specialists is NOT on Xash3D's
-  not-supported-mod-list. TS should be supported by the engine.
-- Identified TS mod download blocker: moddb Cloudflare-gates bots.
+- Forked `x8BitRain/webXash` → `klampatech/webXash` on GitHub.
+- Pushed `phase-0-stub-fix` (commit `e455923`) to the fork.
+- Switched the `webxash/` submodule's origin to the fork; updated
+  `.gitmodules`.
+- Discovered the npm packages were *unpublished* (2026-09-08), not
+  just version-stale. Discovered yohimik's monorepo is also 404.
+- Realized: for our use case (TS via CheerpX), hlsdk-portable and
+  cs16-client are irrelevant anyway. Stub patch is the right
+  pragmatic fix.
 
 What I did NOT do (waiting on Kyle):
-- Did not pull HL1 from MacBook (waiting on Kyle's install).
-- Did not download TS mod (Cloudflare blocks; needs real browser).
-- Did not fork webXash (waiting on Kyle's call).
-- Did not actually launch a game in the page (game launch needs the
-  HLSDK WASM, which needs the fork).
+- Did not pull HL1 from MacBook (MacBook asleep — `offline 1m`).
+- Did not download TS mod (Cloudflare blocks; Kyle to do from Mac).
+- Did not substantially customize the launcher (Phase 1 work).
