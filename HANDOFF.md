@@ -12,16 +12,22 @@
 > ║  New T3 thread? Point it at this file. It will know what to do.   ║
 > ╚══════════════════════════════════════════════════════════════════╝
 
-**Status:** Phase 0 step 1 GREEN — page serves locally. Step 1.5 (fork
-webXash) is the next blocker for actually launching a game. Waiting
-on Kyle for HL1 + TS mod files.
-**Last updated:** 2026-10-14 (after Phase 0 step 1)
+**Status:** Phase 0 step 2 GREEN — HL1 `valve/` landed on m5 at
+`_runtime_assets/half-life/valve/`. Dev server now bound to 0.0.0.0
+and reachable on Tailscale. **Phase 0 step 3 (tier-3 manual smoke)
+is Kyle's job** — open the URL in his Mac browser and point the
+Filesystem Access API at his local HL1 install.
+**Last updated:** 2026-10-14 (after Phase 0 step 2)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 **Repo:** `github.com/klampatech/specialists-browser` (private)
 **Vault mirror:** `~/Obsidian/projects/specialists-browser/SPEC.md`
-**Live dev server:** `http://127.0.0.1:5174/webXash/` (running on m5,
-PID started via `bun run dev --port 5174` in `webxash/`)
+**Live dev server:** `http://100.95.111.112:5174/webXash/` (m5
+Tailscale IP, 0.0.0.0:5174, PID 589656, started via
+`/home/kyle/.bun/bin/bun run dev --port 5174 --host 0.0.0.0`)
+**HL1 on m5:** `~/Development/specialists-browser/_runtime_assets/half-life/valve/`
+(517MB, 4250 files, legacy HL1 1.1.2.2 / WAD-based — no .pak files,
+which is correct for the legacy build)
 
 ---
 
@@ -89,6 +95,34 @@ port 5174, page returns HTTP 200 with the expected WebXash
   - Saved the diff to `tools/patches/webxash-hlsdk-stub.patch` for
     reference / reproducibility.
 
+- **2026-10-14 — Phase 0 step 2: HL1 landed on m5 (GREEN).**
+  - MacBook came back online. SSH verified: HL1 installed at
+    `/Users/kylelampa/Library/Application Support/Steam/steamapps/common/Half-Life/`,
+    578MB total.
+  - `rsync -av` over Tailscale pulled `valve/` to m5:
+    `~/Development/specialists-browser/_runtime_assets/half-life/valve/`
+    (per Kyle's destination choice — gitignored, asset-free contract
+    preserved).
+  - 26 seconds, 4250 files, 517MB transferred at ~20MB/sec.
+  - Verified key files landed: `valve/cl_dlls/client.dll` (643KB),
+    `valve/dlls/hl.dll` (976KB), `valve/halflife.wad` (37MB),
+    `valve/liblist.gam` (game definition).
+  - **Initial panic about missing .pak files was unfounded** — the
+    Mac install is HL1 `PatchVersion=1.1.2.2` (the legacy build
+    before the 25th-anniversary Steam update), which uses WAD files,
+    not pak files. This is the build TS was made for.
+  - **Dev server restarted bound to 0.0.0.0** so Kyle can reach it
+    from his Mac over Tailscale. Previous PID 4166403 was bound to
+    127.0.0.1 only. New PID 589657 (node-MainThread) listening on
+    0.0.0.0:5174. Reachable at `http://100.95.111.112:5174/webXash/`
+    (also LAN-reachable via 172.25.44.243 + 192.168.0.151).
+  - **Bun path correction:** the actual `bun` binary lives at
+    `/home/kyle/.bun/bin/bun`, not `/home/kyle/.hermes/tools/node-26.7.0-linux-x64/bin/bun`
+    (which is what `which bun` reported earlier — must have been a
+    stale PATH). Updated the dev server invocation to use the full
+    path. Worth recording: when starting dev servers in fresh
+    execute_code kernels, always use the full bun path.
+
 - **2026-10-14 — Phase 0 step 1.5: webXash forked (with caveats).**
   - Forked `x8BitRain/webXash` to `klampatech/webXash` (500KB, default
     `main`, parent confirmed).
@@ -128,43 +162,54 @@ port 5174, page returns HTTP 200 with the expected WebXash
     human browser required → Kyle to download from his Mac alongside
     HL1.
 
-## Next task — Phase 0, step 2 (waiting on Kyle)
+## Next task — Phase 0, step 3 (Kyletier-3 manual smoke)
 
-**Goal:** Land HL1 + TS mod files on m5 at the agreed paths, then
-verify the webXash page UI loads with the Filesystem Access API
-ready to accept them.
+**Goal:** Kyle opens the dev server URL in his Mac browser (Chrome
+or Vivaldi), uses webXash's "Open game folder" UI to point at his
+local HL1 install, and verifies the page UI loads cleanly with the
+folder picker working.
 
-**Steps (waiting on Kyle to wake his MacBook):**
+**Steps:**
 
-1. Verify Tailscale can see the MacBook again
-   (`tailscale status | grep kyles-macbook-pro`).
-2. `rsync` the HL1 `valve/` folder from MacBook to m5:
-   - Source: `/Users/kylelampa/Library/Application Support/Steam/steamapps/common/Half-Life/valve/`
-   - Dest: `~/GameSource/half-life/valve/` on m5
-3. Verify file count matches expectations (the README says the folder
-   should contain pak files, .mdl models, .wav sounds — many files,
-   typically ~500MB-1GB).
-4. (After TS mod zip lands) extract it to
-   `~/GameSource/the-specialists/`.
-5. Take a tier-3 manual smoke: open `http://127.0.0.1:5174/webXash/`
-   in a real browser (Kyle on his Mac via Tailscale if needed) and
-   verify the page renders the file-picker UI.
-6. Update HANDOFF.md with smoke results.
+1. Kyle opens `http://100.95.111.112:5174/webXash/` in his Mac
+   browser (Chrome or Vivaldi, NOT Safari/Firefox — Filesystem
+   Access API is Chrome/Edge only).
+2. Page should render the WebXash UI (Vue mount point in `<div
+   id="app">`). The "open game folder" button should be reachable.
+3. Kyle clicks the button, navigates to and selects
+   `/Users/kylelampa/Library/Application Support/Steam/steamapps/common/Half-Life/`
+   (the parent of `valve/`). **Note:** the user picks the HL1
+   *root*, not the `valve/` subfolder — the README says it
+   expects a folder containing `valve/` and/or `cstrike/`.
+4. Grant persistent access if asked.
+5. Verify the file list shows directories like `valve`, `dlls`,
+   `cl_dlls`, `maps`, `models`, `sound`, `sprites`, `gfx` etc.
+6. **STOP HERE** — do NOT try to "start the game" yet. The stub
+   patch means the HLSDK WASMs are empty, so a game launch will
+   fail at the WASM-load step. The point of this smoke is: the
+   folder picker works, the engine can read the files, and the
+   page UI is functional. That's Phase 0 step 3 GREEN.
+7. Take a screenshot of the loaded UI, save to
+   `docs/cheats/phase-0-step-3-screenshot.png`.
+8. Save smoke notes to `tools/smokes/tier-3-manual-phase-0-step-3.md`
+   with: browser used, files visible, any console errors, what
+   worked, what didn't.
 
-**Status now:** MacBook went to sleep 1 minute after Kyle said
-"halflife is downloaded" (per Tailscale: `offline, last seen 1m ago`).
-Need Kyle to wake the Mac.
+**Important caveat:** the "Start game" / "Launch" button will fail
+because of our stub patch (HLSDK WASMs are empty strings). This is
+expected. Phase 1 fixes this with a CheerpX-based TS launch path
+that doesn't need the HLSDK WASMs at all.
 
-(After step 2) **Phase 0 step 3 — verify webXash page picks up
-local files.** Use the Filesystem Access API to point at the
-landed `~/GameSource/half-life/` folder. Try the `public/hl/`
-sample first as a no-network smoke (it's already vendored in
-`webxash/public/hl/`). Document the result.
+**Update this HANDOFF before pushing the commit** with Kyle's smoke
+results (pass/fail, browser used, screenshot path, smoke log path,
+any console errors).
 
 (After step 3) **Phase 1 — actual TS game launch.** This is where
 CheerpX comes in. We need to extend `webXash/src/services/xash-loader.ts`
 to add a TS launch path that uses CheerpX for the mod's x86 DLLs
 instead of the WASM-based HLSDK. Substantial new code; ~1–2 weeks.
+**Trigger:** Phase 0 step 3 GREEN + TS mod zip in
+`_runtime_assets/`.
 
 ## Open questions (do not start Phase 0 step 2 without answers)
 
@@ -237,20 +282,18 @@ instead of the WASM-based HLSDK. Substantial new code; ~1–2 weeks.
 
 ## Last work session
 
-**2026-10-14 — Phase 0 step 1.5 (Evo)**
+**2026-10-14 — Phase 0 step 2 (Evo)**
 
 What I did:
-- Forked `x8BitRain/webXash` → `klampatech/webXash` on GitHub.
-- Pushed `phase-0-stub-fix` (commit `e455923`) to the fork.
-- Switched the `webxash/` submodule's origin to the fork; updated
-  `.gitmodules`.
-- Discovered the npm packages were *unpublished* (2026-09-08), not
-  just version-stale. Discovered yohimik's monorepo is also 404.
-- Realized: for our use case (TS via CheerpX), hlsdk-portable and
-  cs16-client are irrelevant anyway. Stub patch is the right
-  pragmatic fix.
+- MacBook came online. SSH-key auth verified (kylelampa@macbook).
+- `rsync -av` over Tailscale pulled `/Users/kylelampa/Library/Application Support/Steam/steamapps/common/Half-Life/valve/` to `~/Development/specialists-browser/_runtime_assets/half-life/valve/` on m5.
+- 26 seconds, 517MB, 4250 files. Key files verified: client.dll, hl.dll, halflife.wad, liblist.gam.
+- Discovered HL1 is `PatchVersion=1.1.2.2` (legacy build, WAD-based, NO pak files — which is correct for the legacy build, not the 25th anniversary update).
+- Killed the old dev server (PID 4166403, bound to 127.0.0.1 only).
+- Restarted vite via full bun path (`/home/kyle/.bun/bin/bun`) bound to 0.0.0.0:5174 (PID 589657). Page now reachable at `http://100.95.111.112:5174/webXash/`.
+- Updated HANDOFF.md with the new dev server URL, the HL1 path, and Phase 0 step 3 instructions for Kyle's tier-3 smoke.
 
 What I did NOT do (waiting on Kyle):
-- Did not pull HL1 from MacBook (MacBook asleep — `offline 1m`).
-- Did not download TS mod (Cloudflare blocks; Kyle to do from Mac).
-- Did not substantially customize the launcher (Phase 1 work).
+- Did not download TS mod (still pending — moddb Cloudflare blocks, Kyle to do from Mac).
+- Did not run the tier-3 smoke myself (tier-3 is Kyle's job per the smoke-validation discipline).
+- Did not start Phase 1 (TS+CheerpX) — needs Phase 0 step 3 GREEN + TS mod zip first.
