@@ -12,20 +12,26 @@
 > ║  New T3 thread? Point it at this file. It will know what to do.   ║
 > ╚══════════════════════════════════════════════════════════════════╝
 
-**Status:** ⚠️ **Phase 0 step 3 = INFRASTRUCTURE PARTIAL GREEN /
-USER-FACING NOT GREEN.** Engine infra works up to the mod-side WASM
-load (per the Vite console output: xash.wasm, filesystem_stdio.wasm,
-libmenu.wasm all loaded; only the empty-string stub fails). Engine
-never reaches `processZip()`, so no user-facing game starts. Pivoting
-to Phase 1 (CheerpX) — see `docs/phase-1-scope.md`.
-**Last updated:** 2026-10-14 (after Kyle's honest pushback on the
-over-rotated GREEN verdict; Phase 1 scope doc in progress)
+**Status:** ⚠️ **Phase 1 step 1.1 (CheerpX PoC) = POINTS BUSTED. Pivot
+to Option C recommended.** CheerpX is Linux-only (won't load Windows
+PE DLLs), DataDevice is flat-namespace (no subdirectories), requires
+crossOriginIsolated (HTTPS + COEP/COOP — fixed), AND requires HTTP
+Range header support (Vite doesn't have it). 4 architectural
+surprises in 1 hour; even fixing the environmental ones leaves the
+fundamental Windows PE + flat-namespace deal-breakers. Decision
+pending: pivot to Option C (TS reimplementation in TypeScript, 2-4
+months) or one more push on Option B.
+**Last updated:** 2026-10-14 (after CheerpX PoC revealed 4
+architectural surprises; full record at
+`tools/smokes/tier-3-manual-phase-1-step-1.1.md`)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 **Repo:** `github.com/klampatech/specialists-browser` (private)
 **Vault mirror:** `~/Obsidian/projects/specialists-browser/SPEC.md`
-**Live dev server:** `http://100.95.111.112:5174/webXash/` (m5
-Tailscale IP, 0.0.0.0:5174, PID 589657)
+**Live dev server:** `https://100.95.111.112:5174/webXash/` (m5
+Tailscale IP, HTTPS with self-signed cert for crossOriginIsolated,
+PID 822872. Vite has COEP `credentialless` + COOP `same-origin`
+headers so CheerpX-style WASM works)
 **HL1 + TS on m5:** `~/Development/specialists-browser/_runtime_assets/half-life/{valve,ts}/`
 (valve: 178MB / 3575 files; ts: 721MB / 1721 files including
 `ts/cl_dlls/client.dll` and `ts/dlls/mp.dll` — the mod DLLs we'll
@@ -99,6 +105,45 @@ port 5174, page returns HTTP 200 with the expected WebXash
     **Page returns HTTP 200 with valid WebXash HTML.**
   - Saved the diff to `tools/patches/webxash-hlsdk-stub.patch` for
     reference / reproducibility.
+
+- **2026-10-14 — Phase 1 step 1.1 (CheerpX PoC) — POINTS BUSTED.**
+  - 4 architectural surprises in 1 hour of PoC work. Full record at
+    `tools/smokes/tier-3-manual-phase-1-step-1.1.md`. Summary:
+    1. **CheerpX is Linux-only** — won't load Windows PE DLLs.
+       Confirmed by API check (`index.d.ts` shows only `Linux` class
+       + Linux system calls; no PE/Windows support). TS mod DLLs
+       (`ts/dlls/mp.dll`, `ts/cl_dlls/client.dll`) are PE format
+       (`MZ\x90\x00` header confirmed). Fundamental deal-breaker.
+    2. **CheerpX DataDevice is flat-namespace** — only `/<filename>`
+       paths work, no subdirectories. Can't represent the original
+       `ts/dlls/mp.dll` hierarchy. Would need multiple DataDevices
+       (one per "subdirectory") or a real ext2 filesystem image.
+    3. **CheerpX needs `crossOriginIsolated`** — SharedArrayBuffer
+       unavailable in non-isolated context. ✅ FIXED by switching
+       dev server to HTTPS + COEP `credentialless` + COOP
+       `same-origin` headers. Self-signed cert generated with
+       openssl, valid 365 days, covers 100.95.111.112 +
+       127.0.0.1 + localhost. Vite config updated; had to delete
+       stale `vite.config.js` build artifact that was shadowing
+       `vite.config.ts` (artifact priority over source).
+    4. **CheerpX needs HTTP Range header support** — Vite's dev
+       server doesn't serve Range requests. Console showed:
+       *"HTTP server does not support the 'Range' header. CheerpX
+       cannot run."* Exit code `-2` from `ELF execution failed`.
+       Would need nginx / a Range-supporting proxy in front of Vite.
+  - Plus: **Mount config warning** — `Ignoring invalid 'mounts'
+    parameters, first entry is not the root`. CheerpX may expect
+    root filesystem mount first; subdirectory mount may be silently
+    rejected.
+  - The PoC proved the architectural incompatibility is real, not
+    speculative. **Even fixing #3 and #4 leaves #1 and #2 as
+    fundamental deal-breakers** for using CheerpX to run TS mod DLLs.
+  - **Recommendation: Option C (TS reimplementation in TypeScript).**
+    2-4 months, well-understood territory. Decision pending — see
+    `Last work session` below.
+  - Updated HANDOFF.md status banner to "Phase 1 step 1.1 = POINTS
+    BUSTED." Live dev server now HTTPS, cert at
+    `/home/kyle/Development/scratch/cheerpx-inspect/certs/`.
 
 - **2026-10-14 — Phase 0 step 3 honest re-verdict (after Kyle's pushback).**
   - Kyle correctly called out the original "GREEN" verdict as
@@ -369,11 +414,11 @@ step plan. **Trigger:** Kyle approves the Phase 1 scope doc.
    the plaintext password is no longer needed. Follow-up: have Kyle
    run `passwd` on his Mac to rotate, then update the skill.
 
-7. **HTTPS dev server?** Currently serving over HTTP, which blocks
-   the File System Access API in Vivaldi (Kyle had to use the ZIP
-   fallback path). `bun run dev --https` would restore it but adds
-   a one-time cert warning per browser. Defer until Phase 1 work
-   needs the File System Access API directly.
+7. **HTTPS dev server?** Now active (as of Phase 1 step 1.1 PoC).
+   Self-signed cert at `/home/kyle/Development/scratch/cheerpx-inspect/certs/`.
+   Vite config has `server.https` + COEP/COOP headers. This was added
+   to make `window.crossOriginIsolated` true so CheerpX's worker
+   could use SharedArrayBuffer.
 
 ## Risks to watch
 
@@ -402,28 +447,55 @@ step plan. **Trigger:** Kyle approves the Phase 1 scope doc.
 
 ## Last work session
 
-**2026-10-14 — Phase 0 step 3 GREEN (Evo)**
+**2026-10-14 — Phase 1 step 1.1 (CheerpX PoC) — POINTS BUSTED (Evo)**
 
 What I did:
-- Captured the smoke screenshot from Kyle's Vivaldi DevTools
-  (lambda logo state with the `wasm magic number` error visible in
-  console) → saved to `docs/cheats/phase-0-step-3-screenshot.png`.
-- Wrote `tools/smokes/tier-3-manual-phase-0-step-3.md` with full
-  setup details, what worked, what didn't, the complete console
-  error stack trace, what this confirms / doesn't confirm, and notes
-  for future smokes.
-- Updated HANDOFF.md to mark Phase 0 step 3 GREEN, updated Next task
-  to Phase 1 scope doc, updated Open Questions (removed resolved
-  ones, added the HTTPS-deferred question), refreshed Last Work
-  Session.
+- Installed `cheerpx@1.4.0` and reviewed the API. Discovered
+  `Linux` class is Linux-only (no Windows PE support). Updated
+  Phase 1 scope doc's Risk #1 to reflect this — should have caught
+  it when writing the doc, not after Kyle approved it.
+- Wrote `webxash/public/cheerpx-test.html` — a diagnostic page
+  that loads CheerpX from CDN, fetches `ts/dlls/mp.dll`, mounts it
+  via DataDevice, creates a Linux VM, and attempts `linux.run()`.
+  Includes window-level error capture + 30s timeout for the silent
+  worker-death case.
+- Switched the dev server to HTTPS with a self-signed cert + COEP/
+  COOP headers so `window.crossOriginIsolated = true` (required by
+  CheerpX's SharedArrayBuffer-using worker). Vite config updated.
+  Had to delete stale `webxash/vite.config.js` build artifact
+  shadowing `vite.config.ts`.
+- Kyle ran the test in Vivaldi. Result: `crossOriginIsolated = true`
+  ✅, CheerpX loaded ✅, Linux VM created ✅, exec attempt failed
+  with *"HTTP server does not support the 'Range' header. CheerpX
+  cannot run."* + exit code `-2`. Plus the existing
+  *"first entry is not the root"* mount warning.
+- Wrote `tools/smokes/tier-3-manual-phase-1-step-1.1.md` with full
+  record (4 architectural surprises, 6 lessons, what we'd need to
+  make Option B work — ~3-6 months, high risk).
+- Updated HANDOFF status banner, "What just happened" entry, dev
+  server URL, and open question #7 (HTTPS) to reflect the new state.
 
-Smoke result: zip loaded, engine UI shell reached, expected failure
-at WASM-load (stub patch correctly substitutes the missing npm
-deps). xash3d-fwgs WASM loading path fully exercised. Phase 0 is
-GREEN end-to-end. Phase 1 (CheerpX + TS mod DLL bridge) is the
-next work item.
+Smoke result: **4 architectural surprises in 1 hour.** Even fixing
+the environmental ones (crossOriginIsolated, Range headers) leaves
+the Windows PE + flat-namespace deal-breakers. **Option B is dead
+in practice. Recommend pivot to Option C (TS reimplementation,
+2-4 months, well-understood territory).**
 
-What I did NOT do (waiting on Kyle):
-- Did not start writing the Phase 1 scope doc yet — wanted to
-  confirm Kyle approves the "doc first, then code" approach. Doc is
-  queued as the next task; Kyle can greenlight it whenever.
+**Next task (DECISION PENDING from Kyle):**
+- **(a) Pivot to Option C.** Write `docs/option-c-scope.md` covering
+  reimplementation of acrobatics, slowmo, dual-wield, kick, weapons,
+  maps, bot AI, HUD, scoreboard in TypeScript. Reference
+  specialists-web for patterns (per Kyle's rule: don't blindly
+  copy, adopt patterns with explicit review).
+- **(b) One more push on Option B.** Add Range header support via
+  a small Node proxy in front of Vite. Bounded 2-hour experiment.
+  Won't fix the Windows PE or flat-namespace issues but will rule
+  out "we can do Option B if we also add Wine-like shims" before
+  pivoting.
+
+**What I did NOT do (waiting on Kyle):**
+- Did not pivot to Option C yet — wanted Kyle to confirm the
+  recommendation before writing the new scope doc.
+- Did not delete `webxash/public/cheerpx-test.html` and
+  `webxash/public/test-assets/mp.dll` — kept for one more
+  iteration if Kyle wants to push Option B.
