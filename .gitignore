@@ -72,3 +72,6 @@ logs/
 # Misc
 .cache/
 tmp/
+# Runtime working files (HL1, TS mod, smoke zips, etc.)
+# The repo is asset-free; these stay local but never commit.
+_runtime_assets/

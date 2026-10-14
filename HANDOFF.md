@@ -12,22 +12,27 @@
 > ║  New T3 thread? Point it at this file. It will know what to do.   ║
 > ╚══════════════════════════════════════════════════════════════════╝
 
-**Status:** Phase 0 step 2 GREEN — HL1 `valve/` landed on m5 at
-`_runtime_assets/half-life/valve/`. Dev server now bound to 0.0.0.0
-and reachable on Tailscale. **Phase 0 step 3 (tier-3 manual smoke)
-is Kyle's job** — open the URL in his Mac browser and point the
-Filesystem Access API at his local HL1 install.
-**Last updated:** 2026-10-14 (after Phase 0 step 2)
+**Status:** Phase 0 step 2 + step 3 setup GREEN. HL1 + TS mod files
+laid out on m5 (`_runtime_assets/half-life/{valve,ts}/`, 898MB extracted
+from TSHD3_EN.exe). Smoke zip (`Half-Life-TS.zip`, 494MB) rsync'd
+to Kyle's Mac at `~/Downloads/`. **Kyle to run the tier-3 manual smoke
+via the "Open ZIP" button on webXash** (Vivaldi's File System Access
+API is blocked by secure-context, so the ZIP fallback path is what
+we use).
+**Last updated:** 2026-10-14 (after Phase 0 step 2 follow-on: extraction + smoke zip)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 **Repo:** `github.com/klampatech/specialists-browser` (private)
 **Vault mirror:** `~/Obsidian/projects/specialists-browser/SPEC.md`
 **Live dev server:** `http://100.95.111.112:5174/webXash/` (m5
-Tailscale IP, 0.0.0.0:5174, PID 589656, started via
-`/home/kyle/.bun/bin/bun run dev --port 5174 --host 0.0.0.0`)
-**HL1 on m5:** `~/Development/specialists-browser/_runtime_assets/half-life/valve/`
-(517MB, 4250 files, legacy HL1 1.1.2.2 / WAD-based — no .pak files,
-which is correct for the legacy build)
+Tailscale IP, 0.0.0.0:5174, PID 589657)
+**HL1 + TS on m5:** `~/Development/specialists-browser/_runtime_assets/half-life/{valve,ts}/`
+(valve: 178MB / 3575 files; ts: 721MB / 1721 files including
+`ts/cl_dlls/client.dll` and `ts/dlls/mp.dll`)
+**Smoke zip on Mac:** `~/Downloads/Half-Life-TS.zip` (493MB, rsync'd
+from m5; top level = valve/ + ts/)
+**Original installer kept for reference:** `_runtime_assets/the-specialists/TSHD3_EN.exe`
+(370MB, Inno Setup installer, source of the extracted content)
 
 ---
 
@@ -94,6 +99,42 @@ port 5174, page returns HTTP 200 with the expected WebXash
     **Page returns HTTP 200 with valid WebXash HTML.**
   - Saved the diff to `tools/patches/webxash-hlsdk-stub.patch` for
     reference / reproducibility.
+
+- **2026-10-14 — Phase 0 step 2 follow-on: TS mod extracted + smoke zip built.**
+  - TSHD3_EN.exe arrived via Syncthing at
+    `_runtime_assets/the-specialists/TSHD3_EN.exe` (370MB, Inno
+    Setup installer).
+  - `sudo apt-get install innoextract` (1.9, supports Inno 1.2.10–6.0.5;
+    sufficient for TS 3.0 from 2007).
+  - `innoextract -d extracted TSHD3_EN.exe` unpacked to
+    `extracted/app/{valve, ts, platform, hl.exe, upatch.dll, hw.dll, ...}`.
+  - **Mod folder name is `ts/`, NOT `specialists/`.** The TS installer's
+    layout is `app/valve/` + `app/ts/` (the mod folder is named `ts`).
+    `liblist.gam` confirms: `game "TSMOD.NET - The Specialists"`.
+    webXash launch arg will be `-game ts`.
+  - Cleaned out: Windows engine binaries at `app/` root (hlds.exe,
+    vgui.dll, sw.dll, tier0.dll, Mss32.dll, steam_api.dll, etc.
+    — Source Engine / SteamPipe leftovers, ~30 files, 19MB). The
+    `app/platform/` SteamPipe dir (753 files) also removed.
+  - Laid out:
+    - `_runtime_assets/half-life/valve/` ← from installer (178MB, 3575 files)
+    - `_runtime_assets/half-life/ts/` ← from installer (721MB, 1721 files, includes
+      `ts/cl_dlls/client.dll` and `ts/dlls/mp.dll` — the mod DLLs we'll
+      CheerpX-load in Phase 1)
+    - Replaced the earlier Mac-sourced `valve/` (517MB, 4250 files,
+      from the legacy 1.1.2.2 Steam install) with the installer's
+      `valve/` (178MB, 3575 files) — both are valid but the installer
+      version is self-contained, smaller, and more portable.
+  - **Built smoke zip** `Half-Life-TS.zip` (494MB, 5296 entries,
+    `valve/` + `ts/` at the top level) using Python `zipfile`
+    (no `zip` binary on m5, but Python's stdlib is fine).
+  - **rsync'd the zip to Kyle's Mac** at `~/Downloads/Half-Life-TS.zip`
+    (493MB, ~10MB/s over Tailscale, 53s).
+  - **Discovered Vivaldi's File System Access API is blocked** on
+    `http://100.95.111.112:5174` (non-secure context — the URL bar
+    showed "Not Secure" and the browser refused `showDirectoryPicker`).
+    Kyle hit the "make a ZIP" fallback path in webXash, which is
+    exactly the path we built the zip for.
 
 - **2026-10-14 — Phase 0 step 2: HL1 landed on m5 (GREEN).**
   - MacBook came back online. SSH verified: HL1 installed at
@@ -162,43 +203,50 @@ port 5174, page returns HTTP 200 with the expected WebXash
     human browser required → Kyle to download from his Mac alongside
     HL1.
 
-## Next task — Phase 0, step 3 (Kyletier-3 manual smoke)
+## Next task — Phase 0, step 3 (Kyletier-3 manual smoke, ZIP path)
 
-**Goal:** Kyle opens the dev server URL in his Mac browser (Chrome
-or Vivaldi), uses webXash's "Open game folder" UI to point at his
-local HL1 install, and verifies the page UI loads cleanly with the
-folder picker working.
+**Goal:** Kyle opens the dev server URL in his Mac browser, uses
+webXash's "Open ZIP" button to select the smoke zip, and verifies
+the page UI loads cleanly with the engine reading the zip contents.
 
 **Steps:**
 
 1. Kyle opens `http://100.95.111.112:5174/webXash/` in his Mac
-   browser (Chrome or Vivaldi, NOT Safari/Firefox — Filesystem
-   Access API is Chrome/Edge only).
-2. Page should render the WebXash UI (Vue mount point in `<div
-   id="app">`). The "open game folder" button should be reachable.
-3. Kyle clicks the button, navigates to and selects
-   `/Users/kylelampa/Library/Application Support/Steam/steamapps/common/Half-Life/`
-   (the parent of `valve/`). **Note:** the user picks the HL1
-   *root*, not the `valve/` subfolder — the README says it
-   expects a folder containing `valve/` and/or `cstrike/`.
-4. Grant persistent access if asked.
-5. Verify the file list shows directories like `valve`, `dlls`,
-   `cl_dlls`, `maps`, `models`, `sound`, `sprites`, `gfx` etc.
-6. **STOP HERE** — do NOT try to "start the game" yet. The stub
-   patch means the HLSDK WASMs are empty, so a game launch will
-   fail at the WASM-load step. The point of this smoke is: the
-   folder picker works, the engine can read the files, and the
-   page UI is functional. That's Phase 0 step 3 GREEN.
-7. Take a screenshot of the loaded UI, save to
+   browser (Vivaldi, which he confirmed renders the page). Page
+   should already be loaded from earlier.
+2. Kyle clicks the **"Open ZIP"** button (NOT "Open game Folder" —
+   that one is blocked by Vivaldi's secure-context block; the
+   README's ZIP fallback is what we use).
+3. Kyle navigates to and selects
+   `~/Downloads/Half-Life-TS.zip` (493MB, top level = valve/ + ts/).
+4. webXash reads the zip in-memory and processes its contents.
+5. Verify the file list populates with `valve/`, `dlls/`, `cl_dlls/`,
+   `maps/`, `models/`, `sound/`, `sprites/`, `gfx/` from the HL1
+   base, AND `ts/` (the TS mod folder with its own `cl_dlls/`,
+   `models/`, `maps/`, `sound/` etc).
+6. In the **LAUNCH OPTIONS** box, set `-game ts` (the mod folder
+   name from the installer is `ts`, not `specialists`).
+7. **STOP HERE** — do NOT try to "start the game" yet. The stub
+   patch means the HLSDK WASMs are empty strings, so a game launch
+   will fail at the WASM-load step. The point of this smoke is: the
+   zip loads, the engine sees both folders, and the page UI is
+   functional. That's Phase 0 step 3 GREEN.
+8. Take a screenshot of the loaded UI (with the zip loaded), save to
    `docs/cheats/phase-0-step-3-screenshot.png`.
-8. Save smoke notes to `tools/smokes/tier-3-manual-phase-0-step-3.md`
-   with: browser used, files visible, any console errors, what
+9. Save smoke notes to `tools/smokes/tier-3-manual-phase-0-step-3.md`
+   with: browser used, files visible in the UI, console errors, what
    worked, what didn't.
 
 **Important caveat:** the "Start game" / "Launch" button will fail
 because of our stub patch (HLSDK WASMs are empty strings). This is
 expected. Phase 1 fixes this with a CheerpX-based TS launch path
 that doesn't need the HLSDK WASMs at all.
+
+**FYI / future improvement:** we could switch the dev server to
+HTTPS via `bun run dev --https` (Vite's built-in self-signed cert)
+to restore the File System Access API on `http://100.95.111.112`.
+Trade-off: one-time "this site is not secure" warning per browser.
+Defer until after Phase 0 is GREEN if at all — the ZIP path works.
 
 **Update this HANDOFF before pushing the commit** with Kyle's smoke
 results (pass/fail, browser used, screenshot path, smoke log path,
@@ -282,18 +330,30 @@ instead of the WASM-based HLSDK. Substantial new code; ~1–2 weeks.
 
 ## Last work session
 
-**2026-10-14 — Phase 0 step 2 (Evo)**
+**2026-10-14 — Phase 0 step 2 follow-on (Evo)**
 
 What I did:
-- MacBook came online. SSH-key auth verified (kylelampa@macbook).
-- `rsync -av` over Tailscale pulled `/Users/kylelampa/Library/Application Support/Steam/steamapps/common/Half-Life/valve/` to `~/Development/specialists-browser/_runtime_assets/half-life/valve/` on m5.
-- 26 seconds, 517MB, 4250 files. Key files verified: client.dll, hl.dll, halflife.wad, liblist.gam.
-- Discovered HL1 is `PatchVersion=1.1.2.2` (legacy build, WAD-based, NO pak files — which is correct for the legacy build, not the 25th anniversary update).
-- Killed the old dev server (PID 4166403, bound to 127.0.0.1 only).
-- Restarted vite via full bun path (`/home/kyle/.bun/bin/bun`) bound to 0.0.0.0:5174 (PID 589657). Page now reachable at `http://100.95.111.112:5174/webXash/`.
-- Updated HANDOFF.md with the new dev server URL, the HL1 path, and Phase 0 step 3 instructions for Kyle's tier-3 smoke.
+- TSHD3_EN.exe arrived via Syncthing at
+  `_runtime_assets/the-specialists/TSHD3_EN.exe` (370MB).
+- Installed `innoextract` 1.9 via `sudo apt-get install -y innoextract`.
+- Extracted installer → `extracted/app/{valve, ts, platform, ...}`.
+- Cleaned out ~30 Windows engine binaries at `app/` root (hlds.exe,
+  vgui.dll, sw.dll, tier0.dll, steam_api.dll, Mss32.dll, etc.)
+  + the 753-file `app/platform/` SteamPipe dir.
+- Laid out final structure on m5:
+  `_runtime_assets/half-life/{valve, ts}/` (898MB total).
+- Built smoke zip `Half-Life-TS.zip` (494MB, 5296 entries, top level
+  = valve/ + ts/) using Python's `zipfile` stdlib.
+- rsync'd zip to Kyle's Mac at `~/Downloads/Half-Life-TS.zip` (493MB,
+  ~10MB/s, 53s).
+- Discovered Kyle's Vivaldi blocks File System Access API on the HTTP
+  Tailscale URL (secure-context issue, "Not Secure" in URL bar).
+  Documented the ZIP fallback path in HANDOFF.
+- Confirmed the mod folder name is `ts/`, not `specialists/` (from
+  `liblist.gam`); launch arg will be `-game ts`.
 
 What I did NOT do (waiting on Kyle):
-- Did not download TS mod (still pending — moddb Cloudflare blocks, Kyle to do from Mac).
-- Did not run the tier-3 smoke myself (tier-3 is Kyle's job per the smoke-validation discipline).
-- Did not start Phase 1 (TS+CheerpX) — needs Phase 0 step 3 GREEN + TS mod zip first.
+- Did not run the tier-3 smoke myself (tier-3 is Kyle's job).
+- Did not start Phase 1 (TS+CheerpX) — needs Phase 0 step 3 GREEN
+  via the zip path.
+- Did not switch dev server to HTTPS — ZIP path works, defer.
