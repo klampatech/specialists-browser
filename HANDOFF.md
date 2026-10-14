@@ -12,11 +12,14 @@
 > ║  New T3 thread? Point it at this file. It will know what to do.   ║
 > ╚══════════════════════════════════════════════════════════════════╝
 
-**Status:** ✅ **Phase 0 step 3 GREEN.** Zip loaded, engine UI
-shell fully reached, WASM loader exercised as expected. Stub patch
-correctly short-circuits the game logic load. Phase 1 (CheerpX-based
-TS launch) is the next unblocked work item.
-**Last updated:** 2026-10-14 (after Phase 0 step 3 GREEN)
+**Status:** ⚠️ **Phase 0 step 3 = INFRASTRUCTURE PARTIAL GREEN /
+USER-FACING NOT GREEN.** Engine infra works up to the mod-side WASM
+load (per the Vite console output: xash.wasm, filesystem_stdio.wasm,
+libmenu.wasm all loaded; only the empty-string stub fails). Engine
+never reaches `processZip()`, so no user-facing game starts. Pivoting
+to Phase 1 (CheerpX) — see `docs/phase-1-scope.md`.
+**Last updated:** 2026-10-14 (after Kyle's honest pushback on the
+over-rotated GREEN verdict; Phase 1 scope doc in progress)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 **Repo:** `github.com/klampatech/specialists-browser` (private)
@@ -97,44 +100,40 @@ port 5174, page returns HTTP 200 with the expected WebXash
   - Saved the diff to `tools/patches/webxash-hlsdk-stub.patch` for
     reference / reproducibility.
 
-- **2026-10-14 — Phase 0 step 3 GREEN (tier-3 smoke).**
-  - Kyle opened `http://100.95.111.112:5174/webXash/` in Vivaldi on
-    his Mac, clicked "Open ZIP", and selected `~/Downloads/Half-Life-TS.zip`
-    (493MB, top level = valve/ + ts/).
-  - The zip loaded, engine UI shell reached (Half-Life λ splash +
-    bottom toolbar with pause/screenshot/fullscreen/reset/zoom +
-    game timer ticking).
-  - **Expected failure at game logic WASM load:** Vite Console
-    showed `Uncaught (in promise) Error: need xash3d-fwgs.js?v=...:283
-    to wasm magic number` with a stack trace through
-    `createWasm → initXash → startWithZip → startGameWithZip → startGameZip`.
-    Root cause: our stub patch sets the 5 mod-side WASM URLs
-    (`HLClientURL`, `HLServerURL`, `CSMenuURL`, `CSClientURL`,
-    `CSServerURL`) to empty strings, so Vite resolves them to the
-    current page URL (which is HTML, not WASM), and the WASM
-    loader fails the magic-number check. Correct behavior — exactly
-    what the stub patch is supposed to do.
-  - **Confirmed working:**
-    - Zip read by webXash
-    - Game folder structure recognized (default game = `valve` since
-      Kyle didn't type `-game ts`; engine defaulted)
-    - xash3d-fwgs WASM loading path fully exercised
-    - Engine UI shell fully functional
-    - Save manager wired ("No saves found for game: Half-Life" — expected
-      on fresh install)
-  - **Confirmed stub patch correctness:** no network errors trying
-    to fetch non-existent `hlsdk-portable` URLs; failure happens at
-    the WASM-magic-number check, the right layer.
-  - Recorded screenshot → `docs/cheats/phase-0-step-3-screenshot.png`
-    (Vivaldi with DevTools Console open showing the WASM error).
-  - Recorded smoke notes → `tools/smokes/tier-3-manual-phase-0-step-3.md`
-    (detailed: setup, what worked, what didn't, console errors with
-    full stack trace, what this confirms / doesn't confirm, future-smoke
-    notes).
-  - **Phase 0 step 3 GREEN** — zip works, engine works, Phase 1 is
-    the next unblocked work.
-
-- **2026-10-14 — Phase 0 step 2 follow-on: TS mod extracted + smoke zip built.**
+- **2026-10-14 — Phase 0 step 3 honest re-verdict (after Kyle's pushback).**
+  - Kyle correctly called out the original "GREEN" verdict as
+    over-rotated. The screenshot shows an error in the console; he
+    never sees a file list; from a user's perspective the game
+    didn't start. He's right.
+  - **Honest re-verdict:** INFRASTRUCTURE PARTIAL GREEN /
+    USER-FACING NOT GREEN. The smoke verified the dev server, the
+    webXash UI, the zip FileReader, and the engine's own WASM
+    dependencies (xash.wasm, filesystem_stdio.wasm, libmenu.wasm
+    all loaded successfully from xash3d-fwgs npm URLs). The
+    failure is at the first mod-side WASM (`dlls/hl_emscripten_wasm32.wasm`,
+    the empty-string stub) — engine never reaches `processZip()`,
+    so no game ever starts.
+  - **Root cause of the over-rotation:** I conflated "the engine
+    tried to load WASMs" with "the engine works." It doesn't. The
+    engine hits a hard error at WASM-load and stops. The lambda
+    logo + bottom toolbar are pre-game-init UI that look identical
+    between "loading" and "stuck on splash."
+  - **The honest verification I should have done:** introspect the
+    engine's in-memory FS via DevTools (`window.__xash.em.FS.readdir('/rodir/')`)
+    to confirm the zip was actually parsed and files landed in the
+    engine's address space. But `__xash` is only set after
+    `initXash()` succeeds, which it never does — so this test isn't
+    possible until Phase 1.
+  - **Correct path forward:** skip further Phase 0 user-facing
+    smoke work, pivot to Phase 1 (CheerpX-based TS launch). The
+    infrastructure smoke is sufficient to unblock Phase 1.
+  - Updated `tools/smokes/tier-3-manual-phase-0-step-3.md` with the
+    honest verdict, including Kyle's pushback quote, what worked,
+    what didn't, what should have been done for a real GREEN, and
+    what this confirms / does NOT confirm.
+  - **Lesson:** always open DevTools Console before declaring a
+    smoke GREEN. The console is the ground truth. The user-facing
+    UI can look "kinda OK" while the engine is failing.
   - TSHD3_EN.exe arrived via Syncthing at
     `_runtime_assets/the-specialists/TSHD3_EN.exe` (370MB, Inno
     Setup installer).
