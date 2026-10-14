@@ -12,18 +12,16 @@
 > ║  New T3 thread? Point it at this file. It will know what to do.   ║
 > ╚══════════════════════════════════════════════════════════════════╝
 
-**Status:** ⚠️ **Phase 1 step 1.1 (CheerpX PoC) = POINTS BUSTED. Pivot
-to Option C recommended.** CheerpX is Linux-only (won't load Windows
-PE DLLs), DataDevice is flat-namespace (no subdirectories), requires
-crossOriginIsolated (HTTPS + COEP/COOP — fixed), AND requires HTTP
-Range header support (Vite doesn't have it). 4 architectural
-surprises in 1 hour; even fixing the environmental ones leaves the
-fundamental Windows PE + flat-namespace deal-breakers. Decision
-pending: pivot to Option C (TS reimplementation in TypeScript, 2-4
-months) or one more push on Option B.
-**Last updated:** 2026-10-14 (after CheerpX PoC revealed 4
-architectural surprises; full record at
-`tools/smokes/tier-3-manual-phase-1-step-1.1.md`)
+**Status:** 🔄 **PIVOTED to Option C — TypeScript + Babylon.js
+reimplementation of TS mod gameplay.** CheerpX path dead (4
+architectural surprises in 1 hour; full record at
+`tools/smokes/tier-3-manual-phase-1-step-1.1.md`). New plan:
+rebuild from scratch in TypeScript + Babylon.js. Phase 1 MVP = 1 map
+(ts_heresy) + 1 weapon (pistol) + 1 basic bot, listen server in
+browser tab. 10-16 weeks for Phase 1. Full design in
+`docs/option-c-scope.md`.
+**Last updated:** 2026-10-14 (after Option C pivot approved by Kyle;
+CheerpX test files deleted, webXash submodule kept for now)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 **Repo:** `github.com/klampatech/specialists-browser` (private)
@@ -447,55 +445,70 @@ step plan. **Trigger:** Kyle approves the Phase 1 scope doc.
 
 ## Last work session
 
-**2026-10-14 — Phase 1 step 1.1 (CheerpX PoC) — POINTS BUSTED (Evo)**
+**2026-10-14 — Pivoted to Option C: TypeScript + Babylon.js
+reimplementation (Evo)**
 
 What I did:
-- Installed `cheerpx@1.4.0` and reviewed the API. Discovered
-  `Linux` class is Linux-only (no Windows PE support). Updated
-  Phase 1 scope doc's Risk #1 to reflect this — should have caught
-  it when writing the doc, not after Kyle approved it.
-- Wrote `webxash/public/cheerpx-test.html` — a diagnostic page
-  that loads CheerpX from CDN, fetches `ts/dlls/mp.dll`, mounts it
-  via DataDevice, creates a Linux VM, and attempts `linux.run()`.
-  Includes window-level error capture + 30s timeout for the silent
-  worker-death case.
-- Switched the dev server to HTTPS with a self-signed cert + COEP/
-  COOP headers so `window.crossOriginIsolated = true` (required by
-  CheerpX's SharedArrayBuffer-using worker). Vite config updated.
-  Had to delete stale `webxash/vite.config.js` build artifact
-  shadowing `vite.config.ts`.
-- Kyle ran the test in Vivaldi. Result: `crossOriginIsolated = true`
-  ✅, CheerpX loaded ✅, Linux VM created ✅, exec attempt failed
-  with *"HTTP server does not support the 'Range' header. CheerpX
-  cannot run."* + exit code `-2`. Plus the existing
-  *"first entry is not the root"* mount warning.
-- Wrote `tools/smokes/tier-3-manual-phase-1-step-1.1.md` with full
-  record (4 architectural surprises, 6 lessons, what we'd need to
-  make Option B work — ~3-6 months, high risk).
-- Updated HANDOFF status banner, "What just happened" entry, dev
-  server URL, and open question #7 (HTTPS) to reflect the new state.
+- Wrote `docs/option-c-scope.md` (25.6KB) — full design doc for
+  Option C. Covers Phase 1 MVP (1 map + 1 weapon + 1 bot, 10-16
+  weeks), Phase 2 (TS-specific features, 6-10 weeks), Phase 3
+  (multiplayer, 6-10 weeks), Phase 4 (polish). Stack: Babylon.js
+  7.x + WebGL2 + TypeScript. Asset pipeline: convert .bsp/.mdl
+  → glTF via one-time dev scripts. 4 open architectural decisions
+  baked in: Babylon.js (vs Three.js), WebGL2 (vs WebGPU), glTF
+  conversion (vs runtime BSP parser), listen server in Web Worker.
+- Updated `SPEC.md` to reflect Option C: rewrote the Approach
+  section, added "Why not CheerpX" section, updated Phases
+  (Phase 0 ✅, Phase 1 = TS reimpl MVP, Phase 2 = TS features,
+  Phase 3 = multiplayer, Phase 4 = polish), updated Technical
+  stack table, updated Repo layout, updated Out of Scope,
+  updated References.
+- Updated HANDOFF status banner to "PIVOTED to Option C."
+- Cleaned up CheerpX PoC files: deleted
+  `webxash/public/cheerpx-test.html` and
+  `webxash/public/test-assets/mp.dll` (gitignored by submodule,
+  so no leak risk).
+- WebXash submodule KEPT for now. Will likely remove in the next
+  cleanup pass since Option C doesn't need it (it was the
+  xash3d-fwgs WASM path). Awaiting Kyle's confirmation.
 
-Smoke result: **4 architectural surprises in 1 hour.** Even fixing
-the environmental ones (crossOriginIsolated, Range headers) leaves
-the Windows PE + flat-namespace deal-breakers. **Option B is dead
-in practice. Recommend pivot to Option C (TS reimplementation,
-2-4 months, well-understood territory).**
+Smoke result: n/a (design pivot, not a code change).
 
 **Next task (DECISION PENDING from Kyle):**
-- **(a) Pivot to Option C.** Write `docs/option-c-scope.md` covering
-  reimplementation of acrobatics, slowmo, dual-wield, kick, weapons,
-  maps, bot AI, HUD, scoreboard in TypeScript. Reference
-  specialists-web for patterns (per Kyle's rule: don't blindly
-  copy, adopt patterns with explicit review).
-- **(b) One more push on Option B.** Add Range header support via
-  a small Node proxy in front of Vite. Bounded 2-hour experiment.
-  Won't fix the Windows PE or flat-namespace issues but will rule
-  out "we can do Option B if we also add Wine-like shims" before
-  pivoting.
+
+1. **Approve the Option C scope doc as-is** → I start step 4.1
+   (Project Scaffolding: Vite + TS + Babylon.js hello world).
+2. **Revise the Option C scope doc first** → I incorporate
+   changes (architectural decisions, step plan, risks, etc.)
+   before starting 4.1.
+3. **Discuss the 4 open architectural decisions** (Babylon.js
+   vs Three.js, WebGL2 vs WebGPU, glTF vs runtime parser, listen
+   server in same tab vs separate) before approving.
+
+My pick: (1). The scope doc covers all the tradeoffs. If Kyle
+has specific changes, he can say so.
+
+**Phase 1 step plan** (full detail in `docs/option-c-scope.md`):
+- **4.1** Project scaffolding (Vite + TS + Babylon.js) — 1-2 days
+- **4.2** Player controller (FPS camera + WASD + mouse) — 3-5 days
+- **4.3** BSP→glTF conversion tool — 3-5 days
+- **4.4** MDL→glTF conversion tool — 3-5 days
+- **4.5** Map loading (load glTF into Babylon scene) — 2-3 days
+- **4.6** Player collision (character controller) — 2-3 days
+- **4.7** Weapon viewmodel (pistol in hand) — 2-3 days
+- **4.8** Weapon firing (hit-scan raycast) — 2-3 days
+- **4.9** Bot AI basic (move + shoot) — 3-5 days
+- **4.10** Damage system (HP, death, respawn) — 1-2 days
+- **4.11** HUD (HTML overlay: health, ammo, crosshair) — 1-2 days
+- **4.12** Tier-3 manual smoke (Kyle plays, screenshots) — 1 day
 
 **What I did NOT do (waiting on Kyle):**
-- Did not pivot to Option C yet — wanted Kyle to confirm the
-  recommendation before writing the new scope doc.
-- Did not delete `webxash/public/cheerpx-test.html` and
-  `webxash/public/test-assets/mp.dll` — kept for one more
-  iteration if Kyle wants to push Option B.
+- Did NOT start step 4.1 (Project Scaffolding) yet — wanted to
+  confirm Kyle approves the Option C scope doc.
+- Did NOT remove the webXash submodule yet — that's a one-way
+  action; can do it after Kyle greenlights the scope doc.
+- Did NOT create the `src/` directory structure shown in SPEC.md
+  § Repo layout — that's part of step 4.1.
+- Did NOT remove `docs/phase-1-scope.md` (the old Option B doc)
+  yet — kept for historical reference, marked as superseded in
+  SPEC.md.

@@ -4,8 +4,15 @@
 > Mirror: `~/Obsidian/projects/specialists-browser/SPEC.md`
 > Authoritative canonical: this file in the repo.
 
-**Status:** Phase 0 — kickoff, no code yet.
-**Last updated:** 2026-10-14
+**Status:** Phase 1 scope — Option C (TypeScript reimplementation).
+The CheerpX-based Option B path was abandoned after the Phase 1
+step 1.1 PoC revealed 4 architectural incompatibilities (Linux-only
+emulation, flat-namespace DataDevice, crossOriginIsolated required,
+HTTP Range header required). New direction: reimplement the TS mod
+gameplay in TypeScript + Babylon.js. Full design in
+`docs/option-c-scope.md`. 10-16 weeks for Phase 1 MVP (one map, one
+weapon, basic bot AI). 4-7 months total for shippable single-player.
+**Last updated:** 2026-10-14 (after Option C pivot)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 
@@ -48,90 +55,125 @@ that wave is informative but not directly reusable:
 
 ## Approach (one paragraph)
 
-Use the existing `Xash3D-WASM` engine port as the engine substrate
-(`webXash` frontend + `Xash3D FWGS` compiled to WebAssembly via
-Emscripten). For the mod's gameplay DLLs (`dlls/server.dll`,
-`dlls/client.dll`) which are closed-source x86 binaries, use
-**CheerpX** — a WebAssembly-based x86 JIT that runs unmodified x86
-binaries in the browser with no source, no recompilation. The TS mod
-assets (`.pak` files) load natively into Xash3D's filesystem layer
-via the Filesystem Access API or OPFS. If CheerpX is too heavy or
-buggy for the GoldSrc DLL contract, fall back to a vibe-coded
-TS-equivalent gameplay DLL in C++ compiled to WASM.
+**Reimplement The Specialists mod gameplay in TypeScript + Babylon.js,
+running entirely in the browser.** No use of the closed-source x86
+DLLs (the CheerpX-based bridge approach was abandoned — see §"Why
+not CheerpX" below). Use Babylon.js for 3D rendering, scene graph,
+animations, character controller. The TS mod + HL1 game assets
+(`.bsp` maps, `.mdl` models, `.wav` sounds, `.wad` textures) are
+sourced from the user's local files and converted to glTF via a
+one-time dev tool (`tools/convert-bsp.ts`, `tools/convert-mdl.ts`),
+loaded at runtime in the browser. Phase 1 MVP is a single-tab listen
+server with one map (ts_heresy), one weapon (pistol), and one basic
+bot — 10-16 weeks. Subsequent phases add TS-specific features
+(acrobatics, slowmo, dual-wield, more weapons/maps/bots) and
+multiplayer (WebRTC datachannel P2P). Full design in
+`docs/option-c-scope.md`.
+
+## Why not CheerpX (or xash3d-fwgs WASM)
+
+Originally planned to use `xash3d-fwgs` (the open-source GoldSrc
+reimplementation ported to WASM) as the engine substrate, with
+**CheerpX** (WASM-based x86 JIT) running the TS mod's closed-source
+`.dll` files unmodified. The 1-hour Phase 1 step 1.1 PoC revealed
+this path is unworkable:
+
+1. **CheerpX is Linux-only.** Its `index.d.ts` only exports a `Linux`
+   class with Linux syscalls. The TS mod DLLs are Windows PE format
+   (`MZ\x90\x00` header). CheerpX rejects them at exec with
+   "ELF execution failed."
+2. **CheerpX DataDevice is flat-namespace.** Only `/<filename>`
+   paths work — no subdirectories. Can't represent the original
+   `ts/dlls/mp.dll` hierarchy without multiple DataDevices or a real
+   ext2 filesystem image.
+3. **CheerpX requires `window.crossOriginIsolated`.** Its Web Worker
+   uses SharedArrayBuffer. We can fix this with HTTPS + COEP/COOP
+   headers (now done — dev server is HTTPS), but it's still a
+   fundamental constraint for the runtime.
+
+4. **CheerpX requires HTTP Range header support.** Vite's dev server
+   doesn't serve `Range: bytes=N-M` requests. Would need nginx or a
+   Range-supporting proxy in front of Vite.
+
+Even fixing #3 and #4, #1 and #2 remain fundamental deal-breakers.
+The trend in the PoC: each fix revealed another layer of
+incompatibility. **Pivoted to Option C (TS reimpl).** Full record at
+`tools/smokes/tier-3-manual-phase-1-step-1.1.md`.
 
 ## Phases
 
-### Phase 0 — Sanity (1 day)
+### Phase 0 — Setup ✅ COMPLETE
 
-Stand up `webXash` locally on m5. Confirm the dev server runs and the
-page loads in a browser tab.
+Forked webXash, set up dev server, sourced HL1 + TS mod files,
+built smoke zip, Kyle's tier-3 smoke confirmed infrastructure works
+(but user-facing game launch blocked by design — see
+`tools/smokes/tier-3-manual-phase-0-step-3.md`).
 
-**Exit criterion:** A browser tab opens to the webXash page. Manual
-playtest confirms "press Start New Game" UI is reachable.
+**Exit:** ✅ dev server boots in 185ms on HTTPS port 5174 with COEP/
+COOP for crossOriginIsolated.
 
-### Phase 1 — TS via CheerpX (1–2 weeks)
+### Phase 1 — TS reimplementation MVP (10-16 weeks)
 
-Same `webXash` frontend, with CheerpX loaded alongside to JIT the TS
-`dlls/server.dll` and `dlls/client.dll` at runtime.
+Full design in `docs/option-c-scope.md`. Build a Babylon.js +
+TypeScript browser game from scratch. Single browser tab, listen
+server (server in Web Worker, client on main thread), one map
+(ts_heresy), one weapon (pistol), one basic bot. 12 sub-steps,
+each its own design + implement + smoke + commit cycle.
 
-Page-side glue:
+**Exit criterion:** Kyle opens the URL, loads HL1 + TS assets,
+spawns at TS player spawn point on ts_heresy, walks around, fires
+pistol, kills the bot, takes screenshot.
 
-1. Detect the user's mod folder (TS lives in `<mod>/specialists/`
-   with shared `<mod>/valve/` for HL1 base assets).
-2. Mount the TS `.pak` files via OPFS (Origin Private File System) or
-   the Filesystem Access API into Xash3D's virtual filesystem.
-3. Hand the DLL load call to CheerpX.
-4. Bridge Xash3D's engine↔DLL function calls (entity dispatch,
-   `pfnEngine`, cvar system, etc.) to the CheerpX-emulated x86 calls.
+### Phase 2 — TS-specific features (6-10 weeks)
 
-**Exit criterion:** TS mod runs in browser. Local listen-server, bots
-join, can start a Deathmatch match. Manual playtest confirms acrobatics
-+ slowmo + dual-wield + kick all behave like the original.
+Add the mod's signature gameplay: acrobatics (dive, roll, wallrun,
+walljump, climb), slowmo (headshot-triggered bullet time),
+dual-wield (two pistols), kick (melee), throwing knives, katana,
+TS bots (proper AI, not just "move + shoot"), TS HUD (round timer,
+scores, names), more weapons (shotgun, SMG, sniper), more maps
+(tm_harbor, cs_office, banana), sound design.
 
-### Phase 2 — Fallback (only if Phase 1 fails)
+**Exit criterion:** Playing against bots feels like the original
+TS mod (within reason — we're not pixel-perfect).
 
-Vibe-code a TS-equivalent gameplay DLL in C++ using the HLSDK headers
-from the FWGS fork (`xash3d-fwgs/3rdparty/hlsdk/`). Compile to WASM
-via Emscripten. Swap CheerpX for the native WASM DLL.
+### Phase 3 — Multiplayer (6-10 weeks)
 
-Mechanic-by-mechanic implementation:
-- Acrobatics state machine (wallrun, slide, roll, dive, walljump)
-- Slowmo hook (time-scale, player perception)
-- Dual-wield weapon combos (akimbo fire modes, reload logic)
-- Kick hitbox (melee, anti-melee timing)
-- Kung-fu + kata animations
-- "The One" juggernaut mode (slowmo + superjump + health-on-kill)
+WebRTC datachannel P2P between browser tabs. Server in Web Worker
+(already done in Phase 1), client on main thread. Hit registration,
+lag compensation, client-side prediction, connection flow UI,
+reconnection logic.
 
-**Exit criterion:** Same as Phase 1.
-
-### Phase 3 — Multiplayer (deferred until SP ships)
-
-Replace Xash3D's Netchan (reliable-ordered UDP) with browser-friendly
-transport. Three options on the table:
+Three transport options on the table (decision at Phase 3 kickoff):
 
 - **(a) WebRTC datachannels (SCTP)** between browser tabs. Lowest
   latency, hardest NAT traversal.
 - **(b) WebRTC-to-UDP SFU** on a VPS bridge. Lowest dev cost, adds
-  ~20–30ms RTT.
-- **(c) Reuse the WebTransport/WS netcode layer from
-  `specialists-web`** via a thin client bridge. Highest leverage —
-  the existing netcode layer already handles snapshot interpolation,
-  AimEvent, lag-comp (mostly — see audit Finding #1 in
-  `~/Development/specialists-web/HANDOFF.md`).
+  ~20-30ms RTT.
+- **(c) Custom over WebSockets.** Well-understood, easier debugging,
+  slightly higher latency.
 
-Decision deferred to Phase 3 kickoff.
+### Phase 4 — Polish (variable)
+
+Settings menu, performance optimization (LOD, occlusion, batching),
+all TS maps + weapons + bots, save/load, sound design, packaging
+(CDN hosting, npm package, etc.), production asset distribution
+strategy.
 
 ## Technical stack
 
 | Layer | Choice | Why |
 |---|---|---|
-| Engine | `Xash3D FWGS` compiled to WASM | Existing port = half the work done |
-| Frontend | `webXash` (`x8BitRain/webXash`) | Filesystem Access API flow already solved |
-| x86 emulation | `CheerpX` (Leaning Tech) | Unmodified x86 DLLs in browser, no source needed |
-| Filesystem | OPFS or Filesystem Access API | Browser-native virtual FS for `.pak` files |
-| WebTransport | n/a for SP; revisit in Phase 3 | — |
-| Page glue | TypeScript | Matches specialists-web, good FFI ergonomics |
-| Build | Emscripten | Standard for Xash3D-WASM |
+| 3D engine | **Babylon.js 7.x** | Mature TS-first, glTF loader, character controller, Havok physics integration. Same engine specialists-web was using (but we don't copy code per Kyle's rule). |
+| Language | **TypeScript** | Already configured; matches specialists-web patterns |
+| Rendering | **WebGL2** (not WebGPU for Phase 1) | Babylon.js default. Explicitly avoid WebGPU to dodge specialists-web's debug trench. WebGPU can be Phase 4 polish. |
+| Build | **Vite** | Already configured with HTTPS + COEP/COOP for crossOriginIsolated. |
+| Audio | **Web Audio API** | Native browser API; WAV plays natively, OGG via decoder |
+| Physics | **Babylon.js built-in** (Phase 1); Havok v2 (Phase 2 if needed) | No third-party physics for Phase 1 |
+| Asset format | **glTF** (converted from .bsp/.mdl via dev tools) | Babylon.js loads glTF natively |
+| Asset conversion | **TypeScript scripts** (`convert-bsp.ts`, `convert-mdl.ts`) | One-time dev tools; idempotent |
+| Networking | None Phase 1; WebRTC datachannel Phase 3 | Listen server in browser tab; multi-tab via WebRTC |
+| Server model | **Listen server in Web Worker** | Same browser tab; client + server separate code paths |
+| Page glue | TypeScript | Direct DOM + Babylon.js, no framework needed for the minimal UI |
 | Agent harness | T3 Code (`t3 v0.0.45`) | BYOK GUI for Claude Code / Codex |
 | Docs convention | HANDOFF.md + SPEC.md + AGENTS.md | See § Repo conventions below |
 
@@ -166,15 +208,28 @@ what to do.
 ├── AGENTS.md               # Implicit contract for any agent touching the repo.
 ├── README.md               # Orients new humans/agents to the project.
 ├── docs/                   # Extended design docs, research notes.
-│   └── cheats/             # One-shot reference docs (decompiled headers,
-│                            # CheerpX notes, etc.)
+│   ├── option-c-scope.md   # Phase 1 (Option C) full design doc.
+│   ├── phase-1-scope.md    # Phase 1 (Option B) — superseded by Option C.
+│   └── cheats/             # One-shot reference docs.
 ├── tools/                  # Smoke scripts, dispatch prompts, build scripts.
+│   ├── convert-bsp.ts      # Phase 1 asset conversion (GoldSrc .bsp → glTF)
+│   ├── convert-mdl.ts      # Phase 1 asset conversion (GoldSrc .mdl → glTF)
 │   ├── .codex-prompts/     # .codex-prompt-prN-*.md dispatch notes
 │   │                        # (Kyle pastes these into T3 sessions).
 │   └── smokes/             # tier-1 (unit), tier-2 (headless),
 │                            # tier-3 (real-browser) smoke scripts.
-├── webxash/                # Submodule (Phase 0+). Fork if we need to patch.
-├── xash3d-fwgs/            # Forked Xash3D engine (Phase 1+).
+├── src/                    # TypeScript source (Phase 1+).
+│   ├── main.ts             # Entry point.
+│   ├── scene/              # Babylon.js scene setup, lighting, materials.
+│   ├── player/             # Player controller, camera, input.
+│   ├── weapons/            # Weapon system, viewmodels, firing.
+│   ├── bots/               # Bot AI (basic Phase 1, advanced Phase 2).
+│   ├── hud/                # HTML overlay (health, ammo, crosshair).
+│   ├── server/             # Listen server in Web Worker.
+│   └── assets/             # Asset loaders (glTF, WAD, WAV, SPR).
+├── public/                 # Static assets served at /.
+│   └── runtime-assets/     # Symlink to /home/kyle/Development/specialists-browser/_runtime_assets/
+│                            # (so the page can fetch converted files at runtime)
 └── .github/                # CI workflows (Phase 2+).
 ```
 
@@ -213,28 +268,35 @@ copy/paste after SPEC changes).
 
 ## Open questions
 
-- **HL1 + TS mod file location** — see `HANDOFF.md` open question #1.
 - **T3 code backend** — see `HANDOFF.md` open question #2.
-- **CheerpX license trigger** — see `HANDOFF.md` open question #3.
 - **TS mod IP** — see `HANDOFF.md` open question #4.
 - **Browser support matrix** — Filesystem Access API is Chrome/Edge
   only. Decide if Firefox / Safari matter. Default: Chrome + Edge for
   Phase 1; revisit if Kyle uses Safari / Firefox for dev.
+- **Asset distribution for production** — see
+  `docs/option-c-scope.md` §2.7. Dev-only sourcing for Phase 1;
+  production strategy deferred to Phase 4.
 
 ## What we are NOT doing (out of scope)
 
 - **Continuing the specialists-web Babylon rebuild.** That project
-  stays as-is, separate. May or may not be revived later. We're
-  adopting *patterns and conventions* from it (HANDOFF/SPEC/AGENTS,
-  smoke tier system, dispatch prompts), not code or infra.
-- **Reimplementing TS gameplay from scratch in JS/TS.** The CheerpX
-  path is preferred; reimplementation is the Phase 2 fallback only.
-- **Reverse-engineering / decompiling TS mod DLLs.** CheerpX runs them
-  as-is. Vibe-coded C++ in Phase 2 is original code, not
-  decompilation.
-- **Distributing TS mod assets.** Each user sources their own. The
-  repo is asset-free.
+  stays as-is, separate. We may adopt *patterns and conventions*
+  from it (HANDOFF/SPEC/AGENTS, smoke tier system, dispatch
+  prompts), but no code, infra, or asset reuse. Kyle has confirmed
+  this scope.
+- **Running the closed-source TS mod DLLs in the browser.** The
+  CheerpX path was the original idea; it failed (see
+  `tools/smokes/tier-3-manual-phase-1-step-1.1.md`). Option C
+  reimplementation is the path forward.
+- **Reverse-engineering / decompiling TS mod DLLs.** Even if AI-
+  decompilation is technically feasible (the Oct 2026 wave proved
+  it for similar games), we don't go this route. Reimplementing
+  from observed gameplay is cleaner and avoids the legal gray area.
+- **Distributing TS mod assets.** Each user sources their own
+  (HL1 from Steam, TS from moddb). The repo is asset-free.
 - **Multiplayer before single-player is shippable.**
+- **WebGPU for Phase 1.** Explicitly using WebGL2 to avoid
+  specialists-web's debug trench.**
 
 ## License
 
@@ -245,15 +307,14 @@ distribution terms.
 
 ## References
 
-- `Xash3D FWGS` — `github.com/FWGS/xash3d-fwgs` (WASM target in
-  progress; see issue #1226)
-- `webXash` — `github.com/x8BitRain/webXash` (Filesystem Access API
-  frontend for Xash3D-WASM)
-- `WebHL` — `webhl.neocities.org` (sister project, modified Xash3D)
-- `CheerpX` — `cheerpx.io` (x86-to-WASM JIT, Leaning Tech)
-- `Half-Life SDK` — `github.com/ValveSoftware/halflife` (free for
-  modified Valve games, free distribution only)
-- `twhl-community/halflife-updated` — modern-VS fork of HLSDK
+- `Babylon.js` — `doc.babylonjs.com` (TypeScript-first 3D engine)
+- `GoldSrc BSP format` — `hlfx.ru/tech/info/bsp_format.html` (map format)
+- `GoldSrc MDL format` — `hlfx.ru/tech/info/mdl_format.html` (model format)
+- `glTF 2.0 spec` — `github.com/KhronosGroup/glTF` (target format for asset conversion)
+- `Half-Life SDK` — `github.com/ValveSoftware/halflife` (reference for
+  HL1 game mechanics, but the HLSDK is for the C++ engine; we reimplement
+  in TS)
 - `specialists-web` (sibling project) — `~/Development/specialists-web/`
-  — Babylon rebuild in the weeds. Conventions only, no code reuse.
+  — Babylon rebuild. Conventions only, no code reuse. Kyle is not
+  continuing this project at the moment.
 - T3 Code skill — `~/.hermes/skills/devops/t3-code/SKILL.md`
