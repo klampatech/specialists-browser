@@ -1,0 +1,74 @@
+# Node / JS
+node_modules/
+.npm/
+.pnpm-store/
+yarn.lock
+package-lock.json
+
+# Build outputs
+dist/
+build/
+out/
+*.wasm
+*.map
+*.tsbuildinfo
+
+# Local env
+.env
+.env.local
+.env.*.local
+*.local
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+Thumbs.db
+
+# Smoke artifacts
+test-output/
+playwright-report/
+playwright/.cache/
+coverage/
+
+# ─────────────────────────────────────────────────────────────
+# Game assets — DO NOT COMMIT. The repo is asset-free.
+# Users source HL1 + TS mod files separately.
+# ─────────────────────────────────────────────────────────────
+*.pak
+*.bsp
+*.mdl
+*.wav
+*.spr
+*.txt   # catch-all for game-text files (motd, titles, etc.)
+valve/
+specialists/
+cstrike/
+tfc/
+agility/
+dod/
+gearbox/
+ricochet/
+valve_hd/
+
+# CheerpX binaries (downloaded at install time)
+cheerpx/
+*.so
+*.so.*
+*.dll
+*.dylib
+
+# T3 / agent worktrees
+.t3-worktrees/
+.worktrees/
+.worktrees.md
+
+# Logs
+*.log
+logs/
+
+# Misc
+.cache/
+tmp/
