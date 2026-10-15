@@ -137,7 +137,32 @@ port 5174, page returns HTTP 200 with the expected WebXash
     for implementation (chunk generation, prompt sending), Claude
     Code (M3) for review/validation.
 
-- **2026-10-15 — Option D D.3 (GoldSrc engine↔mod interface) — COMPLETE.**
+- **2026-10-15 — Option D D.4.1 (slowmo system) — PARTIAL.** 5 of
+  11 CTSSlowMotion methods decompiled + cross-vendor reviewed.
+  Output: `src/mod/slowmo.ts` (15.5KB, 363 lines).
+  - `ActivateSlow__13CTSSlowMotion` (D.2 carryover)
+  - `DeactivateSlow__13CTSSlowMotion` (D.4.1)
+  - `CheckPlayersDistance__13CTSSlowMotion` (D.4.1)
+  - `WaitThink__13CTSSlowMotion` (D.4.1)
+  - `WaitTouch__13CTSSlowMotionP11CBaseEntity` (D.4.1)
+  - **Cross-vendor value (continued from D.3):** Claude caught
+    a missing `entity = ent["0x60"]` load in codex's
+    DeactivateSlow output — the virtual call would have
+    dispatched on the edict instead of the entity. Fix was
+    a single load before the call.
+  - **Class state discovered (cross-method):** `m_fActive`
+    (0x68, float), `m_affectedEntities` (0x70, 33×4 = 132 B
+    edict-pointer array), `m_fGlobal` (0x100, mode flag).
+    Each function has a review doc with the full field map.
+  - **Pending for D.4.1 (next session):** Spawn (454 B),
+    Use (176 B), KeyValue (158 B), Save (80 B), Restore
+    (80 B), ObjectCaps (6 B), plus the CTSSlowMotionPoint
+    family (7 methods). Spawn is the largest; ~10 min for
+    codex + 3 min for claude review.
+  - **Tooling fixes landed this session:** chunk.py
+    filename sanitization (replaces `,` and ` ` to avoid
+    path errors); decompile-review.py finds chunk by header
+    (was matching sibling mentions).
   - Pulled HLSDK reference (`github.com/FWGS/halflife`, depth 1)
     to `/home/kyle/Development/scratch/hlsdk-ref/halflife/`.
     Reference implementation of the 4 entry points lives in
@@ -470,6 +495,30 @@ entry points; D.4 will be larger but the workflow is the same.
 to decompile all of them for Phase 1 MVP — just enough to
 get a working game. After D.4 is roughly complete, evaluate
 coverage and decide if more is needed.
+
+**Sub-step plan (each is its own commit):**
+- **D.4.1** — `src/mod/slowmo.ts` (CTSSlowMotion + CTSSlowMotionPoint)
+  — 11 + 7 methods. **This session's first commit.**
+- **D.4.2** — `src/mod/weapons.ts` (CTSGun + CTSGunUci, pistol first)
+  — ~15 methods. **Next session.**
+- **D.4.3** — `src/mod/bots.ts` (bot AI core) — variable.
+  TBD based on D.4.2 review feedback.
+- **D.4.4** — `src/mod/damage.ts`, `scoring.ts`, `spawn.ts` —
+  for completeness; depends on what the gameplay functions
+  reference. TBD.
+
+**Play-test surface:** the first browser-playable game lands
+at end of D.5 / start of D.6. D.4 produces reviewable TS
+source files; even those need `tsc` to verify (no browser
+yet). No play-test until D.5.
+
+**Exit criteria (per sub-step):**
+- `src/mod/<feature>.ts` exists with the relevant class methods
+- Each method reviewed by claude, verdict PASS or
+  PASS-WITH-NOTES
+- Methods that touch the engine (`Spawn`, `Save`, `Restore`,
+  `Use`) reference the same `g_engfuncs` / `gpGlobals` /
+  `gFunctionTable` globals that D.3's `interface.ts` exposes
 
 **Exit criteria:**
 - `src/mod/<feature>.ts` files for the priority-1 features

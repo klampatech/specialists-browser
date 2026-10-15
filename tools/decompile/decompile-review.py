@@ -33,15 +33,24 @@ CROSS_VENDOR_DIR = DECOMPILE_DIR / "cross-vendor"
 
 
 def find_symbol_files(symbol: str) -> tuple[Path, Path]:
-    """Find chunk + codex-output for a symbol. Symbol may be raw or demangled."""
+    """Find chunk + codex-output for a symbol. Symbol may be raw or demangled.
+
+    The chunk's header has the format:
+        # `<symbol>` — <demangled>
+    The chunk's sibling table has:
+        | `<symbol>` | ... |
+    We match the header specifically (line-start # + backticks) so we don't
+    pick up the wrong chunk when the symbol appears as a sibling elsewhere.
+    """
+    import re as _re
     chunk_path = None
-    codex_path = None
     for p in CHUNKS_DIR.glob("*.chunk.md"):
-        if f"`{symbol}`" in p.read_text():
+        # Match header line: starts with "# `" + symbol + "`"
+        if _re.search(rf"^# `?{_re.escape(symbol)}`?\s*—", p.read_text(), _re.MULTILINE):
             chunk_path = p
             break
     if not chunk_path:
-        sys.exit(f"no chunk found for {symbol} — run chunk.py first")
+        sys.exit(f"no chunk header found for {symbol} — run chunk.py first")
     stem = chunk_path.stem.removesuffix(".chunk")
     codex_path = CROSS_VENDOR_DIR / f"{stem}__codex.ts"
     if not codex_path.exists():

@@ -426,9 +426,10 @@ def main() -> None:
     if args.out:
         out = Path(args.out)
     else:
-        # demangled is like 'CTSSlowMotion::ActivateSlow()'
-        # safe filename
-        name = sym.demangled.replace("::", "__").replace("(", "_").rstrip(")_").replace(",", "")
+        # demangled is like 'CTSSlowMotion::WaitTouch(p CBaseEntity)'
+        # safe filename: replace problematic chars
+        name = sym.demangled.replace("::", "__").replace("(", "_").rstrip(")_")
+        name = name.replace(",", "").replace(" ", "_")
         if not name:
             name = sym.sym
         out = CHUNKS_DIR / f"{name}.chunk.md"
