@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
@@ -75,14 +76,25 @@ def send_to_claude(prompt_text: str, model: str | None = None) -> str:
 
 def send_to_codex(prompt_text: str) -> str:
     """Pipe prompt to `codex exec` (Codex CLI's non-interactive mode)."""
-    if shutil.which("codex") is None:
-        sys.exit("codex CLI not found on PATH")
-    # Codex CLI's non-interactive entry point is `codex exec "<prompt>"`
+    if shutil.which("codex") is None and not Path("/home/kyle/bin/codex").exists():
+        sys.exit(
+            "codex CLI not found. On m5 it's installed at /home/kyle/bin/codex "
+            "(NOT in PATH). Add /home/kyle/bin to PATH, or pass --use codex after "
+            "running `export PATH=/home/kyle/bin:$PATH`."
+        )
+    # Codex CLI's non-interactive entry point is `codex exec "<prompt>"`.
+    # Codex requires an env var matching `env_key` in config.toml to be non-empty,
+    # even when it's just a placeholder (the actual auth is done by a local proxy
+    # at 127.0.0.1:8789 → api.minimax.io). Setting the placeholder unblocks the
+    # call. See /home/kyle/.codex/config.toml [model_providers.minimax].
+    codex_bin = shutil.which("codex") or "/home/kyle/bin/codex"
+    env = {**os.environ, "MINIMAX_API_KEY_UNUSED": "placeholder"}
     res = subprocess.run(
-        ["codex", "exec", prompt_text],
+        [codex_bin, "exec", prompt_text],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
+        env=env,
     )
     if res.returncode != 0:
         sys.stderr.write(f"codex exec failed (exit {res.returncode})\n")
@@ -97,6 +109,7 @@ def main() -> None:
     ap.add_argument("--use", choices=["claude", "codex"], default="claude",
                     help="which CLI to use (default: claude)")
     ap.add_argument("--model", help="override model (passed to claude --model)")
+    ap.add_argument("--out", help="explicit output .ts path (default: output/<demangled>.ts)")
     ap.add_argument("--dry-run", action="store_true",
                     help="generate chunk and show composed prompt, don't send to AI")
     ap.add_argument("--list-priority", action="store_true",
@@ -146,9 +159,13 @@ def main() -> None:
     else:
         out = send_to_codex(composed)
 
-    # 4. Save output. Derive filename from chunk.
+    # 4. Save output. Derive filename from chunk, unless --out.
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = OUTPUT_DIR / (chunk_path.stem.removesuffix(".chunk") + ".ts")
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        out_path = OUTPUT_DIR / (chunk_path.stem.removesuffix(".chunk") + ".ts")
     out_path.write_text(out)
     print(f"wrote {out_path}  ({len(out)} chars)", file=sys.stderr)
     # Print the result to stdout for inline viewing

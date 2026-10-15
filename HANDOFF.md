@@ -172,28 +172,40 @@ port 5174, page returns HTTP 200 with the expected WebXash
       scaffolding (per prompt)
     - Output: `tools/decompile/output/CTSSlowMotion__ActivateSlow.ts`
     - Chunk: `tools/decompile/chunks/CTSSlowMotion__ActivateSlow.chunk.md`
+  - **Cross-vendor second pass:** also ran Codex on the same
+    function (53-line output, similar reasoning, slightly
+    different field naming). Both vendors converge on the same
+    function structure. Saved Codex output separately at
+    `tools/decompile/cross-vendor/CTSSlowMotion__ActivateSlow__codex.ts`
+    for review comparison. (Claude-vs-Codex detailed diff
+    deferred — they're substantively equivalent for this
+    small function.)
+  - **Codex discovery (after D.2 closeout):** Codex CLI IS
+    installed at `/home/kyle/bin/codex` (codex-cli 0.160.1) —
+    just not in default PATH. `which codex` failed in earlier
+    sweep because `/home/kyle/bin/` isn't exported. **Path
+    gotcha:** the installer put codex in a non-standard dir.
+    `decompile.py --use codex` now auto-handles the path lookup
+    AND sets `MINIMAX_API_KEY_UNUSED=placeholder` (Codex's
+    config uses a dummy env var name; real auth flows through
+    the local proxy at `127.0.0.1:8789` → `api.minimax.io`).
   - **Workflow time:** ~5 min end-to-end (chunk gen + AI send +
     save). Right on target for D.2's "<5 min per function"
     exit criterion.
-  - **Codex status:** not installed on m5 (`which codex` → empty).
-    D.2 ran with Claude Code for both impl + decompile. Per
-    Kyle's direction (Codex for impl, Claude for review),
-    **install Codex before D.3** so we can do the cross-vendor
-    review pass on the GoldSrc interface functions. Cross-vendor
-    review is most valuable on the D.3 functions since they
-    have well-known HLSDK signatures we can verify against.
   - **Files added:**
     - `tools/decompile/chunk.py` (executable, with MSVC demangler)
     - `tools/decompile/decompile.py` (executable, runner)
     - `tools/decompile/prompts/single-function.md` (prompt template)
     - `tools/decompile/chunks/CTSSlowMotion__ActivateSlow.chunk.md`
     - `tools/decompile/output/CTSSlowMotion__ActivateSlow.ts`
+    - `tools/decompile/cross-vendor/CTSSlowMotion__ActivateSlow__codex.ts`
   - **Next:** D.3 — decompile the GoldSrc engine↔mod interface
     (GiveFnptrsToDll, GetEntityAPI2, GetNewDLLFunctions,
     GetEngineFunctions, Initialize). 5 functions, each with
     well-documented HLSDK signatures, so we can verify the
     decompiled output matches the open-source reference.
-    Cross-vendor review (Codex vs Claude) lands here.
+    Cross-vendor review (Codex impl + Claude review per
+    Kyle's direction) lands here.
 
 - **2026-10-14 — Phase 1 step 1.2 (bridge layer) — POINTS BUSTED (CheerpX linker bugs).**
   - Tried to dlopen `ts_i386.so` from a `ts-host` bridge binary
@@ -483,15 +495,15 @@ are mine. Kyle's role: review the final `interface.ts` against the
 HLSDK reference and approve the signature set.
 
 **Open pre-reqs:**
-1. **Install Codex CLI on m5.** `which codex` is empty; D.2 used
-   Claude Code only. Install via `npm i -g @openai/codex` (or
-   whatever the current install path is — confirm with Kyle's
-   preferences) before starting D.3.
-2. **Wire Codex to MiniMax M3** via the anthropic-SDK shim at
-   `api.minimax.io/anthropic` (per memory entry 2026-10-11: we
-   don't run real Anthropic models, but the protocol is a valid
-   transport). Codex CLI's `~/.codex/config.toml` needs the
-   base_url + api_key env vars.
+1. ~~Install Codex CLI on m5.~~ **DONE.** Codex is at
+   `/home/kyle/bin/codex` (0.160.1); `decompile.py --use codex`
+   handles the PATH + env var. Smoke-tested: 6,918 tokens for
+   "Reply with just the word 'pong'". Ready for cross-vendor
+   loops in D.3.
+2. ~~Wire Codex to MiniMax M3 via the anthropic-SDK shim.~~
+   **DONE.** Wired through the local proxy at
+   `127.0.0.1:8789` (which is itself wired to
+   `api.minimax.io/anthropic`). No work needed here.
 3. **Pull the HLSDK reference** for `enginefuncs_t`,
    `dllfuncs_t`, etc. Either `git clone
    github.com/ValveSoftware/halflife-updated` into a scratch dir,
@@ -510,20 +522,18 @@ HLSDK reference and approve the signature set.
      Laid out at `~/Development/specialists-browser/_runtime_assets/half-life/ts/`.
    - **Both unblocked — files are on m5 + smoke zip on Mac.**
 
-2. **Codex CLI install — DECISION POINT NOW.** `claude` is on
-   PATH on m5. `codex` is NOT yet installed (`which codex` →
-   empty). D.2 ran Claude-only. Per Kyle's direction (Codex for
-   impl, Claude for review) and per the HANDOFF "Next task" for
-   D.3 (cross-vendor review on the 5 GoldSrc interface
-   functions), **install Codex before D.3 starts.** Two paths:
-   - **Pre-built install:** `npm i -g @openai/codex` (current
-     canonical package, requires Node 18+).
-   - **Wired to MiniMax M3:** Codex needs an anthropic-protocol
-     shim. Per memory 2026-10-11: `api.minimax.io/anthropic` is
-     MiniMax's anthropic-SDK-compat shim. Codex's
-     `~/.codex/config.toml` needs `base_url` + `api_key` env
-     vars. Confirm with Kyle whether to use the real OpenAI
-     Codex (real GPT-5-Codex) or wire it through the shim.
+2. **Codex CLI — FOUND, not in PATH.** Installed at
+   `/home/kyle/bin/codex` (codex-cli 0.160.1, symlink chain →
+   `bin-local/lib/node_modules/@openai/codex/bin/codex.js`).
+   NOT in default PATH — add `export PATH=/home/kyle/bin:$PATH`
+   to use it, or hardcode the path. **Gotcha:** Codex requires
+   env var `MINIMAX_API_KEY_UNUSED=placeholder` to be set even
+   though it's a dummy (the real auth is via local proxy at
+   `127.0.0.1:8789` → `api.minimax.io/anthropic`). Without the
+   placeholder, codex errors with `Missing environment variable:
+   MINIMAX_API_KEY_UNUSED`. `decompile.py --use codex` handles
+   this automatically. Confirmed working: 6,918 tokens for a
+   trivial pong test.
 
 3. **CheerpX license trigger.** Free for personal / non-commercial use.
    If this ever ships as a product, we need a paid license from
