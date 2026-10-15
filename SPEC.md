@@ -4,15 +4,17 @@
 > Mirror: `~/Obsidian/projects/specialists-browser/SPEC.md`
 > Authoritative canonical: this file in the repo.
 
-**Status:** Phase 1 scope — Option C (TypeScript reimplementation).
-The CheerpX-based Option B path was abandoned after the Phase 1
-step 1.1 PoC revealed 4 architectural incompatibilities (Linux-only
-emulation, flat-namespace DataDevice, crossOriginIsolated required,
-HTTP Range header required). New direction: reimplement the TS mod
-gameplay in TypeScript + Babylon.js. Full design in
-`docs/option-c-scope.md`. 10-16 weeks for Phase 1 MVP (one map, one
-weapon, basic bot AI). 4-7 months total for shippable single-player.
-**Last updated:** 2026-10-14 (after Option C pivot)
+**Status:** Phase 1 scope — **Option D (AI-decompile the .so)**.
+The CheerpX-based Option B path was abandoned after Phase 1 step 1.2
+revealed the dynamic linker has cascading buffer-state bugs (see
+`docs/option-d-scope.md` § "Why we pivoted"). New approach: use
+Claude to decompile `ts/dlls/ts_i386.so` directly to TypeScript, then
+clean up and integrate into a Babylon.js scene. The Oct 2026 wave
+(HL2, Black Ops, GTA V) proved this pattern works for similar games.
+**Estimate: 4-6 weeks for Phase 1 MVP, vs. 10-16 for Option C
+clean reimpl.** Option C remains valid as a fallback if Option D
+doesn't converge.
+**Last updated:** 2026-10-14 (after Option D pivot)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 
@@ -55,50 +57,61 @@ that wave is informative but not directly reusable:
 
 ## Approach (one paragraph)
 
-**Reimplement The Specialists mod gameplay in TypeScript + Babylon.js,
-running entirely in the browser.** No use of the closed-source x86
-DLLs (the CheerpX-based bridge approach was abandoned — see §"Why
-not CheerpX" below). Use Babylon.js for 3D rendering, scene graph,
-animations, character controller. The TS mod + HL1 game assets
-(`.bsp` maps, `.mdl` models, `.wav` sounds, `.wad` textures) are
-sourced from the user's local files and converted to glTF via a
-one-time dev tool (`tools/convert-bsp.ts`, `tools/convert-mdl.ts`),
-loaded at runtime in the browser. Phase 1 MVP is a single-tab listen
-server with one map (ts_heresy), one weapon (pistol), and one basic
-bot — 10-16 weeks. Subsequent phases add TS-specific features
-(acrobatics, slowmo, dual-wield, more weapons/maps/bots) and
-multiplayer (WebRTC datachannel P2P). Full design in
-`docs/option-c-scope.md`.
+**AI-decompile `ts/dlls/ts_i386.so` to TypeScript, then clean up and
+integrate into a Babylon.js scene.** Use Claude (Sonnet 4) to
+convert the mod's x86 assembly (1.7MB .so, NOT stripped, has full
+debug symbols + 1387+ named exports) into TypeScript pseudocode
+that we then refactor into a working browser game. The Oct 2026
+wave (HL2, Black Ops, GTA V) proved this pattern works — it's just
+faster than Option C because we start from the actual gameplay
+logic instead of guessing it. The CheerpX runtime approach was
+abandoned (see §"Why not CheerpX" below) due to cascading linker
+bugs. Phase 1 MVP: 1 map + 1 weapon + 1 bot in 4-6 weeks. Subsequent
+phases add TS-specific features (acrobatics, slowmo, dual-wield,
+more weapons/maps/bots) and multiplayer (WebRTC datachannel P2P).
+Full design in `docs/option-d-scope.md`. Option C
+(`docs/option-c-scope.md`) is the fallback if Option D doesn't
+converge.
 
 ## Why not CheerpX (or xash3d-fwgs WASM)
 
 Originally planned to use `xash3d-fwgs` (the open-source GoldSrc
 reimplementation ported to WASM) as the engine substrate, with
 **CheerpX** (WASM-based x86 JIT) running the TS mod's closed-source
-`.dll` files unmodified. The 1-hour Phase 1 step 1.1 PoC revealed
-this path is unworkable:
+`.so` files unmodified. We got further than expected — Phase 1
+step 1.1 v4 proved CheerpX CAN run the Linux .so files that ship
+with the TSHD3_EN.exe installer, and all 1387+ exported symbols
+(`CTSSlowMotion`, `CTSGunUci`, `GiveFnptrsToDll`, etc.) are
+accessible. But Phase 1 step 1.2 (write a bridge binary that
+dlopen's the .so) hit a wall:
 
-1. **CheerpX is Linux-only.** Its `index.d.ts` only exports a `Linux`
-   class with Linux syscalls. The TS mod DLLs are Windows PE format
-   (`MZ\x90\x00` header). CheerpX rejects them at exec with
-   "ELF execution failed."
-2. **CheerpX DataDevice is flat-namespace.** Only `/<filename>`
-   paths work — no subdirectories. Can't represent the original
-   `ts/dlls/mp.dll` hierarchy without multiple DataDevices or a real
-   ext2 filesystem image.
-3. **CheerpX requires `window.crossOriginIsolated`.** Its Web Worker
-   uses SharedArrayBuffer. We can fix this with HTTPS + COEP/COOP
-   headers (now done — dev server is HTTPS), but it's still a
-   fundamental constraint for the runtime.
+1. **CheerpX's dynamic linker has a buffer state bug.** It reads
+   library names from the wrong offset in the ELF string table.
+   When loading `ts_i386.so`, it tries to dlopen a library called
+   `rame_info` — which is a 9-char substring of
+   `__register_frame_info` (a libgcc_s symbol), not a real library
+   name. Each workaround (provide a `/dlls/rame_info` file with
+   libm bytes) reveals the next truncated name (`d_alloc` → another
+   bug).
+2. **Cascade of linker bugs.** Beyond the buffer state issue, the
+   version-check logic in `dl-version.c` also fails with
+   `Assertion 'needed != NULL' failed!` after enough workarounds
+   are applied. This is the second distinct bug in CheerpX's
+   linker.
+3. **Symbol resolution would be affected too.** Even if dlopen
+   succeeded, `dlsym` and PLT/GOT relocations likely hit the same
+   buffer state issues. Calling functions would bind to wrong
+   addresses.
 
-4. **CheerpX requires HTTP Range header support.** Vite's dev server
-   doesn't serve `Range: bytes=N-M` requests. Would need nginx or a
-   Range-supporting proxy in front of Vite.
+**Pivoted to Option D (AI-decompile the .so to TypeScript).** We
+don't need to RUN the .so in CheerpX — we just need to READ it and
+have an AI produce TypeScript pseudocode. That code runs in plain
+V8/WebAssembly, bypassing CheerpX's broken dynamic linker entirely.
 
-Even fixing #3 and #4, #1 and #2 remain fundamental deal-breakers.
-The trend in the PoC: each fix revealed another layer of
-incompatibility. **Pivoted to Option C (TS reimpl).** Full record at
-`tools/smokes/tier-3-manual-phase-1-step-1.1.md`.
+Full record at `tools/smokes/tier-3-manual-phase-1-step-1.1-revised.md`
+(Phase 1 step 1.1 v4 — the part that worked) and
+`tools/smokes/tier-3-manual-phase-1-step-1.1-v6.md` (Phase 1 step
+1.2 — the bridge layer + CheerpX bugs).
 
 ## Phases
 
@@ -112,13 +125,22 @@ built smoke zip, Kyle's tier-3 smoke confirmed infrastructure works
 **Exit:** ✅ dev server boots in 185ms on HTTPS port 5174 with COEP/
 COOP for crossOriginIsolated.
 
-### Phase 1 — TS reimplementation MVP (10-16 weeks)
+### Phase 1 — TS reimplementation MVP (10-16 weeks) — superseded by Option D
 
-Full design in `docs/option-c-scope.md`. Build a Babylon.js +
-TypeScript browser game from scratch. Single browser tab, listen
-server (server in Web Worker, client on main thread), one map
-(ts_heresy), one weapon (pistol), one basic bot. 12 sub-steps,
-each its own design + implement + smoke + commit cycle.
+Originally planned to build a Babylon.js + TypeScript browser game
+from scratch (clean reimpl). Full design in `docs/option-c-scope.md`.
+Estimated 10-16 weeks for Phase 1 MVP.
+
+**Status:** kept as fallback. If Option D (AI-decompile) doesn't
+converge cleanly, fall back to this approach.
+
+### Phase 1 — Option D: AI-decompile + Babylon.js integration (4-6 weeks) — ACTIVE
+
+Full design in `docs/option-d-scope.md`. Decompile
+`ts/dlls/ts_i386.so` to TypeScript using Claude, then clean up and
+integrate into a Babylon.js scene. 6 sub-steps: D.1 pick binary +
+extract, D.2 workflow setup, D.3 GoldSrc interface, D.4 TS-specific
+gameplay, D.5 Babylon.js integration, D.6 bridge semantics + polish.
 
 **Exit criterion:** Kyle opens the URL, loads HL1 + TS assets,
 spawns at TS player spawn point on ts_heresy, walks around, fires
@@ -170,7 +192,8 @@ strategy.
 | Audio | **Web Audio API** | Native browser API; WAV plays natively, OGG via decoder |
 | Physics | **Babylon.js built-in** (Phase 1); Havok v2 (Phase 2 if needed) | No third-party physics for Phase 1 |
 | Asset format | **glTF** (converted from .bsp/.mdl via dev tools) | Babylon.js loads glTF natively |
-| Asset conversion | **TypeScript scripts** (`convert-bsp.ts`, `convert-mdl.ts`) | One-time dev tools; idempotent |
+| Asset conversion | **TypeScript scripts** (`convert-bsp.ts`, `convert-mdl.ts`) — only needed if we re-process original assets; Option D uses the decompiled TS to render directly | One-time dev tools; idempotent |
+| Mod gameplay | **AI-decompiled TypeScript** (Option D) | Use Claude to read `ts/dlls/ts_i386.so` and produce TS pseudocode; clean up + integrate |
 | Networking | None Phase 1; WebRTC datachannel Phase 3 | Listen server in browser tab; multi-tab via WebRTC |
 | Server model | **Listen server in Web Worker** | Same browser tab; client + server separate code paths |
 | Page glue | TypeScript | Direct DOM + Babylon.js, no framework needed for the minimal UI |
@@ -208,12 +231,19 @@ what to do.
 ├── AGENTS.md               # Implicit contract for any agent touching the repo.
 ├── README.md               # Orients new humans/agents to the project.
 ├── docs/                   # Extended design docs, research notes.
-│   ├── option-c-scope.md   # Phase 1 (Option C) full design doc.
-│   ├── phase-1-scope.md    # Phase 1 (Option B) — superseded by Option C.
+│   ├── option-d-scope.md   # Phase 1 (Option D, ACTIVE) full design doc.
+│   ├── option-c-scope.md   # Phase 1 (Option C) — fallback if Option D fails.
+│   ├── phase-1-scope.md    # Phase 1 (Option B CheerpX) — superseded.
 │   └── cheats/             # One-shot reference docs.
 ├── tools/                  # Smoke scripts, dispatch prompts, build scripts.
-│   ├── convert-bsp.ts      # Phase 1 asset conversion (GoldSrc .bsp → glTF)
-│   ├── convert-mdl.ts      # Phase 1 asset conversion (GoldSrc .mdl → glTF)
+│   ├── decompile/          # Option D: AI decompile artifacts
+│   │   ├── analysis/       # readelf/objdump output for each function
+│   │   ├── prompts/        # Claude prompt templates
+│   │   ├── chunks/         # Function-level chunks fed to Claude
+│   │   └── output/         # Decompiled TS output
+│   ├── convert-bsp.ts      # dev tool: BSP → glTF (Phase 1.5, only if needed)
+│   ├── convert-mdl.ts      # dev tool: MDL → glTF (Phase 1.5, only if needed)
+│   ├── patch_gnu_stack.py  # ELF patcher used in CheerpX PoC (kept for reference)
 │   ├── .codex-prompts/     # .codex-prompt-prN-*.md dispatch notes
 │   │                        # (Kyle pastes these into T3 sessions).
 │   └── smokes/             # tier-1 (unit), tier-2 (headless),
@@ -226,6 +256,13 @@ what to do.
 │   ├── bots/               # Bot AI (basic Phase 1, advanced Phase 2).
 │   ├── hud/                # HTML overlay (health, ammo, crosshair).
 │   ├── server/             # Listen server in Web Worker.
+│   ├── mod/                # Decompiled TS mod gameplay (Option D output).
+│   │   ├── interface.ts    # GoldSrc interface (GiveFnptrsToDll, etc.)
+│   │   ├── slowmo.ts       # CTSSlowMotion, CTSSlowMotionPoint
+│   │   ├── weapons.ts      # CTSGun, CTSGunUci
+│   │   ├── bots.ts         # Bot AI logic
+│   │   ├── damage.ts       # Damage system
+│   │   └── scoring.ts      # Scoring system
 │   └── assets/             # Asset loaders (glTF, WAD, WAV, SPR).
 ├── public/                 # Static assets served at /.
 │   └── runtime-assets/     # Symlink to /home/kyle/Development/specialists-browser/_runtime_assets/
@@ -285,13 +322,14 @@ copy/paste after SPEC changes).
   prompts), but no code, infra, or asset reuse. Kyle has confirmed
   this scope.
 - **Running the closed-source TS mod DLLs in the browser.** The
-  CheerpX path was the original idea; it failed (see
-  `tools/smokes/tier-3-manual-phase-1-step-1.1.md`). Option C
-  reimplementation is the path forward.
-- **Reverse-engineering / decompiling TS mod DLLs.** Even if AI-
-  decompilation is technically feasible (the Oct 2026 wave proved
-  it for similar games), we don't go this route. Reimplementing
-  from observed gameplay is cleaner and avoids the legal gray area.
+  CheerpX runtime path failed (see
+  `tools/smokes/tier-3-manual-phase-1-step-1.1-v6.md`). Option D
+  (AI-decompile) is the path forward — same DLL semantics, but
+  re-implemented in TypeScript instead of run in CheerpX.
+- **Hand-copying the closed-source TS mod DLLs.** Option D
+  decompiles via AI and treats the output as a *specification*, not
+  source. We rewrite into clean TS; we don't copy the decompiled
+  output verbatim. Avoids the DMCA risk the Oct 2026 wave hit.
 - **Distributing TS mod assets.** Each user sources their own
   (HL1 from Steam, TS from moddb). The repo is asset-free.
 - **Multiplayer before single-player is shippable.**

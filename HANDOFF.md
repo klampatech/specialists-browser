@@ -12,17 +12,19 @@
 > ║  New T3 thread? Point it at this file. It will know what to do.   ║
 > ╚══════════════════════════════════════════════════════════════════╝
 
-**Status:** ✅ **Phase 1 step 1.1 GREEN — CheerpX with TS server .so
-works.** The Linux .so files (`ts_i386.so`, 1.7MB, not stripped)
-shipped by the TSHD3_EN.exe installer are runnable unmodified in
-CheerpX. Linux VM boots (Debian 10.13), /dlls/ mount works, the
-.so is readable, `nm -D` shows all 1,387+ exported symbols
-including TS-specific (`CTSSlowMotion`, `CTSGun`, `CTSSharedEmitter`).
-**Next:** bridge layer — write a `ts-host` C program that dlopens
-the .so + calls `GiveFnptrsToDll`, compile static i386 binary on
-m5, upload to CheerpX via second DataDevice, run inside the VM.
-Full record at `tools/smokes/tier-3-manual-phase-1-step-1.1-revised.md`.
-**Last updated:** 2026-10-14 (after v4 PoC GREEN)
+**Status:** 🔄 **PIVOTED to Option D — AI-decompile the .so to
+TypeScript.** Phase 1 step 1.1 v4 proved CheerpX CAN load
+`ts_i386.so` (1387+ symbols visible). Phase 1 step 1.2 v5–v6
+attempted the bridge binary (`ts-host` dlopen'ing the .so) and
+discovered CheerpX's dynamic linker has **cascading bugs** —
+buffer-state issues reading library names from ELF string tables,
+then `dl-version.c` assertion failures. The runtime path is
+fundamentally blocked. **Pivot:** use Claude to decompile the .so
+directly to TypeScript, bypass CheerpX entirely. Plan in
+`docs/option-d-scope.md`. **Estimate: 4–6 weeks to Phase 1 MVP.**
+**Last updated:** 2026-10-14 (after Option D pivot approved)
+**Architect of pivot decision:** Kyle
+**Orchestrator:** Evo (Hermes on m5)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 **Repo:** `github.com/klampatech/specialists-browser` (private)
@@ -104,6 +106,26 @@ port 5174, page returns HTTP 200 with the expected WebXash
     **Page returns HTTP 200 with valid WebXash HTML.**
   - Saved the diff to `tools/patches/webxash-hlsdk-stub.patch` for
     reference / reproducibility.
+
+- **2026-10-14 — Phase 1 step 1.2 (bridge layer) — POINTS BUSTED (CheerpX linker bugs).**
+  - Tried to dlopen `ts_i386.so` from a `ts-host` bridge binary
+    running inside CheerpX. Iterated through 11 versions of ts-host
+    (static/dynamic, m5-compiled/Docker-Debian-10-compiled, with
+    libgcc_s stubs) trying to get past linker issues.
+  - **Cascade of CheerpX dynamic linker bugs discovered:**
+    1. GLIBC_2.34 not found (m5's glibc 2.41 vs CheerpX's glibc 2.28) — fixed by compiling in Debian 10 Docker
+    2. `cannot enable executable stack` (TS .so missing PT_GNU_STACK) — fixed by writing `tools/patch_gnu_stack.py` (Python ELF patcher)
+    3. `rame_info: cannot open shared object file` (CheerpX's linker reading wrong offset in string table) — worked around by adding `/dlls/rame_info` (= libm bytes)
+    4. `d_alloc: cannot open shared object file` (same bug, next truncated name) — worked around by adding `/dlls/d_alloc` (= libc bytes)
+    5. `Inconsistency detected by ld.so: dl-version.c: 205: _dl_check_map_versions: Assertion 'needed != NULL' failed!` — separate bug in version-check logic; no clean fix
+  - **Conclusion:** CheerpX's dynamic linker has multiple cascading
+    bugs. Even if dlopen succeeded, `dlsym` + function calls would
+    hit the same issues. The runtime path is fundamentally blocked.
+  - Wrote `tools/smokes/tier-3-manual-phase-1-step-1.1-v6.md`
+    (8.9KB) with full v1-v11 history, the cascade pattern, and
+    the pivot recommendation.
+  - **Pivoted to Option D (AI-decompile the .so to TypeScript).**
+    Bypass CheerpX entirely. Plan in `docs/option-d-scope.md`.
 
 - **2026-10-14 — Phase 1 step 1.1 v4 PoC — GREEN.**
   - **Major discovery:** TSHD3_EN.exe installer ships **Linux .so
@@ -485,9 +507,57 @@ step plan. **Trigger:** Kyle approves the Phase 1 scope doc.
 
 ## Last work session
 
-**2026-10-14 — Phase 1 step 1.1 v4 PoC — GREEN (Evo)**
+**2026-10-14 — Phase 1 step 1.2 (bridge layer) — POINTS BUSTED. Pivoted to Option D. (Evo + Kyle)**
 
-What I did:
+What we did:
+- Discovered the Linux .so files (Phase 1 step 1.1 v4 PoC GREEN)
+- Iterated through 11 versions of the `ts-host` bridge binary
+  - m5 gcc-multilib dynamic (libc 2.41 mismatch)
+  - static binary with embedded glibc (executable stack issue)
+  - patched .so to add PT_GNU_STACK (custom Python ELF patcher)
+  - Debian 10 Docker-compiled binary (matches CheerpX glibc 2.28)
+  - ts-host v3 with full env+fs+hexdump diagnostics
+  - ts-host v4 with file open + libgcc_s dlopen
+  - ts-host v5 with libgcc_s stubs (--export-dynamic)
+  - LD_DEBUG=libs revealed the buffer state bug (linker reads "rame_info" from string table)
+- Discovered cascading CheerpX bugs: `rame_info` → `d_alloc` → `dl-version.c` assertion
+- Wrote `tools/smokes/tier-3-manual-phase-1-step-1.1-v6.md` (8.9KB) with full record
+- Kyle: "Ok, let's pivot to Option D. Plan it out first. Be sure to keep our specs and stuff updated."
+- Wrote `docs/option-d-scope.md` (18.6KB) — full design for Option D
+- Updated `SPEC.md`: Approach, "Why not CheerpX", Phase 1 (Option D now active), Repo layout, Out of Scope
+- Updated `HANDOFF.md`: Status banner, "What just happened" entry, Last Work Session
+
+Smoke result: ❌ **Phase 1 step 1.2 POINTS BUSTED.** CheerpX linker has cascading bugs.
+
+**Next task (DECISION PENDING from Kyle):**
+
+1. **Approve Option D scope doc as-is** → I start step D.1 (pick binary, extract analysis data, write prompt template)
+2. **Revise Option D scope doc first** → I incorporate changes (architecture, step plan, risks) before starting D.1
+3. **Discuss any of the 8 open questions in the scope doc** → resolve decisions (AI tool, output format, primary binary, etc.) before starting D.1
+
+My pick: (1). The scope doc covers all the tradeoffs. Kyle can read it and say "approved" or "want changes" once.
+
+**Phase 1 step plan** (full detail in `docs/option-d-scope.md`):
+- **D.1** Pick binary + extract analysis data (1-2 hours)
+- **D.2** Set up AI decompile workflow (2-4 hours)
+- **D.3** Decompile GoldSrc interface (1-2 days)
+- **D.4** Decompile TS-specific gameplay (3-5 days)
+- **D.5** Adapt + integrate into Babylon.js scene (1-2 weeks)
+- **D.6** Bridge semantics + polish (1-2 weeks)
+
+**Phase 1 total: 4-6 weeks** (vs Option C's 10-16 weeks for from-scratch TS reimpl, vs continued CheerpX workarounds being infinite).
+
+**What I did NOT do (waiting on Kyle):**
+- Did NOT start D.1 (pick binary + extract analysis) yet — wanted to confirm Kyle approves the Option D scope doc.
+- Did NOT remove the webXash submodule — that's a one-way action; can do it after Kyle greenlights the scope doc.
+- Did NOT remove `tools/lib*.so.6` etc. system libs from the working tree — kept for documentation of the bridge layer PoC; not committed.
+- Did NOT remove `webxash/public/cheerpx-test.html` and `webxash/public/test-assets/` — they're gitignored by the submodule's .gitignore; will clean up once Option D is underway.
+
+---
+
+## Prior session — Phase 1 step 1.1 v4 PoC GREEN (kept for reference)
+
+What we did:
 - **Discovered** the TSHD3_EN.exe installer ships Linux .so files
   (`ts/dlls/ts_i386.so`, 1.7MB, not stripped) in addition to the
   Windows DLLs. The .so files are 32-bit ELF, exactly CheerpX's
@@ -517,44 +587,3 @@ Smoke result: ✅ **GREEN.** CheerpX runs the TS server .so
 unmodified. All 1,387+ exported symbols are accessible. The
 architectural premise is proven: we can run the actual TS mod
 code in the browser and call its functions.
-
-**Next task (Kyle's call):**
-
-1. **Start bridge work (recommended).** Plan:
-   - Install `gcc-multilib` on m5 (or use existing cross-compiler)
-   - Write `ts-host.c`: dlopens the .so, calls
-     `GiveFnptrsToDll`, communicates with JS via stdout
-   - Compile to static i386 binary (`gcc -m32 -static`)
-   - Upload as second DataDevice alongside the .so
-   - Run from inside CheerpX, verify dlopen + GiveFnptrsToDll work
-   - Iterate on the engine↔mod bridge
-2. **Review the docs first.** Hand off the smoke note to a T3
-   thread for review before starting bridge work.
-3. **Different priority.** Take a break, work on something else.
-
-My pick: (1). The PoC is at a clean state. The next 3-5 days
-are mechanical (install toolchain, write ~200-500 lines of C,
-compile, upload, test). I'll keep Kyle in the loop with smoke
-results.
-
-**Phase 1 step plan** (updated with v4 results):
-- **1.1** ✅ GREEN — CheerpX loads ts_i386.so, all symbols
-  visible
-- **1.2** Bridge layer: ts-host.c + static i386 binary, runs in
-  CheerpX, calls GiveFnptrsToDll (3-5 days)
-- **1.3** Engine function bridge: implement the ~100 engine
-  functions the mod calls, route to Babylon.js (2-4 weeks)
-- **1.4** Browser shell: Babylon.js rendering, HUD, sound (2-4
-  weeks)
-- **1.5** Tier-3 manual smoke: Kyle plays, screenshots (1 day)
-
-**Phase 1 total: 4-7 weeks** (vs. Option C's 10-16 weeks for
-from-scratch TS reimpl).
-
-**What I did NOT do (waiting on Kyle):**
-- Did NOT start step 1.2 (Bridge work) yet — wanted to confirm
-  Kyle approves the GREEN result and is OK with the bridge plan.
-- Did NOT update SPEC.md or docs/phase-1-scope.md to reflect
-  CheerpX-resurrected direction — leaving for after the
-  smoke note is reviewed (Option C doc remains as fallback
-  reference).
