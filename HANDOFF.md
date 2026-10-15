@@ -107,6 +107,34 @@ port 5174, page returns HTTP 200 with the expected WebXash
   - Saved the diff to `tools/patches/webxash-hlsdk-stub.patch` for
     reference / reproducibility.
 
+- **2026-10-14 — Option D D.1 (binary analysis) — COMPLETE.**
+  - Picked primary binary: `ts/dlls/ts_i386.so` (1,741,920 bytes,
+    32-bit ELF, NOT stripped, has full debug symbols).
+  - Extracted: 3,894 total dynamic symbols, 619 TS-specific
+    (CTS/slowmo/GiveFnptrs), 923 GLOB_DAT relocations, 1,171
+    JUMP_SLOT PLT entries, 2 NEEDED libs (libm, libc), 6.7MB
+    disassembly, 11,912 debug strings.
+  - Identified high-priority decompile targets:
+    - D.3 (GoldSrc interface): GiveFnptrsToDll, GetEntityAPI2,
+      GetNewDLLFunctions, GetEngineFunctions, Initialize
+    - D.4 (TS gameplay): ActivateSlow__13CTSSlowMotion (slowmo),
+      AkimboFire__6CTSGun (dual-wield), AddAmmo__6CTSGunUci,
+      AddItem__6CTSGuni, Animate__12CTSAnimation,
+      AlternateAttack__6CTSGun, AddObjectiveInList__12CTSGameRules
+  - All analysis output in `tools/decompile/analysis/`:
+    - `readelf-h.txt`, `readelf-d.txt` (header + dynamic section)
+    - `readelf-dyn-syms.txt` (full symbol table)
+    - `readelf-relocs-all.txt`, `readelf-relocs-glob-dat.txt`
+    - `nm-D-size.txt`, `nm-D-CTS-specific.txt`
+    - `objdump-disasm-full.txt` (6.7MB)
+    - `strings-n5.txt` (11,912 strings)
+    - `SUMMARY.md` (D.1 report)
+  - Committed: `82c44cb tools+docs: D.1 complete - ts_i386.so
+    analysis extracted` (237,993 insertions).
+  - **Next:** D.2 — set up AI decompile workflow. Use Codex (M3)
+    for implementation (chunk generation, prompt sending), Claude
+    Code (M3) for review/validation.
+
 - **2026-10-14 — Phase 1 step 1.2 (bridge layer) — POINTS BUSTED (CheerpX linker bugs).**
   - Tried to dlopen `ts_i386.so` from a `ts-host` bridge binary
     running inside CheerpX. Iterated through 11 versions of ts-host
@@ -507,7 +535,79 @@ step plan. **Trigger:** Kyle approves the Phase 1 scope doc.
 
 ## Last work session
 
-**2026-10-14 — Phase 1 step 1.2 (bridge layer) — POINTS BUSTED. Pivoted to Option D. (Evo + Kyle)**
+**2026-10-14 — Option D D.1 (binary analysis) — COMPLETE. Stopping point for fresh session. (Evo + Kyle)**
+
+What we did:
+- Picked `ts/dlls/ts_i386.so` as primary decompile target (1.7MB,
+  NOT stripped, has full debug symbols — best AI-decompile input)
+- Extracted all analysis data: 3,894 symbols, 619 TS-specific,
+  923 GLOB_DAT relocs, 1,171 JUMP_SLOT, 6.7MB disassembly,
+  11,912 debug strings
+- Identified priority decompile targets (D.3 = GoldSrc interface,
+  D.4 = TS gameplay)
+- Wrote `tools/decompile/analysis/SUMMARY.md` with findings +
+  risk list
+- Committed: `82c44cb tools+docs: D.1 complete - ts_i386.so
+  analysis extracted` (237,993 insertions, 10 files)
+- Kyle: "After that summary doc, let's find a stopping point so
+  we can start with a fresh session and new context window."
+
+**Stopping point — everything is committed and vault-mirrored.**
+
+**State at stopping point:**
+- Repo: clean working tree, all on `main`, all pushed to origin
+- Latest commit: `82c44cb` (D.1 analysis extracted)
+- Vault mirror at `~/Obsidian/projects/specialists-browser/` is
+  in sync (HANDOFF + SPEC + D.1 analysis files)
+- `tools/decompile/analysis/SUMMARY.md` is the entry point for
+  picking up D.2 in the next session
+- `docs/option-d-scope.md` is the canonical plan
+
+**Next task (in next session):**
+
+D.2 — Set up AI decompile workflow. Per Kyle's clarification:
+- **Codex (M3) for implementation** — run the chunk generation,
+  send prompts, get decompiled TS output
+- **Claude Code (M3) for review** — validate the output, catch
+  issues, suggest improvements
+- Same M3 model under the hood, different harnesses for different
+  tasks
+
+D.2 sub-tasks (from `docs/option-d-scope.md`):
+1. Build `tools/decompile/chunk.py` — function chunker that
+   extracts disassembly for a single symbol
+2. Write `tools/decompile/prompts/single-function.md` — Claude
+   prompt template
+3. Test on `ActivateSlow__13CTSSlowMotion` (127 bytes, well-named,
+   isolated) to validate the workflow
+4. Iterate the prompt template based on what works
+
+**Phase 1 step plan** (full detail in `docs/option-d-scope.md`):
+- **D.1** ✅ COMPLETE — binary + analysis (this session)
+- **D.2** Set up AI decompile workflow (2-4 hours)
+- **D.3** Decompile GoldSrc interface (1-2 days)
+- **D.4** Decompile TS-specific gameplay (3-5 days)
+- **D.5** Adapt + integrate into Babylon.js scene (1-2 weeks)
+- **D.6** Bridge semantics + polish (1-2 weeks)
+- **Total: 4-6 weeks** to Phase 1 MVP
+
+**What I did NOT do (waiting on next session):**
+- Did NOT start D.2 yet — Kyle explicitly asked for a fresh session
+- Did NOT remove `webxash/public/cheerpx-test.html` and
+  `webxash/public/test-assets/` — gitignored, kept for now
+- Did NOT remove the `webXash` submodule — that's a one-way action,
+  defer until D.5+ when we're sure we don't need it
+- Did NOT remove `tools/lib*.so.6` etc. system libs from the
+  working tree — kept for documentation of the bridge layer PoC
+
+**Files NOT committed (transient or gitignored):**
+- `tools/ts-host-*` binaries (build outputs, 11 versions)
+- `tools/lib*.so.6`, `tools/ld-linux.so.2` (system libs, mirrored
+  in webxash/public/test-assets/ which is gitignored)
+- `tools/ts_i386_stripped*.so` (mod asset, gitignored by `*.so`)
+- `tools/docker-test/` (test artifacts)
+- `webxash/public/cheerpx-test.html` and `webxash/public/test-assets/*`
+  (gitignored by submodule's .gitignore)
 
 What we did:
 - Discovered the Linux .so files (Phase 1 step 1.1 v4 PoC GREEN)
