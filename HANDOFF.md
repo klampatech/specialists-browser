@@ -137,75 +137,72 @@ port 5174, page returns HTTP 200 with the expected WebXash
     for implementation (chunk generation, prompt sending), Claude
     Code (M3) for review/validation.
 
-- **2026-10-15 — Option D D.2 (AI decompile workflow) — COMPLETE.**
-  - Built `tools/decompile/chunk.py` (~330 lines): function
-    chunker. Reads `nm-D-size.txt` + `objdump-disasm-full.txt`,
-    extracts the disassembly for a given symbol's address range,
-    finds class siblings (other methods + RTTI + vtable + data
-    members), and emits a markdown chunk file with the full
-    context. Includes a hand-rolled MSVC demangler (c++filt
-    doesn't handle MSVC names).
-  - Wrote `tools/decompile/prompts/single-function.md` (~95
-    lines): the decompilation prompt template. Instructs the
-    AI to treat disassembly as a specification (not literal
-    source), use clear names from context, add TODO markers for
-    ambiguous assembly, output ONE TypeScript function
-    declaration that compiles in isolation.
-  - Built `tools/decompile/decompile.py` (~140 lines): runner
-    that composes prompt + chunk, pipes to `claude -p` (or
-    `codex exec`), saves output to `tools/decompile/output/`.
-  - **First test (✅ GREEN):** `ActivateSlow__13CTSSlowMotion`
-    (127 bytes, isolated, well-named). Claude Code produced a
-    78-line TypeScript function that:
-    - Correctly identified the PIC/GOT pattern
-      (`call $+5; pop ebx; add ebx, 0x104a82`)
-    - Named class fields by purpose: `m_bSlowActive` (toggle
-      byte at `[esi+0x64]`), `m_flSlowEndTime` (float at
-      `[esi+0x68]`), `m_flSlowAmount` (float at `[esi+0xf8]`),
-      `m_pThinkTarget` (pointer at `[esi+0x100]`),
-      `m_fNextThink` + `m_pfnThink` (think time + function)
-    - Traced the gpGlobals->time triple-deref pattern with
-      the right `[ebx+0x1600] → [eax] → fld` reasoning
-    - Added TODO(asm-ambiguous) markers where the assembly
-      is uncertain (cvar identity, field names)
-    - Used `any` for unknown types and avoided engine
-      scaffolding (per prompt)
-    - Output: `tools/decompile/output/CTSSlowMotion__ActivateSlow.ts`
-    - Chunk: `tools/decompile/chunks/CTSSlowMotion__ActivateSlow.chunk.md`
-  - **Cross-vendor second pass:** also ran Codex on the same
-    function (53-line output, similar reasoning, slightly
-    different field naming). Both vendors converge on the same
-    function structure. Saved Codex output separately at
-    `tools/decompile/cross-vendor/CTSSlowMotion__ActivateSlow__codex.ts`
-    for review comparison. (Claude-vs-Codex detailed diff
-    deferred — they're substantively equivalent for this
-    small function.)
-  - **Codex discovery (after D.2 closeout):** Codex CLI IS
-    installed at `/home/kyle/bin/codex` (codex-cli 0.160.1) —
-    just not in default PATH. `which codex` failed in earlier
-    sweep because `/home/kyle/bin/` isn't exported. **Path
-    gotcha:** the installer put codex in a non-standard dir.
-    `decompile.py --use codex` now auto-handles the path lookup
-    AND sets `MINIMAX_API_KEY_UNUSED=placeholder` (Codex's
-    config uses a dummy env var name; real auth flows through
-    the local proxy at `127.0.0.1:8789` → `api.minimax.io`).
-  - **Workflow time:** ~5 min end-to-end (chunk gen + AI send +
-    save). Right on target for D.2's "<5 min per function"
-    exit criterion.
-  - **Files added:**
-    - `tools/decompile/chunk.py` (executable, with MSVC demangler)
-    - `tools/decompile/decompile.py` (executable, runner)
-    - `tools/decompile/prompts/single-function.md` (prompt template)
-    - `tools/decompile/chunks/CTSSlowMotion__ActivateSlow.chunk.md`
-    - `tools/decompile/output/CTSSlowMotion__ActivateSlow.ts`
-    - `tools/decompile/cross-vendor/CTSSlowMotion__ActivateSlow__codex.ts`
-  - **Next:** D.3 — decompile the GoldSrc engine↔mod interface
-    (GiveFnptrsToDll, GetEntityAPI2, GetNewDLLFunctions,
-    GetEngineFunctions, Initialize). 5 functions, each with
-    well-documented HLSDK signatures, so we can verify the
-    decompiled output matches the open-source reference.
-    Cross-vendor review (Codex impl + Claude review per
-    Kyle's direction) lands here.
+- **2026-10-15 — Option D D.3 (GoldSrc engine↔mod interface) — COMPLETE.**
+  - Pulled HLSDK reference (`github.com/FWGS/halflife`, depth 1)
+    to `/home/kyle/Development/scratch/hlsdk-ref/halflife/`.
+    Reference implementation of the 4 entry points lives in
+    `ricochet/dlls/h_export.cpp` + `ricochet/dlls/cbase.cpp`.
+    Type definitions in `engine/eiface.h` (`enginefuncs_s`,
+    `DLL_FUNCTIONS`, `NEW_DLL_FUNCTIONS`, `globalvars_t`).
+  - Wrote `tools/decompile/references/hlsdk-goldsrc-interface.md`
+    (~6.5KB): compact reference doc with version constants,
+    function signatures, reference implementations, struct
+    layouts, and a per-item review checklist. Used by the
+    cross-vendor review prompt.
+  - Wrote `tools/decompile/prompts/review-single-function.md`
+    (~95 lines): the cross-vendor review prompt. Asks Claude
+    to compare a codex-decompiled TS against the HLSDK reference
+    + original disassembly, output a pass/fail verdict + the
+    corrected rewrite.
+  - Wrote `tools/decompile/decompile-review.py` (~150 lines):
+    runner that composes the review prompt (chunk + HLSDK ref +
+    codex output) and sends to `claude -p`, extracts the
+    suggested rewrite, saves canonical + cross-vendor outputs.
+  - **Cross-vendor review ran on all 4 entry points** (NOT 5 —
+    `Initialize` isn't a separate exported function in HLSDK or
+    in the TS mod; the mod is "initialized" via the
+    `GiveFnptrsToDll` → `GetEntityAPI2` → `GetNewDLLFunctions`
+    sequence plus static struct initializers):
+    - `GiveFnptrsToDll` (49 B) — codex output had a
+      comment-only body with `void pFunctionTable; void pGlobals;`
+      (invalid TS); claude caught it and rewrote as 2 clean
+      statements (`g_engfuncs = ...; gpGlobals = ...;`) with
+      right HLSDK param names. **FAIL → fixed.**
+    - `GetEntityAPI` (67 B, legacy) — PASS-WITH-NOTES. Source
+      data is `undefined` (D.3 limitation; data arrives in D.5).
+    - `GetEntityAPI2` (75 B) — PASS-WITH-NOTES. By-pointer
+      version arg (vs by-value in legacy), 50 dword copy.
+    - `GetNewDLLFunctions` (127 B) — PASS-WITH-NOTES. **TS mod
+      only ships 3 of 5 NEW_DLL_FUNCTIONS pointers** (12 B
+      vs canonical 20 B). Likely a custom subset; D.4 will
+      investigate which 3 the mod implements.
+  - **Cross-vendor value was huge.** Codex produced plausible
+    but subtly wrong output for `GiveFnptrsToDll` (comment-only
+    body, wrong param name, fabricated "C++/CheerpX boundary"
+    claim). Claude caught every issue and produced a clean
+    rewrite. Same pattern for the other 3 (smaller issues,
+    mostly the "undefined source" data flag + naming nits).
+    Without cross-vendor, D.3 would have shipped with the
+    codex output verbatim.
+  - **Output:** `src/mod/interface.ts` (9.4KB, 226 lines, 4
+    function declarations with the HLSDK-aligned signatures).
+    Bodies use `any` for the function-table source — the actual
+    function pointers are populated in D.4 when we decompile
+    each `pfn*` slot's target implementation.
+  - **Files added (this step):**
+    - `tools/decompile/references/hlsdk-goldsrc-interface.md`
+    - `tools/decompile/prompts/review-single-function.md`
+    - `tools/decompile/decompile-review.py` (executable)
+    - `tools/decompile/output/{GiveFnptrsToDll,GetEntityAPI,GetEntityAPI2,GetNewDLLFunctions}.ts`
+    - `tools/decompile/cross-vendor/<name>__{codex,claude,claude-review}.{ts,md}` (4×3 = 12 files)
+    - `src/mod/interface.ts` (the canonical D.3 deliverable)
+  - **Next:** D.4 — decompile the TS-specific gameplay functions
+    (slowmo, weapons, bots, damage, scoring, spawn). The 619
+    CTS-specific symbols in `nm-D-CTS-specific.txt` are the
+    candidates. Highest-priority first: `CTSSlowMotion` family
+    (the D.2 test was the entry point), then `CTSGun` (weapons),
+    then bot AI. Each function: chunk + codex + claude review,
+    output to `src/mod/<feature>.ts`.
 
 - **2026-10-14 — Phase 1 step 1.2 (bridge layer) — POINTS BUSTED (CheerpX linker bugs).**
   - Tried to dlopen `ts_i386.so` from a `ts-host` bridge binary
@@ -441,74 +438,73 @@ port 5174, page returns HTTP 200 with the expected WebXash
     human browser required → Kyle to download from his Mac alongside
     HL1.
 
-## Next task — D.3: Decompile GoldSrc engine↔mod interface (Evo + Codex + Claude)
+## Next task — D.4: Decompile TS-specific gameplay (Evo + Codex + Claude)
 
-**Goal:** Produce a clean TypeScript module that mirrors the TS
-mod's interface with the GoldSrc engine. Five functions, all with
-well-documented signatures in the open-source HLSDK
-(`github.com/ValveSoftware/halflife-updated`):
+**Goal:** Produce `src/mod/<feature>.ts` modules for the TS
+mod's signature gameplay features. Priority order per
+`tools/decompile/analysis/SUMMARY.md`:
 
-- `GiveFnptrsToDll` — the engine's entry-point. Engine calls this
-  first to give the mod a pointer table of engine functions.
-- `GetEngineFunctions` — the mod returns its engine-call table.
-- `GetEntityAPI2` — the mod returns its entity-dispatch table.
-- `GetNewDLLFunctions` — the mod returns its game-loop functions.
-- `Initialize` — one-time mod setup.
+1. **Slowmo system** — `CTSSlowMotion` family (we already have
+   `ActivateSlow__13CTSSlowMotion` from D.2; expand to the rest
+   of the class: `DeactivateSlow`, `CheckPlayersDistance`,
+   `WaitThink`, `WaitTouch`, `Use`, `Spawn`, `Save`, `Restore`,
+   `KeyValue`). Also `CTSSlowMotionPoint` (the per-point
+   variant).
+2. **Weapons** — `CTSGun`, `CTSGunUci` family. At least one
+   weapon fully decompiled (the spec calls for pistol for
+   Phase 1 MVP).
+3. **Bot AI** — the bot classes. Movement, target selection,
+   firing logic.
+4. **Damage system** — `TakeDamage`, `Killed`, etc.
+5. **Scoring** — `AddPointsToTeam` etc.
+6. **Spawn** — player + bot spawn entities.
+7. **Map entities** — TS-specific triggers, scripts.
 
-**Why these first:** the engine↔mod interface is the contract that
-*every* TS gameplay function will need. Once we have TS types for
-these five entry points, D.4 (TS-specific gameplay) can decompile
-the rest against a known interface.
+**Cross-vendor loop works:** `chunk.py` → `codex` (impl) →
+`decompile-review.py` (claude review) → save to
+`src/mod/<feature>.ts`. D.3 took ~6 minutes total for all 4
+entry points; D.4 will be larger but the workflow is the same.
 
-**Cross-vendor review:** install Codex CLI on m5 first
-(`which codex` is empty as of D.2 closeout). Per Kyle: Codex
-implements, Claude reviews. For each of the 5 functions:
-
-1. `python3 tools/decompile/chunk.py <symbol>` → chunk
-2. Codex → produces TS declaration
-3. Claude Code → reviews TS declaration against HLSDK reference,
-   flags any signature mismatches
-4. Iterate until Claude's review is clean
-5. Save final TS to `src/mod/interface.ts` (the canonical location
-   per SPEC.md § Repo layout)
+**Sub-decision:** the 619 CTS-specific symbols in
+`nm-D-CTS-specific.txt` are the candidate pool. We don't need
+to decompile all of them for Phase 1 MVP — just enough to
+get a working game. After D.4 is roughly complete, evaluate
+coverage and decide if more is needed.
 
 **Exit criteria:**
-- `src/mod/interface.ts` exists with 5 function declarations
-- All signatures match HLSDK reference (`enginefuncs_t`,
-  `dllfuncs_t`, `NEW_DLL_FUNCTIONS`, `entity_interface_t`)
-- A second engineer can read `interface.ts` and understand what
-  the mod exposes to the engine
+- `src/mod/<feature>.ts` files for the priority-1 features
+  (slowmo, pistol, basic bot)
+- Each function reviewed by claude, verdict PASS or
+  PASS-WITH-NOTES
+- The interfaces in `interface.ts` are wired up against the
+  `enginefuncs_t` / `DLL_FUNCTIONS` / `NEW_DLL_FUNCTIONS`
+  tables (i.e., we know which mod function implements which
+  table slot, even if the bodies are still `any`)
 
 **Phase 1 step plan** (full detail in `docs/option-d-scope.md`):
 - **D.1** ✅ COMPLETE — binary + analysis (2026-10-14)
 - **D.2** ✅ COMPLETE — AI decompile workflow (2026-10-15)
-- **D.3** Decompile GoldSrc interface (1-2 days)
-- **D.4** Decompile TS-specific gameplay (3-5 days)
+- **D.3** ✅ COMPLETE — GoldSrc interface (2026-10-15)
+- **D.4** TS-specific gameplay (3-5 days)
 - **D.5** Adapt + integrate into Babylon.js scene (1-2 weeks)
 - **D.6** Bridge semantics + polish (1-2 weeks)
 - **Total: 4-6 weeks** to Phase 1 MVP
 
-**Why this is on me, not Kyle:** the decompilation is mechanical
-work given the workflow. The interesting judgment calls (which
-functions to decompile, when to declare a chunk production-ready)
-are mine. Kyle's role: review the final `interface.ts` against the
-HLSDK reference and approve the signature set.
+**Why this is on me, not Kyle:** the per-function work is
+mechanical given the workflow. The judgment calls (which
+functions are in/out of MVP scope, when a feature is "done
+enough") are mine. Kyle's role: review the high-stakes
+functions (e.g., pistol weapon, bot AI core) and approve the
+overall coverage.
 
 **Open pre-reqs:**
-1. ~~Install Codex CLI on m5.~~ **DONE.** Codex is at
-   `/home/kyle/bin/codex` (0.160.1); `decompile.py --use codex`
-   handles the PATH + env var. Smoke-tested: 6,918 tokens for
-   "Reply with just the word 'pong'". Ready for cross-vendor
-   loops in D.3.
-2. ~~Wire Codex to MiniMax M3 via the anthropic-SDK shim.~~
-   **DONE.** Wired through the local proxy at
-   `127.0.0.1:8789` (which is itself wired to
-   `api.minimax.io/anthropic`). No work needed here.
-3. **Pull the HLSDK reference** for `enginefuncs_t`,
-   `dllfuncs_t`, etc. Either `git clone
-   github.com/ValveSoftware/halflife-updated` into a scratch dir,
-   or just grep the headers online. We don't need the full repo,
-   just the relevant typedefs.
+- ~~Install Codex CLI~~ DONE
+- ~~Wire Codex to MiniMax M3~~ DONE
+- **Decide coverage target for D.4:** which features go in
+  Phase 1 MVP vs. deferred to Phase 2? Default: slowmo
+  (already have 1 function), pistol (1 weapon), basic bot
+  (no fancy AI). Phase 2 picks up acrobatics, dual-wield,
+  kick, more weapons, more maps.
 
 ## Open questions
 
