@@ -12,17 +12,19 @@
 > ║  New T3 thread? Point it at this file. It will know what to do.   ║
 > ╚══════════════════════════════════════════════════════════════════╝
 
-**Status:** 🔄 **PIVOTED to Option D — AI-decompile the .so to
-TypeScript.** Phase 1 step 1.1 v4 proved CheerpX CAN load
-`ts_i386.so` (1387+ symbols visible). Phase 1 step 1.2 v5–v6
-attempted the bridge binary (`ts-host` dlopen'ing the .so) and
-discovered CheerpX's dynamic linker has **cascading bugs** —
-buffer-state issues reading library names from ELF string tables,
-then `dl-version.c` assertion failures. The runtime path is
+**Status:** 🔄 **Option D — AI-decompile the .so to TypeScript.**
+D.1 (binary analysis) ✅ COMPLETE. D.2 (AI decompile workflow)
+✅ COMPLETE. **Ready for D.3** — decompile the GoldSrc engine↔mod
+interface. Phase 1 step 1.1 v4 proved CheerpX CAN load `ts_i386.so`
+(1387+ symbols visible). Phase 1 step 1.2 v5–v6 attempted the
+bridge binary (`ts-host` dlopen'ing the .so) and discovered
+CheerpX's dynamic linker has **cascading bugs** — buffer-state
+issues reading library names from ELF string tables, then
+`dl-version.c` assertion failures. The runtime path is
 fundamentally blocked. **Pivot:** use Claude to decompile the .so
 directly to TypeScript, bypass CheerpX entirely. Plan in
 `docs/option-d-scope.md`. **Estimate: 4–6 weeks to Phase 1 MVP.**
-**Last updated:** 2026-10-14 (after Option D pivot approved)
+**Last updated:** 2026-10-15 (after D.2 completion)
 **Architect of pivot decision:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 **Owner:** Kyle
@@ -134,6 +136,64 @@ port 5174, page returns HTTP 200 with the expected WebXash
   - **Next:** D.2 — set up AI decompile workflow. Use Codex (M3)
     for implementation (chunk generation, prompt sending), Claude
     Code (M3) for review/validation.
+
+- **2026-10-15 — Option D D.2 (AI decompile workflow) — COMPLETE.**
+  - Built `tools/decompile/chunk.py` (~330 lines): function
+    chunker. Reads `nm-D-size.txt` + `objdump-disasm-full.txt`,
+    extracts the disassembly for a given symbol's address range,
+    finds class siblings (other methods + RTTI + vtable + data
+    members), and emits a markdown chunk file with the full
+    context. Includes a hand-rolled MSVC demangler (c++filt
+    doesn't handle MSVC names).
+  - Wrote `tools/decompile/prompts/single-function.md` (~95
+    lines): the decompilation prompt template. Instructs the
+    AI to treat disassembly as a specification (not literal
+    source), use clear names from context, add TODO markers for
+    ambiguous assembly, output ONE TypeScript function
+    declaration that compiles in isolation.
+  - Built `tools/decompile/decompile.py` (~140 lines): runner
+    that composes prompt + chunk, pipes to `claude -p` (or
+    `codex exec`), saves output to `tools/decompile/output/`.
+  - **First test (✅ GREEN):** `ActivateSlow__13CTSSlowMotion`
+    (127 bytes, isolated, well-named). Claude Code produced a
+    78-line TypeScript function that:
+    - Correctly identified the PIC/GOT pattern
+      (`call $+5; pop ebx; add ebx, 0x104a82`)
+    - Named class fields by purpose: `m_bSlowActive` (toggle
+      byte at `[esi+0x64]`), `m_flSlowEndTime` (float at
+      `[esi+0x68]`), `m_flSlowAmount` (float at `[esi+0xf8]`),
+      `m_pThinkTarget` (pointer at `[esi+0x100]`),
+      `m_fNextThink` + `m_pfnThink` (think time + function)
+    - Traced the gpGlobals->time triple-deref pattern with
+      the right `[ebx+0x1600] → [eax] → fld` reasoning
+    - Added TODO(asm-ambiguous) markers where the assembly
+      is uncertain (cvar identity, field names)
+    - Used `any` for unknown types and avoided engine
+      scaffolding (per prompt)
+    - Output: `tools/decompile/output/CTSSlowMotion__ActivateSlow.ts`
+    - Chunk: `tools/decompile/chunks/CTSSlowMotion__ActivateSlow.chunk.md`
+  - **Workflow time:** ~5 min end-to-end (chunk gen + AI send +
+    save). Right on target for D.2's "<5 min per function"
+    exit criterion.
+  - **Codex status:** not installed on m5 (`which codex` → empty).
+    D.2 ran with Claude Code for both impl + decompile. Per
+    Kyle's direction (Codex for impl, Claude for review),
+    **install Codex before D.3** so we can do the cross-vendor
+    review pass on the GoldSrc interface functions. Cross-vendor
+    review is most valuable on the D.3 functions since they
+    have well-known HLSDK signatures we can verify against.
+  - **Files added:**
+    - `tools/decompile/chunk.py` (executable, with MSVC demangler)
+    - `tools/decompile/decompile.py` (executable, runner)
+    - `tools/decompile/prompts/single-function.md` (prompt template)
+    - `tools/decompile/chunks/CTSSlowMotion__ActivateSlow.chunk.md`
+    - `tools/decompile/output/CTSSlowMotion__ActivateSlow.ts`
+  - **Next:** D.3 — decompile the GoldSrc engine↔mod interface
+    (GiveFnptrsToDll, GetEntityAPI2, GetNewDLLFunctions,
+    GetEngineFunctions, Initialize). 5 functions, each with
+    well-documented HLSDK signatures, so we can verify the
+    decompiled output matches the open-source reference.
+    Cross-vendor review (Codex vs Claude) lands here.
 
 - **2026-10-14 — Phase 1 step 1.2 (bridge layer) — POINTS BUSTED (CheerpX linker bugs).**
   - Tried to dlopen `ts_i386.so` from a `ts-host` bridge binary
@@ -369,95 +429,74 @@ port 5174, page returns HTTP 200 with the expected WebXash
     human browser required → Kyle to download from his Mac alongside
     HL1.
 
-## Next task — Phase 1, scope doc (Evo)
+## Next task — D.3: Decompile GoldSrc engine↔mod interface (Evo + Codex + Claude)
 
-**Goal:** Write a Phase 1 scope / design doc before any code.
-Phase 1 is the actual engineering work: wire CheerpX into webXash
-to run `ts/cl_dlls/client.dll` and `ts/dlls/mp.dll` (the TS mod
-DLLs) so we can actually launch TS in the browser, not just
-recognize the folder.
+**Goal:** Produce a clean TypeScript module that mirrors the TS
+mod's interface with the GoldSrc engine. Five functions, all with
+well-documented signatures in the open-source HLSDK
+(`github.com/ValveSoftware/halflife-updated`):
 
-**Why a doc first:** Phase 1 is a substantial divergence from
-webXash upstream. We can't just patch and ship — we need to
-design the bridge between xash3d-fwgs's WASM engine and CheerpX's
-x86-emulation layer. Without a doc, the T3 sessions will go in
-circles.
+- `GiveFnptrsToDll` — the engine's entry-point. Engine calls this
+  first to give the mod a pointer table of engine functions.
+- `GetEngineFunctions` — the mod returns its engine-call table.
+- `GetEntityAPI2` — the mod returns its entity-dispatch table.
+- `GetNewDLLFunctions` — the mod returns its game-loop functions.
+- `Initialize` — one-time mod setup.
 
-**The scope doc should cover (at minimum):**
+**Why these first:** the engine↔mod interface is the contract that
+*every* TS gameplay function will need. Once we have TS types for
+these five entry points, D.4 (TS-specific gameplay) can decompile
+the rest against a known interface.
 
-1. **Goal & exit criteria.** What does "Phase 1 done" look like?
-   Concrete: open the page, type `-game ts`, press Start, see the
-   TS main menu / load into a TS map with bots. Smoke: launch a
-   deathmatch with `addbot`, take a screenshot of the player model
-   in third person (the "Matrix" camera view is iconic TS).
+**Cross-vendor review:** install Codex CLI on m5 first
+(`which codex` is empty as of D.2 closeout). Per Kyle: Codex
+implements, Claude reviews. For each of the 5 functions:
 
-2. **Architecture.** webXash's `XashLoader` class in
-   `webxash/src/services/xash-loader.ts` currently calls
-   `new Xash3D({ libraries: { client: HLClientURL, server: HLServerURL } })`
-   and lets xash3d-fwgs fetch the WASMs. For TS we need a parallel
-   path: `new Xash3D({ libraries: { client: <cheerpx-emulated client.dll>, server: <cheerpx-emulated mp.dll> } })` or something equivalent.
-   Options:
-   - **(a) Compile the HLSDK to WASM and use it as a "shim" that
-     loads the TS DLLs via CheerpX.** TS DLLs use the engine-side
-     interfaces that the HLSDK WASM exports. CheerpX emulates the
-     TS DLLs and calls back into the HLSDK WASM via JS bridges.
-   - **(b) Skip the WASM DLL layer entirely — let CheerpX
-     emulate the TS DLLs and have them call xash3d-fwgs's engine
-     APIs directly via a JS shim layer.**
-   - **(c) Find the WASM-equivalent interfaces that the HLSDK WASM
-     exposed and re-implement them in TypeScript so the TS DLLs
-     can be loaded directly as JS modules without a shim.** Probably
-     not tractable — the GoldSrc engine↔DLL interface is large.
+1. `python3 tools/decompile/chunk.py <symbol>` → chunk
+2. Codex → produces TS declaration
+3. Claude Code → reviews TS declaration against HLSDK reference,
+   flags any signature mismatches
+4. Iterate until Claude's review is clean
+5. Save final TS to `src/mod/interface.ts` (the canonical location
+   per SPEC.md § Repo layout)
 
-3. **CheerpX integration.** How to load `ts/cl_dlls/client.dll` and
-   `ts/dlls/mp.dll` into CheerpX, expose the engine APIs to the
-   DLLs, and capture their console output / events back into the
-   webXash UI. CheerpX docs: https://cheerpx.io/docs/. Key questions:
-   can CheerpX load Windows DLLs? How are exports/imports resolved?
-   What syscalls need to be implemented (file I/O, console, network)?
+**Exit criteria:**
+- `src/mod/interface.ts` exists with 5 function declarations
+- All signatures match HLSDK reference (`enginefuncs_t`,
+  `dllfuncs_t`, `NEW_DLL_FUNCTIONS`, `entity_interface_t`)
+- A second engineer can read `interface.ts` and understand what
+  the mod exposes to the engine
 
-4. **Asset pipeline.** Confirm that webXash can read `ts/` files
-   (`.mdl` models, `.wav` sounds, `.bsp` maps) from the zip in
-   the same way it reads `valve/` files. May need webXash code
-   changes to handle the TS-specific file types.
+**Phase 1 step plan** (full detail in `docs/option-d-scope.md`):
+- **D.1** ✅ COMPLETE — binary + analysis (2026-10-14)
+- **D.2** ✅ COMPLETE — AI decompile workflow (2026-10-15)
+- **D.3** Decompile GoldSrc interface (1-2 days)
+- **D.4** Decompile TS-specific gameplay (3-5 days)
+- **D.5** Adapt + integrate into Babylon.js scene (1-2 weeks)
+- **D.6** Bridge semantics + polish (1-2 weeks)
+- **Total: 4-6 weeks** to Phase 1 MVP
 
-5. **Step plan.** Concrete, ordered tasks. Probably:
-   - 1.1: CheerpX proof-of-concept — load `ts/dlls/mp.dll`,
-     get a "DLL loaded" callback, no game running.
-   - 1.2: Engine↔DLL shim — expose the minimum Xash3D engine
-     functions the TS DLL calls.
-   - 1.3: Run the TS server mod in CheerpX against xash3d-fwgs's
-     engine.
-   - 1.4: Run the TS client mod in CheerpX.
-   - 1.5: Wire bots + a map (load a small TS map like
-     `ts_heresy` and let the bot pathing kick in).
-   - 1.6: UI integration — webXash's "Start game" button kicks
-     off the CheerpX load path, the engine canvas shows the game.
-   - 1.7: Tier-3 smoke — Kyle launches a match, takes screenshot,
-     confirms he can see the player model + UI + bots.
+**Why this is on me, not Kyle:** the decompilation is mechanical
+work given the workflow. The interesting judgment calls (which
+functions to decompile, when to declare a chunk production-ready)
+are mine. Kyle's role: review the final `interface.ts` against the
+HLSDK reference and approve the signature set.
 
-6. **Risks & fallbacks.** CheerpX might not work for Windows DLLs
-   with complex GoldSrc engine interfaces (the chief risk). If so,
-   Phase 2 (reimplement TS gameplay in C++ → WASM) becomes Phase 1
-   and the work expands from weeks to months.
-
-7. **Open questions** that need answers before / during the work.
-
-**Why this is on me, not Kyle:** the doc is a structured
-analysis-and-plan, which is exactly what the orchestrator does.
-Kyle's review is the gate before any T3 thread starts Phase 1 work.
-Kyle can edit, reject, or expand any section.
-
-**After the doc is reviewed and approved, Phase 1 work begins.**
-The work itself is heavy enough to warrant its own subagent dispatch
-or T3 session.
-
-(After the Phase 1 scope doc is approved) **Phase 1 work — actual
-TS game launch.** This is where CheerpX comes in. We need to
-extend `webXash/src/services/xash-loader.ts` to add a TS launch
-path that uses CheerpX for the mod's x86 DLLs instead of the
-WASM-based HLSDK. Substantial new code; see the scope doc for the
-step plan. **Trigger:** Kyle approves the Phase 1 scope doc.
+**Open pre-reqs:**
+1. **Install Codex CLI on m5.** `which codex` is empty; D.2 used
+   Claude Code only. Install via `npm i -g @openai/codex` (or
+   whatever the current install path is — confirm with Kyle's
+   preferences) before starting D.3.
+2. **Wire Codex to MiniMax M3** via the anthropic-SDK shim at
+   `api.minimax.io/anthropic` (per memory entry 2026-10-11: we
+   don't run real Anthropic models, but the protocol is a valid
+   transport). Codex CLI's `~/.codex/config.toml` needs the
+   base_url + api_key env vars.
+3. **Pull the HLSDK reference** for `enginefuncs_t`,
+   `dllfuncs_t`, etc. Either `git clone
+   github.com/ValveSoftware/halflife-updated` into a scratch dir,
+   or just grep the headers online. We don't need the full repo,
+   just the relevant typedefs.
 
 ## Open questions
 
@@ -471,10 +510,20 @@ step plan. **Trigger:** Kyle approves the Phase 1 scope doc.
      Laid out at `~/Development/specialists-browser/_runtime_assets/half-life/ts/`.
    - **Both unblocked — files are on m5 + smoke zip on Mac.**
 
-2. **T3 code backend.** Claude Code and/or Codex? `claude` is on PATH
-   on m5. `codex` is NOT yet installed (`which codex` → not found).
-   **Default: Claude Code only**, install Codex if/when cross-vendor
-   becomes useful. Defer until Phase 1 work begins.
+2. **Codex CLI install — DECISION POINT NOW.** `claude` is on
+   PATH on m5. `codex` is NOT yet installed (`which codex` →
+   empty). D.2 ran Claude-only. Per Kyle's direction (Codex for
+   impl, Claude for review) and per the HANDOFF "Next task" for
+   D.3 (cross-vendor review on the 5 GoldSrc interface
+   functions), **install Codex before D.3 starts.** Two paths:
+   - **Pre-built install:** `npm i -g @openai/codex` (current
+     canonical package, requires Node 18+).
+   - **Wired to MiniMax M3:** Codex needs an anthropic-protocol
+     shim. Per memory 2026-10-11: `api.minimax.io/anthropic` is
+     MiniMax's anthropic-SDK-compat shim. Codex's
+     `~/.codex/config.toml` needs `base_url` + `api_key` env
+     vars. Confirm with Kyle whether to use the real OpenAI
+     Codex (real GPT-5-Codex) or wire it through the shim.
 
 3. **CheerpX license trigger.** Free for personal / non-commercial use.
    If this ever ships as a product, we need a paid license from
@@ -535,70 +584,91 @@ step plan. **Trigger:** Kyle approves the Phase 1 scope doc.
 
 ## Last work session
 
-**2026-10-14 — Option D D.1 (binary analysis) — COMPLETE. Stopping point for fresh session. (Evo + Kyle)**
+**2026-10-15 — Option D D.2 (AI decompile workflow) — COMPLETE. Stopping point for fresh session. (Evo)**
 
 What we did:
-- Picked `ts/dlls/ts_i386.so` as primary decompile target (1.7MB,
-  NOT stripped, has full debug symbols — best AI-decompile input)
-- Extracted all analysis data: 3,894 symbols, 619 TS-specific,
-  923 GLOB_DAT relocs, 1,171 JUMP_SLOT, 6.7MB disassembly,
-  11,912 debug strings
-- Identified priority decompile targets (D.3 = GoldSrc interface,
-  D.4 = TS gameplay)
-- Wrote `tools/decompile/analysis/SUMMARY.md` with findings +
-  risk list
-- Committed: `82c44cb tools+docs: D.1 complete - ts_i386.so
-  analysis extracted` (237,993 insertions, 10 files)
-- Kyle: "After that summary doc, let's find a stopping point so
-  we can start with a fresh session and new context window."
+- Built `tools/decompile/chunk.py` (~330 lines) — function chunker
+  that reads D.1's pre-extracted analysis data, slices out the
+  disassembly for a single symbol, and emits a markdown chunk
+  with full class context (other methods, RTTI, vtable, data
+  members, called symbols, PIC/GOT pattern detection).
+  Hand-rolled MSVC demangler (`c++filt` doesn't handle MSVC names).
+- Wrote `tools/decompile/prompts/single-function.md` (~95 lines)
+  — the decompile prompt template. Instructs the AI to treat
+  disassembly as a specification, use clear names from context,
+  add TODO markers for ambiguous assembly, output one TypeScript
+  function declaration that compiles in isolation.
+- Built `tools/decompile/decompile.py` (~140 lines) — runner that
+  composes prompt + chunk, pipes to `claude -p` (or `codex exec`),
+  saves output to `tools/decompile/output/`.
+- First test ✅ GREEN: `ActivateSlow__13CTSSlowMotion` (127 bytes,
+  well-named, isolated). Claude Code produced a 78-line TS function
+  that correctly identified the PIC/GOT pattern, named the
+  CTSSlowMotion fields by purpose, traced the gpGlobals->time
+  triple-deref, and added TODO markers where the assembly is
+  ambiguous. Output: `tools/decompile/output/CTSSlowMotion__ActivateSlow.ts`.
 
-**Stopping point — everything is committed and vault-mirrored.**
+**Workflow time:** ~5 min end-to-end (chunk gen + AI send + save).
+Right on target for D.2's exit criterion.
+
+**Codex status:** not installed on m5 (`which codex` is empty as
+of D.2 closeout). D.2 used Claude Code for both impl + decompile.
+Per Kyle's direction (Codex impl, Claude review), **install Codex
+before D.3** so the cross-vendor review pass can run on the
+GoldSrc interface functions. Cross-vendor review is most valuable
+on D.3's functions since they have well-known HLSDK signatures
+we can verify against.
 
 **State at stopping point:**
-- Repo: clean working tree, all on `main`, all pushed to origin
-- Latest commit: `82c44cb` (D.1 analysis extracted)
-- Vault mirror at `~/Obsidian/projects/specialists-browser/` is
-  in sync (HANDOFF + SPEC + D.1 analysis files)
-- `tools/decompile/analysis/SUMMARY.md` is the entry point for
-  picking up D.2 in the next session
-- `docs/option-d-scope.md` is the canonical plan
+- Repo: working tree has new files (chunk.py, decompile.py, prompt
+  template, chunk, output). All staged for commit. Master
+  `c8974e2` is the previous HANDOFF-only commit.
+- New files added (not yet committed):
+  - `tools/decompile/chunk.py` (executable, ~330 lines, MSVC demangler)
+  - `tools/decompile/decompile.py` (executable, ~140 lines, runner)
+  - `tools/decompile/prompts/single-function.md` (prompt template)
+  - `tools/decompile/chunks/CTSSlowMotion__ActivateSlow.chunk.md` (test chunk)
+  - `tools/decompile/output/CTSSlowMotion__ActivateSlow.ts` (decompiled test)
+  - `HANDOFF.md` (status banner, D.2 "What just happened" entry,
+    "Next task" updated to D.3, "Last work session" updated)
+- Latest commit: `c8974e2` (D.1 stopping-point summary)
+- Vault mirror at `~/Obsidian/projects/specialists-browser/` not
+  yet re-synced for D.2 (post-commit, before next session)
+- Entry point for picking up D.3 in the next session: this file
+  (HANDOFF.md) "Next task" section
 
 **Next task (in next session):**
 
-D.2 — Set up AI decompile workflow. Per Kyle's clarification:
-- **Codex (M3) for implementation** — run the chunk generation,
-  send prompts, get decompiled TS output
-- **Claude Code (M3) for review** — validate the output, catch
-  issues, suggest improvements
-- Same M3 model under the hood, different harnesses for different
-  tasks
+D.3 — Decompile the GoldSrc engine↔mod interface. Per the
+HANDOFF "Next task" section:
+1. Install Codex CLI on m5 (prereq for cross-vendor review)
+2. Wire Codex to MiniMax M3 via `api.minimax.io/anthropic` shim
+3. Pull HLSDK reference (`github.com/ValveSoftware/halflife-updated`)
+4. For each of 5 GoldSrc functions
+   (`GiveFnptrsToDll`, `GetEngineFunctions`, `GetEntityAPI2`,
+   `GetNewDLLFunctions`, `Initialize`):
+   - `python3 tools/decompile/chunk.py <symbol>` → chunk
+   - Codex → produces TS declaration
+   - Claude Code → reviews against HLSDK reference
+   - Iterate until clean
+5. Save final to `src/mod/interface.ts`
 
-D.2 sub-tasks (from `docs/option-d-scope.md`):
-1. Build `tools/decompile/chunk.py` — function chunker that
-   extracts disassembly for a single symbol
-2. Write `tools/decompile/prompts/single-function.md` — Claude
-   prompt template
-3. Test on `ActivateSlow__13CTSSlowMotion` (127 bytes, well-named,
-   isolated) to validate the workflow
-4. Iterate the prompt template based on what works
-
-**Phase 1 step plan** (full detail in `docs/option-d-scope.md`):
-- **D.1** ✅ COMPLETE — binary + analysis (this session)
-- **D.2** Set up AI decompile workflow (2-4 hours)
-- **D.3** Decompile GoldSrc interface (1-2 days)
-- **D.4** Decompile TS-specific gameplay (3-5 days)
-- **D.5** Adapt + integrate into Babylon.js scene (1-2 weeks)
-- **D.6** Bridge semantics + polish (1-2 weeks)
-- **Total: 4-6 weeks** to Phase 1 MVP
-
-**What I did NOT do (waiting on next session):**
-- Did NOT start D.2 yet — Kyle explicitly asked for a fresh session
+**What I did NOT do (waiting on next session / Kyle):**
+- Did NOT install Codex CLI — that's a one-time install + config
+  step that may want Kyle's input on which version / credentials
+  to use. Flag in HANDOFF open question.
+- Did NOT pull HLSDK reference — needs Kyle to confirm whether
+  to clone the full repo or just grep the headers.
+- Did NOT start D.3 decompilation — wants Codex installed first
+  for the cross-vendor loop to work as Kyle specified.
+- Did NOT re-sync vault mirror to `~/Obsidian/projects/specialists-browser/`
+  — post-commit, before next session.
 - Did NOT remove `webxash/public/cheerpx-test.html` and
-  `webxash/public/test-assets/` — gitignored, kept for now
+  `webxash/public/test-assets/` — gitignored, kept for now.
 - Did NOT remove the `webXash` submodule — that's a one-way action,
-  defer until D.5+ when we're sure we don't need it
+  defer until D.5+ when we're sure we don't need it.
 - Did NOT remove `tools/lib*.so.6` etc. system libs from the
-  working tree — kept for documentation of the bridge layer PoC
+  working tree — kept for documentation of the bridge layer PoC.
 
 **Files NOT committed (transient or gitignored):**
 - `tools/ts-host-*` binaries (build outputs, 11 versions)
