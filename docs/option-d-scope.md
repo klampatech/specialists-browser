@@ -1,11 +1,30 @@
 # Option D Scope — AI-Decompile the TS Mod DLL to TypeScript
 
-**Date:** 2026-10-14
+**Date:** 2026-10-14 (initial), 2026-10-15 (progress update)
 **Author:** Evo (Hermes orchestrator)
-**Status:** Draft for Kyle's review (planning phase)
+**Status:** D.2 + D.3 + D.4.1 complete; D.4.5 (Point family) + D.4.2 (weapons) next.
 **Source of truth:** this doc is canonical; once approved, it folds into SPEC.md and HANDOFF.md.
 
 > **Naming note:** the project repo is `specialists-browser`. The current scope doc for "Phase 1 with CheerpX" was `docs/phase-1-scope.md` (Option B). `docs/option-c-scope.md` covers Option C (clean TS reimplementation from scratch). This is **Option D** (AI-decompile the mod DLL directly to TypeScript).
+
+## Progress (updated 2026-10-15)
+
+| Step | Status | Date | Deliverable |
+|---|---|---|---|
+| D.1 | ✅ | 2026-10-14 | Binary analysis: 3,894 symbols, 619 TS-specific, 6.7MB disasm, 11,912 strings. SUMMARY.md priority list. |
+| D.2 | ✅ | 2026-10-15 | AI decompile workflow: `tools/decompile/chunk.py` (function chunker with hand-rolled MSVC demangler), `decompile.py` (runner), `decompile-review.py` (cross-vendor reviewer). First test on `ActivateSlow__13CTSSlowMotion` (127 B) GREEN. Codex CLI wired via local proxy. |
+| D.3 | ✅ | 2026-10-15 | 4 GoldSrc interface functions decompiled: `GiveFnptrsToDll`, `GetEntityAPI`, `GetEntityAPI2`, `GetNewDLLFunctions`. Output: `src/mod/interface.ts`. Cross-vendor caught invalid TS in GiveFnptrsToDll. |
+| D.4.1 | ✅ | 2026-10-15 | CTSSlowMotion (11/11 methods): Spawn, KeyValue, Use, ActivateSlow, DeactivateSlow, CheckPlayersDistance, WaitThink, WaitTouch, Save, Restore, ObjectCaps. Output: `src/mod/slowmo.ts` (33.5KB, 750 lines). Class state consolidated across methods. Cross-vendor caught 3 bugs in `Use` alone (string_t comparison, wrong field name, unverified gpGlobals). |
+| D.4.5 | ⏳ Next | — | CTSSlowMotionPoint family (5 methods). |
+| D.4.2 | ⏸ | — | weapons (CTSGun + CTSGunUci, ~15 methods). |
+| D.4.3 | ⏸ | — | bots (variable). |
+| D.4.4 | ⏸ | — | damage/scoring/spawn (~10 methods). |
+| D.5 | ⏸ | — | Babylon.js integration (1-2 weeks). |
+| D.6 | ⏸ | — | bridge semantics + polish (1-2 weeks). |
+
+**Tempo update (2026-10-15):** Codex calls today are 5-15 min each (was ~30s in D.2). The local proxy at port 8789 is the bottleneck — parallel codex calls queue. The plan said 4-6 weeks; realistic estimate is the same on aggregate but slower per-call than initially expected.
+
+**Tooling fixes:** chunk.py filename sanitization (replaces `,` and ` ` to avoid path errors); decompile-review.py finds chunk by header (was matching sibling mentions); decompile-review.py uses codex output as canonical when review verdict is PASS (was skipping output write).
 
 ---
 

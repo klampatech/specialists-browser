@@ -14,9 +14,26 @@ clean up and integrate into a Babylon.js scene. The Oct 2026 wave
 **Estimate: 4-6 weeks for Phase 1 MVP, vs. 10-16 for Option C
 clean reimpl.** Option C remains valid as a fallback if Option D
 doesn't converge.
-**Last updated:** 2026-10-14 (after Option D pivot)
+**Last updated:** 2026-10-15 (D.2, D.3, D.4.1 complete)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
+
+## Phase 1 D-step progress (Option D)
+
+| Step | Status | Deliverable |
+|---|---|---|
+| D.1 | ✅ Complete (2026-10-14) | `tools/decompile/analysis/` (3,894 symbols, 619 TS-specific) |
+| D.2 | ✅ Complete (2026-10-15) | `tools/decompile/{chunk,decompile,decompile-review}.py` + `prompts/` |
+| D.3 | ✅ Complete (2026-10-15) | `src/mod/interface.ts` (4 entry points, GoldSrc engine↔mod) |
+| D.4.1 | ✅ Complete (2026-10-15) | `src/mod/slowmo.ts` (CTSSlowMotion, 11/11 methods, 750 lines) |
+| D.4.2 | ⏳ Next | weapons (CTSGun + CTSGunUci, ~15 methods) |
+| D.4.3 | ⏸ Pending | bots (variable) |
+| D.4.4 | ⏸ Pending | damage/scoring/spawn (~10 methods) |
+| D.4.5 | ⏸ Pending | CTSSlowMotionPoint (5 methods) |
+| D.5 | ⏸ Pending | Babylon.js integration (1-2 weeks) |
+| D.6 | ⏸ Pending | bridge semantics + polish (1-2 weeks) |
+
+**Play-test surface:** not yet. First browser-playable game at end of D.5 / start of D.6. D.4 produces reviewable TS source; even those need `tsc` to verify.
 
 ---
 
