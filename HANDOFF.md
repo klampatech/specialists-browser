@@ -109,6 +109,75 @@ If Kyle prefers a different scope, the alternatives are:
 
 ---
 
+## 🚀 NEXT-SESSION KICKOFF PROMPT
+
+Copy-paste the block below into the new session. Tells the next
+session what to do without needing to re-derive the state.
+
+---
+
+```
+Continue Option D Phase 1 decomp of ts/dlls/ts_i386.so → TypeScript.
+
+Current state: 25/89 methods (~28%) done. D.4.6 (CTSGun combat) was the last commit.
+Next: D.4.8 — finish the remaining 10 CTSGun methods.
+
+Repo: /home/kyle/Development/specialists-browser
+Branch: main
+Vault mirror: /home/kyle/Obsidian/projects/specialists-browser/
+
+FIRST: Read HANDOFF.md (it has a CHECKPOINT SUMMARY at the top with everything
+you need — deliverable table, class state map, workflow recipe, tempo budget,
+recent commits, env constraints). Then read SPEC.md for the high-level plan.
+
+TODO for this session — D.4.8 (finish CTSGun):
+
+1. Find the 10 remaining CTSGun methods (excluding the 23 already done):
+   grep '__[0-9]*CTSGun ' tools/decompile/analysis/nm-D-size.txt | sort
+   Cross-check against the 23 already in src/mod/weapons.ts. The 10
+   remaining should include: AddItem, TakeWeapon, Zoom, Unzoom, SecondaryAttack,
+   AlternateAttack, SwitchItems, MultiplyClips, SelectWeapon, GetBetterWeapon,
+   DropWeapon, StopReload, GetActiveItems. (Re-derive exact list from nm.)
+
+2. For each method (one at a time, sequential, single proxy):
+   a. tools/decompile/chunk.py <mangled>   # generates chunks/<name>.chunk.md
+   b. python tools/decompile/decompile.py --use codex --out tools/decompile/cross-vendor/<name>__codex.ts <mangled>
+      (5-40 min depending on size; for symbols with non-trivial arg types,
+       codex output may be at <name>__codex.ts without the args suffix —
+       copy to expected <name>_<arg-types>__codex.ts before review)
+   c. python tools/decompile/decompile-review.py <mangled>
+      (1-9 min; if it times out, the review file is usually already written —
+       extract the rewrite via:
+         import re
+         review = open("tools/decompile/cross-vendor/<name>__claude-review.md").read()
+         m = re.search(r"Suggested rewrite.*?```typescript\n(.*?)\n```", review, re.DOTALL)
+         open("tools/decompile/output/<name>...ts", "w").write(m.group(1))
+       Fallback to codex output (strip outer ```typescript fence) if no rewrite block.)
+
+3. After each method: git add the new chunk + output + cross-vendor files, commit,
+   push. Don't wait for batch commits — commit per method, or per 3-4 small methods.
+
+4. After all 10: assemble into src/mod/weapons.ts (append in source-code order,
+   update header doc-comment with full 33/33 inventory), commit, push, sync vault,
+   update SPEC.md + docs/option-d-scope.md + HANDOFF.md with D.4.8 complete.
+
+If I (Kyle) say to pivot, the alternatives are:
+- More CTSGameRules (CheckDeads, RestartRound, InitHUD, Think) → scoring.ts
+- CTSStunt (23 methods, ~12KB) → src/mod/stunt.ts (new)
+- CTSGunUci + CTSGuni subclasses (Uzi + dual-wield) → src/mod/weapons-uzi.ts, src/mod/weapons-akimbo.ts
+- D.5 (Babylon.js integration) — pivot to wiring up the 3D scene
+
+Reminders:
+- Real auth is via 127.0.0.1:8789 → api.minimax.io/anthropic (no real Anthropic)
+- Use /home/kyle/bin/codex (not in PATH by default)
+- All commits go to main (private solo repo, Kyle confirmed earlier)
+- After each commit, sync ~/Obsidian/projects/specialists-browser/ from the repo
+- Stay organized: update specs and handoff at every D-step boundary
+- Tempo: ~30 min/method average; budget ~5-6 hours for 10 methods
+```
+
+---
+
 **Status:** 🔄 **Option D — AI-decompile the .so to TypeScript.**
 D.1 (binary analysis) ✅ COMPLETE. D.2 (AI decompile workflow)
 ✅ COMPLETE. **Ready for D.3** — decompile the GoldSrc engine↔mod
