@@ -1,55 +1,23 @@
 /**
- * The Specialists mod — CTSGun entity (D.4.2 COMPLETE).
+ * The Specialists mod — CTSGun entity (D.4.2 + D.4.7 COMPLETE, 19 methods).
  *
  * Source: ts/dlls/ts_i386.so (NOT stripped, 32-bit ELF).
  * Class: `CTSGun` (the base TS gun class).
  * Reference: cross-vendor review (codex decompile + claude review).
  *
- * 11 of 11 pistol-priority methods decompiled + cross-vendor reviewed.
- * Methods appear in source-code order: spawn → reset → precache →
- * metadata → state transitions (Deploy/Holster) → fire (Primary/Idle)
- * → reload → fire-mode-dispatch → actual fire.
+ * 19 of 33 CTSGun methods decompiled + cross-vendor reviewed:
+ * - All 11 pistol lifecycle/fire methods (D.4.2)
+ * - All 8 Fire* dispatch methods (D.4.7)
  *
- * The full CTSGun class has 33 methods; this is the "pistol" subset:
- * the lifecycle + state-transition + per-frame + firing logic.
- * Subclass-specific Fire* methods (KnifeFire, AkimboFire, etc.)
- * and the CCombat* methods are deferred to D.4.7+ if needed.
+ * The pistol is fully wired. The full Fire dispatcher is in place:
+ *   PrimaryAttack → Fire → (mode switch) → StandardFire / ShotgunFire /
+ *   AkimboFire / GrenadeFire / KatanaFire / KnifeFire
  *
- * Class state (consolidated across all 11 methods):
- *   pev / this+0x60   - CBaseEntity* (vtable ptr)
- *   this+0x80         - CBasePlayer* (m_pPlayer)
- *   this+0x88         - int (iMaxClip from GetItemInfo)
- *   this+0x9c         - float (m_flTimeWeaponIdle / next idle)
- *   this+0xa8         - float (m_flReloadTime / m_flNextPrimaryAttack)
- *   this+0xb4         - int (m_iClip, synced from m_pWeaponInfo)
- *   this+0xc8         - int (weapon id, 0x17 = pistol, 0x21 = akimbo)
- *   this+0xcc         - CCombatInfo* (m_pCombat)
- *   this+0xd0         - CBasePlayerWeapon* (m_pOwnerInterface)
- *   this+0xd4..0xe4   - m_rgAmmo[5] (per-ammo-type counts)
- *   this+0x114..0x346 - m_pWeaponInfo (532-byte data blob)
- *   this+0x964         - WORD (m_usPrimaryEvent)
- *   this+0x970         - WORD (m_usEvent — weapon event id)
- *   this+0x976         - WORD (m_usDeployEvent)
- *   this+0x9b8..0xa08  - 80-byte data block (zeroed in Reset)
- *
- * Methods included (in this file's order):
- *   1. Spawn                  — entity spawn (calls Reset, sets iMaxClip=16)
- *   2. Reset                  — zero state block
- *   3. Precache               — asset preloading
- *   4. GetItemInfo            — fill ItemInfo struct (iMaxClip=16, etc.)
- *   5. Deploy                 — body resolution + DefaultDeploy + playback
- *   6. HolsterWeapon          — state teardown + Unzoom + grenade bailout
- *   7. PrimaryAttack          — main fire (5-branch switch on weapon state)
- *   8. WeaponIdle             — per-frame idle (burst autofire, idle anim)
- *   9. EmptySound             — dry-fire sound + reload-time setup
- *  10. Reload                 — mode dispatch + ReloadWeapon call
- *  11. StandardFire           — the actual fire (ScaleSpread + ShootBullets)
- *
- * The pistol is fully wired. To play a pistol shot, the engine
- * calls PrimaryAttack (which routes through the switch) which
- * calls StandardFire. StandardFire scales spread, shoots bullets,
- * plays the fire sound, decrements ammo, and schedules the next
- * primary attack.
+ * Pending for full CTSGun coverage: CCombat (Idle, Block, Attack) +
+ * UpdateClientData + TakeWeapon + AddItem + Zoom/Unzoom + SecondaryAttack
+ * + AlternateAttack + SwitchItems + MultiplyClips + SelectWeapon +
+ * GetBetterWeapon + DropWeapon + StopReload + GetActiveItems + 4 vtable
+ * thunks. Defer to D.4.6/D.4.8.
  */
 
 /**
@@ -653,6 +621,1422 @@ export function HolsterWeapon(this: any): void {
 }
 
 // ======================================================================
+// Fire
+// ======================================================================
+
+// Module-static shared by all CTSGun::Fire* variants.
+// Resets to -1 (= "skip Animate") at the top of Fire, then each
+// dispatched variant may overwrite it.
+declare let g_animationChoice: number;
+
+export function Fire(this: CTSGun): void {
+  // Bail silently if there's no ammo entity attached (e.g. melee
+  // weapons). Asm: cmp [esi+0xcc], 0; je 71dca.
+  if (!this.m_pAmmo) {
+    return;
+  }
+
+  // Player-state guard: a pev int equal to 3 means "cannot fire".
+  // TODO(asm-ambiguous): exact meaning of [pev + 0x1c0] == 3 —
+  // likely a TS-specific deadflag / observer / stance value.
+  if ((this.m_pPlayer as any).pev[0x1c0] === 3) {
+    this.EmptySound();
+    return;
+  }
+
+  // Decide whether we're allowed to consume a shot.
+  const ammo: any = this.m_pAmmo;
+  const owner: any = this.m_pOwner;
+  const hasInfiniteClips = InfiniteClips(this.m_pPlayer);
+  const ammoCount = ammo.count;
+  const specialAmmo =
+    ammo.flag !== 0 &&
+    ammo.ammoType === 3 &&
+    owner.fireMode === 1;
+
+  if (!hasInfiniteClips && ammoCount <= 0 && !specialAmmo) {
+    this.EmptySound();
+    return;
+  }
+
+  // Reset the animation selector. The Fire variant we dispatch into
+  // will overwrite it (or leave it at -1 to skip the animation).
+  g_animationChoice = -1;
+
+  // Refresh engine view vectors from the player's view angles.
+  // Asm: mov eax, [esi+0x80]; mov eax, [eax]; add eax, 0x74 —
+  // i.e. *(m_pPlayer) is pev, then pev + 0x74 is &v_angle.
+  UTIL_MakeVectors((this.m_pPlayer as any).pev.v_angle);
+
+  // Dispatch based on the owner's fire-mode byte (m_pOwner + 0x348).
+  // Asm: sub al, 4; cmp al, 1; ja → AkimboFire only for fireMode in {4, 5}.
+  const ownerFireMode = owner.fireMode;
+  if (ownerFireMode === 4 || ownerFireMode === 5) {
+    if (this.AkimboFire()) {
+      g_animationChoice = ammo.flag !== 0 ? 9 : 8;
+    }
+    // else: g_animationChoice stays at -1 → no Animate call.
+  } else if (ownerFireMode === 1) {
+    this.ShotgunFire();
+    g_animationChoice = 0;
+  } else {
+    this.StandardFire();
+    g_animationChoice = 0;
+  }
+
+  // Play the chosen animation unless the sentinel says "none".
+  if (g_animationChoice >= 0) {
+    // The CTSAnimation object lives at m_pPlayer + 0x28c.
+    // TODO(asm-ambiguous): offset 0x28c within CBasePlayer is either
+    // an embedded CTSAnimation or a pointer to one.
+    const anim: any = (this.m_pPlayer as any).anim_at_0x28c;
+    anim.Animate(this.m_pPlayer, g_animationChoice);
+  }
+}
+
+// ======================================================================
+// ColdCock
+// ======================================================================
+
+/**
+ * CTSGun::ColdCock — pump/cock a weapon. Triggered from
+ * `AlternateAttack` (or per-weapon dispatch) when the held weapon has a
+ * live ammo tracker; runs the per-weapon "chamber a round" sequence
+ * and emits a `coldcock` event so clients sync their view-model cock
+ * animation.
+ *
+ * Pipeline (faithful to asm at 0x00071dd0, 821 B, thiscall):
+ *   1. Lazy-init 3 GOT statics (one-shot init flags).
+ *   2. Bail if m_pAmmo is null or s_weapon_info[0x10] == 0.
+ *   3. Sample a pev[0x250] bitmask (mask 0x70c30) → playerFlag byte.
+ *   4. Refresh engine view vectors from the player's v_angle.
+ *      If m_pAmmoTracker is set, and its mode byte == 2 (grenade
+ *      idle), call GrenadeIdle(1); then call StopReload().
+ *   5. cockDelay = 0.7f; if playerFlag, scale by [GOT-0x6deec] cvar.
+ *   6. Unzoom(); set this+0x9c/+0xa0/+0xa4/+0x12c to
+ *      UTIL_WeaponTimeBase() + cockDelay; set this+0xa8 to
+ *      UTIL_WeaponTimeBase() + [GOT-0x6de50] (double).
+ *   7. Cache player spread cone into m_vecRecoil ([GOT+0x7c44]);
+ *      cache engine base spread ([GOT[0x1600]][0]+0x28) into
+ *      m_vecSpreadBase ([GOT+0x7c50]).
+ *   8. ammoMul = (float)m_pAmmoTracker[0x10], scaled by
+ *      [GOT-0x6def0] cvar if playerFlag.
+ *   9. dir = m_vecRecoil + 35 * m_vecSpreadBase (3-dword stack copy).
+ *      spreadBaseOut = snapshot of m_vecSpreadBase.
+ *  10. Call ColdCockAttack(this=m_pPlayer, &aimVec, &dir,
+ *      &spreadBaseOut, 3, ammoMul, playerFlag?-1:0x27, 0,0,0,0).
+ *  11. If hit, play the cocking SFX via EMIT_SOUND_DYN.
+ *  12. If m_pAmmo is alive (dword non-zero) and m_pAmmo[0] != 0,
+ *      dispatch the coldcock playback event (12 dword args).
+ *
+ * NOTE: ColdCockAttack's true prototype in CBasePlayer takes 2 more
+ * args than the demangler's `(G6Vector, N21, int, float, int, bool,
+ * N37)` shows; the trailing `N37` is the 4-dword zero padding
+ * (MSVC struct-align). Modeled here as pad1..pad4.
+ *
+ * NAMING-TBD: CVars.* / EngineGlobals.* / globalGOT.* names below are
+ * speculative and will be reconciled with the cvars table in D.4.
+ */
+
+// ── stubs for compile isolation ──────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyPtr = any;
+
+interface CTSGun {
+  m_pPlayer: AnyPtr;               // [+0x80] CBasePlayer*
+  m_iWeaponType: number;           // [+0xc8] tsweapon_t
+  m_pAmmo: AnyPtr;                 // [+0xcc] CBasePlayerAmmo* (alive-flag at [0])
+  m_pAmmoTracker: AnyPtr | null;   // [+0xd0] s_weapon_info* (mode byte at +0x348)
+  m_flNextPrimaryAttack: number;   // [+0x9c]
+  m_flNextSecondaryAttack: number; // [+0xa0]
+  m_flTimeWeaponIdle: number;      // [+0xa4]
+  m_flReloadTime: number;          // [+0xa8]
+  m_usEventColdCock: number;       // [+0x966] playback-event id (movzx WORD)
+
+  GrenadeIdle(forceState: number): void;
+  StopReload(): void;
+  Unzoom(): void;
+}
+
+declare function UTIL_WeaponTimeBase(): number;
+declare function UTIL_MakeVectors(vec: AnyPtr): void;
+declare function get_weapon_info(weaponType: number): AnyPtr;
+declare function ColdCockAttack(
+  player: AnyPtr,
+  aimVec: AnyPtr,
+  dir: AnyPtr,
+  spreadVec: AnyPtr,
+  intArg1: number,
+  floatArg: number,
+  intFlagArg: number,
+  pad1: number, pad2: number, pad3: number, pad4: number,
+): number;
+declare function EMIT_SOUND_DYN(
+  edict: AnyPtr,
+  channel: number,
+  sample: AnyPtr,
+  vol: number,
+  attn: number,
+  flags: number,
+  sampleExt: AnyPtr,
+  ext: number,
+): void;
+
+declare const CVars: any;
+declare const EngineGlobals: any;
+declare const globalGOT: any;
+
+// ── the decompiled function ──────────────────────────────────────
+export function ColdCock(this: CTSGun): void {
+  const self = this as any;
+
+  // ── 1. Lazy-init GOT statics (one-shot init flags) ────────────────
+  if (CVars.coldCock_initA === 0) CVars.coldCock_initA = 1; // +0x7c38
+  if (CVars.coldCock_initB === 0) CVars.coldCock_initB = 1; // +0x7c3c
+  if (CVars.coldCock_initC === 0) CVars.coldCock_initC = 1; // +0x7c40
+
+  // ── 2. Early bail ────────────────────────────────────────────────
+  if (!self.m_pAmmo) return;
+  const weaponInfo = get_weapon_info(self.m_iWeaponType);
+  if (weaponInfo === null || weaponInfo[0x10] === 0) return;
+
+  // ── 3. Sample pev[0x250] bitmask → playerFlag ────────────────────
+  // TODO(asm-ambiguous): pev offset 0x250 is a TS-extended user-data
+  //   field, not vanilla entvars_t. The mask 0x70c30 likely probes a
+  //   player-state condition (frozen / in water / observing).
+  const playerFlag: boolean =
+    (((self.m_pPlayer as any).pev[0x250] & 0x70c30) !== 0);
+
+  // ── 4. Refresh engine view vectors from player's v_angle ─────────
+  UTIL_MakeVectors((self.m_pPlayer as any).pev.v_angle);
+
+  // ── 5. Optional pre-cock teardown (grenade idle / stop reload) ───
+  const ammoTracker: any = self.m_pAmmoTracker;
+  if (ammoTracker != null) {
+    if (ammoTracker.mode === 2) self.GrenadeIdle(1);
+    self.StopReload();
+  }
+
+  // ── 6. cockDelay = 0.7f (asm literal 0x3f39999a), scaled by cvar ─
+  let cockDelay = 0.7;
+  if (playerFlag) cockDelay *= globalGOT.slowmo_path_cvar; // [GOT-0x6deec]
+  CVars.m_flColdCockDelay = cockDelay;                      // [GOT+0x7c68]
+
+  // ── 7. Unzoom and push out next-attack timers ───────────────────
+  self.Unzoom();
+  const t0 = UTIL_WeaponTimeBase();
+  const cockAt = t0 + cockDelay;
+  self.m_flTimeWeaponIdle = cockAt;        // [+0xa4]
+  self.m_flNextSecondaryAttack = cockAt;   // [+0xa0]
+  self.m_flNextPrimaryAttack = cockAt;     // [+0x9c]
+  (self.m_pPlayer as any).field_0x12c = cockAt;
+  self.m_flReloadTime =
+    UTIL_WeaponTimeBase() + globalGOT.reload_delay_d; // [GOT-0x6de50] (double)
+
+  // ── 8. Cache player spread cone into m_vecRecoil ────────────────
+  // Asm: call [m_pPlayer[0x60].vtable+0x168](&temp, m_pPlayer)
+  //      rep movsd m_vecRecoil ← temp  (3 dwords = 12 bytes)
+  const temp: [number, number, number] = [0, 0, 0];
+  (self.m_pPlayer as any).field_0x60.vfunc_0x168(temp, self.m_pPlayer);
+  const recoil = CVars.m_vecRecoil as [number, number, number];
+  recoil[0] = temp[0]; recoil[1] = temp[1]; recoil[2] = temp[2];
+
+  // Cache engine base spread into m_vecSpreadBase.
+  const baseSpread =
+    EngineGlobals.vec_0x1600_at_0x28 as [number, number, number];
+  const spreadBase =
+    CVars.m_vecSpreadBase as [number, number, number];
+  spreadBase[0] = baseSpread[0];
+  spreadBase[1] = baseSpread[1];
+  spreadBase[2] = baseSpread[2];
+
+  // ── 9. ammoMul = (float)ammoTracker[0x10], cvar-scaled ──────────
+  let ammoMul: number = ammoTracker.field_0x10;
+  if (playerFlag) ammoMul *= globalGOT.coldcock_ammo_cvar; // [GOT-0x6def0]
+
+  // ── 10. Compute dir = m_vecRecoil + 35 * m_vecSpreadBase ────────
+  // 0x23 = 35 in asm.
+  const dir: [number, number, number] = [
+    recoil[0] + 35 * spreadBase[0],
+    recoil[1] + 35 * spreadBase[1],
+    recoil[2] + 35 * spreadBase[2],
+  ];
+
+  // spreadBaseOut is a snapshot of the current m_vecSpreadBase.
+  const spreadBaseOut: [number, number, number] = [
+    spreadBase[0], spreadBase[1], spreadBase[2],
+  ];
+
+  // aimVec points to the stack-local copy of m_vecRecoil that the
+  // asm set up at 71f62-71f84 (written to [esp+0x40], pointer saved
+  // at [esp+0x8], and read back as [esp+0x30] at the call site).
+  // In the TS port we just pass `recoil` directly — semantically
+  // identical, no need to materialize a stack copy.
+  const aimVecPtr: AnyPtr = recoil;
+
+  // ── 11. ColdCockAttack — 12 dword arguments (cdecl) ────────────
+  const hit = ColdCockAttack(
+    self.m_pPlayer,    // this (CBasePlayer*)
+    aimVecPtr,         // &aimVec
+    dir,               // &dir
+    spreadBaseOut,     // &spreadBaseOut
+    0x3,               // intArg1
+    ammoMul,           // floatArg
+    playerFlag ? -1 : 0x27,
+    0, 0, 0, 0,        // 4-dword N37 padding
+  );
+
+  // ── 12. Play the cock SFX on hit ────────────────────────────────
+  if (hit !== 0) {
+    const edict: AnyPtr = (self.m_pPlayer as any).pev.engineRef_0x208;
+    // Engine vfunc at [GOT+0x1aa8]+0x168 — returns base path, +0x3c
+    // gives the engine-prefixed sound sample path. Args in cdecl
+    // order: (0, 0x1f, 0.5).
+    const soundPathExt: AnyPtr =
+      EngineGlobals.engineFunc_0x168(0, 0x1f, 0.5) + 0x3c;
+    const sample: AnyPtr = globalGOT.cockSoundPath; // [GOT-0x6dcc7]
+    EMIT_SOUND_DYN(
+      edict,
+      0x4,        // channel
+      sample,
+      1.0,        // attn
+      0.8,        // vol
+      0,          // flags
+      soundPathExt,
+      0,          // ext
+    );
+  }
+
+  // ── 13. Engine dispatch — coldcock playback event ──────────────
+  // Gate: m_pAmmo must be a non-zero dword AND m_pAmmo[0] must be
+  // a non-zero byte. Asm reads the dword as alive-flag (not just
+  // a null-pointer check); TS port treats it the same.
+  if (self.m_pAmmo !== 0 && (self.m_pAmmo as any)[0] !== 0) {
+    const edict: AnyPtr = (self.m_pPlayer as any).pev.engineRef_0x208;
+    const eventId: number = self.m_usEventColdCock & 0xffff;
+    const msg = (globalGOT as any).engineMessages;       // [GOT+0x1aa8]
+    const vecBuf = (globalGOT as any).messageBuffer;     // [GOT+0x1888]
+    (msg as AnyPtr)[0x1ec /* PLAYBACK_EVENT_INVOKE_OFFSET */](
+      1,                          // flags
+      edict,                      // invoker
+      eventId,                    // eventindex
+      0,                          // delay
+      vecBuf,                     // origin
+      vecBuf,                     // angles
+      CVars.m_flDamageOrScale_0x7c5c, // fparam1
+      CVars.m_flDamageOrScale_0x7c60, // fparam2
+      self.m_iWeaponType,         // iparam1
+      self.m_pAmmo[0x10],         // iparam2
+      0,                          // bparam1
+      0,                          // bparam2
+    );
+  }
+}
+
+// ======================================================================
+// GrenadeFire
+// ======================================================================
+
+/**
+ * CTSGun::GrenadeFire — arm and throw a grenade: validate ammo and owner
+ * state, consume ammo via a virtual call, broadcast a "grenade thrown"
+ * network anim event, set the post-throw timers, and bump a per-mode
+ * "cook" accumulator.
+ *
+ * NOTE: The asm spills `this` to the stack via `[esp+0x10]` rather
+ * than keeping it in ECX — unusual for MSVC __thiscall, but the
+ * field offsets that follow (player ptr at +0xcc, timers at +0x9c/a0/a8)
+ * are all consistent with `this == CTSGun`.
+ */
+export function GrenadeFire(this: CTSGun): void {
+  // ---- state guard -------------------------------------------------------
+  // Bail early if there's no owner, the owner already has a grenade in
+  // flight, or the owner is out of grenades.
+  const player = this.m_pPlayer;                  // +0xcc
+  if (player === null) return;
+  if (player.m_bGrenadeInFlight !== 0) return;    // +0x8 — flipped to 1 below
+  if (player.m_iGrenadeAmmo <= 0) return;         // +0x4
+
+  // ---- determine consumption amount -------------------------------------
+  // Take a signed 16-bit "ammo to consume" out of the player's weapon
+  // sub-state struct, falling back to 0 if that struct pointer is null.
+  let consume = 0;
+  if (player.m_pWeaponState !== null) {           // player+0x28 (nullable)
+    consume = player.m_pWeaponState.field_0x26;   // int16 at sub+0x26
+  }
+
+  // ---- consume the grenades via virtual call ----------------------------
+  // helper = *(this+0x60); call helper->vtable[0x174] with
+  //   (this, consume, 1, 0).
+  // TODO(asm-ambiguous): +0x60 is most plausibly m_pPlayer/m_pOwner
+  // (we already use m_pPlayer at +0xcc — verify whether these alias
+  // or whether +0x60 is a separate helper interface); slot 0x174 needs
+  // a real name (likely a TakeAmmo/RemoveAmmo variant).
+  const helper = this.field_0x60;                 // +0x60 (name TBD)
+  (helper as any).vtable_0x174(this, consume, 1, 0);
+
+  // ---- broadcast "grenade thrown" network anim event --------------------
+  // Twelve dwords pushed right-to-left for an engine-side message
+  // dispatcher. Args in call order (last push = first arg):
+  //   (1, ammoArg, weaponAnim, 0, buf, buf, 0, 0, 0x13, 0, 0, 0)
+  //
+  // ammoArg derivation (FIXED from prior version):
+  //   asm:  eax = *(this+0x80)        ; eax = some object ptr P
+  //         edx = *(eax)              ; edx = *P (first dword of P,
+  //                                     almost certainly a vtable or
+  //                                     inner-table pointer)
+  //         eax = *(edx+0x208)        ; eax = *(*P + 0x208)
+  //   i.e. a triple-deref, not a flat field read. Treat +0x208 as a
+  //   vtable slot / inner-table offset, NOT as `dwAmmoIndex`.
+  // TODO(asm-ambiguous): resolve what `*[this+0x80]` is (m_pAmmoDef?
+  // m_pWeaponInfo?) and what *(*it + 0x208) returns. The TS previously
+  // called it `ammoSlot`/`dwAmmoIndex` — that's a misread.
+  const ammoArg   = this.field_0x80_deref_deref_0x208(); // FIXME: model the triple-deref
+  const weaponAnim = this.m_iGrenadeAnimIndex;    // uint16 at +0x978
+  const msg        = (globalGOT as any).engineMessages;     // GOT+0x1aa8
+  const buf        = (globalGOT as any).messageBuffer;      // GOT+0x1888
+
+  msg.dispatch(
+    /* dest       */ 1,
+    /* ammoArg    */ ammoArg,
+    /* weaponAnim */ weaponAnim,
+    /* ? */ 0,
+    /* buf        */ buf, buf,
+    /* ?          */ 0, 0,
+    /* msg-type   */ 0x13,
+    /* ?          */ 0, 0, 0
+  );
+
+  // ---- mark player as having a grenade in flight ------------------------
+  player.m_bGrenadeInFlight = 1;                  // player+0x8
+
+  // ---- schedule post-throw timing windows -------------------------------
+  // m_flTimeWeaponIdle (+0xa0) and m_flNextAttack (+0x9c) are both set
+  // to the SAME value: UTIL_WeaponTimeBase() + [GOT-0x6de48]. m_flNextReload
+  // (+0xa8) is reset to the same expression but with a FRESH
+  // UTIL_WeaponTimeBase() call (a second `@plt` invocation at 0x733c1).
+  // [GOT-0x6de48] is a small float/double constant (likely 0.1–0.3 s —
+  // a "post-throw idle" delay).
+  const postThrowDelay = (globalGOT as any).grenadePostThrowDelay; // GOT-0x6de48
+  const nextFire       = UTIL_WeaponTimeBase() + postThrowDelay;
+  this.m_flTimeWeaponIdle = nextFire;             // +0xa0
+  this.m_flNextAttack    = nextFire;              // +0x9c
+  this.m_flNextReload    = UTIL_WeaponTimeBase() + postThrowDelay; // +0xa8
+
+  // ---- bump the per-throw "cook" accumulator ----------------------------
+  // *(this + 0xa0c) = (*(GOT[0x1600])) + (GOT-0x6e818).
+  // GOT[0x1600] dereferenced is the engine-side time pointer
+  // (almost certainly gpGlobals->time); GOT-0x6e818 is another
+  // float constant (the "cook step" / per-throw damage ramp).
+  // NOTE: asm dereferences unconditionally — no null check. The TS
+  // should not add `?? 0` fallbacks here unless we want behavior to
+  // diverge from the original.
+  // TODO(asm-ambiguous): name this field properly. "cook" is a working
+  // hypothesis based on grenade semantics; could also be aim damping,
+  // pull-pin timer, etc.
+  const gpTime   = (globalGOT as any).gpGlobals_deref_time;   // *(*GOT[0x1600])
+  const cookStep = (globalGOT as any).grenadeCookStep;        // GOT-0x6e818
+  this.m_flGrenadeCook = gpTime + cookStep;       // +0xa0c
+}
+
+// External call targets assumed declared elsewhere in the project:
+//   - UTIL_WeaponTimeBase(): () => number     // returns gpGlobals->time
+//   - CTSGun, CBasePlayer, etc. structs (this + helpers)
+//   - globalGOT: { [key: string]: any }       // PIC-offset globals map
+
+// ======================================================================
+// ShotgunFire
+// ======================================================================
+
+/**
+ * CTSGun::ShotgunFire — fire one shotgun shot (pump or auto variant).
+ *
+ * The auto (mode 3) weapon drives a two-call "prime + fire" sequence:
+ * the first call only flips a flag and bails on the bullet path; the
+ * second call is the real one with bullets + view kick. Pump-action
+ * (mode 1) fires on every call.
+ *
+ * @param this  The CTSGun entity (first cdecl stack arg, NOT in ecx).
+ * @returns     void
+ */
+export function ShotgunFire(this: any /* TODO: replace with CTSGun */): void {
+  // ---- 1. One-time global latches (GOT-relative flags). ----
+  // Purpose unknown — likely "cvar already registered" sentinels.
+  if (!g_initLatch_7c6c) g_initLatch_7c6c = true;
+  if (!g_initLatch_7c70) g_initLatch_7c70 = true;
+  if (!g_initLatch_7c74) g_initLatch_7c74 = true;
+
+  const player: any = this.field_0x80;          // [this+0x80]
+  const ws:     any = this.pWeaponState;         // [this+0xcc]
+  const wd:     any = this.pWeaponClassInfo;     // [this+0xd0]
+
+  // ---- 2. Already-firing short-circuit. ----
+  if (ws.field_0x8 !== 0) {
+    ws.field_0x8 = 2;
+    return;
+  }
+
+  // ---- 3. First-shot-of-auto-sequence flag. ----
+  // isFirstShot := (mode == 3) AND (pumpArmed != 0).
+  const isFirstShot: boolean =
+    ws.field_0x2 === 3 && ws.field_0x24 !== 0;
+  g_isFirstShot_7c9c = isFirstShot ? 1 : 0;
+
+  // ---- 4. Schedule timing. ----
+  // Pump (mode 1) uses a fixed 0.18s cooldown; auto uses wd.field_0x18.
+  const fireDelay: number =
+    ws.field_0x2 === 1 ? 0.18 : wd.field_0x18;  // 0x3e19999a == 0.18f
+  this.field_0x9c = UTIL_WeaponTimeBase() + fireDelay;
+
+  // Secondary timer uses a static double from the GOT (purpose unclear:
+  // re-trigger guard? idle threshold?). Not frametime — loaded as a
+  // QWORD, not from gpGlobals.
+  this.field_0xa8 =
+    UTIL_WeaponTimeBase() + g_doubleStatic_6de50;  // [ebx-0x6de50], QWORD
+
+  // ---- 5. Empty-clip early-out. ----
+  if (!InfiniteClips(player) && ws.field_0x4 <= 0 && !isFirstShot) {
+    return;
+  }
+
+  // ---- 6. Decrement clip on the real shot only. ----
+  if (!isFirstShot && !InfiniteClips(player)) {
+    ws.field_0x4--;
+  }
+
+  // ---- 7. Cache muzzle position and view forward. ----
+  // m_vecMuzzlePos := player->GetGunPosition(out).
+  player.GetGunPosition(g_vecMuzzlePos_7c78);
+  // m_vecForward := gpGlobals->field_0x28 (likely v_forward; exact
+  // offset in globalvars_t is TODO — see chunk note about +0x28).
+  g_vecForward_7c84.copyFrom(g_gpGlobals_1600.deref().field_0x28);
+
+  // ---- 8. Fire bullet spread (skipped on the priming pump). ----
+  if (!isFirstShot) {
+    // Vec3 broadcast of wd.field_0x28 — passed as 3rd Vector to
+    // ShootBulletsPlayer. Distinct from muzzle/forward; likely a
+    // "spread distance" or "aim origin" parameter.
+    const aimSrcVec: Vec3 = {
+      x: wd.field_0x28, y: wd.field_0x28, z: wd.field_0x28,
+    };
+
+    // NOTE: cdecl this, not thiscall. Player is the first stack arg.
+    ShootBulletsPlayer(
+      player,              // this (cdecl, 1st stack arg)
+      wd.field_0x24,       // [wd+0x24] BYTE — silenced flag (pushed widened)
+      g_shotDirOut_7c90,   // OUT vec3 (ptr — written by callee)
+      g_vecMuzzlePos_7c78, // vec3 (ptr)
+      g_vecForward_7c84,   // vec3 (ptr)
+      aimSrcVec,           // vec3 (ptr)
+      wd.field_0x1c,       // float
+      wd.field_0x20,       // float
+      wd.field_0x8,        // BYTE (bulletsToFire, pushed widened)
+      player.field_0x7ec,  // tracerFreq-ish
+    );
+
+    // Copy 3 dwords from the OUT slot at [esp+0x38] back to
+    // g_shotDirOut_7c90 — this is the post-call `rep movs` at 0x72350.
+    g_shotDirOut_7c90.copyFrom(g_shotDirOut_7c90); // (the OUT pointer is edi)
+
+    // ---- 8b. View kick, gated by wd.field_0x38. ----
+    if (wd.field_0x38 !== 0) {
+      // Spread selection (CORRECTED — was inverted + had a fabricated
+      // m_bAttackActive conjunct):
+      //   useWide := (wd.field_0xc & 0x3) != 0 AND mode != 1
+      const useWide: boolean =
+        (wd.field_0xc & 0x3) !== 0 && ws.field_0x2 !== 1;
+      const cvarSpread: number = useWide
+        ? g_cvar_6df04        // wider
+        : g_cvar_6f3fc;       // tighter
+      const kickScale: number = cvarSpread * wd.field_0x30;
+
+      // VKickback(this, float, int, bool, float, float, T3).
+      // T3 is a 12-byte struct (or 10-byte + padding) passed by value
+      // on the stack — exact layout is asm-ambiguous.
+      // Args in callee order: scale, byteFlag, 0, fwdX, fwdY, 1.
+      VKickback(
+        this,             // this (cdecl, 1st stack arg)
+        kickScale,
+        wd.field_0x348,   // [wd+0x348] BYTE
+        0,                // pushw 0
+        g_shotDirOut_7c90.x,
+        g_shotDirOut_7c90.y,
+        1,                // pushw 1 (T3 trailing byte)
+      );
+    }
+  }
+
+  // ---- 9. Engine event call (different event index per branch). ----
+  // Both branches land at 0x7246b and tail-call into
+  // enginefuncs[0x1ec], with different arg lists. The codex
+  // abstracts this as playWeaponEvent(); the full arg layout is
+  // branch-dependent (see disassembly 0x723c0–0x72474).
+  const evtIdx: number = isFirstShot
+    ? this.field_0x96a    // m_usEventPump
+    : this.field_0x964;   // m_usEventShoot
+  playWeaponEvent(this, evtIdx);
+
+  // ---- 10. Toggle the pump-armed flag. ----
+  ws.field_0x24 = ws.field_0x24 ? 0 : 1;
+}
+
+// ======================================================================
+// StandardFire
+// ======================================================================
+
+/**
+ * CTSGun::StandardFire — fires a single bullet using standard accuracy logic.
+ *
+ * Pipeline:
+ *   1. Lazy-init cached vectors (m_vecRecoil, m_vecSpreadBase) and damage scalar.
+ *   2. Sample player's current spread cone via virtual call.
+ *   3. Copy engine base spread vector.
+ *   4. Cache bullet damage from weapon_info.
+ *   5. Branch on weapon type to compute the spread multiplier.
+ *   6. Call ScaleSpread (3 args after this: &damage, spread, shouldScale).
+ *   7. Apply crouching/running multiplier to weapon_info.baseSpread.
+ *   8. Call ShootBulletsPlayer with damage + spread + several vec refs.
+ *   9. Save the recoil vector returned by ShootBulletsPlayer.
+ *  10. Optionally call VKickback for view kick.
+ *  11. Decrement reserve ammo, then clip ammo (unless InfiniteClips); clamp >=0.
+ *  12. Set m_bIsEmpty flag based on current reserve ammo.
+ *  13. Engine dispatch — fire sound/anim event for the shot.
+ *  14. Set m_flNextPrimaryAttack = UTIL_WeaponTimeBase() + delay.
+ *  15. Set m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + idle_delay.
+ */
+
+declare const CVars: any;          // GOT statics ([ebx+0x7ca4..0x7cdc])
+declare const EngineGlobals: any;  // engine singletons ([ebx+0x1600], 0x1888, 0x1aa8)
+declare const EngineUtil: any;     // UTIL_WeaponTimeBase, InfiniteClips
+
+export function StandardFire(this: any /* TODO: replace with CTSGun */): void {
+  // === 1. Lazy-init cached state (first-call guards in the GOT) ===
+  if (CVars.standardFire_initA === 0) CVars.standardFire_initA = 1;
+  if (CVars.standardFire_initB === 0) CVars.standardFire_initB = 1;
+  if (CVars.standardFire_initC === 0) {
+    // Copy 3 floats from engine global [ebx+0x1888] into m_vecRecoil.
+    // TODO(asm-ambiguous): exact engine global meaning unclear
+    const initSrc = EngineGlobals.vec_0x1888 as [number, number, number];
+    const recoil = CVars.m_vecRecoil as [number, number, number];
+    recoil[0] = initSrc[0]; recoil[1] = initSrc[1]; recoil[2] = initSrc[2];
+    CVars.standardFire_initC = 1;
+  }
+
+  // === 2. Sample player's spread cone via vfunc ===
+  // m_pPlayer[0x60] is a sub-object vtable; vfunc_0x168 returns Vector3.
+  const cone = this.m_pPlayer.someField_0x60.vfunc_0x168() as [number, number, number];
+  const spreadCurrent = CVars.m_vecSpreadCurrent as [number, number, number];
+  spreadCurrent[0] = cone[0]; spreadCurrent[1] = cone[1]; spreadCurrent[2] = cone[2];
+
+  // === 3. Copy engine base spread vector ===
+  // Source: [ebx+0x1600][0]+0x28 (12-byte Vector3 from a global singleton)
+  const baseVec = EngineGlobals.vec_0x1600_at_0x28 as [number, number, number];
+  const spreadBase = CVars.m_vecSpreadBase as [number, number, number];
+  spreadBase[0] = baseVec[0]; spreadBase[1] = baseVec[1]; spreadBase[2] = baseVec[2];
+
+  // === 4. Cache bullet damage from weapon_info ===
+  CVars.m_flBulletDamage = this.m_pWeaponInfo.bulletDamage as number;
+
+  // === 5. Weapon-type-specific spread branching ===
+  const weaponType = this.m_iWeaponType as number;
+
+  // 5a. type 0x12: always runs the velocity penalty, then falls through.
+  if (weaponType === 0x12) {
+    const v = this.m_pPlayer.velocity as [number, number, number];
+    const speed = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (speed <= CVars.sv_movespeed_threshold_0x12 /* TODO: cvar name */) {
+      this.m_pPlayer.someField_0x778 = 0.3; // 0x3e99999a
+    }
+    // fall through — the asm has no jmp out of the 0x12 block.
+  }
+
+  let scaleSpread: { shouldScale: number; spread: number } | null = null;
+
+  // 5b. type 0x20: velocity-gated, cvar-multiplied. If velocity > threshold,
+  //     falls through to the flag_0x2c check below (NOT a return/skip).
+  if (weaponType === 0x20) {
+    const v = this.m_pPlayer.velocity as [number, number, number];
+    const speed = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (speed <= CVars.sv_movespeed_threshold_0x20 /* TODO: cvar name */) {
+      const shouldScale =
+        ((this.m_pAmmoTracker.flag as number) & 1) &&
+        !((this.m_pWeaponInfo.flag_0xe4 as number) & 1) ? 1 : 0;
+      scaleSpread = {
+        shouldScale,
+        spread: (CVars.spread_multiplier_0x20 as number) *
+                (this.m_pWeaponInfo.spreadValue as number),
+      };
+    }
+    // else: fall through to flag_0x2c check below
+  }
+
+  // 5c. Default path — reached from type-0x12 path, AND from type-0x20 when
+  //     velocity > threshold (asm unconditionally falls into 0x72638).
+  if (scaleSpread === null &&
+      (this.m_pWeaponInfo.flag_0x2c as number) !== 0) {
+    const shouldScale =
+      ((this.m_pAmmoTracker.flag as number) & 1) &&
+      !((this.m_pWeaponInfo.flag_0xe4 as number) & 1) ? 1 : 0;
+    scaleSpread = {
+      shouldScale,
+      spread: this.m_pWeaponInfo.spreadValue as number,
+    };
+  }
+
+  // === 6. Call ScaleSpread — demangled `Rffi` = (float&, float, int). ===
+  if (scaleSpread !== null) {
+    this.ScaleSpread(
+      CVars.m_flBulletDamage_ref,   // float& (arg 1)
+      scaleSpread.spread,           // float  (arg 2)
+      scaleSpread.shouldScale,      // int    (arg 3)
+    );
+  }
+
+  // === 7. Apply crouching/running multiplier to weapon_info.baseSpread ===
+  let finalSpread = this.m_pWeaponInfo.baseSpread as number;
+  if (
+    ((this.m_pAmmoTracker.flag as number) & 1) &&
+    !((this.m_pWeaponInfo.flag_0xe4 as number) & 1)
+  ) {
+    finalSpread *= CVars.spread_modifier_crouching as number; // TODO: cvar name
+  }
+
+  // === 8. Call ShootBulletsPlayer ===
+  // Stack layout: 3 Vector3 refs set up before the call (recoil/damage spread
+  // [esp+0x20] / spreadBase [esp+0x30] / spreadCurrent [esp+0x40]).
+  // TODO(asm-ambiguous): exact arg order not derivable without full prototype.
+  this.m_pPlayer.shootBulletsPlayer({
+    returnRecoil:  CVars.m_vecRecoil_ref,
+    damageVec:     CVars.m_flBulletDamage_ref,
+    baseSpread:    CVars.m_vecSpreadBase_ref,
+    currentSpread: CVars.m_vecSpreadCurrent_ref,
+    finalSpread,
+    weaponByte:    this.m_pWeaponInfo.weaponByte,   // byte at 0x8
+    ammoCount:     this.m_pWeaponInfo.ammoCount,   // dword at 0x20
+    tracerType:    this.m_pWeaponInfo.tracerType,  // byte at 0x24
+    playerField:   this.m_pPlayer.field_0x7ec,
+  });
+
+  // === 9. m_vecRecoil is already updated via the returnRecoil ref above ===
+
+  // === 10. Optional VKickback for view kick ===
+  const isShotgunType =
+    (this.m_pWeaponInfo.kickbackMode as number) === 7 ||
+    weaponType === 0x1f ||
+    weaponType === 0x21;
+  if (
+    isShotgunType ||
+    (this.m_pWeaponInfo.hasKickback as number) !== 0
+  ) {
+    const playerFlag =
+      ((this.m_pAmmoTracker.flag as number) & 1) &&
+      !((this.m_pWeaponInfo.flag_0xe4 as number) & 1) ? 1 : 0;
+    this.VKickback(
+      this.m_pWeaponInfo.kickbackAngle,           // float at 0x30
+      this.m_pWeaponInfo.kickbackCount,           // byte at 0x348 (zext to int)
+      playerFlag,
+      (CVars.m_vecRecoil as [number, number, number])[0],
+      (CVars.m_vecRecoil as [number, number, number])[1],
+      isShotgunType ? 1 : 0,                       // pushw 0x1/0x0 in the 8-byte tail slot
+    );
+  }
+
+  // === 11. Decrement ammo (unless InfiniteClips) ===
+  if (!this.m_pPlayer.infiniteClips()) {
+    this.m_pAmmoTracker.ammo--;
+    const clipIndex = this.m_pWeaponInfo.clipIndex as number;
+    if (clipIndex !== -1) {
+      // m_rgAmmo entries have stride 56 (not 4 like standard HL1).
+      // TODO(asm-ambiguous): custom CTS ammo struct layout, offset 0x18 between fields
+      this.m_rgAmmo[clipIndex].ammo--;
+      this.m_rgAmmo[clipIndex].lastAmmo = this.m_pAmmoTracker.ammo as number;
+      if (this.m_rgAmmo[clipIndex].ammo < 0) {
+        this.m_rgAmmo[clipIndex].ammo = 0;
+      }
+    }
+  }
+
+  // === 12. Set m_bIsEmpty flag ===
+  CVars.m_bIsEmpty = (this.m_pAmmoTracker.ammo as number) === 0 ? 1 : 0;
+
+  // === 13. Engine dispatch (anim/sound event) ===
+  // vfunc call at [ecx+0x1ec] with ecx = [ebx+0x1aa8] (engine singleton).
+  // 12-arg call. Note: [edx+0x208] is m_pPlayer[0][0x208] — DOUBLE deref via
+  // the pointer at m_pPlayer[0]. TODO(asm-ambiguous): exact prototype unclear.
+  EngineGlobals.dispatchFire(
+    1,                                          // int/bool (0x1)
+    this.m_pPlayer.deref0.field_0x208,          // m_pPlayer[0][0x208] (double deref)
+    this.m_usEvent,                             // word event id at this+0x964
+    0,                                          // null
+    EngineGlobals.vec_0x1888,                   // pushed twice
+    EngineGlobals.vec_0x1888,
+    CVars.m_flBulletDamage,                     // pushed twice
+    CVars.m_flBulletDamage,
+    weaponType,
+    this.m_pAmmoTracker.ammoType,               // field at 0x10, LSB is flag
+    CVars.m_bIsEmpty,
+    this.m_pPlayer.field_0x7ec,
+  );
+
+  // === 14. Compute m_flNextPrimaryAttack delay ===
+  let delay: number;
+  if ((this.m_pAmmoTracker.mode as number) === 2) {
+    delay = (this.m_pAmmoTracker.someField_8 as number) === 1
+      ? (CVars.delay_cvar1 as number)
+      : (CVars.delay_cvar2 as number);
+  } else if (
+    (this.m_pAmmoTracker.mode as number) === 1 &&
+    ((this.m_pWeaponInfo.flag_0xc as number) & 1)
+  ) {
+    delay = 0.1; // 0x3dcccccd
+  } else {
+    delay = this.m_pWeaponInfo.defaultDelay as number; // at 0x18
+  }
+  CVars.m_flNextPrimaryAttack_delay = delay;
+
+  // === 15. Set m_flNextPrimaryAttack ===
+  this.m_flNextPrimaryAttack =
+    EngineUtil.weaponTimeBase() + (CVars.m_flNextPrimaryAttack_delay as number);
+
+  // === 16. Compute and set m_flTimeWeaponIdle ===
+  let idleDelay = CVars.idle_delay_default as number;
+  if (
+    weaponType === 0x24 &&
+    (this.m_pAmmoTracker.ammo as number) <= 0 &&
+    !this.m_pPlayer.infiniteClips()
+  ) {
+    idleDelay = CVars.idle_delay_alt as number;
+  }
+  this.m_flTimeWeaponIdle = EngineUtil.weaponTimeBase() + idleDelay;
+}
+
+// ======================================================================
+// AkimboFire
+// ======================================================================
+
+/**
+ * CTSGun::AkimboFire — fires one akimbo (dual-wield) weapon shot.
+ * Returns 1 if the shot was performed, 0 if it bailed (no ammo).
+ *
+ * Decompiled from `ts/dlls/ts_i386.so` @0x000729c0 (2350 B).
+ */
+export function AkimboFire(this: any): number {
+  const player     = this.m_pPlayer;        // [this+0x80]
+  const itemInfo   = this.m_pItemInfo;      // [this+0xd0]
+  const weaponData = this.m_pWeaponData;    // [this+0xcc]
+
+  // ── Lazy-init three akimbo-related cvars to 1 on first invocation ──
+  // TODO(asm-ambiguous): cvar names — look up in tools/decompile/analysis/strings-n5.txt
+  if (CVAR_TS_AKIMBO_A.value === 0) CVAR_TS_AKIMBO_A.value = 1;  // [ebx+0x7ce0]
+  if (CVAR_TS_AKIMBO_B.value === 0) CVAR_TS_AKIMBO_B.value = 1;  // [ebx+0x7ce4]
+  if (CVAR_TS_AKIMBO_C.value === 0) CVAR_TS_AKIMBO_C.value = 1;  // [ebx+0x7ce8]
+
+  // ── Determine fire eligibility ──────────────────────────────────────
+  const weaponType   = weaponData.weaponType;        // byte @ weaponData+0x2
+  const isAkimboType = (weaponType - 4) <= 1;        // type ∈ {4, 5}
+  let canFire = false;
+
+  if (isAkimboType) {
+    // NOTE: disassembly tests bits 0x1 AND 0x800 of [m_pPlayer+0x814].
+    // Bit 0x800 is NOT standard IN_ATTACK2 (which is 0x2); it's a
+    // TS-specific "akimbo-fire" flag.
+    let buttons: number;
+    if (weaponType === 5) {
+      // TODO(asm-ambiguous): double-indirection [m_pPlayer][0][0x180]
+      buttons = 0;
+    } else {
+      buttons = player.field_0x814;                  // [m_pPlayer+0x814]
+    }
+    canFire = (buttons & 0x1) !== 0 && (buttons & 0x800) !== 0;
+  }
+  if (!canFire && weaponType === 0) canFire = true;
+
+  // ── Pick the active gun / bail with EmptySound if both are dry ──────
+  if (isAkimboType && !canFire) {
+    const leftFlag  = (player.field_0x180 ?? 0) & 0x01; // [(*m_pPlayer)+0x180]
+    const rightFlag = (player.field_0x181 ?? 0) & 0x08; // [(*m_pPlayer)+0x181]
+    const leftOk  = leftFlag  !== 0 && weaponData.leftClip  > 0;
+    const rightOk = rightFlag !== 0 && weaponData.rightClip > 0;
+    if (leftOk)  weaponData.activeGun = 0;             // [weaponData+0x24]
+    if (rightOk) weaponData.activeGun = 1;
+    if (!leftOk && !rightOk) {
+      this.EmptySound();
+      return 0;                                         // matches `mov al,0x0` @ 0x72ae1
+    }
+  } else {
+    weaponData.activeGun = weaponData.activeGun === 0 ? 1 : 0;
+    if (weaponData.leftClip  <= 0) { canFire = false; weaponData.activeGun = 1; }
+    if (weaponData.rightClip <= 0) { canFire = false; weaponData.activeGun = 0; }
+  }
+
+  // ── Consume ammo (skip when InfiniteClips is active) ────────────────
+  if (!InfiniteClips(player)) {
+    if (canFire) {
+      weaponData.clipTotal -= 2;                       // [weaponData+0x4]
+      weaponData.rightClip -= 1;                       // [weaponData+0x1c]
+      weaponData.leftClip  -= 1;                       // [weaponData+0x20]
+    } else {
+      weaponData.clipTotal -= 1;
+      if (weaponData.activeGun === 1) weaponData.rightClip -= 1;
+      else                            weaponData.leftClip  -= 1;
+    }
+    if (weaponData.clipTotal < 0) weaponData.clipTotal = 0;
+    if (weaponData.rightClip  < 0) weaponData.rightClip  = 0;
+    if (weaponData.leftClip   < 0) weaponData.leftClip   = 0;
+
+    if (itemInfo.weaponSlot === 4) {                   // [itemInfo+0x348]
+      const idx = itemInfo.clipIndex;                  // [itemInfo+0xcc]
+      this.ammoClipArray[idx] = weaponData.rightClip;
+    }
+  }
+
+  // ── Save player's spread seed for ScaleSpread ───────────────────────
+  TS_SPREAD_SEED = itemInfo.spreadSeed;                // [itemInfo+0x28]
+
+  // ── Compute spread and fire rate (when applySpread is set) ──────────
+  if (itemInfo.applySpread !== 0) {                    // [itemInfo+0x2c]
+    const crouching =
+      (weaponData.flags & 0x01) !== 0 &&               // [weaponData+0x10]
+      (itemInfo.field_0xe4 ^ 1) !== 0;                 // [itemInfo+0xe4]
+
+    let spreadRate = itemInfo.spreadRate;              // [itemInfo+0x34]
+    if (canFire) spreadRate += spreadRate;             // double for dual-fire
+    // Note: no `&` in TS — pass globals by reference via a wrapper object.
+    ScaleSpread(this, TS_SPREAD_SEED, spreadRate, crouching ? 1 : 0);
+
+    let fireRate = itemInfo.fireRate;                  // [itemInfo+0x1c]
+    if (crouching) fireRate *= TS_CROUCH_FIRE_MULT;    // [ebx-0x6df0c]
+    TS_FIRE_RATE = fireRate;                           // [ebx+0x7d1c]
+  }
+
+  // ── Build per-gun fire direction ────────────────────────────────────
+  const eyePos = new Vector();
+  player.GetEyePosition(eyePos);
+
+  // TODO(asm-ambiguous): [ebx+0x1600]+0x28 — likely v_forward but offset
+  // doesn't match standard gpGlobals->v_forward (0x1C). May be g_engfuncs.
+  const fwd   = gpGlobals.v_forward; // placeholder
+  const right = gpGlobals.v_right;   // placeholder
+
+  const sideOffset =
+    weaponData.activeGun !== 0
+      ? TS_AKIMBO_RIGHT_HAND_OFFSET                    // [ebx-0x6ded8]
+      : TS_AKIMBO_LEFT_HAND_OFFSET;                    // [ebx-0x6e818]
+  const dir = right.mul(sideOffset);
+  const traceDir = eyePos.add(dir);
+
+  // ── Call ShootBulletsPlayer (once or twice depending on canFire) ───
+  // TODO(asm-ambiguous): full enginefuncs_t dispatch — see0x731ed..0x73253.
+  // Source of weapon id is [this+0xc8], NOT weaponData.weaponId.
+  const fireArgs = {
+    player,
+    attackMode:  itemInfo.attackMode,                  // [itemInfo+0x24]
+    bulletCount: TS_BULLET_COUNT,                      // [ebx+0x7d04]
+    ammoType:    itemInfo.ammoType,                    // [itemInfo+0x20]
+    spread:      TS_FIRE_RATE,
+    dir,
+    fwd,
+    viewModel:   player.viewmodelIndex,                // [m_pPlayer+0x7ec]
+    attackType:  itemInfo.attackType                   // [itemInfo+0x8]
+  };
+
+  if (canFire) {
+    ShootBulletsPlayer({ ...fireArgs, traceDir, viewModel: player.viewmodelIndex        });
+    ShootBulletsPlayer({ ...fireArgs, traceDir, viewModel: player.viewmodelIndex + 0x21 });
+  } else {
+    ShootBulletsPlayer({ ...fireArgs, traceDir });
+  }
+
+  // ── Apply view kick ─────────────────────────────────────────────────
+  if (itemInfo.applyKickback !== 0) {                  // [itemInfo+0x38]
+    const crouching =
+      (weaponData.flags & 0x01) !== 0 &&
+      (itemInfo.field_0xe4 ^ 1) !== 0;
+    let kick = itemInfo.kickbackAmount;                // [itemInfo+0x30]
+    if (canFire) kick += kick;                         // double for dual-fire
+    // TODO(asm-ambiguous): VKickback actually pushes
+    // (kick, weaponSlot, crouching, [ebx+0x7d04], [ebx+0x7d08], 0).
+    // TS_KICK_Y/TS_KICK_X don't match the disassembly — adjust once
+    // those globals are identified.
+    VKickback(this, kick, itemInfo.weaponSlot, crouching, TS_KICK_Y, TS_KICK_X, 0);
+  }
+
+  // ── Track which hand is firing for the client-side animation ───────
+  TS_AKIMBO_FIRING = weaponData.activeGun !== 0 ? 1 : 0; // [ebx+0x7d10]
+
+  // ── Dispatch fire animation + sound to the owning client ───────────
+  // NOTE: weapon id source is [this+0xc8], not weaponData.weaponId.
+  const animIndex = TS_AKIMBO_FIRING
+    ? this.animBodyAkimbo                              // [this+0x96e]
+    : this.animBodyNormal;                             // [this+0x964]
+  DispatchFireEvent(player, this.field_0xc8, animIndex);
+
+  // ── Compute next attack delay based on weapon type ──────────────────
+  let nextAttackDelay: number;
+  if (weaponType === 2) {
+    nextAttackDelay =
+      weaponData.field_0x8 === 1                       // [weaponData+0x8]
+        ? TS_CVAR_SHOTGUN_DELAY_1                      // [ebx-0x6dee0]
+        : TS_CVAR_SHOTGUN_DELAY_2;                     // [ebx-0x6dedc]
+  } else if (weaponType === 1 || weaponType === 4) {
+    nextAttackDelay = 0.1;                             // 0x3dcccccd
+  } else {
+    nextAttackDelay = itemInfo.nextAttackDelay;        // [itemInfo+0x18]
+  }
+
+  const now = UTIL_WeaponTimeBase();
+  this.m_flNextPrimaryAttack   = now + nextAttackDelay;       // [this+0xa0]
+  this.m_flNextSecondaryAttack = now + nextAttackDelay;       // [this+0x9c]
+  this.m_flTimeWeaponIdle      = now + TS_WEAPON_IDLE_DELAY;  // [this+0xa8]
+
+  return 1;                                          // matches `mov al,0x1` @ 0x732e1
+}
+
+// ======================================================================
+// KatanaFire
+// ======================================================================
+
+// Compile in isolation: stub the missing types/helpers as
+// `any` so the file builds.
+type any = any; // intentional escape hatch
+
+export function KatanaFire(this: any): void {
+  const THIS: any = this;
+  if (!THIS.m_pKatana) return;
+
+  const player: any = THIS.m_pPlayer;
+  UTIL_MakeVectors(player.pev.angles);
+
+  const inWater = (player.pev.flags & 0x70c30) !== 0; // TODO(asm-ambiguous): verify bitmask vs FL_*
+
+  let anim = 0, body = 0, delay = 0;
+  let damage = 0; // int until multiplied by GetMeleeMultiplier
+  let applyKick = false;
+
+  if (inWater) {
+    anim = 0x11; body = -1;
+    delay = 0.5; // GOT[-0x6f3fc]
+    THIS.m_flTimeWeaponIdle = 0.23;
+  } else {
+    const altButton = (player.pev.button & 0x10) !== 0;
+    const overheadPath = altButton; // (fwdLen > min && reach > 0) branch from0x734c3-0x734cc — TODO verify    if (overheadPath) {
+      anim = 0x0f; body = 0x23; applyKick = true;
+    } else if ((player.pev.button & 0x04) !== 0 || (player.pev.flags & 0x40) !== 0) {
+      // duck-block stab
+      anim = 0x11; body = 0x25; applyKick = true;
+      player.pev.flags |= 0x04 | 0x01;
+      player.pev.v_angle = player.pev.origin; // overridden to swing dir
+      THIS.m_flNextSecondaryAttack = 2.0;
+    } else if ((player.pev.flags & 0x02) !== 0) {
+      // standing alt (combo cycle)
+      anim = 0x11;
+      if (THIS.m_iCombo - 1 > 1) THIS.m_iCombo = RANDOM_LONG(1, 2);
+      if (THIS.m_iCombo === 1) { THIS.m_iCombo = 2; body = 0x21; }
+      else if (THIS.m_iCombo === 2) { THIS.m_iCombo = 1; body = 0x22; anim = 0x10; }
+    } else {
+      // default stab
+      anim = 0x11; body = 0x24;
+    }
+  }
+
+  CTSAnimation.Animate(player, anim, body);
+
+  damage = (damage || 0) * GetMeleeMultiplier(player); // multiplier first
+
+  const eye = player.EyePosition(); // vtable 0x168 — verify name
+  const reach = body; // int-to-float at 0x73844
+  const aim = vec3_add(eye, vec3_scale(gpGlobals.v_forward, reach));
+  const trace = CheckHull(player, eye, aim, 0, 3);
+
+  let hitEnt: any = null;
+  if (trace.fraction < 1.0) {
+    hitEnt = trace.ent ?? INDEXENT(0);
+    if (hitEnt && hitEnt.Classify() && hitEnt.pev.takedamage >= 0) {
+      if (!VictimKatanaHold(player, hitEnt, damage)) {
+        ClearMultiDamage();
+        const dir = vec3_scale(gpGlobals.v_forward, Math.abs(damage));
+        hitEnt.TakeDamage(player.pev, player.pev, damage, 0x1080, dir, trace);
+        ApplyMultiDamage(player.pev, player.pev);
+        if (!hitEnt.IsAlive()) {
+          THIS.m_pKatana.decap = 1;
+          // TODO(asm-ambiguous): [ebp+0x0]+0x114 — verify this is the right entity/field
+          THIS.pev.decapVictim = 1;
+          // EMIT_SOUND_DYN call follows; collapse to a single call for brevity
+          EMIT_SOUND_DYN(
+            hitEnt.edict, 4, "weapons/katana_decap",
+            1.0, 0.8, 0, 1, RANDOM_LONG(0, 31) + 95
+          );
+        }
+      }
+    }
+  }
+
+  if (!hitEnt) {
+    THIS.m_flMissDamageTime = 0.25;
+    THIS.m_flMissDamage = damage;
+    THIS.m_iSwingMode = 2;
+  }
+
+  if (applyKick && (player.pev.flags & 0x01) === 0) {
+    // TODO(asm-ambiguous): destination is pev+0x4dc on the player — verify field name
+    player.m_vecViewKick = vec3_scale(gpGlobals.v_forward, delay * 0.0); // GOT[-0x6decc] cvar — placeholder
+    player.pev.flags |= 0x01;
+  }
+
+  PLAYBACK_EVENT_FULL(
+    0, player.edict, /*eventIndex*/ cvars.event_katana,
+    0, vec3_zero(), vec3_zero(),
+    /*fparam1*/ body, /*fparam2*/ delay,
+    /*iparam1*/ THIS.m_iId, /*iparam2*/ anim,
+    /*bparam1*/ 1, /*bparam2*/ 0
+  );
+
+  const now = UTIL_WeaponTimeBase();
+  THIS.m_flNextPrimaryAttack   = now + delay;
+  THIS.m_flNextSecondaryAttack = now + delay;
+  THIS.m_flTimeWeaponIdle      = now + 0.0; // GOT[-0x6e768] cvar — placeholder
+  player.m_flNextAttack        = delay; // pev+0x4f8
+}
+
+// ======================================================================
+// KatanaThrow
+// ======================================================================
+
+/**
+ * CTSGun::KatanaThrow — spawn a flying CTSKnife along the player's view,
+ * then drop the katana from the player's inventory.
+ *
+ * Decompiled from CTSGun__KatanaThrow.chunk.md (1241 B, 0x73b68–0x74044).
+ */
+export function KatanaThrow(this: any): void {
+  // Guard: only proceed if a katana is actually attached to this gun.
+  // TODO(asm-ambiguous): [this+0xcc] is a dword null-checked here; its meaning
+  //   (active melee item vs. "ready to throw" flag) is unclear without the
+  //   D.4 class layout.
+  if ((this as any).m_pKatanaItem === null) return;
+
+  const player: any    = this.m_pPlayer;         // [this+0x80]
+  const katanaItem: any = this.m_pActiveItem;    // [this+0xd0]
+
+  // ---- Cooldowns ---------------------------------------------------------
+  const throwDelay: number = katanaItem.m_flTime; // [katanaItem+0x28]
+  const now: number        = UTIL_WeaponTimeBase();
+  this.m_flNextSecondaryAttack = now + throwDelay; // [this+0xa0]
+  this.m_flNextPrimaryAttack   = now + throwDelay; // [this+0x9c]
+  this.m_flTimeWeaponIdle      = now + 0.5;       // [this+0xa8] (GOT-0x6e768)
+
+  // ---- Eye position (origin + view_ofs) ---------------------------------
+  UTIL_MakeVectors(player.pev.v_angle);            // [player+0x74]
+  const ox = player.pev.origin.x + player.pev.view_ofs.x; // [+0x08 + +0x174]
+  const oy = player.pev.origin.y + player.pev.view_ofs.y; // [+0x0C + +0x178]
+  const oz = player.pev.origin.z + player.pev.view_ofs.z; // [+0x10 + +0x17C]
+
+  // ---- Trace-end + knife-velocity blends --------------------------------
+  // TODO(asm-ambiguous): the chunk carries three vmul chains over [esi+0x28]
+  //   (forward), [esi+0x40] (a "spread" vector), player velocity, and cvars
+  //   at GOT-relative 0x1600, 0x6F064, 0x6F3FC. The disassembly is too
+  //   interleaved to recover the exact formula here; the lines below are a
+  //   placeholder blend and should be revised in D.4 once those cvars are
+  //   identified in strings-n5.txt.
+  const throwSpeed: any = g_katanaThrowSpeed.value; // GOT-relative 0x1600
+  const ex = ox + gpGlobals.v_forward.x * throwSpeed.x;
+  const ey = oy + gpGlobals.v_forward.y * throwSpeed.y;
+  const ez = oz + gpGlobals.v_forward.z * throwSpeed.z;
+
+  // Trace the throw line, ignoring monsters.
+  // NOTE: the real signature is (start, end, IGNORE_MONSTERS, edict*,
+  //       TraceResult&); the 5th arg is the destination buffer.
+  const tr: any = {};
+  UTIL_TraceLine({ x: ox, y: oy, z: oz },
+                 { x: ex, y: ey, z: ez },
+                 IGNORE_MONSTERS,                 // 0
+                 player.edict,
+                 tr);
+  // TODO(asm-ambiguous): chunk copies tr.vecEndPos and endPos into locals
+  //   and blends them per-axis with GOT-relative 0x6F064; treated here as
+  //   "use the hit point".
+  const hx = tr.vecEndPos.x;
+  const hy = tr.vecEndPos.y;
+  const hz = tr.vecEndPos.z;
+
+  // TODO(asm-ambiguous): knife initial velocity is a blend of (forward *
+  //   cvar) + (player velocity * cvar) + (spread * cvar). Treat the local
+  //   vec3 at [esp+0x30] as "velocity"; exact weights TBD.
+  const pvx = player.pev.velocity.x;
+  const pvy = player.pev.velocity.y;
+  const pvz = player.pev.velocity.z;
+  const vx  = ex - ox + pvx + throwSpeed.x;       // placeholder blend
+  const vy  = ey - oy + pvy + throwSpeed.y;
+  const vz  = ez - oz + pvz + throwSpeed.z;
+
+  // ---- Spawn the knife projectile ---------------------------------------
+  // Signature: CTSKnife::CreateKnife(CBasePlayer*, const Vector& origin,
+  //                                  const Vector& velocity, int).
+  const knife: any = CTSKnife.CreateKnife(
+    player,
+    { x: hx, y: hy, z: hz },                      // origin
+    { x: vx, y: vy, z: vz },                      // velocity
+    katanaItem.m_iModelIndex,                     // int [katanaItem+0x20]
+  );
+
+  if (knife !== null) {
+    // Orient along its velocity vector.
+    const kvx = knife.pev.velocity.x;
+    const kvy = knife.pev.velocity.y;
+    const kvz = knife.pev.velocity.z;
+    const speed = Math.sqrt(kvx * kvx + kvy * kvy + kvz * kvz);
+    let dir: { x: number; y: number; z: number };
+    if (speed < 0.00001) {
+      dir = { x: 0, y: 0, z: 1 };
+    } else {
+      // Divisor (GOT-relative 0x6F3FC) is treated as a throw-speed cvar;
+      // exact identity TBD in D.4.
+      const inv = throwSpeed.x / speed;
+      dir = { x: kvx * inv, y: kvy * inv, z: kvz * inv };
+    }
+    UTIL_VecToAngles(dir);
+
+    // Set facing + angular velocity. The two immediates are IEEE 754
+    // constants; verify against CTSKnife's intended tumble rate during D.4.
+    knife.pev.angles    = dir;                              // [pev+0x50]
+    knife.pev.avelocity = { x: 90.0, y: 0.0, z: 0.0 };      // [pev+0x58] = 0x42B40000
+    // 0xC42F0000 decodes to -700.0 (sign=1, exp=9, mantissa 0x2F0000
+    // → 1.3671875 × 2⁹). NOT -1000.0 and NOT a sign-flip of 0x42F00000.
+    knife.pev.avelocity.z = -700.0;                         // [pev+0x5C] = 0xC42F0000
+  }
+
+  // ---- Animation (skipped if player is in a restricted state and pressing
+  // IN_ATTACK). 0x30C30 = mask of state-restricted flags (exact mapping TBD
+  // against engine.h); 0x2 = IN_ATTACK.
+  const playerEdict: any = (player as any).pev;
+  if ((playerEdict.flags & 0x30c30) === 0 && (playerEdict.button & 0x2) !== 0) {
+    CTSAnimation.Animate(player, /* seq */ 0x20, /* mode */ 0);
+  }
+
+  // ---- Throw sound. Sample name placeholder; verify in data-section strings.
+  EMIT_SOUND_DYN(
+    player.edict,
+    /* channel */ 4,
+    /* sample  */ "weapons/katana_throw.wav",
+    /* volume  */ 1.0,
+    /* attn    */ 0.8,
+    /* flags   */ 0,
+    /* pitch   */ RANDOM_LONG(0, 31) + 95,
+    /* radius  */ 0.5,
+  );
+
+  // ---- Refund + drop (only when infinite-clips cheat is off) -----------
+  if (!InfiniteClips(player)) {
+    player.m_rgAmmo[katanaItem.m_iAmmoType] += katanaItem.m_iClip;
+    SetPlayerSpeed(player, GetSpeedBySlots(player));
+    // [this+0xc8] = int arg to DropWeapon; exact meaning TBD in D.4.
+    this.DropWeapon(this.m_iDropData, true);
+  }
+}
+
+// ======================================================================
+// KnifeFire
+// ======================================================================
+
+export function KnifeFire(this: CTSGun): void {
+  const player  = this.m_pPlayer;
+  const wepInfo = this.m_pWeaponInfo;
+  const knife   = this.m_pKnife;
+  if (knife === null) return;
+
+  const pev = player.pev;
+
+  // ---- 1. Slow-motion decision (used for damage / times only) ----------
+  const fSlowMo   = (player + 0x250 /* FL_* */) (0x70c30) !== 0;
+  const cSlowAmt  = cvarFloat(/* slowamt */);   // firetime scale
+  const cSlowNext = cvarFloat(/* ts_slowmotion_delay */); // [+0x6e768]
+  const cSlowDmg  = cvarFloat(/* ts_slowmotion_dmg */);   // [+0x6def0]
+  const cIdle     = cvarFloat(/* ts_knife_idle */);       // [+0x6df78]
+
+  // ---- 2. Schedule next attack / idle / anim times ----------------------
+  let flDelay = wepInfo.m_flPrimaryAttack;  // [wepInfo+0x18]
+  if (fSlowMo) flDelay *= cSlowAmt;
+
+  const flBase = UTIL_WeaponTimeBase();
+  this.m_flNextPrimaryAttack   = flBase + flDelay;        // [this+0xa0]
+  this.m_flTimeWeaponIdle      = flBase + flDelay;        // [this+0x9c]
+  this.m_flNextSecondaryAttack = flBase + cSlowNext;      // [this+0xa8]
+  (player + 0x4f8)/* m_flWeaponAnimTime */ = flDelay;
+
+  // Refresh forward / right / up from the player's view angle.
+  UTIL_MakeVectors(pev + 0x74 /* v_angle.x */);
+
+  let bFired = false;
+  let engaged = false;
+
+  // =====================================================================
+  // THROW branch — knife.m_bThrow != 0
+  // =====================================================================
+  if (knife.m_bThrow !== 0) {
+    // Predicted eyepoint: origin + velocity (lead the target).
+    const aimStart: Vec3 = [pev.x,            pev.y,            pev.z           ];
+    const aimEnd:   Vec3 = [(pev + 0x174).x,   (pev + 0x174).y,   (pev + 0x174).z ]; // velocity
+    const tr = UTIL_TraceLine(aimStart, aimEnd, 0, player.edict);
+
+    const iThrowMode = wepInfo.m_iMode;  // [wepInfo+0x20]
+
+    // mode 6 picks one damage scale, others pick the default.
+    const spawnEnd: Vec3 = (iThrowMode === 6) ? aimEnd : tr.vecEndPos;
+    const dart = CTSKnife.CreateKnife(player, aimStart, spawnEnd, iThrowMode);
+
+    if (dart !== null) {
+      // Build the throw direction; the disassembly forms it from
+      // v_forward +/- v_right/v_up (offsets +0x28 / +0x40 from gpGlobals),
+      // then divides by its length and a KNIFE_SPEED scale.
+      const dir: Vec3 = [vForward.x, vForward.y, vForward.z];
+      const len = Math.hypot(dir.x, dir.y, dir.z);
+      let ux: number, uy: number, uz: number;
+      if (len <= 1e-6) {
+        ux = 0; uy = 0; uz = -1;
+      } else {
+        const inv = KNIFE_SPEED / len;
+        ux = dir.x * inv; uy = dir.y * inv; uz = dir.z * inv;
+      }
+
+      const angles: Vec3 = [0, 0, 0];
+      UTIL_VecToAngles([ux, uy, uz], angles);
+
+      dart.pev.angles = [angles[0], angles[1], angles[2]];
+      dart.pev.angularVelocity = [50.0, 0.0, -50.0]; // 0x42b40000 / 0xc4a28000
+    }
+
+    bFired = true;
+
+    // Animate if NOT in slowmo-style FL_* bits AND the player has its
+    // anim-flag byte set. NB: this gate does NOT re-test fSlowMo.
+    if ( ( (player + 0x250) (0x30c30) ) === 0
+        && ((player + 0x1a5) /* BYTE */ & 0x2) !== 0) {
+      this.m_pAnimation.Animate(player, 32);             // THROW seq
+    }
+
+    // Sound: filename = "weapons/knife_throw.wav" (resolved at [ebx-0x6dc7e]).
+    EMIT_SOUND_DYN(
+      player.edict,
+      RANDOM_LONG(0, 0x1f) + 95 + 0x5f,
+      SOUND_KNIFE_THROW,         // (ebx - 0x6dc7e)
+      /* vol    */ 1.0,
+      /* attn   */ 0.4,                                  // 0x3f4ccccd
+      /* pitch  */ 0.7,                                  // 0x3f000000
+      /* chan   */ 4,
+    );
+
+  // =====================================================================
+  // MELEE branch — knife.m_bThrow == 0
+  // =====================================================================
+  } else {
+    // Pick swing anim 29..31. NB: gate does NOT check +0x250 either; it
+    // just re-tests fSlowMo at the top of this branch.
+    if ( !fSlowMo && ((player + 0x1a5) /* BYTE */ & 0x2) !== 0) {
+      this.m_pAnimation.Animate(player, RANDOM_LONG(0, 2) + 29);
+    }
+
+    // Damage: slowmo cvar * per-player melee multiplier.
+    let flDamage = wepInfo.m_flDamage;                   // [wepInfo+0x1c]
+    if (fSlowMo) flDamage *= cSlowDmg;
+    flDamage *= player.GetMeleeMultiplier();
+
+    // Hull-trace in the player's view direction (clip-monster hull = 3).
+    const aimStart: Vec3 = [
+      pev.x + (pev + 0x110).x, pev.y + (pev + 0x110).y, pev.z + (pev + 0x110).z,
+    ];
+    const aimEnd:   Vec3 = [
+      aimStart[0] + vForward.x /* *reach */,
+      aimStart[1] + vForward.y /* *reach */,
+      aimStart[2] + vForward.z /* *reach */,
+    ];
+    const tr = player.CheckHull(aimStart, aimEnd, /* hull */ 3);
+
+    if (tr.flFraction < 1.0 /* the [ebx-0x6f018] == 1.0qword */) {
+      let victim: CBaseEntity | null = tr.pHit ?? null;
+      if (victim === null) victim = player.FindUseTarget(null);
+
+      if (victim !== null
+          && victim.IsAlive()
+          && !VictimKnifeHold(player, victim, flDamage)) {
+        engaged = true;
+        ClearMultiDamage();
+        const aimLocal: Vec3 = [vForward.x, vForward.y, vForward.z];
+        victim.TakeDamage(
+          player.pev, player.pev, flDamage,
+          0x1004 /* DMG_SLASH | DMG_NEVERGIB */,
+          aimLocal,
+        );
+        ApplyMultiDamage(player.pev, player.pev);
+
+        // vtable 0xc8 is CBaseEntity::ApplyTraceBleed-ish; its return
+        // decides whether the cosmetic hit-sfx fires. NB: even when it
+        // returns 0 we still leave `engaged = true` here — the fumble
+        // decision is about whether we hit, not whether the sfx played.
+        const bHitSfx = victim.ApplyTraceBleed(/* params */);
+        if (bHitSfx) {
+          knife.m_iHit = 1;          // [knife+0x8]
+          this.m_iHits = 1;          // [this+0x114]
+          EMIT_SOUND_DYN(
+            player.edict,
+            RANDOM_LONG(0, 0x1f) + 95 + 0x5f,
+            SOUND_KNIFE_HIT,        // (ebx - 0x6df30)
+            /* vol   */ 1.0,
+            /* attn  */ 0.4,
+            /* pitch */ 0.5,
+            /* chan  */ 4,
+          );
+        }
+      }
+    }
+
+    if (!engaged) {
+      // Miss: drive fumble-pose times back onto the player.
+      (player + 0x79c) /* m_flAnimTime2 */ = cIdle * wepInfo.m_flPrimaryAttack;
+      (player + 0x7a0) /* m_flAnimTime  */ = flDamage;
+      (player + 0x7a4) /* m_bAnimating  */ = 1;
+    }
+
+    bFired = true;
+
+    // Broadcast the swing to everyone.
+    ENGINE.MESSAGE_BEGIN(1, SVC_WEAPONANIM, null, player.edict);
+    ENGINE.MESSAGE_WRITE_BYTE(knife.m_iHit);
+    ENGINE.MESSAGE_WRITE_SHORT(player + 0x972 /* LOWORD */);
+    ENGINE.MESSAGE_END();
+  }
+
+  // =====================================================================
+  // Post-fire bookkeeping (THROW and MELEE both land here).
+  // =====================================================================
+  if (bFired) {
+    if (!InfiniteClips(player)) {
+      (player + 0x548) /* m_iAmmoKnife */ += ((wepInfo + 0xd0) & 0xff);
+      SetPlayerSpeed(player, player.GetSpeedBySlots());
+      knife.m_iClip--;                                  // [knife+0x4]
+    }
+
+    if (knife.m_iClip > 0) {
+      // Recoil / follow-up anim — vtable 0x174 using m_hOwner (knife+0x28).
+      const hOwner = (knife + 0x28) !== null
+        ? (knife + 0x28)
+        : 0;
+      this.Recoil(hOwner, /* model idx */ player + 0x976);
+
+      // Re-schedule next primary and broadcast the follow-up animation
+      // (a second MESSAGE_BEGIN with the secondary model index).
+      ENGINE.MESSAGE_BEGIN(1, SVC_WEAPONANIM, null, player.edict);
+      ENGINE.MESSAGE_WRITE_BYTE(knife.m_iClip);
+      ENGINE.MESSAGE_WRITE_SHORT(player + 0x976);
+      ENGINE.MESSAGE_END();
+      this.m_flNextPrimaryAttack =
+        UTIL_WeaponTimeBase() + /* qword at [ebx-0x6de50] */ 0.0 /* TODO resolve */;
+    } else {
+      this.DropWeapon(this.m_iId /* [this+0xc8] */, 1);
+    }
+  }
+}
+
+// ======================================================================
 // PrimaryAttack
 // ======================================================================
 
@@ -1059,234 +2443,4 @@ export function Reload(this: CTSGun): void {
   //     ([m_pPlayer + 0x28c]).
   const player = this.m_pPlayer;
   (player as any).anim.Animate(player, 0x33);
-}
-
-// ======================================================================
-// StandardFire
-// ======================================================================
-
-/**
- * CTSGun::StandardFire — fires a single bullet using standard accuracy logic.
- *
- * Pipeline:
- *   1. Lazy-init cached vectors (m_vecRecoil, m_vecSpreadBase) and damage scalar.
- *   2. Sample player's current spread cone via virtual call.
- *   3. Copy engine base spread vector.
- *   4. Cache bullet damage from weapon_info.
- *   5. Branch on weapon type to compute the spread multiplier.
- *   6. Call ScaleSpread (3 args after this: &damage, spread, shouldScale).
- *   7. Apply crouching/running multiplier to weapon_info.baseSpread.
- *   8. Call ShootBulletsPlayer with damage + spread + several vec refs.
- *   9. Save the recoil vector returned by ShootBulletsPlayer.
- *  10. Optionally call VKickback for view kick.
- *  11. Decrement reserve ammo, then clip ammo (unless InfiniteClips); clamp >=0.
- *  12. Set m_bIsEmpty flag based on current reserve ammo.
- *  13. Engine dispatch — fire sound/anim event for the shot.
- *  14. Set m_flNextPrimaryAttack = UTIL_WeaponTimeBase() + delay.
- *  15. Set m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + idle_delay.
- */
-
-declare const CVars: any;          // GOT statics ([ebx+0x7ca4..0x7cdc])
-declare const EngineGlobals: any;  // engine singletons ([ebx+0x1600], 0x1888, 0x1aa8)
-declare const EngineUtil: any;     // UTIL_WeaponTimeBase, InfiniteClips
-
-export function StandardFire(this: any /* TODO: replace with CTSGun */): void {
-  // === 1. Lazy-init cached state (first-call guards in the GOT) ===
-  if (CVars.standardFire_initA === 0) CVars.standardFire_initA = 1;
-  if (CVars.standardFire_initB === 0) CVars.standardFire_initB = 1;
-  if (CVars.standardFire_initC === 0) {
-    // Copy 3 floats from engine global [ebx+0x1888] into m_vecRecoil.
-    // TODO(asm-ambiguous): exact engine global meaning unclear
-    const initSrc = EngineGlobals.vec_0x1888 as [number, number, number];
-    const recoil = CVars.m_vecRecoil as [number, number, number];
-    recoil[0] = initSrc[0]; recoil[1] = initSrc[1]; recoil[2] = initSrc[2];
-    CVars.standardFire_initC = 1;
-  }
-
-  // === 2. Sample player's spread cone via vfunc ===
-  // m_pPlayer[0x60] is a sub-object vtable; vfunc_0x168 returns Vector3.
-  const cone = this.m_pPlayer.someField_0x60.vfunc_0x168() as [number, number, number];
-  const spreadCurrent = CVars.m_vecSpreadCurrent as [number, number, number];
-  spreadCurrent[0] = cone[0]; spreadCurrent[1] = cone[1]; spreadCurrent[2] = cone[2];
-
-  // === 3. Copy engine base spread vector ===
-  // Source: [ebx+0x1600][0]+0x28 (12-byte Vector3 from a global singleton)
-  const baseVec = EngineGlobals.vec_0x1600_at_0x28 as [number, number, number];
-  const spreadBase = CVars.m_vecSpreadBase as [number, number, number];
-  spreadBase[0] = baseVec[0]; spreadBase[1] = baseVec[1]; spreadBase[2] = baseVec[2];
-
-  // === 4. Cache bullet damage from weapon_info ===
-  CVars.m_flBulletDamage = this.m_pWeaponInfo.bulletDamage as number;
-
-  // === 5. Weapon-type-specific spread branching ===
-  const weaponType = this.m_iWeaponType as number;
-
-  // 5a. type 0x12: always runs the velocity penalty, then falls through.
-  if (weaponType === 0x12) {
-    const v = this.m_pPlayer.velocity as [number, number, number];
-    const speed = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    if (speed <= CVars.sv_movespeed_threshold_0x12 /* TODO: cvar name */) {
-      this.m_pPlayer.someField_0x778 = 0.3; // 0x3e99999a
-    }
-    // fall through — the asm has no jmp out of the 0x12 block.
-  }
-
-  let scaleSpread: { shouldScale: number; spread: number } | null = null;
-
-  // 5b. type 0x20: velocity-gated, cvar-multiplied. If velocity > threshold,
-  //     falls through to the flag_0x2c check below (NOT a return/skip).
-  if (weaponType === 0x20) {
-    const v = this.m_pPlayer.velocity as [number, number, number];
-    const speed = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    if (speed <= CVars.sv_movespeed_threshold_0x20 /* TODO: cvar name */) {
-      const shouldScale =
-        ((this.m_pAmmoTracker.flag as number) & 1) &&
-        !((this.m_pWeaponInfo.flag_0xe4 as number) & 1) ? 1 : 0;
-      scaleSpread = {
-        shouldScale,
-        spread: (CVars.spread_multiplier_0x20 as number) *
-                (this.m_pWeaponInfo.spreadValue as number),
-      };
-    }
-    // else: fall through to flag_0x2c check below
-  }
-
-  // 5c. Default path — reached from type-0x12 path, AND from type-0x20 when
-  //     velocity > threshold (asm unconditionally falls into 0x72638).
-  if (scaleSpread === null &&
-      (this.m_pWeaponInfo.flag_0x2c as number) !== 0) {
-    const shouldScale =
-      ((this.m_pAmmoTracker.flag as number) & 1) &&
-      !((this.m_pWeaponInfo.flag_0xe4 as number) & 1) ? 1 : 0;
-    scaleSpread = {
-      shouldScale,
-      spread: this.m_pWeaponInfo.spreadValue as number,
-    };
-  }
-
-  // === 6. Call ScaleSpread — demangled `Rffi` = (float&, float, int). ===
-  if (scaleSpread !== null) {
-    this.ScaleSpread(
-      CVars.m_flBulletDamage_ref,   // float& (arg 1)
-      scaleSpread.spread,           // float  (arg 2)
-      scaleSpread.shouldScale,      // int    (arg 3)
-    );
-  }
-
-  // === 7. Apply crouching/running multiplier to weapon_info.baseSpread ===
-  let finalSpread = this.m_pWeaponInfo.baseSpread as number;
-  if (
-    ((this.m_pAmmoTracker.flag as number) & 1) &&
-    !((this.m_pWeaponInfo.flag_0xe4 as number) & 1)
-  ) {
-    finalSpread *= CVars.spread_modifier_crouching as number; // TODO: cvar name
-  }
-
-  // === 8. Call ShootBulletsPlayer ===
-  // Stack layout: 3 Vector3 refs set up before the call (recoil/damage spread
-  // [esp+0x20] / spreadBase [esp+0x30] / spreadCurrent [esp+0x40]).
-  // TODO(asm-ambiguous): exact arg order not derivable without full prototype.
-  this.m_pPlayer.shootBulletsPlayer({
-    returnRecoil:  CVars.m_vecRecoil_ref,
-    damageVec:     CVars.m_flBulletDamage_ref,
-    baseSpread:    CVars.m_vecSpreadBase_ref,
-    currentSpread: CVars.m_vecSpreadCurrent_ref,
-    finalSpread,
-    weaponByte:    this.m_pWeaponInfo.weaponByte,   // byte at 0x8
-    ammoCount:     this.m_pWeaponInfo.ammoCount,   // dword at 0x20
-    tracerType:    this.m_pWeaponInfo.tracerType,  // byte at 0x24
-    playerField:   this.m_pPlayer.field_0x7ec,
-  });
-
-  // === 9. m_vecRecoil is already updated via the returnRecoil ref above ===
-
-  // === 10. Optional VKickback for view kick ===
-  const isShotgunType =
-    (this.m_pWeaponInfo.kickbackMode as number) === 7 ||
-    weaponType === 0x1f ||
-    weaponType === 0x21;
-  if (
-    isShotgunType ||
-    (this.m_pWeaponInfo.hasKickback as number) !== 0
-  ) {
-    const playerFlag =
-      ((this.m_pAmmoTracker.flag as number) & 1) &&
-      !((this.m_pWeaponInfo.flag_0xe4 as number) & 1) ? 1 : 0;
-    this.VKickback(
-      this.m_pWeaponInfo.kickbackAngle,           // float at 0x30
-      this.m_pWeaponInfo.kickbackCount,           // byte at 0x348 (zext to int)
-      playerFlag,
-      (CVars.m_vecRecoil as [number, number, number])[0],
-      (CVars.m_vecRecoil as [number, number, number])[1],
-      isShotgunType ? 1 : 0,                       // pushw 0x1/0x0 in the 8-byte tail slot
-    );
-  }
-
-  // === 11. Decrement ammo (unless InfiniteClips) ===
-  if (!this.m_pPlayer.infiniteClips()) {
-    this.m_pAmmoTracker.ammo--;
-    const clipIndex = this.m_pWeaponInfo.clipIndex as number;
-    if (clipIndex !== -1) {
-      // m_rgAmmo entries have stride 56 (not 4 like standard HL1).
-      // TODO(asm-ambiguous): custom CTS ammo struct layout, offset 0x18 between fields
-      this.m_rgAmmo[clipIndex].ammo--;
-      this.m_rgAmmo[clipIndex].lastAmmo = this.m_pAmmoTracker.ammo as number;
-      if (this.m_rgAmmo[clipIndex].ammo < 0) {
-        this.m_rgAmmo[clipIndex].ammo = 0;
-      }
-    }
-  }
-
-  // === 12. Set m_bIsEmpty flag ===
-  CVars.m_bIsEmpty = (this.m_pAmmoTracker.ammo as number) === 0 ? 1 : 0;
-
-  // === 13. Engine dispatch (anim/sound event) ===
-  // vfunc call at [ecx+0x1ec] with ecx = [ebx+0x1aa8] (engine singleton).
-  // 12-arg call. Note: [edx+0x208] is m_pPlayer[0][0x208] — DOUBLE deref via
-  // the pointer at m_pPlayer[0]. TODO(asm-ambiguous): exact prototype unclear.
-  EngineGlobals.dispatchFire(
-    1,                                          // int/bool (0x1)
-    this.m_pPlayer.deref0.field_0x208,          // m_pPlayer[0][0x208] (double deref)
-    this.m_usEvent,                             // word event id at this+0x964
-    0,                                          // null
-    EngineGlobals.vec_0x1888,                   // pushed twice
-    EngineGlobals.vec_0x1888,
-    CVars.m_flBulletDamage,                     // pushed twice
-    CVars.m_flBulletDamage,
-    weaponType,
-    this.m_pAmmoTracker.ammoType,               // field at 0x10, LSB is flag
-    CVars.m_bIsEmpty,
-    this.m_pPlayer.field_0x7ec,
-  );
-
-  // === 14. Compute m_flNextPrimaryAttack delay ===
-  let delay: number;
-  if ((this.m_pAmmoTracker.mode as number) === 2) {
-    delay = (this.m_pAmmoTracker.someField_8 as number) === 1
-      ? (CVars.delay_cvar1 as number)
-      : (CVars.delay_cvar2 as number);
-  } else if (
-    (this.m_pAmmoTracker.mode as number) === 1 &&
-    ((this.m_pWeaponInfo.flag_0xc as number) & 1)
-  ) {
-    delay = 0.1; // 0x3dcccccd
-  } else {
-    delay = this.m_pWeaponInfo.defaultDelay as number; // at 0x18
-  }
-  CVars.m_flNextPrimaryAttack_delay = delay;
-
-  // === 15. Set m_flNextPrimaryAttack ===
-  this.m_flNextPrimaryAttack =
-    EngineUtil.weaponTimeBase() + (CVars.m_flNextPrimaryAttack_delay as number);
-
-  // === 16. Compute and set m_flTimeWeaponIdle ===
-  let idleDelay = CVars.idle_delay_default as number;
-  if (
-    weaponType === 0x24 &&
-    (this.m_pAmmoTracker.ammo as number) <= 0 &&
-    !this.m_pPlayer.infiniteClips()
-  ) {
-    idleDelay = CVars.idle_delay_alt as number;
-  }
-  this.m_flTimeWeaponIdle = EngineUtil.weaponTimeBase() + idleDelay;
 }
