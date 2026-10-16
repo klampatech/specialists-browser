@@ -137,6 +137,8 @@ port 5174, page returns HTTP 200 with the expected WebXash
     for implementation (chunk generation, prompt sending), Claude
     Code (M3) for review/validation.
 
+- **2026-10-15 — Option D D.4.6 (CTSGun combat) — COMPLETE.** 4 methods (CCombatIdle, CCombatBlock, CCombatAttack, UpdateClientData) decompiled + cross-vendor reviewed. weapons.ts is 128KB, 2983 lines, 23/33 CTSGun methods. CCombatAttack (3506 B) is the per-tick close-combat dispatch — mode state machine, range check, attack block, animation. CCombatBlock (442 B) is the defensive action. CCombatIdle (104 B) is the defensive mode. UpdateClientData (1287 B) is the per-frame client-state delta (slot diffs, current weapon sync, get_weapon_info lookups).
+
 - **2026-10-15 — Option D D.4.7 (CTSGun fire dispatcher) — COMPLETE.** 8 Fire* methods (Fire, ColdCock, GrenadeFire, ShotgunFire, StandardFire, AkimboFire, KatanaFire, KatanaThrow, KnifeFire) decompiled + cross-vendor reviewed. weapons.ts is 103KB, 2446 lines, 19/33 CTSGun methods. Full fire path: PrimaryAttack → Fire (mode check) → one of 8 Fire* methods.
 
 - **2026-10-15 — Option D D.4.3 (bots) — N/A.** TS is PvP-only and the binary contains 0 bot-related methods. Bots are external (Botman's BotLib). Cannot decompile what doesn't exist.

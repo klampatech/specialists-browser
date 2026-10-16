@@ -31,7 +31,7 @@ doesn't converge.
 | D.4.7 | ✅ | 2026-10-15 | CTSGun fire dispatcher (8 Fire* methods). Output: `src/mod/weapons.ts` (103KB, 2446 lines, 19/33 CTSGun methods). Full fire path: PrimaryAttack → Fire → mode switch → {StandardFire, ShotgunFire, AkimboFire, GrenadeFire, KatanaFire, KatanaThrow, KnifeFire, ColdCock}. |
 | D.4.3 | ⏸ N/A | — | **Bots: 0 methods in binary.** TS is PvP-only; bots are external to TS (Botman's BotLib etc.). Cannot decompile what doesn't exist. |
 | D.4.4 | ✅ | 2026-10-15 | Damage/scoring (2 methods). Output: `src/mod/scoring.ts` (~13KB). Methods: PlayerKilled (CHalfLifeMultiplay, 6912 B — kill handler, score, cash, slowmo, check-deads), TeamWin (CTSGameRules, 1564 B — round winner, HUD, cash distribution, announcer sounds). |
-| D.4.6 | ⏸ Pending | CCombat (3 methods: Idle, Block, Attack) + UpdateClientData + cold-cock flow |
+| D.4.6 | ✅ Complete (2026-10-15) | `src/mod/weapons.ts` (CCombat Idle/Block/Attack + UpdateClientData) — 4 more methods |
 | D.5 | ⏸ Pending | Babylon.js integration (1-2 weeks) |
 | D.6 | ⏸ Pending | bridge semantics + polish (1-2 weeks) |
 

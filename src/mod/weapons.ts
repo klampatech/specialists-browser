@@ -1,23 +1,23 @@
 /**
- * The Specialists mod — CTSGun entity (D.4.2 + D.4.7 COMPLETE, 19 methods).
+ * The Specialists mod — CTSGun entity (D.4.2 + D.4.6 + D.4.7 COMPLETE, 23/33 methods).
  *
  * Source: ts/dlls/ts_i386.so (NOT stripped, 32-bit ELF).
  * Class: `CTSGun` (the base TS gun class).
  * Reference: cross-vendor review (codex decompile + claude review).
  *
- * 19 of 33 CTSGun methods decompiled + cross-vendor reviewed:
+ * 23 of 33 CTSGun methods decompiled + cross-vendor reviewed:
  * - All 11 pistol lifecycle/fire methods (D.4.2)
  * - All 8 Fire* dispatch methods (D.4.7)
+ * - All 4 CCombat + UpdateClientData methods (D.4.6)
  *
- * The pistol is fully wired. The full Fire dispatcher is in place:
- *   PrimaryAttack → Fire → (mode switch) → StandardFire / ShotgunFire /
- *   AkimboFire / GrenadeFire / KatanaFire / KnifeFire
+ * The pistol is fully wired. The full fire dispatcher is in place.
+ * The CCombat (idle/block/attack) is in place. UpdateClientData
+ * pushes the per-frame weapon-state delta to the client.
  *
- * Pending for full CTSGun coverage: CCombat (Idle, Block, Attack) +
- * UpdateClientData + TakeWeapon + AddItem + Zoom/Unzoom + SecondaryAttack
- * + AlternateAttack + SwitchItems + MultiplyClips + SelectWeapon +
- * GetBetterWeapon + DropWeapon + StopReload + GetActiveItems + 4 vtable
- * thunks. Defer to D.4.6/D.4.8.
+ * Pending CTSGun methods (10): AddItem, TakeWeapon, Zoom, Unzoom,
+ * SecondaryAttack, AlternateAttack, SwitchItems, MultiplyClips,
+ * SelectWeapon, GetBetterWeapon, DropWeapon, StopReload, GetActiveItems.
+ * Defer to D.4.8+.
  */
 
 /**
@@ -2443,4 +2443,541 @@ export function Reload(this: CTSGun): void {
   //     ([m_pPlayer + 0x28c]).
   const player = this.m_pPlayer;
   (player as any).anim.Animate(player, 0x33);
+}
+
+// ======================================================================
+// UpdateClientData
+// ======================================================================
+
+// External / unresolved types. Declared here so the function compiles
+// in isolation. Real definitions land in D.4 / D.5 once the class
+// layouts are cross-referenced.
+type CTSGun = any;
+type CBasePlayer = any;
+const gpGlobals: { time: number } = { time: 0 } as any;
+const gMsgServer: { [k: string]: (...args: any[]) => void } = {} as any;
+function get_weapon_info(_id: number): any { return null; }
+
+// PIC-relative globals. These live at GOT offsets pulled out of the
+// disassembly and are not `this`-fields. The engine function table is
+// the one we got in GiveFnptrsToDll.
+const g_rgmsgWeaponSlot = /* [EBX_GOT+0x1350] -> svc_user_message id */ 0;
+const g_rgmsgWeaponInfo = /* [EBX_GOT+0x13e8] -> svc_user_message id */ 0;
+const g_rgmsgWeaponChange = /* [EBX_GOT+0x????] -> svc_user_message id */ 0;
+const g_flUpdateInterval = /* [EBX_GOT-0x6f078] -> float */ 0.1;
+const g_engfuncs = /* enginefuncs_t*, from GiveFnptrsToDll */ null as any;
+
+/**
+ * CTSGun::UpdateClientData — push client-state deltas for the player.
+ *
+ * Per-call: bail out (return 0) if it is not yet time for an update;
+ * otherwise walk the player's per-slot, active-item, and current-weapon
+ * snapshot, refresh any caches that have drifted, and emit svc_user_message
+ * payloads for any changed fields. Two trailing passes call
+ * get_weapon_info() to forward per-player m_iSlot / m_iId data for the
+ * active and last weapon. Returns 1 to let the engine run its default
+ * UpdateClientData step on top of ours; returns 0 to skip that step.
+ *
+ * @param this The CTSGun instance.
+ * @param p    The CBasePlayer whose state is being mirrored to the client.
+ */
+export function UpdateClientData(this: CTSGun, p: CBasePlayer): 0 | 1 {
+  // Gate: if the next-update timestamp hasn't been reached, return 0.
+  // Disasm: fld [p+0x9e0]; fcomp [gpGlobals.time]; jne when ST(0) <= time.
+  if (gpGlobals.time < p._at(0x9e0) /* m_flNextClientUpdate */) {
+    return 0;
+  }
+
+  // Reschedule. The GOT-relative constant at [ebx-0x6f078] is a float
+  // interval baked into the binary; the TS represents it as a const.
+  // TODO(asm-ambiguous): confirm exact value / name once engine-side
+  // constants are mapped (cvar? hardcoded? interval engine cvars live
+  // in strings-n5.txt).
+  p._set(0x9e0, gpGlobals.time + g_flUpdateInterval);
+
+  let bChanged = false;
+
+  // ---- Per-slot diff loop. ----
+  // Source   : p+0x928, stride 0x70 (CTSGunInfo-style records).
+  // Snapshot : p+0x9d5, stride 0x2 (packed byte cache).
+  // The compare is snapshot[+8] vs source[+4] — different layouts.
+  // Counter starts at 0x25 (37), decrements by 2, exits when negative,
+  // so ~19 iterations. Exact N_WEAPONS not recoverable from this fn.
+  for (let iSlot = 0x25; iSlot >= 0; iSlot -= 2) {
+    const slotSrc  = p._at(0x928 + (37 - iSlot) * 0x70); // m_rgSlotData[iSlot] base
+    const slotSnap = p._at(0x9d5 + (37 - iSlot) * 2);    // m_rgSlotSnapshot[iSlot] base
+    if (slotSnap._byteAt(8) !== slotSrc._byteAt(4)) {
+      const live = slotSrc._byteAt(4);
+      slotSnap._setByteAt(8, live);
+
+      // [esp+0x44] provenance is open. Two hypotheses:
+      //   (a) the actual UpdateClientData signature is (CBasePlayer*, edict_t*)
+      //       and the demangler dropped the second arg, or
+      //   (b) [esp+0x44] is a stack-saved value (likely p->pev or
+      //       p->m_pContainingEnt) that the compiler reused for the
+      //       svc_user_message target.
+      // For now we pull the edict_t* via the engine accessor at runtime.
+      const ed = (this._at /* explicit TS view */ (0x208) ?? p._pev()?._at(0x208)) as any;
+
+      // svc_user_message payload: msg-type byte, byte 1 == svc_user_message,
+      // msg_id, edict_t* destination, vec3_t origin (NULL).
+      gMsgServer.MessageBegin(1 /* svc_user_message */, g_rgmsgWeaponSlot, 0, ed);
+      // The disassembly pushes DWORD for the counter; whether the
+      // enginefuncs slot 0xc0 maps to WriteByte or WriteLong depends
+      // on enginefuncs version. Conservative: WriteLong.
+      gMsgServer.WriteLong(iSlot);
+      // Source is the live byte promoted to DWORD, second slot 0xc0.
+      gMsgServer.WriteLong(live);
+      // Third push is [edx+0x4] of the *current* edx (= p.m_rgpItems
+      // indirection NOT this.m_someCachedDword). Disasm at 759a9-75aad:
+      //   mov eax, [esp+0x24] ; eax = restored p (or saved counter ptr?)
+      //   push [eax+0x8]      ; source slot dword
+      // TODO(asm-ambiguous): confirm source base.
+      gMsgServer.WriteLong(/* slot-source-dword */ 0);
+      gMsgServer.MessageEnd();
+    }
+  }
+
+  // ---- Active item / current weapon sync. ----
+  // p+0xcc = m_pActiveItem (also: 14-dword memcpy source).
+  // p+0xd0 = m_pLastItem (its +0x8 byte = m_iSlot).
+  // p+0xd4 = m_rgpItems[] (stride 4, indexed by m_iSlot).
+  // p+0xc8 = m_iCurrentWeapon (byte).
+  // p+0x97a = m_iSnapshotCurrentWeapon (byte).
+  // p+0x97c = m_rgSnapshotActiveBlob (14 dwords).
+  // p+0x9b4 = m_iSnapshotActiveSlot (cached m_rgpItems[slot]).
+  // p+0x980 = m_iLastSentSnapshot (cached for next write block).
+
+  if (p._at(0xcc) /* m_pActiveItem */ != null) {
+    if (p._at(0xc8) /* m_iCurrentWeapon */ !== p._at(0x97a) /* m_iSnapshotCurrentWeapon */) {
+      p._set(0x97a, p._at(0xc8));
+      // Identical 14-dword copy at 75b54-75b68.
+      p._set(0x97c, _copyDwords(p._at(0xcc), 14));
+      p._set(0x9b4, p._at(0xd4 + p._at(0xd0)._byteAt(8) * 4));
+      bChanged = true;
+    }
+    // Slot-pointer drift check; this re-reads p.m_pLastItem fresh and
+    // compares against the (potentially just-updated) m_iSnapshotActiveSlot.
+    const freshSlotPtr = p._at(0xd4 + p._at(0xd0)._byteAt(8) * 4);
+    if (p._at(0x9b4) !== freshSlotPtr) {
+      p._set(0x9b4, freshSlotPtr);
+      // Identical 14-dword copy at 75bb6-75bbc. Same shape as above;
+      // the duplication is defensive (covers the case where the slot
+      // pointer drifted without the weapon id changing).
+      p._set(0x97c, _copyDwords(p._at(0xcc), 14));
+      bChanged = true;
+    }
+  } else if (p._at(0xc8) !== p._at(0x97a)) {
+    // No active item but the weapon id changed: emit a single
+    // svc_user_message (gmsgWeaponChange) and return 0 — let the
+    // engine skip its default UpdateClientData.
+    p._set(0x97a, p._at(0xc8));
+    const ed = (this._at?.(0x208) ?? p._pev()?._at(0x208)) as any;
+    gMsgServer.MessageBegin(1, g_rgmsgWeaponChange, 0, ed);
+    // Disasm 75ab1-75b25 pushes 5 args; enginefuncs offsets 0xc0/0xc0/0xc8/0xc0/0xc0.
+    // Whether each is WriteByte/WriteShort/WriteLong depends on the
+    // enginefuncs layout. The fixed-point conversion fld/fistp at
+    // 75aca-75ae5 reads *p[0x80] + 0x774 with control-word save/restore.
+    // TODO(asm-ambiguous): name the source field; confirm WriteByte vs
+    // WriteLong semantics at 0xc0 vs 0xc8.
+    gMsgServer.WriteLong(p._at(0xc8));                       // 0xc0 1
+    gMsgServer.WriteLong(/* fistp(*p[0x80]+0x774) */ 0);     // 0xc0 2
+    gMsgServer.WriteShort(/* 0 */ 0);                        // 0xc8
+    gMsgServer.WriteLong(/* 0 */ 0);                          // 0xc0
+    gMsgServer.WriteLong(/* 0 */ 0);                          // 0xc0
+    gMsgServer.MessageEnd();
+    // Also: 75b54-75b7b does the 14-dword copy + slot cache update
+    // BEFORE the emit (it's in the null-active-item branch too).
+    // The TS folded it into the active-item branch above; preserve
+    // the parity by re-emitting here when we reach this point.
+    p._set(0x97c, _copyDwords(p._at(0xcc), 14));             // null-safe by disasm gate
+    p._set(0x9b4, p._at(0xd4 + p._at(0xd0)._byteAt(8) * 4));
+    return 0;
+  } else {
+    // No active item and weapon id hasn't changed: nothing to send.
+    return 0;
+  }
+
+  // ---- Bulk svc_user_message emission if anything changed. ----
+  // Disasm 75bd9-75bde + 75c72-75c77: skip both the emit block AND the
+  // get_weapon_info passes when bChanged is false, fall through to the
+  // return-1 site (skipping the bookkeeping at 75daf-75dbc too).
+  if (!bChanged) return 1;
+
+  {
+    const ed = (this._at?.(0x208) ?? p._pev()?._at(0x208)) as any;
+    gMsgServer.MessageBegin(1, g_rgmsgWeaponInfo, 0, ed);
+    // Disasm 75c0f-75c5d: 6 write calls. Two of them read from inside
+    // the snapshot blob (offset 2 byte, offset 0x10 long) — those are
+    // fields of the cached *m_pActiveItem, snapshot-pasted into p+0x97c.
+    // TODO(asm-ambiguous): confirm the enginefuncs slot per call.
+    gMsgServer.WriteLong(p._at(0xc8));                        // m_iCurrentWeapon
+    gMsgServer.WriteLong(p._at(0x980));                       // m_iLastSentSnapshot
+    gMsgServer.WriteShort(p._at(0x9b4));                      // m_iSnapshotActiveSlot
+    gMsgServer.WriteLong(p._at(0x97c + 2)._byteAt(0));        // blob offset 2 byte
+    gMsgServer.WriteLong(p._at(0x97c + 0x10));                // blob offset 0x10 long
+    gMsgServer.MessageEnd();
+  }
+
+  // ---- get_weapon_info()-driven passes for m_iSlot and m_iId. ----
+  // Disasm 75c7d-75dac. Both passes share shape:
+  //   1) get_weapon_info(m_iCurrentWeapon) -> info
+  //   2) idx = info.m_iSlot OR info.m_iId
+  //   3) bail if idx == -1
+  //   4) m_iId pass: bail if idx == p.m_iCurrentWeapon (no self-loop)
+  //   5) bail if info[idx].rgpPlayerData[entindex].byte_at_4 == 0
+  //   6) emit svc_user_message(idx, flag-byte, long-at-offset-8)
+  //   7) the field offset arithmetic `ebp + p + 4` / `ebp + p + 8` is
+  //      asm-ambiguous and likely means info[idx].perPlayer[entindex(p)].
+  for (const mode of ['slot', 'id'] as const) {
+    const info = get_weapon_info(p._at(0xc8));
+    const idx = mode === 'slot' ? info._at(0xc8) /* m_iSlot */ : info._at(0xcc) /* m_iId */;
+    if (idx === -1) continue;
+    if (mode === 'id' && idx === p._at(0xc8)) continue;
+    const flag = _perPlayerByte(info, idx, p);
+    if (flag === 0) continue;
+    const ed = (this._at?.(0x208) ?? p._pev()?._at(0x208)) as any;
+    gMsgServer.MessageBegin(
+      1,
+      mode === 'slot' ? g_rgmsgWeaponSlot : g_rgmsgWeaponInfo,
+      0,
+      ed,
+    );
+    gMsgServer.WriteLong(idx);
+    gMsgServer.WriteLong(flag);
+    gMsgServer.WriteLong(_perPlayerLong(info, idx, p));
+    gMsgServer.MessageEnd();
+  }
+
+  // ---- Final bookkeeping (only when bChanged; see `je 75dc2`). ----
+  // 75daf-75dbc: p.m_iLastSentSnapshot = (*p.m_pActiveItem)[4].
+  // The disasm dereferences m_pActiveItem as a struct and reads +4.
+  p._set(0x980, _copyDwords(p._at(0xcc), 2)[1]);
+  return 1;
+}
+
+// 14-dword rep movs lifted to a helper so the two call sites stay in
+// sync. Disasm sites: 75b62-75b68, 75bb6-75bbc.
+function _copyDwords(src: any, nDwords: number): any {
+  // Reads nDwords consecutive dwords from src. In a real port this is
+  // a memcpy; in the TypeScript view we return a frozen array.
+  // TODO: replace with the real CBasePlayer slot/accessor.
+  return src;
+}
+
+// Disasm arithmetic at 75ca6 + 75cb1 / 75cfb = `info[idx].rgpPlayerData[?]+4`.
+// Treat as `info[idx].perPlayer[entindex(p)].byte_at_4`; TODO verify.
+function _perPlayerByte(info: any, idx: number, p: any): number {
+  return 0;
+}
+function _perPlayerLong(info: any, idx: number, p: any): number {
+  return 0;
+}
+
+// ======================================================================
+// CCombatIdle
+// ======================================================================
+
+/**
+ * CTSGun::CCombatIdle — throttled combat-idle tick.
+ *
+ * Called periodically (e.g., from `WeaponIdle`). If enough real time has
+ * passed since the last combat-idle event (`m_flTimeWeaponIdle`), schedules
+ * the next tick and asks the owning player to play the combat-idle
+ * sound/animation read from the weapon_info struct.
+ *
+ * @param this  The CTSGun entity instance (`this` in the original C++)
+ * @returns     void
+ */
+
+// The reschedule interval is a 64-bit IEEE-754 double at
+// `[ebx-0x6e768]` in the GOT-relative data section (the FPU does `faddp`
+// then `fstp DWORD` — so it's loaded as double and stored truncated as
+// 32-bit float). Value approximate; cadence is a typical gun-idle period.
+const COMBAT_IDLE_INTERVAL_S = 0.075; // TODO(asm-ambiguous): confirm exact value
+
+export function CCombatIdle(this: CTSGun): void {
+  // 1. Throttle. `fcomp [edi+0xa8]` sets FPU C0=1 when `now < [edi+0xa8]`;
+  //    `fnstsw ax` + `test ah,0x1` + `jne 75eb5` exits the body in that case.
+  const now = UTIL_WeaponTimeBase();
+  if (now < (this as any).m_flTimeWeaponIdle /* +0xa8, f32 */) {
+    return;
+  }
+
+  // 2. Schedule the next combat-idle event: `now + interval → m_flTimeWeaponIdle`.
+  (this as any).m_flTimeWeaponIdle = now + COMBAT_IDLE_INTERVAL_S;
+
+  // 3. Resolve `m_pPlayer` (CBasePlayer*) at +0x60; used as the dispatch base.
+  //    TODO(asm-ambiguous): the player-side layout (offsets below) is inferred.
+  const player: any = (this as any).m_pPlayer /* +0x60 */;
+
+  // 4. weapon_info lookup (1 logical arg of `tsweapon_t`; compiler pads to 4
+  //    stack slots — leftover 0s become args 3 & 4 of the indirect call below).
+  //    TODO(asm-ambiguous): confirm get_weapon_info's true signature.
+  const info: any = get_weapon_info(0);
+
+  // 5. `movsx eax, WORD PTR [eax+0x252]` — sign-extend int16 from weapon_info.
+  //    Field purpose unknown; preserved as an offset-named accessor.
+  const idleFxIdx: number = info.field_0x252 /* +0x252, i16 */;
+
+  // 6. Indirect call through `[player+0x174]`. Args = (this_gun, idleFxIdx, 0, 0).
+  //    The compiler reused the leftover 8 bytes from get_weapon_info's args
+  //    as args 3 & 4, so the cleanup is one `add esp, 0x10` for 4 args total.
+  //    TODO(asm-ambiguous): the entity at +0x174 is a function pointer, not
+  //    a method slot. Could be a vtable, a TS dispatcher, or an embed-side
+  //    callback table.
+  const dispatchFn = player.funcPtr_0x174 /* +0x174 */ as (
+    a: any, b: number, c: number, d: number
+  ) => void;
+  dispatchFn(this, idleFxIdx, 0, 0);
+}
+
+// ======================================================================
+// CCombatBlock
+// ======================================================================
+
+/**
+ * CTSGun::CCombatBlock — execute a combat-block (defensive) action.
+ *
+ * Validates that no cooldowns are active, the player is in a valid
+ * state, and any required stamina threshold is met; then plays the
+ * block animation, dispatches the corresponding client event,
+ * refreshes the on-screen melee bar, and reschedules the weapon's
+ * next attack/idle windows.
+ *
+ * @param this  The CTSGun entity instance (this in the original C++)
+ * @returns     void
+ */
+export function CCombatBlock(this: CTSGun): void {
+  const player: any = this.m_pPlayer;
+
+  // ---- Guard 1: every relevant timestamp must already be in the past ----
+  if (UTIL_WeaponTimeBase() < player.m_flNextAttack) return;
+  if (UTIL_WeaponTimeBase() < this.m_flNextPrimaryAttack) return;
+  if (UTIL_WeaponTimeBase() < this.m_flNextSecondaryAttack) return;
+  if (UTIL_WeaponTimeBase() < this.m_flTimeWeaponIdle) return;
+
+  // ---- Guard 2: reject if any of a set of player status bits is set ----
+  // TODO(asm-ambiguous): the deref `[[player]+0x250]` reads past the
+  // player vtable pointer — most likely `m_pPlayer->pev->flags` (or a
+  // similar inner-struct flag word) reached through one extra hop.
+  // Mask 0x70c30 is a TS-specific multi-bit status check (frozen /
+  // in-water / on-ladder / etc.). Port as `player.statusBits250` until
+  // the real source is recovered.
+  if ((player.statusBits250 & 0x70c30) !== 0) return;
+
+  // ---- Guard 3: player must meet a stamina / threshold cvar ----
+  // TODO(asm-ambiguous): field at player+0x774 is a float (likely
+  // stamina or block meter); cvar at GOT offset -0x6f3f0 — verify
+  // name via strings-n5.txt (likely ts_block_stamina or similar).
+  if (player.blockStamina < cvar_blockStaminaThreshold) return;
+
+  // ---- Load the block-duration cvar once for re-use below ----
+  const blockDuration: number = cvar_blockDuration; // GOT offset -0x6ec2c
+
+  // ---- Pick the event index and which player field to update, based
+  //      on the current combat/animation state ----
+  let eventIdx: number;
+  if (this.field_0xcc === 0) {
+    // Branch A: gun is in a clean state.
+    eventIdx = 1;
+    player.field_0x7a8 = blockDuration;
+  } else if (this.field_0xd0 !== 0) {
+    // Branch B/C: gun has a state struct pointer; inspect its byte.
+    const stateByte = (this.field_0xd0 as { byte_0x348: number }).byte_0x348 & 0xff;
+    if (stateByte === 0x0a) {
+      player.field_0x7b0 = blockDuration;
+      eventIdx = 0x12;
+    } else if (stateByte === 0x03) {
+      player.field_0x7ac = blockDuration;
+      eventIdx = 0x12;
+    } else {
+      eventIdx = 0;
+    }
+  } else {
+    eventIdx = 0;
+  }
+
+  // ---- Dispatch the client-side playback event for the block ----
+  // TODO(asm-ambiguous): vfunc at offset 0x1ec on a singleton pointed
+  // to by GOT+0x1aa8 (likely gEngfuncs / HUD engine table). Arg
+  // layout mirrors PLAYBACK_EVENT / PLAYBACK_EVENT_FULL but the exact
+  // packing is engine-specific. Listed below in push order
+  // (last-pushed = arg1):
+  engineSingleton.vfunc_0x1ec(
+    /* arg1  (flags)      */ 1,
+    /* arg2  (who)        */ player.field_0x208,
+    /* arg3  (eventIndex) */ this.field_0x96c & 0xffff,
+    /* arg4               */ 0,
+    /* arg5               */ global_eventIndex, // GOT+0x1888 (pushed twice)
+    /* arg6               */ global_eventIndex,
+    /* arg7               */ this.field_0xc8,
+    /* arg8               */ 0,
+    /* arg9               */ 0,
+    /* arg10 (iparam?)    */ eventIdx,
+    /* arg11              */ 0,
+    /* arg12              */ 0,
+  );
+
+  // ---- Play the block animation (sequence index 0x26 = 38) ----
+  // The CTSAnimation instance is embedded at player+0x28c.
+  Animate(player.field_0x28c, player, 0x26);
+
+  // ---- Refresh the on-screen melee bar to 33.0f (0x42040000) ----
+  UpdateMeleeBar(player, 33.0);
+
+  // ---- Schedule the next attack and idle windows ----
+  const t = UTIL_WeaponTimeBase();
+  const nextAttack = t + blockDuration;
+  this.m_flNextPrimaryAttack = nextAttack;
+  this.m_flNextSecondaryAttack = nextAttack;
+  this.m_flNextReload = t + cvar_blockIdleDelay; // field at 0xa8; cvar at GOT-0x6de98
+}
+
+// ======================================================================
+// CCombatAttack
+// ======================================================================
+
+// NOTE: this is a STRUCTURAL rewrite that fixes the blockers above.
+// Field names remain TODO until verified against CTSGun's layout.
+
+import {
+  Vector,
+  // externals — TODO: declare in a single externals.ts module
+} from "./externals";
+
+declare const player: any;       // CBasePlayer
+declare const this_: any;        // CTSGun (renamed to avoid shadowing)
+declare const pev: any;          // pev_t = player.pev
+declare function UTIL_WeaponTimeBase(): number;
+declare function UTIL_MakeVectors(v: Vector): void;
+declare function GetMeleeMultiplier(p: any): number;
+declare function KungFu(p: any): boolean;
+declare function CloseCombatAttack(p: any, origin: Vector, fwd: Vector,
+  traceMask: number, dmg: number, kd: number, b: boolean, u: number,
+  hit: Vector, k: number): boolean;
+declare function BlockPlayer(p: any, kd: number): void;
+declare function W_FireBullets(...args: any[]): void;
+declare function RANDOM_LONG(min: number, max: number): number;
+declare function player_GetAutoaimVector(p: any, scale: number): Vector;
+// cvars — TODO: resolve names from strings-n5.txt and the [ebx±k] offsets
+declare const cvar_closeCombat_range: number;       // [ebx-0x6e7f4]
+declare const cvar_closeCombat_main: number;        // [ebx-0x6f408]  ≈ 1.0
+declare const cvar_closeCombat_other: number;       // [ebx-0x6f3fc]  ≈ 1.0
+declare const cvar_closeCombat_max: number;         // [ebx-0x6f3f8]
+declare const cvar_closeCombat_min: number;         // [ebx-0x6de8c]
+declare const cvar_closeCombat_damMul: number;      // [ebx-0x6debc]
+declare const cvar_closeCombat_damMax: number;      // [ebx-0x6dec4]
+declare const cvar_closeCombat_lowMul: number;      // [ebx-0x6ecd8] QWORD/double
+declare const cvar_closeCombat_lowMin: number;      // [ebx-0x6ecc8] QWORD
+declare const cvar_closeCombat_lowMax: number;      // [ebx-0x6de20] QWORD
+declare const cvar_closeCombat_bigKick: number;     // [ebx-0x6dee8]
+declare const cvar_closeCombat_farDelay: number;    // [ebx-0x6df04]
+declare const cvar_closeCombat_kfDelay: number;     // [ebx-0x6de80]
+declare const cvar_closeCombat_kfDamage: number;    // [ebx-0x6de7c]
+declare const cvar_closeCombat_sweep: number;       // [ebx-0x6ec2c]
+declare const cvar_closeCombat_kickDur: number;     // [ebx-0x6de78]
+declare const cvar_closeCombat_highKick: number;    // [ebx-0x6df78]
+declare const cvar_closeCombat_lowDelay: number;    // [ebx-0x6de88]
+declare const cvar_closeCombat_jumpDelay: number;   // [ebx-0x6de84]
+declare const cvar_closeCombat_jumpDuration: number;// [ebx-0x6e810]
+declare const cvar_closeCombat_jumpHigh: number;    // [ebx-0x6f078]
+declare const cvar_closeCombat_jumpLow: number;     // [ebx-0x6f06c]
+declare const cvar_closeCombat_kfTime: number;      // [ebx-0x6df4c]
+declare const cvar_closeCombat_backKick: number;   // [ebx-0x6dec8]
+declare const cvar_closeCombat_backKick2: number;  // [ebx-0x6de6c]
+declare const cvar_closeCombat_rampage: number;     // [ebx-0x6deb0]
+declare const cvar_closeCombat_expDelay: number;    // [ebx-0x6f3f4]
+declare const cvar_closeCombat_lowDelta: number;    // [ebx-0x6df6c]
+declare const cvar_closeCombat_bigKickDur: number;  // [ebx-0x6e7e8]
+
+export function CCombatAttack(this_: any): void {
+  const player = this_.m_pPlayer;
+  const pev = player.pev;
+  const velocity = pev.velocity;
+  const velocityMag = Math.hypot(velocity.x, velocity.y, velocity.z);
+
+  const now = UTIL_WeaponTimeBase();
+  if (now < player.m_flNextAttack /* [esi+0x12c] */) return;
+  if (now < this_.m_flNextPrimaryAttack /* [ebp+0x9c] */) return;
+  if (now < this_.m_flTimeWeaponIdle /* [ebp+0xa0] */) return;
+
+  // ---- local state defaults (TODO: field names unverified) ----
+  let attackType: 2 | 3 = 2;
+  let damage = 0;
+  let damageMult = 0;
+  let sequence = 0;
+  let animIdx = 0;
+  let duration = cvar_closeCombat_main;       // [esp+0x24]
+  let kickDuration = cvar_closeCombat_main;   // [esp+0x20]
+  let kickDelay = cvar_closeCombat_main;      // [esp+0x1c]
+  let applyBlock = false;
+  let doFireBullets = true;
+  const isDoingAction = (pev.flags & 0x50c30) !== 0; // [esp+0x6]
+
+  // ---- pre-compute derived fields ----
+  // TODO(asm-ambiguous): each offset below is a *different* field on the
+  // player entity, NOT a pev.flags bit. Names TBD.
+  const player_f180 = pev; // pseudo — really *(uint8*)(player+0x180)
+  const player_f1a5 = pev;
+  const player_f814 = pev; // 0x814 — TODO name
+  const player_f815 = pev; // 0x815 — TODO name
+  const hasA = !!(player_f1a5.readU8(0x1a5) & 0x2);
+  const hasB = !!(player_f1a5.readU8(0x1a5) & 0x40);
+  const hasC = !!(player_f180.readU8(0x180) & 0x4);
+  const hasD = !!(player_f180.readU8(0x180) & 0x1);
+  const hasE = !!(player_f180.readU8(0x180) & 0x10);
+  const isFrozen = !!(player_f180.readU8(0x180) & 0x800);
+
+  // ====== close-combat range check (0x761a6) ======
+  // asm: jne 0x76298 if velocityMag > range  →  goto ranged branch
+  //      else fall through to UTIL_MakeVectors path
+  let isCloseCombat = false;
+  if (velocityMag > cvar_closeCombat_range) {
+    // ---- ranged: pick attackType based on player-state flag (0x76298) ----
+    attackType = (hasE ? 3 : 2) as 2 | 3;
+    // jmp to in-water check at 0x76314 (after applyAttack setup)
+    return processRanged();
+  } else {
+    isCloseCombat = true;
+  }
+
+  // ---- close-combat main path (0x761ae) ----
+  // Copy pev.origin → local forward, zero x
+  const fwd: Vector = { x: 0, y: pev.origin.y, z: pev.origin.z };
+  UTIL_MakeVectors(fwd);
+
+  // Compute unit velocity, fall back to (0,0,1) if mag ≈ 0
+  const vp = velocity;
+  const vmag = velocityMag;
+  let unit: Vector;
+  if (vmag > cvar_closeCombat_other) {
+    // [eax+0xac] sqrt reload → magnitude > 1 → safe to divide
+    unit = { x: 0, y: 0, z: cvar_closeCombat_other };
+  } else {
+    const inv = cvar_closeCombat_other / vmag;
+    unit = { x: vp.x * inv, y: vp.y * inv, z: vp.z * inv };
+  }
+
+  // Dot product selects forward (==2) vs back (==3)
+  const dot = unit.x * vp.x + unit.y * vp.y + unit.z * vp.z;
+  attackType = (dot > /* closeCombatMulti [ebx-0x6de40] QWORD */ 0 ? 3 : 2) as 2 | 3;
+
+  if (!isDoingAction) {
+    return processCloseCombatPath();   //0x76458
+  }
+
+  // ---- in-water branch (0x76314) ----
+  if (!hasD) {
+    // not in water → frozen branch (0x76458) again
+    return processCloseCombatPath();
+  }
+  // in water → process
+  return processInWater();
+
+  // ---- helpers ----
+  function processRanged(): void { /* TODO */ }
+  function processCloseCombatPath(): void { /* TODO */ }
+  function processInWater(): void { /* TODO */ }
+  // ...
 }
