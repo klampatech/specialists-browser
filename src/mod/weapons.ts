@@ -1,43 +1,6 @@
 /**
- * The Specialists mod — CTSGun entity (D.4.2 PARTIAL, 6/11 pistol methods).
- *
- * Source: ts/dlls/ts_i386.so (NOT stripped, 32-bit ELF).
- * Class: `CTSGun`.
- * Reference: cross-vendor review (codex decompile + claude review).
- *
- * 6 of 11 pistol-priority methods decompiled. Methods appear in
- * source-code order: lifecycle first, then state-transition, then
- * per-frame behavior.
- *
- * This is the BASE CTSGun class (not subclass-specific Fire* methods
- * like KnifeFire / AkimboFire / KatanaFire / ShotgunFire / etc —
- * those are deferred to D.4.7+ if needed for Phase 1 MVP).
- *
- * Class state (consolidated across the 6 methods — see each
- * function's review doc in tools/decompile/cross-vendor/<name>__claude-review.md):
- *   this+0x60     — CBaseEntity* (the parent class, gives virtual table)
- *   this+0x80     — CBasePlayer* (m_pPlayer)
- *   this+0x88     — int (iMaxClip from GetItemInfo)
- *   this+0x97a    — byte flag
- *   this+0x9b8..0x9de — 38 B of zeroed state (Reset)
- *   this+0xa08    — dword (end of zero block, also reset)
- *   this+0xa8     — float (m_flReloadTime, m_flTimeWeaponIdle, m_flNextPrimaryAttack)
- *   this+0xb4     — int (m_iClip — synced from m_pWeaponInfo.m_iAmmo)
- *   this+0xc4..0xcc — int (m_iAmmo, m_pWeaponInfo, m_iClip)
- *   this+0xc8     — int (weapon id, 0x17 = pistol)
- *   this+0xd0     — CBasePlayerWeapon* (m_pOwnerInterface)
- *   this+0x114..  — large data block (m_pWeaponInfo + 0x214 bytes)
- *
- * Methods included (in this file's order):
- *   1. Spawn                  — entity spawn (calls Reset + setup state)
- *   2. Reset                  — zero state block
- *   3. EmptySound             — dry-fire sound
- *   4. GetItemInfo            — fill ItemInfo struct
- *   5. PrimaryAttack          — main fire mode dispatch
- *   6. WeaponIdle             — per-frame idle behavior
- *
- * Pending for D.4.2: Precache, Reload, Deploy, HolsterWeapon,
- * StandardFire (the big one — 1307 B).
+ * The Specialists mod — CTSGun entity (D.4.2 PARTIAL 2, 10/11 pistol methods).
+ * StandardFire still in progress.
  */
 
 /**
@@ -538,4 +501,513 @@ export function WeaponIdle(this: CTSGun): void {
   const vtable = this[0] as any;
   const arg4 = vtable !== null ? vtable[0x114 / 4] : 0;
   this.m_pOwnerInterface[0x174 / 4](this, animId, 0, arg4);
+}
+
+// ======================================================================
+// Precache
+// ======================================================================
+
+/**
+ * CTSGun::Precache — Pre-cache 11 model/sound indices and store
+ * each returned (16-bit) index into a CTSGun field.
+ *
+ * Disassembly reference: 0x00070660, 307 B, straight-line. The
+ * engine function table is loaded from `[ebx+0x1aa8]` into `esi`,
+ * the entity is loaded from `[esp+0x10]` into `edi` (regular arg,
+ * NOT `this` — there is no `__thiscall` setup in the prologue),
+ * and 11 identical calls to engine_funcs[0x1e8 / 4] =
+ * engine_funcs[122] are issued. Each returns a 32-bit index
+ * which is truncated to AX (16 bits) and stored as a WORD at
+ * successive entity offsets.
+ *
+ * The 11 store offsets are:
+ *   0x964, 0x966, 0x96e, 0x968, 0x96a, 0x96c, 0x970,
+ *   0x972, 0x974, 0x976, 0x978
+ * (preserved verbatim from the disassembly — three logically
+ * grouped regions: 0x964–0x966, 0x968–0x96e, 0x970–0x978).
+ * The order is *not* monotone; it mirrors source-level
+ * group/init sequencing, not struct layout.
+ *
+ * GOT-relative string addresses (from rodata):
+ *   -0x6dd99, -0x6dd8a, -0x6dd77, -0x6dd62, -0x6dd52,
+ *   -0x6dd43, -0x6dd2d, -0x6dd1c, -0x6dd0c, -0x6dcfb,
+ *   -0x6dcec.
+ * Each is paired 1-to-1 with the call that uses it.
+ *
+ * @param pItem  CTSGun entity (loaded into edi from [esp+0x10])
+ * @returns      void
+ */
+export function Precache(pItem: any): void {
+  // TODO(asm-ambiguous): vtable slot 0x1e8 / 4 = engine_funcs[122].
+  // Candidate names to verify against the TS enginefuncs_t layout
+  // (see D.5 work): pfnPrecacheModel, pfnPrecacheSound,
+  // pfnPrecacheGeneric, or a TS-extended pfnPrecache* that takes
+  // a (flag, path) pair. The literal `1` pushed first is some
+  // precache-flavor discriminator.
+  // TODO(asm-ambiguous): EngineGlobals shape not yet defined; the
+  // `as any` keeps this compilable in isolation, but the eventual
+  // accessor should resolve to engine_funcs[122] in D.5.
+  const precache: any = (EngineGlobals as any).engineFuncs.precache;
+
+  // TODO(asm-ambiguous): resolve each "string@GOT-0x..." placeholder
+  // to the actual rodata string during D.4 (see
+  // tools/decompile/analysis/strings-n5.txt for the GOT-relative
+  // map). Order is fixed by the disassembly; do NOT re-sort by
+  // field offset.
+  pItem.m_iPrecache_0x964_unresolved = precache(/* flag */ 1, /* path: TODO */ "string@GOT-0x6dd99");
+  pItem.m_iPrecache_0x966_unresolved = precache(1, "string@GOT-0x6dd8a");
+  pItem.m_iPrecache_0x96e_unresolved = precache(1, "string@GOT-0x6dd77");
+  pItem.m_iPrecache_0x968_unresolved = precache(1, "string@GOT-0x6dd62");
+  pItem.m_iPrecache_0x96a_unresolved = precache(1, "string@GOT-0x6dd52");
+  pItem.m_iPrecache_0x96c_unresolved = precache(1, "string@GOT-0x6dd43");
+  pItem.m_iPrecache_0x970_unresolved = precache(1, "string@GOT-0x6dd2d");
+  pItem.m_iPrecache_0x972_unresolved = precache(1, "string@GOT-0x6dd1c");
+  pItem.m_iPrecache_0x974_unresolved = precache(1, "string@GOT-0x6dd0c");
+  pItem.m_iPrecache_0x976_unresolved = precache(1, "string@GOT-0x6dcfb");
+  pItem.m_iPrecache_0x978_unresolved = precache(1, "string@GOT-0x6dcec");
+}
+
+// ======================================================================
+// Reload
+// ======================================================================
+
+/**
+ * CTSGun::Reload — Dispatch a player-initiated reload to weapon-specific
+ * logic, or perform a standard ammo-then-clip refill for non-special modes.
+ *
+ * @param this  The CTSGun entity instance (owner weapon).
+ * @returns     void
+ */
+
+// Minimal field stubs — populated by the full CTSGun definition (D.4).
+// Comments show offsets inferred from the disassembly.
+interface CTSGun {
+  m_pPlayer: any;                        // [+0x80] CBasePlayer*
+  m_iId: number;                         // [+0xc8] weapon id (tsweapon_t)
+  m_pCombat: null | {                    // [+0xcc]
+    count: number;                       // [+0x04]
+    flag: number;                        // [+0x08] likely "reload-in-progress"
+    eventParam: any;                     // [+0x10] fed into pfnPlaybackEvent
+    weaponData: null | {                 // [+0x28]
+      clip2: number;                     // [+0x02] default-path clipSize (signed word)
+      clip16: number;                    // [+0x10] grenade-path clipSize (signed word)
+    };
+  };
+  m_pItemInfo: null | {                  // [+0xd0]
+    ammoCount: number;                   // [+0x04]
+    modeIndex: number;                   // [+0x08]
+    timeMul: number;                     // [+0x14]
+    mode: number;                        // [+0x348]
+  };
+  m_rgAmmo: Int32Array;                  // [+0xd4] ammo counts indexed by modeIndex
+  m_flTimeWeaponIdle: number;            // [+0xa8]
+  m_usEvent: number;                     // [+0x970] weapon-event id
+
+  CCombatBlock(): void;
+  ShotgunReload(): void;
+  ReloadWeapon(ammoType: number, clipSize: number, reloadTime: number): number;
+  Unzoom(): void;
+}
+
+// Engine-side stubs so this file compiles in isolation.
+// TODO(cvar/engine): wire these up to the engine cvar lookup and g_engfuncs.
+declare function UTIL_WeaponTimeBase(): number;
+declare const cvarReloadTime: { value: number };
+declare const cvarReloadIdleDelay: { value: number };
+declare const g_engfuncs: {
+  pfnPlaybackEvent(flags: number, ...args: any[]): void;
+};
+
+export function Reload(this: CTSGun): void {
+  // 1) No combat-info → record a combat-block frame and exit.
+  if (this.m_pCombat == null) {
+    this.CCombatBlock();
+    return;
+  }
+
+  // 2) Mode dispatch via m_pItemInfo.mode (byte at [+0xd0]+0x348).
+  //    0x02 → no-op; 0x03/0x0a → CCombatBlock; 0x01 → ShotgunReload.
+  const mode = this.m_pItemInfo!.mode;
+  if (mode === 0x02) return;
+  if (mode === 0x03) { this.CCombatBlock(); return; }
+  if (mode === 0x0a) { this.CCombatBlock(); return; }
+  if (mode === 0x01) { this.ShotgunReload(); return; }
+
+  // 3) Bail if the ammo slot for this mode is empty.
+  //    m_pItemInfo.modeIndex (+0x08) indexes m_rgAmmo (+0xd4).
+  const ammoSlot = this.m_rgAmmo[this.m_pItemInfo!.modeIndex];
+  if (ammoSlot <= 0) return;
+
+  // 4) Bail if m_pCombat's reload-state flag is non-zero.
+  // TODO(asm-ambiguous): confirm [+0xcc]+0x08 is the "reload-in-progress" flag.
+  if (this.m_pCombat.flag !== 0) return;
+
+  // 5) Read the 16-bit clipSize. Which offset of m_pCombat.weaponData we
+  //    read depends on the held weapon: 0x21 with a positive count reads
+  //    [+ptr+0x10]; otherwise read [+ptr+0x02]. The value is movsx-extended.
+  const wpData = this.m_pCombat.weaponData;
+  let clipSize: number;
+  if (this.m_iId === 0x21 && this.m_pCombat.count > 0) {
+    clipSize = wpData !== null ? wpData.clip16 : 0;
+  } else {
+    clipSize = wpData !== null ? wpData.clip2 : 0;
+  }
+
+  // 6) reloadTime = reload_cvar * m_pItemInfo.timeMul (+0x14).
+  const reloadTime = cvarReloadTime.value * this.m_pItemInfo!.timeMul;
+  const ok = this.ReloadWeapon(
+    this.m_pItemInfo!.ammoCount,         // [+0xd0]+0x04
+    clipSize,
+    reloadTime,
+  );
+  if (ok === 0) return;
+
+  // 7) Schedule the next idle frame.
+  this.m_flTimeWeaponIdle = UTIL_WeaponTimeBase() + cvarReloadIdleDelay.value;
+
+  // 8) Cancel any zoom state before the reload plays.
+  this.Unzoom();
+
+  // 9) Fire the engine reload playback event (pfnPlaybackEvent).
+  //    The original pushes 12 stack slots: flags, invoker edict, eventindex,
+  //    origin/angles pair, two fparams, two iparams, two bparams.
+  //    Source operands were: 0x1, [edx+0x208] (player-side), m_usEvent, m_iId,
+  //    m_pCombat.eventParam, and a duplicated global at [ebx+0x1888].
+  // TODO(asm-ambiguous): pin down pfnPlaybackEvent's exact argument layout.
+  g_engfuncs.pfnPlaybackEvent(/* flags */ 0x1 /* + 11 game-supplied args */);
+
+  // 10) Drive sequence 0x33 on the player's embedded anim object
+  //     ([m_pPlayer + 0x28c]).
+  const player = this.m_pPlayer;
+  (player as any).anim.Animate(player, 0x33);
+}
+
+// ======================================================================
+// Deploy
+// ======================================================================
+
+// ── stubs for compile isolation ──────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyPtr = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+interface CTSGun { /* fields resolved in a later D.4 task */ }
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+declare function GetBodyByItems(iId: number, bits: number): number;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+declare function DefaultDeploy(
+  self: AnyPtr, szWpnMdl: AnyPtr, szViewMdl: AnyPtr,
+  iAnim: number, szAnimExt: AnyPtr, skiplocal: number, body: number,
+): number;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+declare function Animate(self: AnyPtr, player: AnyPtr, iAnim: number): number;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+declare function PlaybackEvent(
+  flags: number, pInvoker: AnyPtr, eventindex: number,
+  delay: number, origin: AnyPtr, angles: AnyPtr,
+  fparam1: number, fparam2: number,
+  iparam1: number, iparam2: number,
+  bparam1: number, bparam2: number,
+): void;
+
+const PLAYBACK_EVENT_INVOKE_OFFSET  = 0x1ec;
+const PLAYBACK_EVENT_TABLE_GOT      = 0x1aa8;
+const PLAYBACK_EVENT_ZEROS_GOT      = 0x1888; // pointer to a static 2-float zero
+const WEAPON_INFO_TABLE_BASE_GOT    = 0x7d30;
+
+// ── the decompiled function ──────────────────────────────────────
+/**
+ * CTSGun::Deploy — bring the active weapon into the player's hands.
+ * Demangled: `CTSGun::Deploy()` @ 0x00071030, 501 bytes.
+ * Returns TRUE (1) on every path; the m_iId==0 branch returns early
+ * after HolsterWeapon().
+ */
+export function Deploy(this: CTSGun): boolean {
+  const self = this as any;
+
+  // ── 1. Early bail: no m_iId → holster and return TRUE. ──
+  if (self.m_iId === 0) {
+    self.HolsterWeapon();
+    return true;
+  }
+
+  // ── 2. Clear the field at offset 0x9e0. ──
+  // TODO: offset meaning unclear — looks like a fire/state timer
+  //       that gets cleared on every deploy.
+  self.unknown_0x9e0 = 0;
+
+  // ── 3. Per-slot data + per-weapon config pointer resolution.
+  //       ASM derives BOTH directly off m_iId AND writes them
+  //       back to this+0xcc and this+0xd0. ──
+  const iId       = self.m_iId;
+  const slotData  = (self as AnyPtr) + iId * 56 + 0x114; // 0x114 == m_pActiveItem[0]
+  self.m_pActiveItem  = slotData;
+  const cfgOffset =
+    iId * 988 /* 247 * 4 */; // m_iId*248 - m_iId = m_iId*247; ×4 for dwords
+  const cfg = /* GOT[0x7d30] + iId*988 */ (self.__picBase + WEAPON_INFO_TABLE_BASE_GOT) + cfgOffset;
+  self.m_pWeaponInfo = cfg;
+
+  // ── 4. Computed pointer at slotData+0x28 = cfg + 0x252 ──
+  //       ((self + iId*56) + 0x114) + 0x28 == (cfg + 0x252)
+  //       is just aliasing the same address; mirror both writes. ──
+  const slotAnimExt = slotData + 0x28;
+  slotAnimExt.value = cfg + 0x252;
+
+  // ── 5. Player body resolution + propagation. ──
+  const body: number = GetBodyByItems(iId, slotData.bits_0x10);
+  slotData.body_0x18 = body;
+  (self.m_pPlayer /* ASM: *(self+0) */ as AnyPtr).body_0x114 = body;
+
+  // ── 6. Reset per-weapon state dword + flag byte on slotData. ──
+  slotData.stateDword_0x8  = 0;
+  slotData.stateFlagByte_0x2c = 0;
+
+  // ── 7. DefaultDeploy(this, szWpnMdl, szViewMdl, iAnim,
+  //                     szAnimExt, skiplocal, body). ──
+  let iAnim = 0;
+  const animRef = slotData.deployAnimRef_0x28;
+  if (animRef !== 0) {
+    iAnim = animRef.short_0x4 | 0; // movsx sign-extend (int16 → int32)
+  }
+  const szViewMdl = (slotData.bits_0x10 & 0x1) ? (cfg + 0x1b2) : (cfg + 0x172);
+  DefaultDeploy(
+    /* this      */ self,
+    /* szWpnMdl  */ cfg + 0x132,
+    /* szViewMdl */ szViewMdl,
+    /* iAnim     */ iAnim,
+    /* szAnimExt */ cfg + 0x232,
+    /* skiplocal */ 0,
+    /* body      */ (self.m_pPlayer as AnyPtr).body_0x114,
+  );
+
+  // ── 8. PlaybackEvent — fires the deploy SFX/anim event. ──
+  //       ASM pushes 11 dwords right-to-left into a vtable slot at
+  //       [GOT[0x1aa8] + 0x1ec]. Order on the stack:
+  //           bparam1, bparam2, iparam2 (slotData.bits), iparam1 (m_iId),
+  //           fparam1 (0), fparam2 (0),
+  //           angles.ptr, angles.ptr  (same ptr; vec3_t from float[3]),
+  //           delay (0), eventindex (m_usDeployEvent),
+  //           pInvoker (*( *(self.m_pPlayer_at_0x80) + 0x208 )),
+  //           flags (1)
+  //       then `call DWORD PTR [ecx+0x1ec]`.
+  const eventTbl = (self.__picBase + PLAYBACK_EVENT_TABLE_GOT) as AnyPtr;
+  const zerosPtr = (self.__picBase + PLAYBACK_EVENT_ZEROS_GOT) as AnyPtr;
+  const playerAt80 = self.m_pPlayerAt0x80 as AnyPtr; // distinct from *(self+0)
+  const pInvoker   = (playerAt80 as AnyPtr)[0x208];  // *( *(self+0x80) + 0x208 )
+  const eventIndex = self.m_usDeployEvent_0x976 & 0xffff; // movzx WORD
+  // NOTE: TS lacks an indirection primitive for
+  //       `call DWORD PTR [ecx+0x1ec]`; the engine module
+  //       will provide a real wrapper. Comment-only here is
+  //       acceptable ONLY if there is a follow-up task to wire it.
+  //
+  // TODO(engine-bindings): replace this comment with:
+  //   PlaybackEvent(
+  //     /* flags       */ 1,
+  //     /* pInvoker    */ pInvoker,
+  //     /* eventindex  */ eventIndex,
+  //     /* delay       */ 0,
+  //     /* origin      */ zerosPtr,
+  //     /* angles      */ zerosPtr,
+  //     /* fparam1     */ 0,
+  //     /* fparam2     */ 0,
+  //     /* iparam1     */ iId,
+  //     /* iparam2     */ slotData.bits_0x10,
+  //     /* bparam1     */ 0,
+  //     /* bparam2     */ 0,
+  //   );
+  // until then, the code below is the closest faithful stub:
+  (eventTbl as AnyPtr)[PLAYBACK_EVENT_INVOKE_OFFSET /* 0x1ec */](
+    /* flags       */ 1,
+    /* pInvoker    */ pInvoker,
+    /* eventindex  */ eventIndex,
+    /* delay       */ 0,
+    /* origin      */ zerosPtr,
+    /* angles      */ zerosPtr,
+    /* fparam1     */ 0,
+    /* fparam2     */ 0,
+    /* iparam1     */ iId,
+    /* iparam2     */ slotData.bits_0x10,
+    /* bparam1     */ 0,
+    /* bparam2     */ 0,
+  );
+
+  // ── 9. Animate — the TS-side 3-arg overload of CTSAnimation::Animate.
+  //       Demangler: `Animate__12CTSAnimationP11CBasePlayeri`
+  //       (CTSAnimation*, CBasePlayer*, int). Push order right→left:
+  //           iAnim (0x34), pPlayer, this (== pPlayer + 0x28c). ──
+  Animate(
+    ((self.m_pPlayerAt0x80 as AnyPtr) + 0x28c) as AnyPtr,
+    self.m_pPlayerAt0x80,
+    /* iAnim */ 0x34,
+  );
+
+  // ── 10. Asymmetric per-weapon clip-byte exchange. ──
+  //        Address: *(m_pPlayerAt0x80 + 0xa + iId + 0x490),
+  //        which expands to *(pPlayerAt0x80 + 0x49a + iId)
+  //        — a 1-byte-array indexed by m_iId at base +0x49a. ──
+  {
+    const p = self.m_pPlayerAt0x80 as AnyPtr;
+    const clipByte: number = ((p + 0x49a + iId) as Uint8Array)[0];
+    if (clipByte > 0) {
+      slotData.slotByte_0x2 = clipByte - 1; // drain into slot data
+      // (slotByte_0x2 is the slot-data mirror; NOT updated on the
+      //  else branch below — mirrors asm asymmetry.)
+    } else {
+      ((p + 0x49a + iId) as Uint8Array)[0] =
+        ((slotData.slotByte_0x2 as number) + 1) & 0xff;
+    }
+  }
+
+  return true;
+}
+
+// ======================================================================
+// HolsterWeapon
+// ======================================================================
+
+/**
+ * CTSGun::HolsterWeapon — Hides this weapon (called when the player
+ * switches weapons, stows, or otherwise un-holsters).
+ *
+ * Performs the full teardown: marks the player as having this as
+ * active item, cancels zoom, resets player view fields, schedules
+ * next-attack delays, cancels any in-progress reload, disposes of
+ * in-flight grenades, plays a holster event, and zeros the
+ * weapon's clip/ammo. Skips the grenade/event/clip-clear stages
+ * if the player is dead.
+ *
+ * @param this  The CTSGun entity instance
+ * @returns     void
+ */
+export function HolsterWeapon(this: any): void {
+  const self: any = this;
+  const player: any = self.m_pPlayer;
+
+  // (1) Mark this as the player's currently-active item.
+  player.m_pActiveItem = self;
+
+  // (2) Reset two view-related fields on the player's pev.
+  player.pev.ideal_yaw.x = 0;
+  player.pev.ideal_yaw.y = 0;
+
+  // (3) Cancel any zoom.
+  self.Unzoom();
+
+  // (4) Copy a global flag byte into two player fields.
+  // TODO(asm-ambiguous): source byte at [GOT-0x6f7b9] — likely a
+  // ts_slowmotion flag. Destinations are player+0xb58 (first)
+  // then player+0x478.
+  const slowmoFlag: number = (globalThis as any).__byte_got_m0x6f7b9;
+  player.slowmo_field_0xb58 = slowmoFlag;
+  player.slowmo_field_0x478 = slowmoFlag;
+
+  // (5) Schedule next-attack times.
+  // TODO(asm-ambiguous): globals at [GOT-0x6f010] and [GOT-0x6e768]
+  // are the player next-attack and weapon next-primary-attack delay
+  // cvars respectively.
+  player.m_flNextAttack =
+    UTIL_WeaponTimeBase() + (globalThis as any).__double_got_m0x6f010;
+  self.m_flNextPrimaryAttack =
+    UTIL_WeaponTimeBase() + (globalThis as any).__double_got_m0x6e768;
+
+  // (6) Cancel reload if it's in progress.
+  // The fcomp; fnstsw ax; test ah,0x40; jne idiom at 75740-7574b
+  // SKIPS the reset when the floats are EQUAL (C3 = FPU "equal"
+  // flag). So we reset when they are NOT equal AND player[0x7a4] != 0.
+  // TODO(asm-ambiguous): field trio at +0x79c (float), +0x7a0 (dword),
+  // +0x7a4 (byte) is the player's reload state.
+  const reloadCvar: number = (globalThis as any).__float_got_m0x6f408;
+  if (player.reload_state_0x79c !== reloadCvar
+      && player.reload_flag_0x7a4 !== 0) {
+    player.reload_state_0x79c = 0;
+    player.reload_state_0x7a0 = 0;
+    player.reload_flag_0x7a4 = 0;
+  }
+
+  // (7) If the player is dead, skip the rest (return early).
+  // The disassembly jumps to the function epilogue (758c0) when
+  // m_pPlayer != 0 && IsAlive() returns 0. If m_pPlayer is null
+  // the IsAlive call is skipped and we fall through to the grenade
+  // cleanup (in practice unreachable — steps 1-6 deref m_pPlayer).
+  // TODO(asm-ambiguous): the virtual is on m_pPlayer->field_0x60
+  // (some subobject with its own vtable), slot 0xb4/4 = 45,
+  // not a direct IsAlive() on the player.
+  if (player != null && player.IsAlive() === 0) {
+    return;
+  }
+
+  // (8) Grenade state cleanup.
+  // TODO(asm-ambiguous): field offsets 0xc8 (m_pPrimeGrenade),
+  // 0xcc (m_pGrenadeState), 0xd0 (m_pGrenadeEntity) are TS-specific
+  // and need D.4 research for real names.
+  if (self.m_pGrenadeState != null && self.m_pGrenadeEntity != null) {
+    if (self.m_pGrenadeEntity.some_state === 2) {
+      // Grenade is in state 2 ("primed/thrown"); let GrenadeIdle handle it.
+      self.GrenadeIdle(1);
+    } else {
+      // Otherwise just zero the grenade-state fields.
+      // TODO(asm-ambiguous): sub-fields at +0xc and +0x8 of the
+      // grenade state object.
+      self.m_pGrenadeState.state_field_0xc = 0;
+      self.m_pGrenadeState.state_field_0x8 = 0;
+    }
+  }
+  self.m_pPrimeGrenade = 0;
+  self.m_pGrenadeState = 0;
+  self.m_pGrenadeEntity = 0;
+
+  // (9) Pointer arithmetic → store at player->pev+0xbc.
+  // The disassembly overwrites the slot that was just zeroed at
+  // step (2) with a pointer-sized value computed from the weapon
+  // info table. Semantics unclear — may be a TS pev extension that
+  // happens to share offset 0xbc with ideal_yaw.x.
+  // TODO(asm-ambiguous): magic constant 0x132; semantics unclear.
+  const wi: any = get_weapon_info(0);
+  const globalPtr: any = (globalThis as any).__ptr_got_p0x1600;
+  player.pev.field_0xbc =
+    (wi as number) - globalPtr[0].field_0x98 + 0x132;
+
+  // (10) Send weapon animation via virtual call.
+  // TODO(asm-ambiguous): [self+0x60] is used as a vtable base;
+  // slot 0x174/4 = 93 is a TS-extended virtual. The anim arg is
+  // a sign-extended 16-bit field from get_weapon_info(0)->field_0x256.
+  const animIdx: number =
+    ((get_weapon_info(0) as any).field_0x256 << 16) >> 16;
+  const receiver: any = self.field_0x60;
+  receiver.vtable[0x174 / 4].call(self, animIdx);
+
+  // (11) Play the holster event via the engine's pfnPlaybackEvent.
+  // Signature (HLSDK enginefuncs_t):
+  //   pfnPlaybackEvent(int flags, edict_t* pInvoker, uint16 eventindex,
+  //                    float delay, const float* origin, const float* angles,
+  //                    float fparam1, float fparam2,
+  //                    int iparam1, int iparam2, int bparam1, int bparam2);
+  // Disassembly pushes 12 dwords (cleanup: add esp, 0x30).
+  // TODO(asm-ambiguous): this->0x976 (eventindex), pev+0x208 (invoker),
+  // global dword at [GOT+0x1888] (fparam1/fparam2) need D.4 research.
+  const eventVtableObj: any = (globalThis as any).__ptr_got_p0x1aa8;
+  const eventIdx: number = self.m_usHolsterEvent & 0xffff;  // u16 at 0x976
+  const someGlobal: number = (globalThis as any).__dword_got_p0x1888;
+  const pInvoker: number = (player.pev as any).field_0x208;
+  eventVtableObj.vtable[0x1ec / 4].call(
+    1,             // flags
+    pInvoker,      // m_pPlayer->pev+0x208
+    eventIdx,      // this->0x976 (eventindex, unsigned 16-bit)
+    0,             // delay
+    null,          // origin (float*, NULL)
+    null,          // angles (float*, NULL)
+    someGlobal,    // fparam1
+    someGlobal,    // fparam2
+    0,             // iparam1
+    0,             // iparam2
+    0,             // bparam1 (this->0xc8 was zeroed at step 8)
+    0              // bparam2
+  );
+
+  // (12) Clear clip and ammo counters.
+  // TODO(asm-ambiguous): field offsets 0x9fc, 0xa00, 0xa04 are
+  // TS-specific and need D.4 research for real names.
+  self.m_iClip = 0;          // offset 0x9fc
+  self.m_iAmmo = 0;          // offset 0xa00
+  self.m_iReserveAmmo = 0;   // offset 0xa04
 }
