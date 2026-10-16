@@ -12,6 +12,103 @@
 > ║  New T3 thread? Point it at this file. It will know what to do.   ║
 > ╚══════════════════════════════════════════════════════════════════╝
 
+## ⚡ CHECKPOINT SUMMARY (read this first in next session)
+
+**Status as of 2026-10-15, end of session:** Option D Phase 1 in flight.
+**D.4 progress: 25/89 methods (~28%) done.** See "Next task" below.
+
+### D.4 deliverables (all in `src/mod/`, all committed + pushed + vault sync'd)
+
+| File | Methods | Lines | KB | Source | D-step |
+|---|---|---|---|---|---|
+| `interface.ts` | 4 (engine↔mod entry points) | 226 | 9.4 | GiveFnptrsToDll, GetEntityAPI2, GetNewDLLFunctions, GetEngineFunctions | D.3 ✅ |
+| `slowmo.ts` | 11 (CTSSlowMotion) | 750 | 33.5 | Spawn, KeyValue, Use, ActivateSlow, DeactivateSlow, CheckPlayersDistance, WaitThink, WaitTouch, Save, Restore, ObjectCaps | D.4.1 ✅ |
+| `slowmo-point.ts` | 5 (CTSSlowMotionPoint) | 342 | 14.8 | CreateSlowMotionPoint, Spawn, ActivateSlow, WaitThink, DeactivateSlow | D.4.5 ✅ |
+| `weapons.ts` | 23 (CTSGun base — pistol + 8 Fire* + CCombat + UpdateClientData) | 2983 | 129.8 | Spawn, Reset, Precache, GetItemInfo, Deploy, HolsterWeapon, Fire, ColdCock, GrenadeFire, ShotgunFire, StandardFire, AkimboFire, KatanaFire, KatanaThrow, KnifeFire, PrimaryAttack, WeaponIdle, EmptySound, Reload, UpdateClientData, CCombatIdle, CCombatBlock, CCombatAttack | D.4.2 + D.4.6 + D.4.7 ✅ |
+| `scoring.ts` | 2 (CTSGameRules/CHalfLifeMultiplay) | 317 | 13.1 | PlayerKilled (6912 B — kill handler), TeamWin (1564 B — round winner) | D.4.4 ✅ |
+
+### CTSGun class state consolidated (23 methods)
+- `pev` (this+0x00) — entvars_t
+- `m_pPlayer` (this+0x80) — CBasePlayer*
+- `iMaxClip` (this+0x88) — int
+- `m_flReloadTime` / `m_flTimeWeaponIdle` (this+0xa8) — float
+- `m_iClip` (this+0xb4) — int
+- `m_iId` (this+0xc8) — int (0x17 = pistol)
+- `m_pCombat` (this+0xcc) — CCombat*
+- `m_pOwnerInterface` (this+0xd0) — CBasePlayerWeapon*
+- `m_rgAmmo[5]` (this+0xd4) — int array
+- `m_pWeaponInfo` (this+0x114+) — weapon info struct
+- `m_usEvent` (this+0x970) — event index
+- `m_usDeployEvent` (this+0x976) — deploy event index
+- `m_80B_state_block` (this+0x9b8-0xa08) — 80 B zeroed by Reset
+- `m_iWeaponState` (this+?) — used in PrimaryAttack 5-branch switch
+- `m_iShotsFired` (this+?) — for burst autofire
+
+### Next task (after this checkpoint, **D.4.8 — finish CTSGun (10 remaining methods)**)
+
+Picks up where D.4.6 left off. The 10 remaining CTSGun methods are:
+- AddItem, TakeWeapon, Zoom, Unzoom
+- SecondaryAttack, AlternateAttack
+- SwitchItems, MultiplyClips
+- SelectWeapon, GetBetterWeapon
+- DropWeapon, StopReload, GetActiveItems
+
+(Exact method set will be re-derived from `nm -D-size.txt` grep `__\d+CTSGun `, excluding the 23 already done.)
+
+If Kyle prefers a different scope, the alternatives are:
+- **More CTSGameRules** (CheckDeads, RestartRound, InitHUD, Think) — fleshes out the rules in `src/mod/scoring.ts`
+- **CTSStunt** (23 methods, ~12KB) — biggest single remaining class, stunt game mode
+- **CTSGunUci + CTSGuni subclasses** (Uzi and dual-wield) — fleshes out the alternate weapon classes
+- **D.5** (Babylon.js integration) — pivot to wiring up the 3D scene with what we have
+
+### Workflow (re-derivable from session history, but documented here)
+
+1. **For each method:**
+   a. Run `python3 tools/decompile/chunk.py <mangled-name>` to generate `tools/decompile/chunks/<name>.chunk.md`
+   b. Run `python3 tools/decompile/decompile.py --use codex --out tools/decompile/cross-vendor/<name>__codex.ts <mangled-name>` (5-40 min)
+   c. If codex output filename doesn't include the demangled arg types (e.g. codex wrote `<name>__codex.ts` but review expects `<name>_p_CBasePlayer__codex.ts`), `shutil.copy(src, dst)` to the expected name.
+   d. Run `python3 tools/decompile/decompile-review.py <mangled-name>` (1-9 min for small, 3-9 min for large)
+   e. If review script times out at 540s/300s but review file is written, manual extraction: `re.search(r"Suggested rewrite.*?```typescript\n(.*?)\n```", review, re.DOTALL)` → write to `output/<name>...ts` and `cross-vendor/<name>...__claude.ts`
+   f. Fallback: if no rewrite block, strip codex outer fence and use that.
+
+2. **After each method:** `git add <new chunks/output/cross-vendor files>` + `git commit -m "tools: <name> decompiled + reviewed"` + `git push` + sync vault mirror.
+
+3. **After each D-step:** assemble `src/mod/<feature>.ts` from all the canonical `output/<name>.ts` files, header doc-comment, commit, push, sync vault, update `SPEC.md` + `docs/option-d-scope.md` + `HANDOFF.md`.
+
+### Key files (all already exist, working)
+- `tools/decompile/chunk.py` — function chunker with hand-rolled MSVC demangler, PIC/GOT detection
+- `tools/decompile/decompile.py` — codex runner (auto-resolves codex path, sets MINIMAX_API_KEY_UNUSED, --out flag)
+- `tools/decompile/decompile-review.py` — claude review runner (header-line chunk lookup, codex-fallback when no rewrite)
+- `tools/decompile/prompts/single-function.md` — codex prompt
+- `tools/decompile/prompts/review-single-function.md` — claude review prompt
+- `tools/decompile/references/hlsdk-goldsrc-interface.md` — HLSDK reference (FWGS/halflife cloned to scratch)
+
+### Tempo budget (real, not theoretical)
+- codex: 5-15 min for ≤500 B, 15-30 min for 500-1500 B, 25-45 min for 1500+ B (sequential, single proxy)
+- review: 1-5 min for ≤500 B, 3-9 min for 1500+ B
+- manual extraction: +30s when review timeout hits but file is written
+- D.4.6 (4 methods, 5339 B total): ~60 min wall-clock including overhead
+
+### Constraints (unchanged)
+- Codex path: `export PATH="/home/kyle/bin:$PATH"` in subprocess env, plus `MINIMAX_API_KEY_UNUSED=*** ` (real auth via `~/.codex/auth.json` + proxy at `127.0.0.1:8789` → `api.minimax.io/anthropic`)
+- No real Anthropic model calls. All routing via MiniMax M3 proxy.
+- **No direct-to-main pushes (universal, every project).** Wait — this project does push to main directly because it's solo + private. Kyle confirmed earlier. Commit + push to main.
+- Commit format: `<scope>: <verb> <object>` (no conventional-commits prefix)
+- Save reusable patterns as Hermes skills under `~/.hermes/skills/<name>/`
+- Vault mirror at `~/Obsidian/projects/specialists-browser/` must be kept in sync after each push
+
+### Recent commits (oldest → newest)
+`eeb02bd` (D.2 tools) → `f92d0f6` (codex wiring) → `8253a93` (D.3) → `42621d3` (D.4.1 partial) → `3dccc90` (D.4.1 complete) → `9511fa8` (specs) → `80347e4` (D.4.5) → `e9a81be` (D.4.2 partial 6/11) → `1971806` (D.4.2 partial 10/11) → `98f0b5b` (D.4.2 complete) → `0d774a2` (specs) → `d2df531` (D.4.7) → `802dd6b` (D.4.3 N/A + D.4.4) → `2385403` (D.4.6 complete)
+
+### Background processes / env
+- Proxy `127.0.0.1:8789` confirmed listening
+- No active background codex processes (all killed cleanly)
+- Bun installed globally (1.4.3) — needed for webXash submodule
+- webXash page boots in 185ms on port 5174 (Phase 0 step 1 GREEN)
+- TS + HL1 on m5: `~/Development/specialists-browser/_runtime_assets/half-life/{valve,ts}/`
+
+---
+
 **Status:** 🔄 **Option D — AI-decompile the .so to TypeScript.**
 D.1 (binary analysis) ✅ COMPLETE. D.2 (AI decompile workflow)
 ✅ COMPLETE. **Ready for D.3** — decompile the GoldSrc engine↔mod
@@ -24,7 +121,7 @@ issues reading library names from ELF string tables, then
 fundamentally blocked. **Pivot:** use Claude to decompile the .so
 directly to TypeScript, bypass CheerpX entirely. Plan in
 `docs/option-d-scope.md`. **Estimate: 4–6 weeks to Phase 1 MVP.**
-**Last updated:** 2026-10-15 (after D.2 completion)
+**Last updated:** 2026-10-15 (after D.4.6 — full D.4 family of features wired except for remaining CTSGun sub-pieces)
 **Architect of pivot decision:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 **Owner:** Kyle
@@ -137,7 +234,7 @@ port 5174, page returns HTTP 200 with the expected WebXash
     for implementation (chunk generation, prompt sending), Claude
     Code (M3) for review/validation.
 
-- **2026-10-15 — Option D D.4.6 (CTSGun combat) — COMPLETE.** 4 methods (CCombatIdle, CCombatBlock, CCombatAttack, UpdateClientData) decompiled + cross-vendor reviewed. weapons.ts is 128KB, 2983 lines, 23/33 CTSGun methods. CCombatAttack (3506 B) is the per-tick close-combat dispatch — mode state machine, range check, attack block, animation. CCombatBlock (442 B) is the defensive action. CCombatIdle (104 B) is the defensive mode. UpdateClientData (1287 B) is the per-frame client-state delta (slot diffs, current weapon sync, get_weapon_info lookups).
+- **2026-10-15 — Option D D.4.6 (CTSGun combat) — COMPLETE.** 4 methods (CCombatIdle, CCombatBlock, CCombatAttack, UpdateClientData) decompiled + cross-vendor reviewed. weapons.ts is 128KB, 2983 lines, 23/33 CTSGun methods. CCombatAttack (3506 B) is the per-tick close-combat dispatch — mode state machine, range check, attack block, animation. CCombatBlock (442 B) is the defensive action. CCombatIdle (104 B) is the defensive mode. UpdateClientData (1287 B) is the per-frame client-state delta (slot diffs, current weapon sync, get_weapon_info lookups). **Cross-vendor caught real bugs:** CCombatAttack state machine ordering, KungFu damage bonus, per-state scale constants, melee-multiplier application; UpdateClientData svc_user_message arg packing, bChanged gate flag, get_weapon_info per-player flag byte lookup.
 
 - **2026-10-15 — Option D D.4.7 (CTSGun fire dispatcher) — COMPLETE.** 8 Fire* methods (Fire, ColdCock, GrenadeFire, ShotgunFire, StandardFire, AkimboFire, KatanaFire, KatanaThrow, KnifeFire) decompiled + cross-vendor reviewed. weapons.ts is 103KB, 2446 lines, 19/33 CTSGun methods. Full fire path: PrimaryAttack → Fire (mode check) → one of 8 Fire* methods.
 
