@@ -15,10 +15,12 @@
 | D.2 | ✅ | 2026-10-15 | AI decompile workflow: `tools/decompile/chunk.py` (function chunker with hand-rolled MSVC demangler), `decompile.py` (runner), `decompile-review.py` (cross-vendor reviewer). First test on `ActivateSlow__13CTSSlowMotion` (127 B) GREEN. Codex CLI wired via local proxy. |
 | D.3 | ✅ | 2026-10-15 | 4 GoldSrc interface functions decompiled: `GiveFnptrsToDll`, `GetEntityAPI`, `GetEntityAPI2`, `GetNewDLLFunctions`. Output: `src/mod/interface.ts`. Cross-vendor caught invalid TS in GiveFnptrsToDll. |
 | D.4.1 | ✅ | 2026-10-15 | CTSSlowMotion (11/11 methods): Spawn, KeyValue, Use, ActivateSlow, DeactivateSlow, CheckPlayersDistance, WaitThink, WaitTouch, Save, Restore, ObjectCaps. Output: `src/mod/slowmo.ts` (33.5KB, 750 lines). Class state consolidated across methods. Cross-vendor caught 3 bugs in `Use` alone (string_t comparison, wrong field name, unverified gpGlobals). |
-| D.4.5 | ⏳ Next | — | CTSSlowMotionPoint family (5 methods). |
-| D.4.2 | ⏸ | — | weapons (CTSGun + CTSGunUci, ~15 methods). |
-| D.4.3 | ⏸ | — | bots (variable). |
-| D.4.4 | ⏸ | — | damage/scoring/spawn (~10 methods). |
+| D.4.5 | ✅ | 2026-10-15 | CTSSlowMotionPoint (5/5 methods): CreateSlowMotionPoint, Spawn, ActivateSlow, WaitThink, DeactivateSlow. Output: `src/mod/slowmo-point.ts` (14.7KB, 342 lines). WaitThink is the per-tick zone check (player loop 1..maxClients, two vtable pre-checks, LOS trace from zone to predicted player position, applies slow-motion, records in m_affectedPlayers[slot]). |
+| D.4.2 | ✅ | 2026-10-15 | CTSGun pistol (11/11 methods: Spawn, Reset, Precache, GetItemInfo, Deploy, HolsterWeapon, PrimaryAttack, WeaponIdle, EmptySound, Reload, StandardFire). Output: `src/mod/weapons.ts` (54.7KB, 1292 lines). Pistol is fully wired: PrimaryAttack → StandardFire. Cross-vendor caught 3-5 issues per function. |
+| D.4.7 | ⏳ Next | — | CTSGun subclass Fire* methods (KnifeFire, AkimboFire, KatanaFire, ShotgunFire, GrenadeFire, ColdCock, etc. — 8 methods) |
+| D.4.3 | ⏸ | — | bots (variable) |
+| D.4.4 | ⏸ | — | damage/scoring/spawn (~10 methods) |
+| D.4.6 | ⏸ | — | CCombat (3 methods: Idle, Block, Attack) + UpdateClientData + cold-cock flow |
 | D.5 | ⏸ | — | Babylon.js integration (1-2 weeks). |
 | D.6 | ⏸ | — | bridge semantics + polish (1-2 weeks). |
 

@@ -26,10 +26,12 @@ doesn't converge.
 | D.2 | ✅ Complete (2026-10-15) | `tools/decompile/{chunk,decompile,decompile-review}.py` + `prompts/` |
 | D.3 | ✅ Complete (2026-10-15) | `src/mod/interface.ts` (4 entry points, GoldSrc engine↔mod) |
 | D.4.1 | ✅ Complete (2026-10-15) | `src/mod/slowmo.ts` (CTSSlowMotion, 11/11 methods, 750 lines) |
-| D.4.2 | ⏳ Next | weapons (CTSGun + CTSGunUci, ~15 methods) |
+| D.4.5 | ✅ Complete (2026-10-15) | `src/mod/slowmo-point.ts` (CTSSlowMotionPoint, 5/5 methods, 342 lines) |
+| D.4.2 | ✅ Complete (2026-10-15) | `src/mod/weapons.ts` (CTSGun pistol, 11/11 methods, 1292 lines) |
+| D.4.7 | ⏳ Next | CTSGun subclass Fire* methods (KnifeFire, AkimboFire, KatanaFire, ShotgunFire, GrenadeFire, ColdCock, etc. — 8 methods) |
 | D.4.3 | ⏸ Pending | bots (variable) |
 | D.4.4 | ⏸ Pending | damage/scoring/spawn (~10 methods) |
-| D.4.5 | ⏸ Pending | CTSSlowMotionPoint (5 methods) |
+| D.4.6 | ⏸ Pending | CCombat (3 methods: Idle, Block, Attack) + UpdateClientData + cold-cock flow |
 | D.5 | ⏸ Pending | Babylon.js integration (1-2 weeks) |
 | D.6 | ⏸ Pending | bridge semantics + polish (1-2 weeks) |
 
