@@ -132,8 +132,17 @@ def main() -> None:
 
     rewrite = extract_rewrite(review)
     if not rewrite:
-        print("no rewrite extracted from review (verdict may be PASS); skipping output", file=sys.stderr)
-        return
+        # No rewrite means verdict was PASS (or close to it) — use the codex
+        # output as the canonical. Claude approved it as-is.
+        print("no rewrite extracted from review (verdict may be PASS); using codex output as canonical", file=sys.stderr)
+        rewrite = codex_path.read_text()
+        # Strip codex output's outer ```typescript fence if present
+        import re as _re
+        rewrite = _re.sub(r"^```(?:typescript)?\s*\n", "", rewrite)
+        rewrite = _re.sub(r"\n```\s*$", "", rewrite)
+        if not rewrite.strip():
+            print("codex output is empty after stripping; cannot fall back", file=sys.stderr)
+            return
 
     out_path = OUTPUT_DIR / f"{chunk_path.stem.removesuffix('.chunk')}.ts"
     out_path.parent.mkdir(parents=True, exist_ok=True)

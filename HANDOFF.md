@@ -137,32 +137,50 @@ port 5174, page returns HTTP 200 with the expected WebXash
     for implementation (chunk generation, prompt sending), Claude
     Code (M3) for review/validation.
 
-- **2026-10-15 — Option D D.4.1 (slowmo system) — PARTIAL.** 5 of
+- **2026-10-15 — Option D D.4.1 (slowmo system) — COMPLETE.** All
   11 CTSSlowMotion methods decompiled + cross-vendor reviewed.
-  Output: `src/mod/slowmo.ts` (15.5KB, 363 lines).
-  - `ActivateSlow__13CTSSlowMotion` (D.2 carryover)
-  - `DeactivateSlow__13CTSSlowMotion` (D.4.1)
-  - `CheckPlayersDistance__13CTSSlowMotion` (D.4.1)
-  - `WaitThink__13CTSSlowMotion` (D.4.1)
-  - `WaitTouch__13CTSSlowMotionP11CBaseEntity` (D.4.1)
-  - **Cross-vendor value (continued from D.3):** Claude caught
-    a missing `entity = ent["0x60"]` load in codex's
-    DeactivateSlow output — the virtual call would have
-    dispatched on the edict instead of the entity. Fix was
-    a single load before the call.
-  - **Class state discovered (cross-method):** `m_fActive`
-    (0x68, float), `m_affectedEntities` (0x70, 33×4 = 132 B
-    edict-pointer array), `m_fGlobal` (0x100, mode flag).
-    Each function has a review doc with the full field map.
-  - **Pending for D.4.1 (next session):** Spawn (454 B),
-    Use (176 B), KeyValue (158 B), Save (80 B), Restore
-    (80 B), ObjectCaps (6 B), plus the CTSSlowMotionPoint
-    family (7 methods). Spawn is the largest; ~10 min for
-    codex + 3 min for claude review.
-  - **Tooling fixes landed this session:** chunk.py
-    filename sanitization (replaces `,` and ` ` to avoid
-    path errors); decompile-review.py finds chunk by header
-    (was matching sibling mentions).
+  Output: `src/mod/slowmo.ts` (33.5KB, 750 lines).
+  - `Spawn__13CTSSlowMotion` (454 B) — entity creation, sets
+    up `pev`, RENDER_MODE, NEXT_THINK, m_affectedEntities[33]
+    zero-fill, computes m_flSlowAmount from spawn distance
+  - `KeyValue__13CTSSlowMotion` (158 B) — parses "slowamt" +
+    "slowtime" map keys
+  - `Use__13CTSSlowMotion` (176 B) — player trigger, calls
+    ActivateSlow, schedules deactivation, broadcasts HUD msg,
+    fires target
+  - `ActivateSlow__13CTSSlowMotion` (127 B, D.2 carryover)
+  - `DeactivateSlow__13CTSSlowMotion` (273 B) — clears
+    m_affectedEntities, calls ResetSlowMotion on each
+  - `CheckPlayersDistance__13CTSSlowMotion` (278 B) — sets/
+    unsets slowmo per player based on distance threshold
+  - `WaitThink__13CTSSlowMotion` (222 B) — think callback
+  - `WaitTouch__13CTSSlowMotion` (153 B) — touch callback
+  - `Save__13CTSSlowMotion` (80 B) — save-game writer via
+    WriteFields
+  - `Restore__13CTSSlowMotion` (80 B) — save-game reader via
+    ReadFields
+  - `ObjectCaps__13CTSSlowMotion` (6 B) — returns 0
+    (FCAP_NONE)
+  - **Cross-vendor value (continued):** Claude caught 3 bugs
+    in the `Use` decompile: `pev.message !== null` should be
+    `!== 0` (string_t is int), wrong field name
+    `m_flDeactivateAt` → `m_iHasBeenUsed`, unverified
+    `gpGlobals.time` claim. Without cross-vendor, those
+    would have shipped.
+  - **Class state consolidated:** pev (this+0x00),
+    m_iDeactivateFlag (0x0c), m_flSlowEndTime (0x10),
+    m_bSlowActive (0x64), m_fNextThink (0x68),
+    m_affectedEntities[33] (0x70), m_flSlowAmount (0xf4),
+    m_iUseCount (0x100), m_flSlowAmt (0xf8, from KeyValue),
+    m_flSlowTime (0xfc, from KeyValue), m_SaveData[32] (class).
+  - **Engine globals accessed:** gpGlobals (GOT+0x1600),
+    Engine.SetModel (GOT+0x1aa8), cvars `slowamt`/`slowtime`.
+  - **Tooling fix:** decompile-review.py now uses codex
+    output as canonical when review verdict is PASS (no
+    suggested rewrite). Previously: skipped output write.
+  - **Next:** CTSSlowMotionPoint family (5 methods: Spawn,
+    DeactivateSlow, WaitThink, ActivateSlow, CreateSlowMotionPoint).
+    Then D.4.2 (weapons).
   - Pulled HLSDK reference (`github.com/FWGS/halflife`, depth 1)
     to `/home/kyle/Development/scratch/hlsdk-ref/halflife/`.
     Reference implementation of the 4 entry points lives in

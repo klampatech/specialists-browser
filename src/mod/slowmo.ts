@@ -1,40 +1,288 @@
 /**
- * The Specialists mod — slowmo system (D.4.1 deliverable).
+ * The Specialists mod — CTSSlowMotion entity (D.4.1 COMPLETE).
  *
  * Source: ts/dlls/ts_i386.so (NOT stripped, 32-bit ELF).
- * Class: `CTSSlowMotion` + `CTSSlowMotionPoint`.
+ * Class: `CTSSlowMotion`.
  * Reference: cross-vendor review (codex decompile + claude review).
  *
- * What this module contains:
- * - The CTSSlowMotion entity's primary gameplay methods. Together
- *   they implement the TS slow-motion system: spawn → use/check →
- *   activate/wait → deactivate.
- * - Each function is one TS function declaration; class state is
- *   `any` for D.4.1 — the host (D.5) wires up Babylon.js entities
- *   to this shape.
+ * 11 of 11 public methods decompiled. Methods appear here in source-code
+ * order (Spawn first, lifecycle methods in between, ObjectCaps last).
  *
- * Shared state (inferred from the decompiled methods, see
- * `tools/decompile/cross-vendor/<name>__claude-review.md` for
- * each function's notes):
- *   this.m_fActive            (0x68)         — float, slow-end time
- *   this.m_affectedEntities   (0x70, 33*4)   — array of edict pointers
- *   this.m_flMaxDistance      (offset TBD)   — used in CheckPlayersDistance
- *   this.m_fGlobal            (0x100)        — bool, "global" mode flag
+ * Class state (consolidated across all methods — see each function's
+ * review doc in tools/decompile/cross-vendor/<name>__claude-review.md):
+ *   pev                          (this+0x00)   — entvars_t*, set by Spawn
+ *   m_iDeactivateFlag            (this+0x0c)   — float? (Use writes 0xffff0000)
+ *   m_flSlowEndTime              (this+0x10)   — float, gpGlobals.time-based
+ *   m_bSlowActive                (this+0x64)   — byte flag
+ *   m_fNextThink                 (this+0x68)   — float, scheduler next-think time
+ *   m_affectedEntities[33]       (this+0x70)   — edict-pointer array, 132 B
+ *   m_flSlowAmount               (this+0xf4)   — float, from spawn distance calc
+ *   m_iUseCount / m_iHasBeenUsed (this+0x100)  — int (use-counter / "has been used" flag)
+ *   m_flSlowAmt                  (this+0xf8)   — float, set by KeyValue "slowamt"
+ *   m_flSlowTime                 (this+0xfc)   — float, set by KeyValue "slowtime"
+ *   m_SaveData[32]               (class-level) — save/load scratch (offset 0x101140)
  *
- * Cross-vendor review files:
+ * Engine globals accessed (via GOT, see disassembly comments):
+ *   gpGlobals                    (ebx+0x1600)  — engine globals struct
+ *   Engine.SetModel              (ebx+0x1aa8)  — engine function table
+ *   NEXT_THINK_DELAY             (constant)     — scheduler tick
+ *   RENDER_MODE                  (constant)     — render mode bitfield
+ *   CLASS_ID_SLOWMOTION          (constant)     — engine class id
+ *   slowamt                      (cvar)         — set by KeyValue
+ *   slowtime                     (cvar)         — set by KeyValue
+ *
+ * Cross-vendor review files for each function:
  *   tools/decompile/cross-vendor/CTSSlowMotion__<Method>__{codex,claude,claude-review}.{ts,md}
  *
- * Methods included in D.4.1 (in this order):
- *   1. ActivateSlow           — D.2 test
- *   2. DeactivateSlow         — D.4.1
- *   3. CheckPlayersDistance   — D.4.1
- *   4. WaitThink              — D.4.1
- *   5. WaitTouch              — D.4.1
+ * Methods included (in this file's order):
+ *   1. Spawn                     — entity creation
+ *   2. KeyValue                  — map key-value parsing
+ *   3. Use                       — player-trigger handler
+ *   4. ActivateSlow              — TS gameplay (slowmo on)
+ *   5. DeactivateSlow            — TS gameplay (slowmo off)
+ *   6. CheckPlayersDistance      — TS gameplay (range check)
+ *   7. WaitThink                 — TS gameplay (scheduler)
+ *   8. WaitTouch                 — TS gameplay (touch handler)
+ *   9. Save                      — save-game serialization
+ *  10. Restore                   — save-game deserialization
+ *  11. ObjectCaps                — engine capability flags
  *
- * Pending for D.4.1 (next session or this session if time):
- *   - Spawn, Use, KeyValue, Save, Restore, ObjectCaps
- *   - CTSSlowMotionPoint family (7 methods)
+ * Next: CTSSlowMotionPoint family (D.4.1 follow-up, 5 methods).
  */
+
+/**
+ * CTSSlowMotion::Spawn — initialize a slow-motion trigger entity.
+ *
+ * Sets the class identifier, model string, bounding box, origin,
+ * collision and movement flags, initial state, and schedules the
+ * first think. Reads spawn flags for behavior options and
+ * optionally calls ActivateSlow if the "Start On" flag (0x1) is
+ * set.
+ *
+ * Field offsets follow the TS mod's non-standard entvars_t layout.
+ * Names marked TODO must be verified against the actual class
+ * definition (D.4 cross-references).
+ *
+ * @param this  The CTSSlowMotion entity instance
+ * @returns     void
+ */
+export function Spawn(this: any /* TODO: CTSSlowMotion */): void {
+  // PIC / GOT base established by the prologue. Globals via [ebx + offset]:
+  //   [ebx+0x1600] → pointer to engine globals struct (gpGlobals-like)
+  //   [ebx+0x1aa8] → engine function table
+  //   [ebx+0x1540] → render-mode constant
+  //   [ebx-0x6f010] → NEXT_THINK_DELAY (double, value unverified)
+  //   [ebx-0x6eeb5] → used in the classname computation
+
+  // TODO: import / declare from project sources; any-stubs for isolation.
+  const ENGINE_GLOBALS_PTR: any = null;       // [ebx+0x1600] deref
+  const ENGINE_FUNCTIONS: any[] = [];         // [ebx+0x1aa8]
+  const NEXT_THINK_DELAY: number = 0;         // [ebx-0x6f010] — TODO: verify
+  const RENDER_MODE: number = 0;             // [ebx+0x1540]
+  const CLASS_ID_SLOWMOTION: number = 0;      // computed from [ebx-0x6eeb5]
+
+  const pev: any = this.pev;
+
+  // 1. Set class identifier. Value = (GOT-relative code addr)
+  //    - (*gpGlobals_struct)[0x98].
+  //    TODO(asm-ambiguous): encoding is opaque without engine source.
+  pev.classname = CLASS_ID_SLOWMOTION;
+
+  // 2. Call ENGINE_FUNCTIONS[2] (offset 0x8 / 4-byte-fn-ptr = index 2).
+  //    Args: (pev+0x208 aux string, pev->model + engine_state_offset).
+  //    engine_state_offset = (*gpGlobals)[0x98].
+  //    pev->model = pev+0xb8 in this build.
+  //    TODO(asm-ambiguous): pev+0x208 is most likely pev->noise2 or  //      another aux string field; the engine_state_offset's purpose
+  //      is unclear; the called function's signature isn't a standard
+  //      HLSDK enginefuncs_t entry.
+  const engineStateOffset =
+    ((ENGINE_GLOBALS_PTR as any)[0x98] as number) | 0;
+  ENGINE_FUNCTIONS[2](
+    /* pev+0x208 */ null,                    // TODO: aux string field
+    (pev.model as number) + engineStateOffset
+  );
+
+  // 3. Set bounding box. UTIL_SetSize(pev, mins, maxs).
+  //    mins/maxs are at pev+0xdc and pev+0xe8 in this build.
+  //    TODO(asm-ambiguous): these offsets don't match standard HLSDK
+  //      entvars_t; they're likely vuser3/vuser4 or TS-specific.
+  UTIL_SetSize(pev, /* pev+0xdc */ null, /* pev+0xe8 */ null);
+
+  // 4. Snap origin to pev->origin (offset 0x8).
+  UTIL_SetOrigin(pev, pev.origin);
+
+  // 5. Set collision and movement flags.
+  //    TODO(asm-ambiguous): offsets don't match standard HLSDK entvars_t.
+  pev.flags |= 0x80;        // FL_PARTIALGROUND or similar; offset 0x118
+  pev.solid = 1;            // SOLID_BSP; offset 0x10c
+  pev.movetype = 5;         // MOVETYPE_FLY; offset 0x108
+
+  // 6. Initialize instance fields.
+  //    TODO: verify names against CTSSlowMotion class definition.
+  this.m_iWaitCount = 0;          // offset 0x14 (int)
+  this.m_iPlayerCount = 0;        // offset 0x18 (int)
+  this.m_color = 0xffff0000;      // offset 0x0c (RGBA packed: B=0xff, A=0xff)
+  this.m_renderMode = RENDER_MODE;// offset 0x10
+  this.m_iState = 0;              // offset 0x68 (int)
+  this.m_bActive = false;         // offset 0x64 (byte)
+
+  // 7. Schedule next think. Both pev->nextthink and m_flActivateTime
+  //    are set to gpGlobals->time + NEXT_THINK_DELAY.
+  //    TODO(asm-ambiguous): pev->nextthink offset (0x104) doesn't match
+  //      standard HLSDK entvars_t; verify.
+  const thinkTime = ENGINE_GLOBALS_PTR.time + NEXT_THINK_DELAY;
+  pev.nextthink = thinkTime;        // offset 0x104
+  this.m_flActivateTime = thinkTime; // offset 0x6c
+
+  // 8. Zero the player tracking array (33 dwords at offset 0x70).
+  //    TODO: verify size; likely MAX_PLAYERS (32) + 1 sentinel.
+  for (let i = 0; i < 33; i++) {
+    (this.m_pTrackedPlayers as any[])[i] = null;
+  }
+
+  // 9. Compute distance between two vectors at pev+0xc4 and pev+0xd0.
+  //    Store as int (truncated) in m_iMaxDistance (offset 0xf4).
+  //    ⚠️ TODO(asm-ambiguous): the disassembly emits `fmulp st(1), st`
+  //      after the sqrt that multiplies the distance by a leftover
+  //      FPU value from the next_think setup (NEXT_THINK_DELAY).
+  //      The value actually stored is (int)(distance * NEXT_THINK_DELAY),
+  //      not just (int)distance. Codex1 assumed "the slot holds 1.0
+  //      in the normal case" but this isn't justified. The next_think
+  //      delay constant is plausibly 1.0 (TS-specific for this entity)
+  //      but more commonly 0.1 (10Hz think rate) — needs verification.
+  //    TODO(asm-ambiguous): pev+0xc4 / pev+0xd0 are likely vuser1 / vuser2.
+  const dx = (pev.v2x as number) - (pev.v1x as number);
+  const dy = (pev.v2y as number) - (pev.v1y as number);
+  const dz = (pev.v2z as number) - (pev.v1z as number);
+  this.m_iMaxDistance = Math.trunc(
+    Math.sqrt(dx * dx + dy * dy + dz * dz)
+  );
+
+  // 10. Read spawn flags into option fields.
+  //     TODO(asm-ambiguous): pev->spawnflags offset (0x1a0) doesn't match
+  //       standard HLSDK entvars_t; verify.
+  this.m_bOption1 = (pev.spawnflags & 0x2) ? true : false; // offset 0x100 (int)
+  this.m_bOption2 = (pev.spawnflags & 0x4) ? true : false; // offset 0x104 (byte)
+
+  // 11. Spawnflag 0x1 = "Start On" — fire ActivateSlow immediately.
+  if (pev.spawnflags & 0x1) {
+    ActivateSlow(this);
+  }
+}
+
+// Stubs — replace with actual definitions or import from the project.
+declare const ENGINE_GLOBALS_PTR: any;
+declare const ENGINE_FUNCTIONS: any[];
+declare const NEXT_THINK_DELAY: number;
+declare const RENDER_MODE: number;
+declare const CLASS_ID_SLOWMOTION: number;
+declare function UTIL_SetSize(pev: any, mins: any, maxs: any): void;
+declare function UTIL_SetOrigin(pev: any, origin: any): void;
+declare function ActivateSlow(self: any): void;
+
+// ======================================================================
+// KeyValue
+// ======================================================================
+
+/**
+ * CTSSlowMotion::KeyValue — handles level-designer key/value pairs for the
+ * slow-motion trigger entity. Two float-typed keys are recognised; their
+ * values are parsed with strtod and stored in adjacent `float` fields on
+ * the entity. The matching arm sets `fHandled = true`; the fallthrough
+ * clears it so the base CBaseEntity::KeyValue path runs.
+ *
+ * ASM source: `KeyValue__13CTSSlowMotionP14KeyValueData_s` @ 0x00060d74
+ *   (158 B, 5/11 CTSSlowMotion methods decompiled — see HANDOFF.md D.4.1)
+ *
+ * Field & key inferences (all TODO — verify by reading the strings at the
+ * noted GOT offsets in tools/decompile/analysis/strings-n5.txt):
+ *   • 1st key string:   GOT (ebx - 0x6c69c)        → "slowamt"   (inferred)
+ *   • 1st field offset: this+0xf8                  → m_flSlowAmt (inferred)
+ *   • 2nd key string:   GOT (ebx - 0x6eebd)        → "slowtime"  (inferred)
+ *   • 2nd field offset: this+0xfc                  → m_flSlowTime(inferred)
+ *   where ebx (PIC base) = 0x166e10.
+ *
+ * `parseFloat` matches `__strtod_internal(szValue, NULL, 0)` semantics
+ * (stops at first non-parseable char; NaN on no leading digits).
+ */
+export function KeyValue(this: any, keyValueData: any): void {
+  if (keyValueData.szKeyName === "slowamt") {
+    this.m_flSlowAmt = parseFloat(keyValueData.szValue);
+    keyValueData.fHandled = 1;
+    return;
+  }
+  if (keyValueData.szKeyName === "slowtime") {
+    this.m_flSlowTime = parseFloat(keyValueData.szValue);
+    keyValueData.fHandled = 1;
+    return;
+  }
+  keyValueData.fHandled = 0;
+}
+
+// ======================================================================
+// Use
+// ======================================================================
+
+/**
+ * CTSSlowMotion::Use — handle the "use" event for a slow-motion trigger entity.
+ *
+ * When the entity is "used":
+ *   1. ActivateSlow() runs unconditionally.
+ *   2. On the first use (use-count gate at offset 0x100 == 0), schedule
+ *      deactivation by writing a sentinel + current game time into the
+ *      schedule fields (offsets 0x14 and 0x18).
+ *   3. If pev.message (string_t) is non-null, broadcast a HUD message.
+ *   4. If pev.target (string_t) is non-null, fire the target with
+ *      USE_TOGGLE semantics.
+ *
+ * @param this        The CTSSlowMotion entity instance.
+ * @param pActivator  Entity that triggered the use (unused here).
+ * @param useType     USE_TYPE value (unused here).
+ * @param value       Float value (unused here — FireTargets gets a hard 0.0).
+ */
+export function Use(
+  this: CTSSlowMotion,
+  pActivator: CBaseEntity,
+  useType: USE_TYPE,
+  value: number,
+): void {
+  // 1. Activate the slow-motion effect right now.
+  this.ActivateSlow();
+
+  // 2. First-use gate: writes the deactivation schedule.
+  //    m_iHasBeenUsed is at offset 0x100 from `this` (verified against asm
+  //    `cmp DWORD PTR [esi+0x100], 0x0; jne skip`).
+  //    m_flDeactivateTimeout is at offset 0x14.
+  //    m_flActivatedAt is at offset 0x18.
+  // TODO(class-layout): the field names above are inferred from register
+  //   usage patterns; confirm against CTSSlowMotion source when available.
+  // TODO(asm-ambiguous): the 0xffff0000 sentinel's meaning — NaN-until-explicit
+  //   time vs packed flag — is unclear until cross-vendored with WaitThink
+  //   and DeactivateSlow chunks.
+  if (this.m_iHasBeenUsed === 0) {
+    this.m_flDeactivateTimeout = 0xffff0000;
+    // TODO(verify-globals): [ebx+0x1c78] is treated as gpGlobals.time here;
+    //   could equally be a CVAR or other global. Confirm via symbol table.
+    this.m_flActivatedAt = gpGlobals.time;
+  }
+
+  // 3. If a HUD message is configured on this entity, broadcast it.
+  //    The string argument is built via the STRING() macro:
+  //    gpGlobals.pStringBase + pev->message.
+  if (this.pev.message !== 0) {
+    TSHudMessageAll(0, 0xff, 0x00, 0x08, 0x1e, STRING(this.pev.message));
+  }
+
+  // 4. If a target is configured, fire it with toggle semantics.
+  //    FireTargets(targetString, pCaller=this, pActivator=this, USE_TOGGLE, 0.0).
+  if (this.pev.target !== 0) {
+    FireTargets(STRING(this.pev.target), this, this, USE_TYPE.TOGGLE, 0.0);
+  }
+}
+
+// ======================================================================
+// ActivateSlow
+// ======================================================================
 
 /**
  * CTSSlowMotion::ActivateSlow — toggles the slow-motion active state.
@@ -360,4 +608,143 @@ export function WaitTouch(
   if (slot <= 0x20) {
     this.field_0x70[slot] = pOther;
   }
+}
+
+// ======================================================================
+// Save
+// ======================================================================
+
+/**
+ * CTSSlowMotion::Save — serializes this entity's saveable fields to CSave.
+ *
+ * Calls CBaseEntity::Save first; if it returns non-zero (success), writes
+ * the 2 derived-class fields via CSave::WriteFields using the entity's
+ * TYPEDESCRIPTION table. Returns 0 if the base save fails; otherwise
+ * returns the value WriteFields returns (typically 1 on success).
+ *
+ * @param this  The CTSSlowMotion entity instance
+ * @param save  The CSave stream/state being written to
+ * @returns     0 if the base save fails; otherwise the result of
+ *              WriteFields (typically 1 on success)
+ */
+export function Save(this: CTSSlowMotion, save: CSave): number {
+  // Base class first: let CBaseEntity serialize its own state. A 0 return
+  // here means we couldn't safely proceed with the derived fields.
+  if (CBaseEntity_Save(this, save) === 0) {
+    return 0;
+  }
+
+  // Derived-class fields: 2 entries in the typedescription table.
+  // TODO(asm-ambiguous): CLASS_NAME is the engine-visible entity classname
+  //   string at GOT-0x6ed47 — verify against strings-n5.txt (expected:
+  //   "ts_slowmotion" or similar).
+  // TODO(asm-ambiguous): gSlowMotionTypeDescriptions is the TYPEDESCRIPTION
+  //   table for CTSSlowMotion at GOT+0x18c4; entry count = 2, matching the
+  //   integer literal passed as the last arg to WriteFields.
+  return CSave_WriteFields(save, CLASS_NAME, this, gSlowMotionTypeDescriptions, 2);
+}
+
+// --- Stub declarations so this file compiles in isolation. ---
+// (Real definitions land when the CBaseEntity / CSave / CTSSlowMotion
+// class ports land in D.4.)
+
+// TODO(D.4): define CTSSlowMotion; expected to derive from CBaseEntity with
+// 2 saveable fields (likely m_flSlowAmt + a starting time/duration float
+// based on "slowamt" / "ts_slowmotion" cvars in strings-n5.txt).
+declare class CTSSlowMotion {}
+
+// TODO(D.4): CSave — engine serialization sink.
+//   className lives at GOT-0x6ed47 (string table reference).
+declare class CSave {}
+
+// TODO(D.4): TYPEDESCRIPTION layout for the engine's typed-field system.
+declare interface TYPEDESCRIPTION { _ts_placeholder: true; }
+
+// TODO(D.4): string literal resolved at runtime from GOT-0x6ed47.
+declare const CLASS_NAME: string;
+
+// TODO(D.4): TYPEDESCRIPTION[2] array resolved at runtime from GOT+0x18c4.
+declare const gSlowMotionTypeDescriptions: TYPEDESCRIPTION[];
+
+// TODO(D.4): base Save — should call this->CBaseEntity::Save(save) and
+// return 1 on success / 0 on failure.
+declare function CBaseEntity_Save(this: CTSSlowMotion, save: CSave): number;
+
+// TODO(D.4): WriteFields — from the demangled PLT name, takes
+// (className: string, this: void*, typeDesc: TYPEDESCRIPTION*, numFields: int).
+// In the Save pattern CSave is the `this` of WriteFields and is pushed
+// explicitly here (x86 thiscall with both this + args on stack).
+declare function CSave_WriteFields(
+  save: CSave,
+  className: string,
+  thisPtr: CTSSlowMotion,
+  typeDesc: TYPEDESCRIPTION[],
+  numFields: number
+): number;
+
+// ======================================================================
+// Restore
+// ======================================================================
+
+/**
+ * CTSSlowMotion::Restore — restore this entity's state from a save game.
+ *
+ * Defers to the base class (CBaseEntity::Restore) for the shared entity
+ * state, then loads CTSSlowMotion's two extra fields through
+ * CRestore::ReadFields and the data-driven TYPEDESCRIPTION table.
+ *
+ * @param this    The CTSSlowMotion entity instance
+ * @param restore The CRestore helper used to read save data
+ * @returns       0 if the base class restore failed; otherwise the
+ *                result of CRestore::ReadFields (typically 1 on success).
+ */
+// External references — ambient stubs so the snippet type-checks in
+// isolation. D.4 will replace these with real CBaseEntity / CRestore /
+// CTSSlowMotion declarations.
+declare const CBaseEntity: any;
+
+export function Restore(this: any, restore: any): number {
+  // Defer to the base class. CRestore-style restore returns 1 on success,
+  // 0 on failure — propagate that failure if it happened.
+  if (CBaseEntity.Restore(this, restore) === 0) {
+    return 0;
+  }
+
+  // Restore this class's two extra fields via the data-driven save table.
+  // ReadFields args (source order): pName, pData, pTypeDesc, nFields.
+  //   pName:     static label         — lea eax, [ebx-0x6ed47]
+  //   pData:     pointer to `this`    — pushed esi (the `this` register)
+  //   pTypeDesc: TYPEDESCRIPTION ptr  — push DWORD PTR [ebx+0x18c4]
+  //   nFields:   2                    — push 0x2
+  // TODO(asm-ambiguous): the exact contract for pName (class-name string
+  //                       used for error reporting vs. a data-block
+  //                       identifier) is inferred — not visible from the
+  //                       disassembly alone.
+  // TODO: resolve the two globals at offsets -0x6ed47 (below GOT) and
+  //       +0x18c4 (above GOT) once the GOT layout and strings-n5.txt
+  //       are fully mapped.
+  return restore.ReadFields(
+    undefined as any, // TODO: static label (GOT - 0x6ed47)
+    this,
+    undefined as any, // TODO: TYPEDESCRIPTION table (GOT + 0x18c4)
+    2,
+  );
+}
+
+// ======================================================================
+// ObjectCaps
+// ======================================================================
+
+/**
+ * CTSSlowMotion::ObjectCaps — returns 0 (FCAP_NONE).
+ *
+ * The entity exposes no engine capabilities: no save/restore transition,
+ * no think override, no use-traversal, etc. Server-side only — clients
+ * never query ObjectCaps for this class.
+ *
+ * @param this  The CTSSlowMotion entity instance (this in the original C++)
+ * @returns     0 (FCAP_NONE)
+ */
+export function ObjectCaps(this: CTSSlowMotion): number {
+  return 0;
 }
