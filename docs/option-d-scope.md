@@ -17,9 +17,9 @@
 | D.4.1 | ✅ | 2026-10-15 | CTSSlowMotion (11/11 methods): Spawn, KeyValue, Use, ActivateSlow, DeactivateSlow, CheckPlayersDistance, WaitThink, WaitTouch, Save, Restore, ObjectCaps. Output: `src/mod/slowmo.ts` (33.5KB, 750 lines). Class state consolidated across methods. Cross-vendor caught 3 bugs in `Use` alone (string_t comparison, wrong field name, unverified gpGlobals). |
 | D.4.5 | ✅ | 2026-10-15 | CTSSlowMotionPoint (5/5 methods): CreateSlowMotionPoint, Spawn, ActivateSlow, WaitThink, DeactivateSlow. Output: `src/mod/slowmo-point.ts` (14.7KB, 342 lines). WaitThink is the per-tick zone check (player loop 1..maxClients, two vtable pre-checks, LOS trace from zone to predicted player position, applies slow-motion, records in m_affectedPlayers[slot]). |
 | D.4.2 | ✅ | 2026-10-15 | CTSGun pistol (11/11 methods: Spawn, Reset, Precache, GetItemInfo, Deploy, HolsterWeapon, PrimaryAttack, WeaponIdle, EmptySound, Reload, StandardFire). Output: `src/mod/weapons.ts` (54.7KB, 1292 lines). Pistol is fully wired: PrimaryAttack → StandardFire. Cross-vendor caught 3-5 issues per function. |
-| D.4.7 | ⏳ Next | — | CTSGun subclass Fire* methods (KnifeFire, AkimboFire, KatanaFire, ShotgunFire, GrenadeFire, ColdCock, etc. — 8 methods) |
-| D.4.3 | ⏸ | — | bots (variable) |
-| D.4.4 | ⏸ | — | damage/scoring/spawn (~10 methods) |
+| D.4.7 | ✅ | 2026-10-15 | CTSGun fire dispatcher (8 Fire* methods: Fire, ColdCock, GrenadeFire, ShotgunFire, StandardFire, AkimboFire, KatanaFire, KatanaThrow, KnifeFire). Output: `src/mod/weapons.ts` (103KB, 2446 lines, 19/33 CTSGun methods). Full fire path: PrimaryAttack → Fire → mode switch → one of 8 Fire* methods. |
+| D.4.3 | ⚠ N/A | — | **Bots: 0 methods in binary.** TS is PvP-only; bots are external to TS (Botman's BotLib etc.). Cannot decompile what doesn't exist. |
+| D.4.4 | ✅ | 2026-10-15 | Damage/scoring (2 methods: PlayerKilled + TeamWin). Output: `src/mod/scoring.ts` (~13KB). PlayerKilled is the kill handler (6912 B — score, cash, slowmo, check-deads, death notice). TeamWin handles round end (1564 B — winner banner, cash distribution, log, announcer sounds). |
 | D.4.6 | ⏸ | — | CCombat (3 methods: Idle, Block, Attack) + UpdateClientData + cold-cock flow |
 | D.5 | ⏸ | — | Babylon.js integration (1-2 weeks). |
 | D.6 | ⏸ | — | bridge semantics + polish (1-2 weeks). |

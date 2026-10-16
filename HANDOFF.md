@@ -137,6 +137,12 @@ port 5174, page returns HTTP 200 with the expected WebXash
     for implementation (chunk generation, prompt sending), Claude
     Code (M3) for review/validation.
 
+- **2026-10-15 — Option D D.4.7 (CTSGun fire dispatcher) — COMPLETE.** 8 Fire* methods (Fire, ColdCock, GrenadeFire, ShotgunFire, StandardFire, AkimboFire, KatanaFire, KatanaThrow, KnifeFire) decompiled + cross-vendor reviewed. weapons.ts is 103KB, 2446 lines, 19/33 CTSGun methods. Full fire path: PrimaryAttack → Fire (mode check) → one of 8 Fire* methods.
+
+- **2026-10-15 — Option D D.4.3 (bots) — N/A.** TS is PvP-only and the binary contains 0 bot-related methods. Bots are external (Botman's BotLib). Cannot decompile what doesn't exist.
+
+- **2026-10-15 — Option D D.4.4 (damage/scoring) — PARTIAL 2/2 methods.** PlayerKilled (CHalfLifeMultiplay, 6912 B — kill handler, score, cash, slowmo, check-deads) and TeamWin (CTSGameRules, 1564 B — round winner, HUD, cash distribution, announcer sounds) decompiled + cross-vendor reviewed. Output: `src/mod/scoring.ts` (~13KB).
+
 - **2026-10-15 — Option D D.4.2 (CTSGun pistol) — COMPLETE.** All 11 pistol-priority methods decompiled + cross-vendor reviewed. Output `src/mod/weapons.ts` (54.7KB, 1292 lines). The pistol is fully wired: PrimaryAttack → (mode switch) → StandardFire. Methods in source-code order: Spawn, Reset, Precache, GetItemInfo, Deploy, HolsterWeapon, PrimaryAttack, WeaponIdle, EmptySound, Reload, StandardFire. StandardFire (1307 B) is the actual fire: ScaleSpread → ShootBullets → VKickback → ammo decrement → playback event. Class state consolidated: m_pPlayer (0x80), m_iMaxClip (0x88), m_flReloadTime (0xa8), m_iClip (0xb4), m_iId (0xc8), m_pCombat (0xcc), m_pOwnerInterface (0xd0), m_rgAmmo[5] (0xd4), m_pWeaponInfo (0x114), m_usEvent (0x970), m_usDeployEvent (0x976), + 80 B state block (0x9b8-0xa08). Next: D.4.7 (subclass Fire* methods), D.4.3 (bots), D.4.4 (damage), D.4.6 (CCombat).
 
 - **2026-10-15 — Option D D.4.1 (slowmo system) — COMPLETE.** All

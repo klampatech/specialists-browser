@@ -28,9 +28,9 @@ doesn't converge.
 | D.4.1 | ✅ Complete (2026-10-15) | `src/mod/slowmo.ts` (CTSSlowMotion, 11/11 methods, 750 lines) |
 | D.4.5 | ✅ Complete (2026-10-15) | `src/mod/slowmo-point.ts` (CTSSlowMotionPoint, 5/5 methods, 342 lines) |
 | D.4.2 | ✅ Complete (2026-10-15) | `src/mod/weapons.ts` (CTSGun pistol, 11/11 methods, 1292 lines) |
-| D.4.7 | ⏳ Next | CTSGun subclass Fire* methods (KnifeFire, AkimboFire, KatanaFire, ShotgunFire, GrenadeFire, ColdCock, etc. — 8 methods) |
-| D.4.3 | ⏸ Pending | bots (variable) |
-| D.4.4 | ⏸ Pending | damage/scoring/spawn (~10 methods) |
+| D.4.7 | ✅ | 2026-10-15 | CTSGun fire dispatcher (8 Fire* methods). Output: `src/mod/weapons.ts` (103KB, 2446 lines, 19/33 CTSGun methods). Full fire path: PrimaryAttack → Fire → mode switch → {StandardFire, ShotgunFire, AkimboFire, GrenadeFire, KatanaFire, KatanaThrow, KnifeFire, ColdCock}. |
+| D.4.3 | ⏸ N/A | — | **Bots: 0 methods in binary.** TS is PvP-only; bots are external to TS (Botman's BotLib etc.). Cannot decompile what doesn't exist. |
+| D.4.4 | ✅ | 2026-10-15 | Damage/scoring (2 methods). Output: `src/mod/scoring.ts` (~13KB). Methods: PlayerKilled (CHalfLifeMultiplay, 6912 B — kill handler, score, cash, slowmo, check-deads), TeamWin (CTSGameRules, 1564 B — round winner, HUD, cash distribution, announcer sounds). |
 | D.4.6 | ⏸ Pending | CCombat (3 methods: Idle, Block, Attack) + UpdateClientData + cold-cock flow |
 | D.5 | ⏸ Pending | Babylon.js integration (1-2 weeks) |
 | D.6 | ⏸ Pending | bridge semantics + polish (1-2 weeks) |
