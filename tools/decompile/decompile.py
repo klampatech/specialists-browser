@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -50,10 +51,15 @@ def run_chunker(symbol: str) -> Path:
 
 
 def find_chunk(symbol: str) -> Path | None:
-    """Try to find an existing chunk file for this symbol (don't re-run chunk.py)."""
+    """Try to find an existing chunk file for this symbol (don't re-run chunk.py).
+
+    Match the chunk HEADER (`# `<symbol>` — ...`), not sibling mentions.
+    Sibling methods appear inside the chunk's "Other public methods" table,
+    so a naive `"{symbol}" in text` would match the wrong chunk.
+    """
     for p in CHUNKS_DIR.glob("*.chunk.md"):
         text = p.read_text()
-        if f"`{symbol}`" in text:
+        if re.search(rf"^# `?{re.escape(symbol)}`?\s*—", text, re.MULTILINE):
             return p
     return None
 

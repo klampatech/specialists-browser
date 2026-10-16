@@ -32,8 +32,33 @@ doesn't converge.
 | D.4.3 | ⏸ N/A | — | **Bots: 0 methods in binary.** TS is PvP-only; bots are external to TS (Botman's BotLib etc.). Cannot decompile what doesn't exist. |
 | D.4.4 | ✅ | 2026-10-15 | Damage/scoring (2 methods). Output: `src/mod/scoring.ts` (~13KB). Methods: PlayerKilled (CHalfLifeMultiplay, 6912 B — kill handler, score, cash, slowmo, check-deads), TeamWin (CTSGameRules, 1564 B — round winner, HUD, cash distribution, announcer sounds). |
 | D.4.6 | ✅ Complete (2026-10-15) | `src/mod/weapons.ts` (CCombat Idle/Block/Attack + UpdateClientData) — 4 more methods |
-| D.5 | ⏸ Pending | Babylon.js integration (1-2 weeks) |
-| D.6 | ⏸ Pending | bridge semantics + polish (1-2 weeks) |
+| D.4.7 | ✅ Complete (2026-10-15) | `src/mod/weapons.ts` (CTSGun fire dispatcher — 8 Fire* methods) — 8 more methods |
+| D.4.8 | ⏸ Pending | **Remaining 19 CTSGun methods** + **30 CTSGameRules** + **11 CTSAnimation** + **16 CTSStunt** + **2 SlowMotionFlow** + subclasses (CTSGunUci/Shotgun/MG/Sniper) + objectives (CTSFlag/CTSBriefcase/CTSBomb/CTSHack/CTSTeamEscape/CTSDMHill) + utility (CTSKnife/CTSWorldGun/CTSPowerUp/CTSGroundWeapon/CTSSellZone/CTSSharedEmitter/etc.). 249 methods / ~80KB to go. **Multi-session, single-vendor codex.** |
+| D.5 | ⏸ Pending | Babylon.js integration. The decompiled TS modules are the contract. |
+| D.6 | ⏸ Pending | bridge semantics + polish (1-2 weeks). |
+
+**D.4 completion target: 281/281 methods.** Per-class status (full
+target = 100% decompiled, all 281 methods):
+
+- `interface.ts`: 4/4 ✅ (D.3)
+- `slowmo.ts`: 11/11 ✅ (D.4.1)
+- `slowmo-point.ts`: 5/5 ✅ (D.4.5)
+- `weapons.ts` (CTSGun base): 23/33 (D.4.2 + D.4.6 + D.4.7) — 10 more base + 9 subclass
+- `scoring.ts`: 2/2 ✅ (D.4.4)
+- **CTSGunUci / CTSGuni / CTSGunShotgun / CTSGunMG / CTSGunSniper**: 0/? each — to decompile
+- `gamerules.ts` (CTSGameRules): 1/30 (TeamWin only — 29 more to do)
+- `animation.ts` (CTSAnimation): 0/11
+- `stunt.ts` (CTSStunt): 0/16
+- `slowmo-flow.ts` (CBasePlayer::SlowMotionFlow): 0/2
+- `knife.ts` (CTSKnife): 0/8
+- `worldgun.ts` (CTSWorldGun): 0/9
+- `objectives.ts` (CTSFlag, CTSBriefcase, CTSBomb, CTSHack, CTSObjective, CTSObjectiveManager, CTSTeamEscape, CTSDMHill): 0/~46
+- `powerups.ts` (CTSPowerUp): 0/8
+- `pickups.ts` (CTSGroundWeapon, CTSSellZone, CTSGroundAmmo, CTSAmmoPack): 0/~20
+- `vfx.ts` (CTSSharedEmitter, CTSParticle, CTSEmitter): 0/~10
+- `util.ts` (CTSTrigger, CTSTimer, CTSCustomTarget, CTSMapGlobals, CTSPhysicObject, CTSObjectivePointer, CTSShrapnel, CTSWind, CTSPlayerAmount, etc.): 0/~30
+
+**Current tally: 32/281 = 11.4% done.**
 
 **Play-test surface:** not yet. First browser-playable game at end of D.5 / start of D.6. D.4 produces reviewable TS source; even those need `tsc` to verify.
 

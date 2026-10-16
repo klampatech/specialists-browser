@@ -7,23 +7,26 @@
 
 > **Naming note:** the project repo is `specialists-browser`. The current scope doc for "Phase 1 with CheerpX" was `docs/phase-1-scope.md` (Option B). `docs/option-c-scope.md` covers Option C (clean TS reimplementation from scratch). This is **Option D** (AI-decompile the mod DLL directly to TypeScript).
 
-## Progress (updated 2026-10-15)
+## Progress (updated 2026-10-16)
 
 | Step | Status | Date | Deliverable |
 |---|---|---|---|
 | D.1 | ✅ | 2026-10-14 | Binary analysis: 3,894 symbols, 619 TS-specific, 6.7MB disasm, 11,912 strings. SUMMARY.md priority list. |
 | D.2 | ✅ | 2026-10-15 | AI decompile workflow: `tools/decompile/chunk.py` (function chunker with hand-rolled MSVC demangler), `decompile.py` (runner), `decompile-review.py` (cross-vendor reviewer). First test on `ActivateSlow__13CTSSlowMotion` (127 B) GREEN. Codex CLI wired via local proxy. |
 | D.3 | ✅ | 2026-10-15 | 4 GoldSrc interface functions decompiled: `GiveFnptrsToDll`, `GetEntityAPI`, `GetEntityAPI2`, `GetNewDLLFunctions`. Output: `src/mod/interface.ts`. Cross-vendor caught invalid TS in GiveFnptrsToDll. |
-| D.4.1 | ✅ | 2026-10-15 | CTSSlowMotion (11/11 methods): Spawn, KeyValue, Use, ActivateSlow, DeactivateSlow, CheckPlayersDistance, WaitThink, WaitTouch, Save, Restore, ObjectCaps. Output: `src/mod/slowmo.ts` (33.5KB, 750 lines). Class state consolidated across methods. Cross-vendor caught 3 bugs in `Use` alone (string_t comparison, wrong field name, unverified gpGlobals). |
-| D.4.5 | ✅ | 2026-10-15 | CTSSlowMotionPoint (5/5 methods): CreateSlowMotionPoint, Spawn, ActivateSlow, WaitThink, DeactivateSlow. Output: `src/mod/slowmo-point.ts` (14.7KB, 342 lines). WaitThink is the per-tick zone check (player loop 1..maxClients, two vtable pre-checks, LOS trace from zone to predicted player position, applies slow-motion, records in m_affectedPlayers[slot]). |
-| D.4.2 | ✅ | 2026-10-15 | CTSGun pistol (11/11 methods: Spawn, Reset, Precache, GetItemInfo, Deploy, HolsterWeapon, PrimaryAttack, WeaponIdle, EmptySound, Reload, StandardFire). Output: `src/mod/weapons.ts` (54.7KB, 1292 lines). Pistol is fully wired: PrimaryAttack → StandardFire. Cross-vendor caught 3-5 issues per function. |
-| D.4.7 | ✅ | 2026-10-15 | CTSGun fire dispatcher (8 Fire* methods: Fire, ColdCock, GrenadeFire, ShotgunFire, StandardFire, AkimboFire, KatanaFire, KatanaThrow, KnifeFire). Output: `src/mod/weapons.ts` (103KB, 2446 lines, 19/33 CTSGun methods). Full fire path: PrimaryAttack → Fire → mode switch → one of 8 Fire* methods. |
-| D.4.6 | ✅ | 2026-10-15 | CTSGun combat (4 methods: CCombatIdle, CCombatBlock, CCombatAttack, UpdateClientData). Output: `src/mod/weapons.ts` (128KB, 2983 lines, 23/33 CTSGun methods). CCombatAttack is the per-tick close-combat dispatch (3506 B — mode state machine, range check, attack block, animation). CCombatBlock is the defensive action (442 B). CCombatIdle is the defensive mode (104 B). UpdateClientData is the per-frame client-state delta (1287 B — slot diffs, current weapon sync, get_weapon_info lookups). |
+| D.4.1 | ✅ | 2026-10-15 | CTSSlowMotion (11/11 methods). Output: `src/mod/slowmo.ts` (33.5KB, 750 lines). Class state consolidated across methods. Cross-vendor caught 3 bugs in `Use` alone. |
+| D.4.5 | ✅ | 2026-10-15 | CTSSlowMotionPoint (5/5 methods). Output: `src/mod/slowmo-point.ts` (14.7KB, 342 lines). |
+| D.4.2 | ✅ | 2026-10-15 | CTSGun pistol (11/11 methods). Output: `src/mod/weapons.ts` (54.7KB, 1292 lines). Pistol is fully wired: PrimaryAttack → StandardFire. |
+| D.4.7 | ✅ | 2026-10-15 | CTSGun fire dispatcher (8 Fire* methods). Output: `src/mod/weapons.ts` (103KB, 2446 lines, 19/33 CTSGun methods). |
+| D.4.6 | ✅ | 2026-10-15 | CTSGun combat (4 methods: CCombatIdle, CCombatBlock, CCombatAttack, UpdateClientData). Output: `src/mod/weapons.ts` (128KB, 2983 lines, 23/33 CTSGun methods). |
 | D.4.3 | ⚠ N/A | — | **Bots: 0 methods in binary.** TS is PvP-only; bots are external to TS (Botman's BotLib etc.). Cannot decompile what doesn't exist. |
-| D.4.4 | ✅ | 2026-10-15 | Damage/scoring (2 methods: PlayerKilled + TeamWin). Output: `src/mod/scoring.ts` (~13KB). PlayerKilled is the kill handler (6912 B — score, cash, slowmo, check-deads, death notice). TeamWin handles round end (1564 B — winner banner, cash distribution, log, announcer sounds). |
-| D.4.6 | ⏸ | — | CCombat (3 methods: Idle, Block, Attack) + UpdateClientData + cold-cock flow |
-| D.5 | ⏸ | — | Babylon.js integration (1-2 weeks). |
-| D.6 | ⏸ | — | bridge semantics + polish (1-2 weeks). |
+| D.4.4 | ✅ | 2026-10-15 | Damage/scoring (2 methods: PlayerKilled + TeamWin). Output: `src/mod/scoring.ts` (~13KB). |
+| D.4.8 | 🔄 IN PROGRESS | 2026-10-16 | Remaining 19 CTSGun methods + CTSGameRules (30) + CTSAnimation (11) + CTSStunt (16) + SlowMotionFlow (2). 78 methods / ~30KB. Single-vendor codex (claude CLI not installed on m5). **In flight via `tools/decompile/batch.py` background process** — see `progress/decomp-log.md`. |
+| D.4.9 | ⏸ Pending | — | **Lower-priority classes**: CTSKnife (8), CTSWorldGun (9), CTSGroundWeapon (8), CTSSellZone (2), CTSGroundAmmo (5), CTSAmmoPack (5), CTSFlag (10), CTSBriefcase (5), CTSBomb (8), CTSHack (6), CTSObjective (6), CTSObjectiveManager (4), CTSTeamEscape (6), CTSDMHill (5), CTSWinGiver (5), CTSMapGlobals (5), CTSPhysicObject (4), CTSObjectivePointer (2), CTSTrigger (3), CTSTimer (4), CTSCustomTarget (4), CTSSharedEmitter (5), CTSParticle (2), CTSSellZone, CTSHack, CTSObserver, etc. ~149 methods / ~45KB. |
+| D.4.10 | ⏸ Pending | — | **Subclasses of CTSGun**: CTSGunUci (Uzi), CTSGuni (dual-pistol), CTSGunShotgun, CTSGunMG, CTSGunSniper — overrides for each weapon. ~10-30 methods. |
+| D.4.11 | ⏸ Pending | — | **Consolidation**: build `src/mod/<class>.ts` per class with field-map doc-comment, run `tsc` to verify, document cross-class type contracts. **This is the deliverable for D.5.** |
+| D.5 | ⏸ Pending | — | Babylon.js integration (1-2 weeks). Decompiled TS is the contract. |
+| D.6 | ⏸ Pending | — | bridge semantics + polish (1-2 weeks). |
 
 **Tempo update (2026-10-15):** Codex calls today are 5-15 min each (was ~30s in D.2). The local proxy at port 8789 is the bottleneck — parallel codex calls queue. The plan said 4-6 weeks; realistic estimate is the same on aggregate but slower per-call than initially expected.
 

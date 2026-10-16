@@ -75,3 +75,21 @@ tmp/
 # Runtime working files (HL1, TS mod, smoke zips, etc.)
 # The repo is asset-free; these stay local but never commit.
 _runtime_assets/
+
+# Python cache (decompile pipeline uses Python)
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Old CheerpX bridge binary experiments (from Phase 1 v5/v6)
+tools/ts-host*
+tools/docker-test/
+
+# Per-process AI logs (large, ephemeral)
+progress/codex-*.log
+progress/review-*.log
+progress/grind.pid
+
+# Module-level __pycache__
+**/__pycache__/

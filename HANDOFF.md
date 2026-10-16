@@ -12,12 +12,30 @@
 > ║  New T3 thread? Point it at this file. It will know what to do.   ║
 > ╚══════════════════════════════════════════════════════════════════╝
 
-## ⚡ CHECKPOINT SUMMARY (read this first in next session)
+## ⚡ CHECKPOINT SUMMARY (read this first in next session) — UPDATED 2026-10-16
 
-**Status as of 2026-10-15, end of session:** Option D Phase 1 in flight.
-**D.4 progress: 25/89 methods (~28%) done.** See "Next task" below.
+> ⚠️ **The 2026-10-15 banner above is STALE.** It claimed 25/89 (~28%).
+> That count was wrong on both sides. The actual real number of T-type
+> methods in `ts/dlls/ts_i386.so` is **281** (per `nm -D-size.txt` after
+> filtering to CTS* symbols and removing `?`-suffixed duplicates). We
+> have **32 done** as of this update = 11%. Kyle asked for "100% complete
+> and ready to begin building in Babylon for the full game" — meaning all
+> 281 methods need to be decompiled + consolidated before D.5.
 
-### D.4 deliverables (all in `src/mod/`, all committed + pushed + vault sync'd)
+**Status as of 2026-10-16:** Option D Phase 1 in flight, single-vendor
+decomp (codex only — `claude` CLI is not installed on m5, was the
+"cross-vendor" partner). `decompile-review.py` was rewritten to use
+codex as both impl + reviewer.
+
+**D.4 progress: 32/281 methods (~11%) done.**
+**Remaining: 249 methods / ~80 KB of code.**
+Realistic per-method budget: 5–45 min (codex/M3 via local proxy at
+`127.0.0.1:8789`; proxy is the single bottleneck — one call at a time
+or queue dies). Aggregate wall-clock: 20–60+ hours across multiple
+sessions. **Multi-session task; track per-method progress in
+`progress/decomp-log.md`.**
+
+### D.4 deliverables (all in `src/mod/`)
 
 | File | Methods | Lines | KB | Source | D-step |
 |---|---|---|---|---|---|
@@ -25,7 +43,7 @@
 | `slowmo.ts` | 11 (CTSSlowMotion) | 750 | 33.5 | Spawn, KeyValue, Use, ActivateSlow, DeactivateSlow, CheckPlayersDistance, WaitThink, WaitTouch, Save, Restore, ObjectCaps | D.4.1 ✅ |
 | `slowmo-point.ts` | 5 (CTSSlowMotionPoint) | 342 | 14.8 | CreateSlowMotionPoint, Spawn, ActivateSlow, WaitThink, DeactivateSlow | D.4.5 ✅ |
 | `weapons.ts` | 23 (CTSGun base — pistol + 8 Fire* + CCombat + UpdateClientData) | 2983 | 129.8 | Spawn, Reset, Precache, GetItemInfo, Deploy, HolsterWeapon, Fire, ColdCock, GrenadeFire, ShotgunFire, StandardFire, AkimboFire, KatanaFire, KatanaThrow, KnifeFire, PrimaryAttack, WeaponIdle, EmptySound, Reload, UpdateClientData, CCombatIdle, CCombatBlock, CCombatAttack | D.4.2 + D.4.6 + D.4.7 ✅ |
-| `scoring.ts` | 2 (CTSGameRules/CHalfLifeMultiplay) | 317 | 13.1 | PlayerKilled (6912 B — kill handler), TeamWin (1564 B — round winner) | D.4.4 ✅ |
+| `scoring.ts` | 2 (CTSGameRules/CHalfLifeMultiplay) | 317 | 13.1 | PlayerKilled (6912 B), TeamWin (1564 B) | D.4.4 ✅ |
 
 ### CTSGun class state consolidated (23 methods)
 - `pev` (this+0x00) — entvars_t
@@ -44,36 +62,94 @@
 - `m_iWeaponState` (this+?) — used in PrimaryAttack 5-branch switch
 - `m_iShotsFired` (this+?) — for burst autofire
 
-### Next task (after this checkpoint, **D.4.8 — finish CTSGun (10 remaining methods)**)
+### Remaining classes (priority order for "100% + Babylon-ready" build)
 
-Picks up where D.4.6 left off. The 10 remaining CTSGun methods are:
-- AddItem, TakeWeapon, Zoom, Unzoom
-- SecondaryAttack, AlternateAttack
-- SwitchItems, MultiplyClips
-- SelectWeapon, GetBetterWeapon
-- DropWeapon, StopReload, GetActiveItems
+The "100% decompiled" target is all 281 methods. To be **ready for
+Babylon build of the full game**, the priority order is:
 
-(Exact method set will be re-derived from `nm -D-size.txt` grep `__\d+CTSGun `, excluding the 23 already done.)
+| # | Class | Methods | Bytes | Why (D.5 dependency) |
+|---|---|---|---|---|
+| 1 | **CTSGun** (D.4.8) | 19 | 6,616 | Finish pistol + base CTGuni + Akimbo + etc. — already 23/33 done; rest of base + subclass CTSGuni |
+| 2 | **CTSGunUci** | (TBD) | TBD | Uzi SMG — extend CTSGun |
+| 3 | **CTSGunMG** | (TBD) | TBD | Machine gun — extend CTSGun |
+| 4 | **CTSGunShotgun** | (TBD) | TBD | Shotgun — extend CTSGun |
+| 5 | **CTSGunSniper** | (TBD) | TBD | Sniper — extend CTSGun |
+| 6 | **CTSGameRules** | 30 | 11,504 | Game loop, round logic, objectives (the largest class) |
+| 7 | **CTSAnimation** | 11 | 10,780 | Player animation state machine — required for first-person viewmodel + player movement |
+| 8 | **CTSStunt** | 16 | 9,538 | Acrobatics (dive/roll/wallrun/walljump/climb) — marquee TS feature |
+| 9 | **CBasePlayer::SlowMotionFlow** | 2 | 2,041 | Slowmo on player (de/dilation, not the world zone) — already partly in slowmo.ts |
+| 10 | **CTSKnife** | 8 | 4,970 | Throwing knives + knife combat |
+| 11 | **CTSWorldGun** | 9 | 2,654 | World-weapon pickups (sitting on the ground) |
+| 12 | **CTSFlag / CTSBriefcase / CTSBomb / CTSHack / CTSObjective / CTSObjectiveManager / CTSTeamEscape / CTSDMHill** | ~46 | ~13K | All objective modes (CTF, CTF-briefcase, bomb, hack, VIP, KOTH) |
+| 13 | **CTSPowerUp** | 8 | 2,236 | Power-ups (speed, jump, regen, etc.) |
+| 14 | **CTSGroundWeapon / CTSSellZone / CTSGroundAmmo / CTSAmmoPack** | ~20 | ~5K | Pickups, ammo, sell zones |
+| 15 | **CTSSharedEmitter / CTSParticle / CTSEmitter** | ~10 | ~2.5K | VFX (can stub for v1) |
+| 16 | **Rest** (CTSTrigger, CTSTimer, CTSCustomTarget, CTSMapGlobals, CTSPhysicObject, CTSSellZone, CTSObjectivePointer, CTSShrapnel, etc.) | ~30 | ~6K | Utility entities — can stub most for v1 |
 
-If Kyle prefers a different scope, the alternatives are:
-- **More CTSGameRules** (CheckDeads, RestartRound, InitHUD, Think) — fleshes out the rules in `src/mod/scoring.ts`
-- **CTSStunt** (23 methods, ~12KB) — biggest single remaining class, stunt game mode
-- **CTSGunUci + CTSGuni subclasses** (Uzi and dual-wield) — fleshes out the alternate weapon classes
-- **D.5** (Babylon.js integration) — pivot to wiring up the 3D scene with what we have
+**D.4 done if all 16 rows above land.** Per the scope, 5-7 of these
+classes are the "must-have for the full game" path; the rest can be
+stubbed for v1 and filled in v2/v3.
 
-### Workflow (re-derivable from session history, but documented here)
+### Next task (after this checkpoint)
 
-1. **For each method:**
-   a. Run `python3 tools/decompile/chunk.py <mangled-name>` to generate `tools/decompile/chunks/<name>.chunk.md`
-   b. Run `python3 tools/decompile/decompile.py --use codex --out tools/decompile/cross-vendor/<name>__codex.ts <mangled-name>` (5-40 min)
-   c. If codex output filename doesn't include the demangled arg types (e.g. codex wrote `<name>__codex.ts` but review expects `<name>_p_CBasePlayer__codex.ts`), `shutil.copy(src, dst)` to the expected name.
-   d. Run `python3 tools/decompile/decompile-review.py <mangled-name>` (1-9 min for small, 3-9 min for large)
-   e. If review script times out at 540s/300s but review file is written, manual extraction: `re.search(r"Suggested rewrite.*?```typescript\n(.*?)\n```", review, re.DOTALL)` → write to `output/<name>...ts` and `cross-vendor/<name>...__claude.ts`
-   f. Fallback: if no rewrite block, strip codex outer fence and use that.
+**D.4.8 — finish CTSGun (19 remaining methods) + CTSGameRules (30
+methods) + CTSAnimation (11 methods) + CTSStunt (16 methods) +
+SlowMotionFlow (2 methods).** That's 78 methods / ~30KB. Pushed
+sequentially through codex, single proxy, ~5-30 hours of wall clock
+across this session + future sessions.
 
-2. **After each method:** `git add <new chunks/output/cross-vendor files>` + `git commit -m "tools: <name> decompiled + reviewed"` + `git push` + sync vault mirror.
+Per Kyle: "continue on the decomp work until 100% complete and ready
+to begin building in Babylon for the full game." Plan:
+1. Spawn 4 parallel subagents, one per high-priority class (CTSGun,
+   CTSGameRules, CTSAnimation, CTSStunt), each with a tight task list
+   of method symbols + the workflow. Each subagent runs codex
+   sequentially for its methods. Subagent contexts are independent so
+   they don't pollute ours. Proxy serializes them anyway, but
+   multi-subagent lets us get more concurrent output.
+2. Main thread: in parallel with subagents, decompile SlowMotionFlow
+   (2 small methods), update HANDOFF/SPEC, commit per batch of
+   completed methods.
+3. After priority classes: lower-priority classes (CTSKnife, world
+   weapons, flags, objectives, power-ups, etc.) — continue with
+   subagents in waves.
+4. Build consolidated `src/mod/<class>.ts` files per class with
+   doc-comment field maps. **This is the deliverable for D.5.**
+5. Write `docs/option-d-scope-d5-ready.md` — the Babylon.js integration
+   plan with the decompiled TS as the contract.
 
-3. **After each D-step:** assemble `src/mod/<feature>.ts` from all the canonical `output/<name>.ts` files, header doc-comment, commit, push, sync vault, update `SPEC.md` + `docs/option-d-scope.md` + `HANDOFF.md`.
+**If proxy dies mid-session or proxy queue overflows**, methods
+half-done will be in `cross-vendor/<name>__codex.ts` and the canonical
+in `output/<name>.ts`. Recovery: re-run the same method, the chunk
+file is the same, codex's output will differ slightly but the
+behavior capture is the goal.
+
+### Workflow (single-vendor: codex/MiniMax-M3 via local proxy at `127.0.0.1:8789`)
+
+**The `claude` CLI is not installed on m5.** Cross-vendor review
+(codex impl + claude review) is therefore not possible. Single-vendor
+path: codex produces impl → codex produces a pass-2 review with a
+quality-recovery prompt. Quality is lower than real cross-vendor
+but sufficient for v1 because:
+
+- Each method is small (< 1KB avg); codex's M3 model is good at
+  x86 disassembly → TS transpilation
+- Cross-method consistency enforced in consolidation step (D.4.9)
+- Babylon integration (D.5) will surface any logic errors that
+  slip through — fix at integration time
+
+**Per method:**
+1. `python3 tools/decompile/chunk.py <mangled-name>` →
+   `tools/decompile/chunks/<name>.chunk.md` (5–20 sec; instant)
+2. `python3 tools/decompile/decompile.py --use codex --out
+   tools/decompile/cross-vendor/<name>__codex.ts <mangled-name>`
+   (5–45 min — codex does internal bwrap exploration)
+3. `python3 tools/decompile/decompile-review.py <mangled-name>`
+   (rewritten to use codex; 5–20 min — pass 2 review via codex)
+4. Manual extraction fallback (if review timeout hits but file is
+   written): `re.search(r"Suggested rewrite.*?```typescript\n(.*?)\n```",
+   review_text, re.DOTALL)` — write to `output/<name>.ts`. PASS verdict
+   with no rewrite block → strip fences from codex output, use as
+   canonical.
 
 ### Key files (all already exist, working)
 - `tools/decompile/chunk.py` — function chunker with hand-rolled MSVC demangler, PIC/GOT detection

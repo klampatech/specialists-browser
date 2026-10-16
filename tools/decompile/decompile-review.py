@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-decompile-review.py — Cross-vendor review (Codex decompile → Claude review).
+decompile-review.py — Single-vendor pass-2 review (codex impl → codex review).
 
-Reads the codex-generated TS (in cross-vendor/<symbol>__codex.ts) plus
-the chunk + HLSDK reference, composes a review prompt, sends to
-`claude -p`, extracts the suggested rewrite, and saves:
+**Why codex-only:** The `claude` CLI is not installed on m5. Original
+cross-vendor pattern (codex decompile + claude review) is not available.
+We use the same codex model for pass-2 review with a different prompt
+that focuses on quality issues. Output naming changes:
+
   - output/<symbol>.ts                       (canonical, post-review)
-  - cross-vendor/<symbol>__claude.ts         (reviewer's version)
-  - cross-vendor/<symbol>__claude-review.md  (verdict + checklist + rewrite)
+  - cross-vendor/<symbol>__codex.ts          (pass-1 decompile output)
+  - cross-vendor/<symbol>__codex2.ts         (pass-2 reviewer's version)
+  - cross-vendor/<symbol>__codex2-review.md  (verdict + checklist + rewrite)
 
 Usage:
   python3 tools/decompile/decompile-review.py GiveFnptrsToDll
   python3 tools/decompile/decompile-review.py --no-rerun-chunk GetEntityAPI2
+  python3 tools/decompile/decompile-review.py --dry-run AddItem__6CTSGun
 """
 from __future__ import annotations
 
@@ -37,15 +41,12 @@ def find_symbol_files(symbol: str) -> tuple[Path, Path]:
 
     The chunk's header has the format:
         # `<symbol>` — <demangled>
-    The chunk's sibling table has:
-        | `<symbol>` | ... |
     We match the header specifically (line-start # + backticks) so we don't
     pick up the wrong chunk when the symbol appears as a sibling elsewhere.
     """
     import re as _re
     chunk_path = None
     for p in CHUNKS_DIR.glob("*.chunk.md"):
-        # Match header line: starts with "# `" + symbol + "`"
         if _re.search(rf"^# `?{_re.escape(symbol)}`?\s*—", p.read_text(), _re.MULTILINE):
             chunk_path = p
             break
@@ -68,7 +69,6 @@ def compose_prompt(symbol: str, chunk_text: str, codex_text: str, hlsdk_text: st
         "PASTE: the codex-generated TS function here",
         codex_clean,
     )
-    # Reference the chunk file path so the AI knows where to read
     composed = composed.replace(
         "Load `tools/decompile/chunks/<demangled>.chunk.md`.",
         f"Loaded below (inline) — the disassembly + class context for this function.\n\n```\n{chunk_text}\n```",
@@ -76,15 +76,21 @@ def compose_prompt(symbol: str, chunk_text: str, codex_text: str, hlsdk_text: st
     return composed
 
 
-def send_to_claude(prompt_text: str) -> str:
+def send_to_codex(prompt_text: str) -> str:
+    """Send prompt to codex/MiniMax-M3 via the local proxy at 127.0.0.1:8789."""
+    if shutil.which("codex") is None and not Path("/home/kyle/bin/codex").exists():
+        sys.exit("codex CLI not found at /home/kyle/bin/codex")
+    codex_bin = shutil.which("codex") or "/home/kyle/bin/codex"
+    env = {**os.environ, "MINIMAX_API_KEY_UNUSED": "placeholder"}
     res = subprocess.run(
-        ["claude", "-p", prompt_text],
+        [codex_bin, "exec", prompt_text],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
+        env=env,
     )
     if res.returncode != 0:
-        sys.stderr.write(f"claude -p failed (exit {res.returncode})\n")
+        sys.stderr.write(f"codex exec failed (exit {res.returncode})\n")
         sys.stderr.write("STDERR:\n" + res.stderr + "\n")
         sys.exit(res.returncode)
     return res.stdout
@@ -92,14 +98,12 @@ def send_to_claude(prompt_text: str) -> str:
 
 def extract_rewrite(review_text: str) -> str | None:
     """Find the first ```typescript ... ``` block after 'Suggested rewrite'."""
-    # Find "Suggested rewrite" then the next typescript block
     m = re.search(
         r"Suggested rewrite.*?```typescript\n(.*?)\n```",
         review_text,
         re.DOTALL,
     )
     if not m:
-        # Fallback: any typescript block
         m = re.search(r"```typescript\n(.*?)\n```", review_text, re.DOTALL)
     if not m:
         return None
@@ -110,7 +114,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("symbol", help="raw mangled symbol (e.g. GiveFnptrsToDll)")
     ap.add_argument("--dry-run", action="store_true",
-                    help="compose + show prompt, don't send to claude")
+                    help="compose + show prompt, don't send to codex")
     args = ap.parse_args()
 
     chunk_path, codex_path = find_symbol_files(args.symbol)
@@ -125,33 +129,30 @@ def main() -> None:
         sys.stdout.write(prompt)
         return
 
-    review = send_to_claude(prompt)
-    review_path = CROSS_VENDOR_DIR / f"{chunk_path.stem.removesuffix('.chunk')}__claude-review.md"
+    review = send_to_codex(prompt)
+    stem = chunk_path.stem.removesuffix('.chunk')
+    review_path = CROSS_VENDOR_DIR / f"{stem}__codex2-review.md"
     review_path.write_text(review)
     print(f"wrote review: {review_path}", file=sys.stderr)
 
     rewrite = extract_rewrite(review)
     if not rewrite:
-        # No rewrite means verdict was PASS (or close to it) — use the codex
-        # output as the canonical. Claude approved it as-is.
-        print("no rewrite extracted from review (verdict may be PASS); using codex output as canonical", file=sys.stderr)
+        # No rewrite means verdict was PASS — use codex pass-1 output as canonical.
+        print("no rewrite extracted from review (verdict may be PASS); using codex pass-1 output as canonical", file=sys.stderr)
         rewrite = codex_path.read_text()
-        # Strip codex output's outer ```typescript fence if present
-        import re as _re
-        rewrite = _re.sub(r"^```(?:typescript)?\s*\n", "", rewrite)
-        rewrite = _re.sub(r"\n```\s*$", "", rewrite)
+        rewrite = re.sub(r"^```(?:typescript)?\s*\n", "", rewrite)
+        rewrite = re.sub(r"\n```\s*$", "", rewrite)
         if not rewrite.strip():
             print("codex output is empty after stripping; cannot fall back", file=sys.stderr)
             return
 
-    out_path = OUTPUT_DIR / f"{chunk_path.stem.removesuffix('.chunk')}.ts"
+    out_path = OUTPUT_DIR / f"{stem}.ts"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rewrite)
-    claude_path = CROSS_VENDOR_DIR / f"{chunk_path.stem.removesuffix('.chunk')}__claude.ts"
-    claude_path.write_text(rewrite)
+    codex2_path = CROSS_VENDOR_DIR / f"{stem}__codex2.ts"
+    codex2_path.write_text(rewrite)
     print(f"wrote canonical: {out_path}", file=sys.stderr)
-    print(f"wrote cross-vendor: {claude_path}", file=sys.stderr)
-    # Print the verdict + the rewrite to stdout
+    print(f"wrote cross-vendor: {codex2_path}", file=sys.stderr)
     print("=== REVIEW (first 30 lines) ===")
     print("\n".join(review.splitlines()[:30]))
     print("=== REWRITE ===")
