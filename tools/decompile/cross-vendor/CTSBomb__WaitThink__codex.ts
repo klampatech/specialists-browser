@@ -1,103 +1,99 @@
 ```typescript
 /**
- * CTSBomb::WaitThink — periodic think for the bomb entity.
+ * CTSBomb::WaitThink — Periodic think for an armed bomb. Drives the
+ * fuse countdown, plays the tick sound when due, and triggers the
+ * explosion when the fuse runs out.
  *
- * Each call:
- *   1. Reschedules the next think (different interval when armed vs. unarmed).
- *   2. Bails out if the bomb isn't active.
- *   3. Decrements the detonation countdown.
- *   4. If the countdown has reached the threshold, fires the explosion
- *      via TSExplosion.
- *   5. Otherwise, if the next-beep time has been reached, reschedules
- *      the next beep and emits a randomized beep via EMIT_SOUND_DYN.
+ * Steps:
+ *   1. Reschedule the next think with slow-amount scaling.
+ *   2. If the bomb hasn't been triggered yet, bail.
+ *   3. Decrement the fuse time.
+ *   4. If the fuse is still above the explosion threshold, tick the
+ *      bomb (bump the detonate-time accumulator and play the tick
+ *      sound, unless we've already passed the planned tick time).
+ *   5. Otherwise explode — notify the goal, fetch its location, and
+ *      call TSExplosion at that location.
  *
- * @param this  The CTSBomb entity instance (this in the original C++)
- * @returns     void
+ * @returns void
  */
-export function WaitThink(this: any /* TODO: CTSBomb */): void {
-  const pev = this.pev; // this+0x00 = entvars_s*
+export function WaitThink(this: CTSBomb): void {
+  // (1) Schedule the next think. The slow amount depends on m_fActive.
+  const slowDelta =
+    (this.m_fActive !== 0) ? SLOW_AMT_ACTIVE : SLOW_AMT_INACTIVE;
+  // TODO(asm-ambiguous): pev offsets 0x100 / 0x104 are not confirmed
+  // against the HL1 entvars layout in this build. Semantic is
+  // "schedule next think"; commonly written as
+  // `pev.nextthink = pev.ltime + delta`.
+  this.pev.nextthink = this.pev.ltime + slowDelta;
 
-  // ── 1. Reschedule next think ─────────────────────────────────
-  // pev.field0x104 = pev.field0x100 + dt, where dt depends on m_bArmed
-  // (offset 0x7f, byte). Cvars at [ebx-0x6cc98] (armed) and [ebx-0x6f018]
-  // (unarmed), both QWORD doubles.
-  // TODO(asm-ambiguous): exact names for pev fields at 0x100/0x104 unknown.
-  const armedTickDt = armedTickIntervalCvar;     // [ebx-0x6cc98]
-  const defaultTickDt = defaultTickIntervalCvar; // [ebx-0x6f018]
-  const tickDt = (this.m_bArmed !== 0) ? armedTickDt : defaultTickDt;
-  pev.field0x104 = pev.field0x100 + tickDt;
+  // (2) Only proceed if the bomb has been triggered (fuse running).
+  if (this.m_bTriggered === 0) return;
 
-  // ── 2. Bail if not active (offset 0x64, byte) ─────────────────
-  if (this.m_bActive === 0) return;
+  // (3) Count down the fuse.
+  this.m_flFuseTime -= slowDelta;
 
-  // ── 3. Tick detonation countdown (offset 0x6c, float) ────────
-  // (asm uses fsubr; equivalent to m_flDetonateTime -= defaultTickDt)
-  this.m_flDetonateTime -= defaultTickDt;
-
-  // ── 4. Detonate if countdown reached threshold ────────────────
-  // x87 fcomp: ST(0)=threshold (cvar at [ebx-0x6f408]),
-  // operand=m_flDetonateTime. jne jumps to non-explosion when
-  // threshold < m_flDetonateTime; fall-through (explosion) when
-  // threshold >= m_flDetonateTime.
-  // TODO(asm-ambiguous): threshold cvar's purpose is unclear
-  // (likely a small grace value near zero).
-  if (this.m_flDetonateTime <= detThresholdCvar /* [ebx-0x6f408] */) {
-    // ── Explosion ───────────────────────────────────────────────
-    // RoundTimeLeft result is consumed but appears unused here.
-    // TODO(asm-ambiguous): post-call cleanup is add esp,0x6, which
-    // doesn't fully match the sub 0xc + push pattern. Likely the
-    // compiler reuses the leftover RoundTimeLeft arg space for the
-    // next call's args (subsequent pushw + push writes into the
-    // freed area).
-    RoundTimeLeft(g_pGameRules /* [ebx+0x14f0] */);
-    // Virtual call through [this+0x60] vtable entry 0x114/4 with (this, ushort 1).
-    // TODO(asm-ambiguous): exact vmethod semantics unknown; likely a
-    // setter (perhaps to clear pev->owner before exploding).
-    this.vmethod114(1);
-    // Virtual call at entry 0xf8/4 returning a Vector (written via &vec).
-    // Most likely GetAbsOrigin/Center, used as the explosion center.
-    const origin = this.getAbsOrigin();
-    // TSExplosion(origin, pevAttacker=pev, pevInflictor=pev,
-    //             damage=300, bits=0x1040, dmgA=2048, dmgB=4096)
-    TSExplosion(origin, pev, pev, 300.0, 0x1040, 2048.0, 4096.0);
+  // (4) Branch on fuse vs threshold. jne 0x7c8bc jumps to the tick
+  // branch when FUSE_THRESHOLD < m_flFuseTime (still counting down).
+  if (this.m_flFuseTime > FUSE_THRESHOLD) {
+    // Still counting down — tick the bomb.
+    // jae 0x7c924 skips sound playback when m_flDetonateTime >=
+    // gameRulesTime (planned tick is in the future).
+    if (this.m_flDetonateTime >= GAME_RULES_TIME) {
+      return; // not yet time to tick (jump to epilogue)
+    }
+    // Schedule the next tick sound.
+    this.m_flDetonateTime = GAME_RULES_TIME + slowDelta;
+    // Emit the tick sound. The engine helpers compute the channel
+    // and attenuation, then EMIT_SOUND_DYN takes the result plus
+    // the sound name and final parameters.
+    // TODO(asm-ambiguous): pev+0x208 used as the edict; offset/name
+    // not confirmed (might be pev.pContainingEntity in this build).
+    // TODO(asm-ambiguous): engine helpers at offsets 0x168 and 0x16c
+    // and the 8-arg EMIT_SOUND_DYN signature are not fully confirmed.
+    const channelBase = engineGetSoundChannel(
+      this.pev.edictRef, /*flags*/ 0, /*?*/ 3, /*vol*/ 0.5,
+    );
+    const channel = channelBase + 0x62;
+    const attn = engineComputeSoundAttenuation(
+      this.pev.edictRef, channel, /*?*/ 0, /*?*/ 1.25, /*?*/ 1.0, /*?*/ 0.92,
+    );
+    emitSoundDyn(
+      /* edict */   this.pev.edictRef,
+      /* channel */ 6,
+      /* sample */  BOMB_TICK_SOUND,
+      /* attn */    attn,
+      /* pitch */   1.25,
+      /* ? */       0,
+      /* flags */   channel,
+      /* ? */       0.5,
+    );
     return;
   }
 
-  // ── 5. Beep logic ─────────────────────────────────────────────
-  // x87 fcomp: ST(0)=m_flNextBeep (offset 0x70, float),
-  // operand=gpGlobals->time (gpGlobals at [ebx+0x1600], first field).
-  // sahf+jae jumps to return when ST(0) >= operand; fall-through
-  // (beep) when m_flNextBeep < gpGlobals.time.
-  if (this.m_flNextBeep < gpGlobals.time) {
-    // Reschedule next beep: m_flNextBeep = gpGlobals.time + dt.
-    const beepDt = (this.m_bArmed !== 0) ? armedTickDt : defaultTickDt;
-    this.m_flNextBeep = gpGlobals.time + beepDt;
+  // (5) Explode.
+  // 5a. Round out the round timer.
+  // TODO(asm-ambiguous): [ebx+0x14f0] arg is unclear (likely a
+  // game-rules singleton pointer).
+  const timeLeft = CTSGameRules.RoundTimeLeft(/*gameRulesSingleton*/ undefined as any);
 
-    // Emit randomized beep via EMIT_SOUND_DYN.
-    //   edict* = pev->owner (pev+0x208)
-    //   channel = 6 (likely CHAN_VOICE)
-    //   sample  = string at [ebx-0x6ce04]
-    //   volume  = 1.0
-    //   attenuation = 1.25
-    //   flags   = 0
-    //   pitch   = 98 + RANDOM_LONG(0, 3)
-    // [ebx+0x1aa8] is a pointer to a function table; RANDOM_LONG is
-    // at +0x168 and RANDOM_FLOAT at +0x16c.
-    // TODO(asm-ambiguous): the float args (0.92, 1.0, 1.25, 0.5)
-    // intermix via stack alignment (sub esp,0x4 / sub esp,0x8 between
-    // calls); a RANDOM_FLOAT(0.92, 1.0) is computed but its target
-    // parameter (volume vs attenuation variation) is undeterminable
-    // from this chunk.
-    const pitch = 98 + RANDOM_LONG(0, 3);
-    EMIT_SOUND_DYN(
-      pev.owner,    // pev+0x208
-      6,            // CHAN_VOICE
-      beepSound,    // string at [ebx-0x6ce04]
-      1.0,          // volume
-      1.25,         // attenuation
-      0,            // flags
-      pitch         // 98 + RANDOM_LONG(0, 3)
-    );
-  }
+  // 5b. Tell the goal the bomb was used with USE_TYPE 1 (USE_ON).
+  // TODO(asm-ambiguous): vfunc offset 0x114 — exact name unclear.
+  this.m_pGoal.useTypeNotify(this, USE_TYPE_1);
+
+  // 5c. Read the goal's origin into a Vector.
+  // TODO(asm-ambiguous): vfunc offset 0xf8 — exact name unclear
+  // (likely GetAbsOrigin / Center).
+  const goalVec: Vector = this.m_pGoal.getOrigin(this);
+
+  // 5d. Trigger the explosion at the goal's location.
+  TSExplosion(
+    /* origin */   goalVec,
+    /* entvars */  this.pev,
+    /* entvars2 */ this.pev,
+    /* damage */   300.0,
+    /* flags */    0x1040,
+    /* radius1 */  2048.0,
+    /* radius2 */  4096.0,
+  );
 }
 ```

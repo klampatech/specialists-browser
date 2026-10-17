@@ -1,78 +1,169 @@
 ```typescript
 /**
- * CTSGun::SwitchItems — Cycle which primary/secondary item the player is
- * currently "drawing" (e.g., primary → secondary → akimbo → off) based on
- * which inventory slots actually contain a weapon, then play a switch sound
- * with a slight randomized pitch.
+ * CTSGun::SwitchItems — cycle the active item(s) on this weapon
+ * (akimbo-style swap) and play the "weapons/switch.wav" cue.
  *
- * @param this  The CTSGun entity instance
+ * Reads two fields off `this->m_pActiveItem` (offset 0xcc):
+ *   +0x10  bits_0x10 — which item slots exist on this weapon.
+ *                    Bit 0x2 = primary slot, bit 0x4 = secondary.
+ *   +0x14  m_iFlags  — which items are currently "active".
+ *                    Same bit layout.
+ *
+ * State transitions (m_iFlags is mutated in place; asm follows each
+ * branch faithfully — note the "both → none" transition also clears
+ * every other bit of m_iFlags, not just 0x2 and 0x4):
+ *
+ *   When both slots exist (bits_0x10 & 0x6 == 0x6):
+ *     0x6 (both)      → m_iFlags = 0            (clear all 32 bits)
+ *     0x0 (none)      → m_iFlags |= 0x2         (primary only)
+ *     0x2 (primary)   → (m_iFlags & ~0x2) | 0x4 (secondary only)
+ *     0x4 (secondary) → m_iFlags |= 0x2         (both)
+ *     … 4-state ring: 0 → 2 → 4 → 6 → 0 …
+ *
+ *   When only the primary slot exists (bits_0x10 & 0x6 == 0x2):
+ *     if m_iFlags has bit 0x2 → m_iFlags = 0      (clear all)
+ *     else                      → m_iFlags |= 0x2 (set primary)
+ *
+ *   When only the secondary slot exists (bits_0x10 & 0x6 == 0x4):
+ *     if m_iFlags has bit 0x4 → m_iFlags = 0      (clear all)
+ *     else                      → m_iFlags |= 0x4 (set secondary)
+ *
+ *   When neither slot exists (bits_0x10 & 0x6 == 0x0):
+ *     m_iFlags = 0  and NO sound is played.
+ *
+ * Otherwise a "weapons/switch.wav" sample is emitted on the owning
+ * player's edict with a small random pitch (≈ 98..101) and slightly
+ * randomized attenuation.
+ *
+ * @param this  The CTSGun weapon entity (this in C++)
  * @returns     void
  */
 export function SwitchItems(this: CTSGun): void {
-  const player = this.m_pPlayer; // [this+0xcc]
-  if (!player) return;
+  const self = this as any;
 
-  // Bits 1 (0x2) and 2 (0x4) on the player encode primary / secondary slots:
-  //   [player+0x10] = which slots hold a weapon
-  //   [player+0x14] = which slots are currently "active" (drawn)
-  // TODO: confirm field names against the HL SDK / TS layout — likely
-  //   something like m_iWeapons / m_iActiveItems or TS-specific flags.
-  const slotMask = player.m_iSlotFlags & 0x6;
-  const activeMask = player.m_iActiveFlags & 0x6;
-
-  if (slotMask === 0x6) {
-    // Both primary and secondary slots hold a weapon
-    if (activeMask === 0x6) {
-      // Both already active (e.g., akimbo) → drop back to nothing drawn
-      player.m_iActiveFlags = 0;
-    } else if (player.m_iActiveFlags & 0x2) {
-      // Primary currently active → switch to secondary
-      // (preserve other bits; set bit 2, clear bit 1)
-      player.m_iActiveFlags = (player.m_iActiveFlags | 0x4) & ~0x2;
-    } else if (player.m_iActiveFlags & 0x4) {
-      // Secondary currently active → switch to primary (preserve other bits)
-      player.m_iActiveFlags |= 0x2;
-    } else {
-      // Nothing currently active → default to primary (preserve other bits)
-      player.m_iActiveFlags |= 0x2;
-    }
-  } else if (slotMask & 0x2) {
-    // Only primary slot has a weapon: toggle primary-active on/off
-    if (player.m_iActiveFlags & 0x2) {
-      player.m_iActiveFlags = 0; // toggle off (full clear)
-    } else {
-      player.m_iActiveFlags |= 0x2; // toggle on, preserve other bits
-    }
-  } else if (slotMask & 0x4) {
-    // Only secondary slot has a weapon: toggle secondary-active on/off
-    if (player.m_iActiveFlags & 0x4) {
-      player.m_iActiveFlags = 0; // toggle off (full clear)
-    } else {
-      player.m_iActiveFlags |= 0x4; // toggle on, preserve other bits
-    }
-  } else {
-    // Neither slot has a weapon — clear active mask and bail silently
-    // (no switch sound is played in this case).
-    player.m_iActiveFlags = 0;
+  // 1. Bail if there is no active item slot.
+  const active = self.m_pActiveItem;
+  if (active == null) {
     return;
   }
 
-  // Play the switch sound. The edict is fetched via double-deref:
-  //   edict = *(this.m_pOwner + 0x208)   // [this+0x80] then deref
-  // Sample string lives at GOT-relative address 0x98136 (look up the
-  // exact path in tools/decompile/analysis/strings-n5.txt).
-  // The float pitch comes from engine RANDOM_FLOAT(0.92, 1.0) via the
-  // engine vtable at [ebx+0x1aa8] + 0x16c.
-  // TODO(asm-ambiguous): exact sample name string.
-  // TODO(asm-ambiguous): RANDOM_LONG(0, 3) + 0x62 (=> 98..101) is computed
-  //   and pushed before the float call; its role in the final
-  //   EMIT_SOUND_DYN(edict, CHAN_ITEM, sample, vol, atten, pitch, flags)
-  //   call is unclear — likely either the int pitch or a leftover slot.
-  // TODO: confirm offset meaning for [this+0x80] (likely m_pOwner) and
-  //   [+0x208] (likely pContainingEdict or similar end-of-struct field).
-  // TODO: implement via g_engfuncs / engine vtable:
-  //   EMIT_SOUND_DYN(<edict>, 3 /*CHAN_ITEM*/, <sample>,
-  //                  1.25 /*vol*/, ??? /*atten*/, RANDOM_FLOAT(0.92, 1.0) /*pitch*/,
-  //                  0 /*flags*/)
+  // 2. Read the slot bits and current flags from the active item.
+  const slotBits = (active.bits_0x10 | 0) & 0x6;   // [+0x10] & 0x6
+  const flags    =  active.m_iFlags | 0;            // [+0x14]
+
+  // 3. State machine.
+  let playSound = true;
+  switch (slotBits) {
+    case 0x6: {
+      // Both slots exist — cycle through the 4-state ring.
+      switch (flags & 0x6) {
+        case 0x6:
+          // Both active → none. Clear ALL bits of m_iFlags.
+          active.m_iFlags = 0;
+          break;
+        case 0x2:
+          // Primary only → secondary only (clear 0x2, set 0x4).
+          active.m_iFlags = (flags & ~0x2) | 0x4;
+          break;
+        case 0x4:
+          // Secondary only → both (set 0x2, leave 0x4 alone).
+        case 0x0:
+        default:
+          // None → primary only (set 0x2).
+          active.m_iFlags = flags | 0x2;
+          break;
+      }
+      break;
+    }
+    case 0x2:
+      // Only primary slot — toggle bit 0x2 (or clear all if set).
+      if ((flags & 0x2) !== 0) {
+        active.m_iFlags = 0;            // asm: mov [eax+0x14], 0
+      } else {
+        active.m_iFlags = flags | 0x2;  // asm: or  [eax+0x14], 0x2
+      }
+      break;
+    case 0x4:
+      // Only secondary slot — toggle bit 0x4 (or clear all if set).
+      if ((flags & 0x4) !== 0) {
+        active.m_iFlags = 0;            // asm: mov [eax+0x14], 0
+      } else {
+        active.m_iFlags = flags | 0x4;  // asm: or  [eax+0x14], 0x4
+      }
+      break;
+    default:
+      // Neither slot — clear, but no sound.
+      active.m_iFlags = 0;
+      playSound = false;
+      break;
+  }
+
+  if (!playSound) {
+    return;
+  }
+
+  // 4. Emit the switch click.
+  // Edict: edi = *( *(this.m_pPlayer_at_0x80) + 0x208 )
+  const player: any = self.m_pPlayer;
+  const edict: AnyPtr = player.pev.engineRef_0x208;
+
+  // Engine singleton at [GOT+0x1aa8]. vfunc_0x168 returns an int
+  // (≈ pitch offset in [0, 3]); vfunc_0x16c returns a float (≈ random
+  // attenuation in [0.918, 1.0]). Full signatures TBD; both calls
+  // also have stack-pad dwords (from `sub esp, 0x4` / `sub esp, 0x8`)
+  // that aren't pushed by the asm and are not consumed here either.
+  const engine = (self.__picBase + 0x1aa8) as AnyPtr;
+  const pitchOffset: number = (engine as any)[0x168](0, 3, 0.5);
+  const pitch: number = (pitchOffset | 0) + 0x62;     // ≈ 98..101
+  const attnJitter: number = (engine as any)[0x16c](
+    0.918, 1.0, /* pad: */ 1.25, 0, pitch,
+  );
+
+  // Sound sample path: [GOT - 0x6dcda] → "weapons/switch.wav"
+  const sample: AnyPtr = (self.__picBase - 0x6dcda) as AnyPtr;
+
+  // EMIT_SOUND_DYN(edict, channel, sample, vol, attn, flags, pitch)
+  // — 7-arg HL SDK signature. The disassembly also has 4 extra bytes
+  // of stack from a prior `sub esp, 0x4` alignment pad that gets
+  // lumped into the `add esp, 0x20` cleanup; not consumed by the callee.
+  EMIT_SOUND_DYN(
+    edict,         // arg1: edict
+    0x3,           // arg2: channel (CHAN_ITEM)
+    sample,        // arg3: "weapons/switch.wav"
+    1.25,          // arg4: vol (slightly boosted above 1.0)
+    attnJitter,    // arg5: attn (random 0.918..1.0)
+    0,             // arg6: flags
+    pitch,         // arg7: pitch (≈ 98..101)
+  );
 }
+
+// ── stubs for compile isolation ──────────────────────────────────
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyPtr = any;
+
+interface CTSGun {
+  /** 0x80 — owning CBasePlayer (used to source the edict for the cue) */
+  m_pPlayer: AnyPtr;
+  /** 0xcc — active item slot data (or null if nothing is held) */
+  m_pActiveItem: CTSGunActiveItem | null;
+  /** PIC base for GOT-relative access (filled in by the loader) */
+  __picBase: number;
+}
+
+interface CTSGunActiveItem {
+  /** +0x10 — bitmask of which item slots the weapon has (0x2/0x4 used) */
+  bits_0x10: number;
+  /** +0x14 — bitmask of which items are currently active (0x2/0x4) */
+  m_iFlags: number;
+}
+
+declare function EMIT_SOUND_DYN(
+  edict: AnyPtr,
+  channel: number,
+  sample: AnyPtr,
+  vol: number,
+  attn: number,
+  flags: number,
+  pitch: number,
+): void;
 ```
