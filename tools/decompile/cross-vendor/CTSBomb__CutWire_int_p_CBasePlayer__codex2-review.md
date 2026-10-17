@@ -1,213 +1,201 @@
 ```
-VERDICT: PASS-WITH-NOTES
+VERDICT: FAIL
 
 Checklist:
-1. Signature — ✅ — matches demangled `CTSBomb::CutWire(int, p CBasePlayer)`.
-   Two args (wireIndex: number, pPlayer: CBasePlayer), void return. The
-   TS's `this: CTSBomb` annotation correctly encodes the implicit C++
-   `this`. Good.
-
-2. Version check — N/A — this is a gameplay method, not an API entry
-   point (GiveFnptrsToDll / GetEntityAPI* / GetNewDLLFunctions). The
-   pattern doesn't apply.
-
-3. interfaceVersion assignment — N/A — same reason.
-
-4. Success path — ✅ — the switch correctly captures the three
-   wire-state cases. The byte-by-byte copy in case 2
-   (`[esi+0x7c..0x7e] → [edi+0x78c..0x78e]`) matches the disassembly's
-   three `mov al, …; mov BYTE PTR [edi+0x78c+eax], al` pairs, and
-   correctly preserves the "clear-then-read" ordering (the cleared   wire's byte is read back as 0). The FireTargets / TSHudMessageAll
-   arg ordering matches the disassembly's reverse-pushed args.
-
-5. No fabricated paths — ✅ — control flow matches exactly: bail
-   guards → state lookup → switch on 3 / 2 / 1 with epilogue jumps.
-   No invented branches.
-
-6. No TODO body — ✅ — body is real code; the only `TODO(asm-ambiguous)`
-   is a one-line note on the vtable entry at offset 0x114, which is
-   the right place for it.
-
-7. Field names — ⚠️ — most are reasonable, but two are structurally
-   wrong and one is misleading:
-   - `m_iszDetonateTarget` / `m_iszDetonateMessage`: the disassembly
-     accesses these as `[esi]; cmp [eax+0x1c8/0x1d4], 0` — that is,
-     `*(this[0] + 0x1c8)`. `this[0]` is the entvars_t pointer (`pev`),
-     so these are `pev->noise` (0x1c8) and `pev->noise3` (0x1d4). The
-     TS uses them as direct fields of `this`, dropping the `pev->`
-     indirection. The intent is correct, the access is wrong.
-   - `m_pOwnerEntity` at `[esi+0x60]`: the disassembly uses this as a
-     vtable pointer (it does `mov eax, [esi+0x60]; call [eax+0x114]` —
-     an indirect call through a function table). Naming it
-     `m_pOwnerEntity` implies a pointer to a separate entity; more
-     likely it's a secondary vtable (multi-inheritance base class).
-     The TS's *call* (`m_pOwnerEntity.vtable[0x45](this, 1)`) doesn't
-     actually match the disassembly's semantics for either     interpretation (a vtable call takes `this` as implicit `this`, not
-     the owner).
-
-8. Compiles in isolation — ⚠️ — uses `CTSBomb`, `CBasePlayer`,
-   `FireTargets`, `TSHudMessageAll`, `STRING`, `USE_TOGGLE` — none
-   defined here. The prompt allows `any` for unknowns; the TS uses
-   specific types instead, which would need to be defined elsewhere.
+1. Signature — ✅ pass — `(this: CTSBomb, wireIndex: number, player: CBasePlayer) => void` matches the demangled `CTSBomb::CutWire(int, p CBasePlayer)`. Two explicit args + implicit `this`, no return value.
+2. Version check — N/A — not one of the 4 engine↔mod interface functions.
+3. interfaceVersion assignment — N/A.
+4. Success path — ✅ pass — the non-failure "main" path (state dispatch + cleanup + final vcall) is preserved; the no-op-on-precondition-fail branches match `je 7c85c` exits.
+5. No fabricated paths — ✅ pass — the 4 preconditions (armedFlag, ownerPtr, time-compare, wireIndex range), the `wireByte == 0` and `player == null` short-circuits, and the 3/2/1 state dispatch map 1:1 to the disassembly branches. The fallthrough for state 1 is *implicit* (see issue 4) but no entirely-invented branch exists.
+6. No TODO body — ✅ pass — the function is fully expressed in code; `// TODO(asm-ambiguous)` markers annotate genuinely-ambiguous bits (the cstring-resolution triple-deref and the exact `TSHudMessageAll` arg types) without standing in for real logic.
+7. Field names — ❌ fail — `self.vtable` for `[esi]` and `self.pev` for `[esi + 0x60]` are actively misleading (see issues 2 and 3).
+8. Compiles in isolation — ⚠️ needs review — `as any` keeps TypeScript happy at the *use* sites, but 8 external identifiers (`STRING`, `FireTargets`, `TSHudMessageAll`, `gpGlobals_time`, `g_pStringBase`, `USE_TYPE_3`, `CBasePlayer`, `CTSBomb`) have no declarations; see issue 5.
 
 Issues to fix:
 
-A. **Float comparison direction is inverted (logic bug).** This is the
-   most important issue. The disassembly at 0x7c73e–0x7c74a is:
+**Issue 1 — BLOCKING: `TSHudMessageAll` argument order is inverted.**
 
- ```
-   fld    DWORD PTR [ebx-0x6f408]   ; st(0) = global
-   fcomp  DWORD PTR [esi+0x6c]      ; compare st(0) vs this.m_flDetonateTime
-   fnstsw ax
-   sahf
-   jae    7c85c                      ; bail iff st(0) >= op
-   ```
+The disassembly pushes, in chronological order:
 
-   After `sahf`, EFLAGS.CF = FPU C0 = 1 iff `st(0) < op`. `jae`
-   (jump if above-or-equal) tests CF=0, so jumps iff `st(0) >= op`,
-   i.e., iff `[ebx-0x6f408] >= [esi+0x6c]`. Jump target is the
-   epilogue. So the function bails iff `global >= this.m_flDetonateTime`,
-   i.e., "the detonation time has arrived or passed".
+```
+  7c825: push  eax          ; string
+  7c826: push  0x1e
+  7c828: push  0x8
+  7c82a: push  0x0
+  7c82c: push  0xff
+  7c831: push  0x0
+  7c833: call  TSHudMessageAll
+```
 
-   The TS has:
+cdecl pushes right-to-left, so source order is the **reverse** of push order:
 
-   ```typescript
-   if (this.m_flDetonateTime >= g_bombTimeoutCvar) return;
-   ```
+```
+TSHudMessageAll(0, 0xff, 0, 0x8, 0x1e, szHud)
+```
 
-   which bails iff `this.field >= global` — the *opposite* condition.
-   As written, the TS would allow cutting the wire only AFTER the
-   bomb has detonated. This needs to be flipped:
+The TS instead has `TSHudMessageAll(szHud, 0, 0xff, 0, 0x8, 0x1e)` — `szHud` at position 1 (leftmost) when it should be position 6 (rightmost), and the numeric slots are all shifted one slot too. Confirmed by direct contrast with the FireTargets call site in the same function: that one has the string leftmost `FireTargets(szFire, self, self, USE_TYPE_3, 0.0)` — which is **correct** because the disassembly has it pushed *last* (`7c7fa`). HUD has it pushed *first*, so the source order should put it on the right.
 
-   ```typescript
-   if (g_currentTime >= this.m_flDetonateTime) return;
-   ```
+**Issue 2 — `self.vtable` for `[esi]` is a misleading name.**
 
-   (or equivalently `if (this.m_flDetonateTime <= g_currentTime) return;`).
-   The TODO comment about confirming the cvar name is fine to keep;
-   the comparison direction is unambiguous from the assembly.
+`[esi][0x1c8]` and `[esi][0x1d4]` are added to a `[[ebx + 0x1600]][0x98]` string base, not invoked or compared as function pointers. That's the "message-offset table" pattern, not a C++ vtable. A vtable slot at index 0x72 would be a function pointer; adding it to a string base would crash. Rename to something neutral — `defuseMessagesPtr`, `m_pMessages`, or just `[esi]` with a TODO — and don't propagate the `vtable` name.
 
-B. **Missing `pev->` indirection on the detonate target/message   strings.** As noted in checklist item 7, the disassembly reads
-   `*[esi+0x1c8]` and `*[esi+0x1d4]` after first loading `*[esi+0]`
-   into eax. The TS should treat these as `pev->noise` (0x1c8) and
-   `pev->noise3` (0x1d4) rather than as direct fields of `this`.
+**Issue 3 — `self.pev` for `[esi + 0x60]` is wrong.**
 
-C. **`m_pOwnerEntity` should be a vtable (or at minimum renamed).**
-   The disassembly's `[esi+0x60]` is used as a vtable pointer for an
-   indirect call through `[eax+0x114]`. The TS should rename it to
-   `m_pVtable2` (or similar) and clarify in a TODO that we haven't
-   pinned down which MI base class owns this vtable.
+In HLSDK, `pev` (the `entvars_t*`) is the first member of `CBaseEntity`, sitting at offset 0 (just after the vptr). A field at `CTSBomb + 0x60` cannot be `pev`. Given the usage pattern `[esi + 0x60][0x114]` as an indirect call site, it's almost certainly a virtual-dispatch table pointer (a second vtable for a separate interface). Use `dispatchTable` / `vfunc2` and document as such.
+
+**Issue 4 (minor): state-1 entry is implicit.**
+
+The disassembly has `cmp BYTE PTR … , 0x1; jne 7c85c` immediately before state-1 logic. The TS falls through without that check. In practice (with only {0,1,2,3} as valid values) the fallthrough is safe, but to be faithful:
+
+```typescript
+if (wireByte !== 1) return;
+self.wireState[wireIndex] = 0;
+…
+```
+
+**Issue 5 (cosmetic, but blocks compile-in-isolation): external identifiers are undeclared.**
+
+Add a declarations block at the top of the file. Names + approximate types:
+
+```typescript
+declare const gpGlobals_time: number;
+declare const g_pStringBase: any;
+declare const USE_TYPE_3: number;
+declare function STRING(p: any): string;
+declare function FireTargets(
+  targetName: string, pCaller: any, pActivator: any,
+  useType: number, delay: number,
+): void;
+declare function TSHudMessageAll(
+  ch: number, r: number, g: number, y: number, hold: number, msg: string,
+): void;
+```
+
+…and either declare the `CBasePlayer` / `CTSBomb` shapes or fully `any`-ify the parameters.
+
+---
 
 Suggested rewrite:
 
 ```typescript
+// === External declarations (would live in a shared cts-bridge.d.ts) ===
+declare const gpGlobals_time: number;
+declare const g_pStringBase: any;
+declare const USE_TYPE_3: number;
+declare function STRING(p: any): string;
+declare function FireTargets(
+  targetName: string, pCaller: any, pActivator: any,
+  useType: number, delay: number,
+): void;
+declare function TSHudMessageAll(
+  ch: number, r: number, g: number, y: number, hold: number, msg: string,
+): void;
+
+interface CBasePlayer {
+  colorByte0: number;
+  colorByte1: number;
+  colorByte2: number;
+}
+
+interface CTSBomb {
+  armedFlag: number;             // byte  [esi+0x64]
+  ownerPtr: number;              // dword [esi+0x84]
+  flDetonateTime: number;        // float [esi+0x6c]
+  flSecondary: number;           // dword [esi+0x70]
+  wireState: Uint8Array;         // 3 bytes [esi+0x7c..0x7e], indexed by wireIndex
+  someFlag: number;              // byte  [esi+0x7f] — set on state-2 cut
+  colorByte0: number;            // byte  [esi+0x7c]
+  colorByte1: number;            // byte  [esi+0x7d]
+  colorByte2: number;            // byte  [esi+0x7e]
+  /* First-member pointer ([esi+0]) that resolves message-table offsets at
+     +0x1c8 and +0x1d4 via a string base. NOT a vtable.            */
+  defuseMessagesPtr: any;
+  /* Pointer at [esi+0x60] to a virtual-dispatch table;
+     [this][0x60][0x114/4] is the function called at the end of state 1.
+     NOT pev (pev lives at CBaseEntity offset 0).                   */
+  dispatchTable: any;
+}
+
 /**
- * CTSBomb::CutWire — handle a player cutting a wire on a planted bomb.
+ * CTSBomb::CutWire — player cuts one of the bomb's three wires.
  *
- * @param this       The CTSBomb entity instance (this in the original C++)
- * @param wireIndex  Which wire to cut (0, 1, or 2)
- * @param pPlayer    The player performing the cut
- * @returns          void
+ *  Preconditions: armed, has owner, timer not yet expired, wireIndex ∈ {0,1,2},
+ *                 wire-byte != 0, player != null.
+ *  State dispatch on the wire byte:
+ *    3 → silent disarm (clear wire + zero timer).
+ *    2 → clear wire, set internal flag, copy [esi+0x7c..0x7e] onto player+0x78c..0x78e.
+ *    1 → clear wire; optionally FireTargets and/or TSHudMessageAll (gated by
+ *        non-zero offsets in the message table); zero both timer fields;
+ *        dispatch through [esi+0x60][0x114/4](this, 1).
  */
 export function CutWire(
   this: CTSBomb,
   wireIndex: number,
-  pPlayer: CBasePlayer,
+  player: CBasePlayer,
 ): void {
-  // ── Bail-out guards (in disassembly order) ──────────────────────
-  if (this.m_bActive === 0) return; // [esi+0x64] byte
-  if (this.m_iszTarget === 0) return;         // [esi+0x84] dword
+  const self = this as any;
+  const playerAny = player as any;
 
-  // Disassembly at 0x7c73e–0x7c74a:
-  //   fld [ebx-0x6f408]; fcomp [esi+0x6c]; fnstsw ax; sahf; jae (bail)
-  // jae after fcomp jumps iff st(0) >= op, i.e., iff
-  // [ebx-0x6f408] >= this.m_flDetonateTime. The TS originally had
-  // the comparison inverted (it would have allowed cutting only
-  // AFTER the bomb detonated).
-  // TODO(asm-ambiguous): confirm the name of [ebx-0x6f408] (likely
-  // gpGlobals->time, but possibly a cvar).
-  if (g_currentTime >= this.m_flDetonateTime) return;
-
-  // Wire index out of range (only 3 wires exist).
+  // ---- Preconditions --------------------------------------------------
+  if (self.armedFlag === 0) return;                          // [esi+0x64] byte
+  if (self.ownerPtr === 0) return;                          // [esi+0x84] dword
+  // x87 pattern: fld [gpGlobals_time]; fcomp [esi+0x6c]; sahf; jae end
+  if (gpGlobals_time >= self.flDetonateTime) return;
   if (wireIndex > 2) return;
+  const wireByte: number = self.wireState[wireIndex];       // [esi+0x7c + wireIndex]
+  if (wireByte === 0) return;
+  if (player == null) return;
 
-  // ── Wire state lookup ──────────────────────────────────────────
-  // State byte at [esi + ecx + 0x7c] (the compiler splits the
-  // address calc as [esi+0xc] + [ecx+0x70]). Possible values:
-  // 0 (idle, bail), 1 (detonate), 2 (defuse), 3 (cancel).
-  const wireState = this.m_rgWireStates[wireIndex];
-  if (wireState === 0) return;
-  if (pPlayer === null) return;
-
-  switch (wireState) {
-    case 3: {
-      // Wire cut was cancelled mid-progress. Just reset the wire
-      // state and detonation timer.
-      this.m_rgWireStates[wireIndex] = 0;
-      this.m_flDetonateTime = 0;
-      break;
-    }
-
-    case 2: {
-      // Correct wire — defuse the bomb.
-      this.m_bDefused = 1; // [esi+0x7f]
-      this.m_rgWireStates[wireIndex] = 0;
-      // Copy the 3 wire-state bytes to the player. Note: the
-      // current wire's state byte is now 0 (we just cleared it),
-      // so the player sees a snapshot with the cut wire marked 0.
-      pPlayer.m_iUserByte0 = this.m_rgWireStates[0];        // [edi+0x78c] ← [esi+0x7c]
-      pPlayer.m_iUserByte1 = this.m_rgWireStates[1];        // [edi+0x78d] ← [esi+0x7d]
-      pPlayer.m_iUserByte2 = this.m_rgWireStates[2];        // [edi+0x78e] ← [esi+0x7e]
-      break;
-    }
-
-    case 1: {
-      // Wrong wire — detonate.
-      this.m_rgWireStates[wireIndex] = 0;
-
-      // pev->noise is the detonate target string.
-      // Disassembly: mov eax, [esi]; cmp [eax+0x1c8], 0
-      // (the TS originally dropped the pev-> indirection here).
-      if (this.pev.noise !== 0) {
-        FireTargets(
-          STRING(this.pev.noise),
-          this,
-          this,
-          USE_TOGGLE,
-          0,
-        );
-      }
-
-      // pev->noise3 is the detonate HUD message.
-      if (this.pev.noise3 !== 0) {
-        TSHudMessageAll(
-          0,
-          0xff,
-          0,
-          8,
-          0x1e,
-          STRING(this.pev.noise3),
-        );
-      }
-
-      // Reset both timers.
-      this.m_flDetonateTime = 0;                            // [esi+0x6c]
-      this.m_flOtherTimer = 0;                              // [esi+0x70]
-
-      // Virtual call through the secondary vtable at [esi+0x60].
-      // Disassembly: mov eax, [esi+0x60]; call [eax+0x114]
-      // (vtable index 0x45, called with (this, 1)).
-      // TODO(asm-ambiguous): which MI base class owns this vtable,
-      // and what does vtable[0x45] do? The TS originally misnamed
-      // this as m_pOwnerEntity; it's actually a vtable pointer.
-      this.m_pVtable2[0x45](this, 1);
-      break;
-    }
+  // ---- state 3: silent disarm -----------------------------------------
+  if (wireByte === 3) {
+    self.wireState[wireIndex] = 0;
+    self.flDetonateTime = 0;
+    return;
   }
+
+  // ---- state 2: clear wire, set flag, snapshot color onto player -----
+  if (wireByte === 2) {
+    self.someFlag = 1;                                      // [esi+0x7f]
+    self.wireState[wireIndex] = 0;
+    playerAny.colorByte0 = self.colorByte0;                 // [esi+0x7c] → [edi+0x78c]
+    playerAny.colorByte1 = self.colorByte1;                 // [esi+0x7d] → [edi+0x78d]
+    playerAny.colorByte2 = self.colorByte2;                 // [esi+0x7e] → [edi+0x78e]
+    return;
+  }
+
+  // ---- state 1: full defuse ------------------------------------------
+  if (wireByte !== 1) return;                               // disasm: cmp 0x1; jne end
+  self.wireState[wireIndex] = 0;
+
+  // Optional FireTargets — gated by a non-zero offset in the message table.
+  const fireOffset: number = (self.defuseMessagesPtr as any)[0x1c8 / 4];
+  if (fireOffset !== 0) {
+    // TODO(asm-ambiguous): the cstring-resolution triple-deref chain
+    //   `*(*(ebx + 0x1600))[0x98/4] + offset` cannot be reconstructed
+    //   in TS without a C bridge; the `+0x98` is elided below.
+    const szFire = STRING(
+      (*(g_pStringBase as any) /* +0x98 after the GOT walk */) + fireOffset,
+    ) as string;
+    FireTargets(szFire, self, self, USE_TYPE_3, 0.0);
+  }
+
+  // Optional HUD broadcast — gated by a non-zero offset in the message table.
+  const hudOffset: number = (self.defuseMessagesPtr as any)[0x1d4 / 4];
+  if (hudOffset !== 0) {
+    const szHud = STRING(
+      (*(g_pStringBase as any) /* +0x98 */) + hudOffset,
+    ) as string;
+    // Disasm push order: eax(string), 0x1e, 0x8, 0x0, 0xff, 0x0.
+    // cdecl source order = reverse of push order, so string goes LAST.
+    TSHudMessageAll(0, 0xff, 0, 0x8, 0x1e, szHud);
+  }
+
+  self.flDetonateTime = 0;                                   // [esi+0x6c]
+  self.flSecondary = 0;                                      // [esi+0x70]
+
+  // Virtual dispatch through [esi+0x60][0x114/4](self, 1).
+  (self.dispatchTable as any)[0x114 / 4](self, 1);
 }
 ```
 
-Summary: structure and switch-case logic are correct. Three fixesneeded — float comparison direction (logic bug, A), `pev->` indirection
-on `m_iszDetonateTarget` / `m_iszDetonateMessage` (B), and renaming
-`m_pOwnerEntity` → `m_pVtable2` (C). Of these, A is the only one that
-silently changes runtime behavior; B and C are structural / naming.
+The single critical fix is issue 1 (HUD arg order); issues 2 and 3 are naming that will mislead the next reviewer; issue 4 keeps the control flow 1:1 with the disassembly; issue 5 unblocks compile-in-isolation. Once those are addressed the function should pass D.3 review.
