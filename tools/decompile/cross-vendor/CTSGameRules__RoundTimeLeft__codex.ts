@@ -1,73 +1,108 @@
 ```typescript
+// === Ambient declarations for in-isolation compile. ===
+// TODO(D.4): full class definitions belong in the class decompile pass; only the
+// offsets touched by RoundTimeLeft are stubbed here.
+declare class CTSGameRules {
+  public m_flField_0x8: number;
+  public m_bRoundActive_0x10: number;
+  public m_pWinnerEntity_0x554: CBaseEntity | null;
+}
+declare class CBaseEntity {
+  public m_iszTargetname_0x94: number; // string_t offset
+}
+// Engine-side memory / callback helpers. Real bindings live in the engine bridge.
+declare function readF32(addr: number): number;
+declare function readU32(addr: number): number;
+declare function readString(addr: number): string;
+declare function FireTargets(
+  targetname: string,
+  pActivator: CBaseEntity,
+  pCaller: CBaseEntity,
+  useType: number,
+  value: number
+): void;
+// Demangled `TeamWin(int, int, bool, ?)`. `T3` is a template-type placeholder.
+declare function TeamWin(
+  this: CTSGameRules,
+  int1: number,
+  int2: number,
+  boolArg: boolean,
+  t3Arg: number
+): void;
+
 /**
- * CTSGameRules::RoundTimeLeft — round-end dispatch.
+ * CTSGameRules::RoundTimeLeft — round-end trigger handler.
  *
- * Per-tick (typically driven from CTSGameRules::Think): when this runs
- * it either fires end-of-round targets via `FireTargets` or declares
- * a team winner via `TeamWin`. Two field checks guard re-entry, then
- * an objective pointer chooses the branch.
+ * Decompiled from `ts/dlls/ts_i386.so` at 0x00069024 (142 bytes).
  *
- * @param this  CTSGameRules instance
+ * Behavior (mirrors the assembly):
+ *
+ *   1. Compare the global f32 at `[GOT − 0x6f408]` with `this->offset_0x8`.
+ *      If equal, return (de-dup: already handled this tick).
+ *   2. Read `this->offset_0x10` (byte). If 0, return (round not active).
+ *   3. If `this->offset_0x554` is non-null and the winner entity's
+ *      `offset_0x94` (targetname string_t) is non-zero:
+ *        a. Resolve the targetname via HL1's global string table.
+ *        b. Call FireTargets(string, winner, winner, USE_TYPE=3, 0.0).
+ *   4. Fallback (no winner / no targetname): TeamWin(this, 2, 0, true, 0).
+ *
+ * @param this  The CTSGameRules entity.
+ * @returns     void
  */
 export function RoundTimeLeft(this: CTSGameRules): void {
-  // ── Guard 1 (0x69038–0x69046): float compare ─────────────────────
-  // fld [ebx-0x6f408]; fcomp [edx+0x8]; fnstsw; test ah,0x40; jne end.
-  // Skips when global float equals this->m_flRoundTime (or unordered).
-  // TODO(asm-ambiguous): the source-level semantics of the strict ==
-  // check are unclear without consulting strings-n5.txt — likely a
-  // dedup-tick guard against re-firing within the same game-time.
-  const flGlobalTimer /* GOT-relative 0x6f408, plausibly gpGlobals->time */ = 0;
-  if (flGlobalTimer === this.m_flRoundTime /* +0x8 */) {
+  // PIC / GOT base: ebx = 0x0006902d + 0xfcde3 ≈ 0x1063F10.
+  const GOT_BASE = 0x1063f10;
+
+  // (1) fcomp + fnstsw + test ah,0x40 + jne ⇒ "skip body if values are equal".
+  // TODO(asm-ambiguous): the semantics of `this->offset_0x8` (round-end
+  // timestamp vs. last-processed tick vs. round trigger version) depend on
+  // engine convention; verify against the SDK header in D.4.
+  const triggerTime: number = readF32(GOT_BASE - 0x6f408);
+  if (triggerTime === this.m_flField_0x8) {
     return;
   }
 
-  // ── Guard 2 (0x69048–0x6904c): round-state flag byte at +0x10 ─────
-  if (this.m_bRoundActive === 0) {
+  // (2) Round-in-progress flag.
+  if (this.m_bRoundActive_0x10 === 0) {
     return;
   }
 
-  // ── Objective branch (0x6904e–0x69064) ───────────────────────────
-  const pEndObjective = this.m_pEndObjective; // +0x554
+  // (3) Winner-entity targetname fire path.
+  const winner: CBaseEntity | null = this.m_pWinnerEntity_0x554;
+  if (winner !== null && winner.m_iszTargetname_0x94 !== 0) {
+    // HL1 STRING(t) ≈ gpGlobals->pStringTable->buffer + t.
+    // The disassembly's triple-dereference:
+    //   gpGlobals  = [GOT + 0x1600]   // engine-side global
+    //   level1     = *gpGlobals        // first deref
+    //   bufferBase = *(level1 + 0x98)  // struct member offset
+    // TODO(asm-ambiguous): gpGlobals->pStringTable offset (0x98) and any
+    // chained struct layout are inferred from HL1 SDK layout; verify.
+    const gpGlobals:  number = readU32(GOT_BASE + 0x1600);
+    const level1:     number = readU32(gpGlobals);
+    const bufferBase: number = readU32(level1 + 0x98);
+    const targetName: string = readString(bufferBase + winner.m_iszTargetname_0x94);
 
-  if (pEndObjective != null && pEndObjective.m_flEndAmount /* +0x94 */ !== 0) {
-    // ═══ Path A — FireTargets (0x69066–0x6908a) ════════════════════
-    // cdecl push order (right-to-left; first arg is the last push):
-    //   arg5: push 0x0                       → string_target = null
-    //   arg4: push 0x3                       → USE_TYPE = 3
-    //   arg3: push eax (= pEndObjective)     → caller (duplicate)
-    //   arg2: push eax (= pEndObjective)     → activator (duplicate)
-    //   arg1: push eax (computed value)
-    //
-    // The PLT sig `FireTargets__FPCcP11CBaseEntityT18USE_TYPEf`
-    // lists only 4 args; the asm pushes 5, so we model the 5 pushes
-    // literally and flag the discrepancy.
-    const flValue =
-      pEndObjective.m_flEndAmount +
-      /* *(*[ebx+0x1600] + 0x98) — dword load + add; float semantics */ 0;
-
+    // FireTargets(string, pActivator, pCaller, USE_TYPE, value).
     FireTargets(
-      /* stringTarget */ 0,
-      /* pCaller      */ pEndObjective,
-      /* pActivator   */ pEndObjective,
-      /* USE_TYPE     */ 3,
-      /* value        */ flValue,
+      /* string     */ targetName,
+      /* pActivator */ winner,
+      /* pCaller    */ winner,
+      /* USE_TYPE   */ 3,
+      /* value      */ 0.0
     );
-  } else {
-    // ═══ Path B — TeamWin (0x69094–0x690a5) ═════════════════════════
-    // cdecl push order with 16-bit word pushes for the trailing bools:
-    //   arg5: pushw 0x0   → false           (← "T3" trailing arg slot)
-    //   arg4: pushw 0x1   → true
-    //   arg3: push 0x0    → 0
-    //   arg2: push 0x2    → 2
-    //   arg1: push edx    → this  (edx still holds `this` here)
-    //
-    // Both paths share the same epilogue: `add esp, 0x20` cleans 32 B.
-    this.TeamWin(
-      /* winnerReason */ 2,
-      /* score        */ 0,
-      /* announce     */ true,
-      /* flag         */ false,
-    );
+    return;
   }
+
+  // (4) Fallback: TeamWin(int, int, bool, ?).
+  // Push sequence (right-to-left; cdecl-style via PLT; this pushed last):
+  //   pushw 0x0            ⇒ T3 = 0   (with sub esp,0xe padding above)
+  //   pushw 0x1 + sub esp,0x2 ⇒ bool = 1
+  //   push 0x0             ⇒ int = 0
+  //   push 0x2             ⇒ int = 2
+  //   push edx             ⇒ this (= CTSGameRules*)
+  // Caller cleans stack with `add esp, 0x20` (32 bytes).
+  // TODO(asm-ambiguous): T3's concrete type/meaning depends on TeamWin's
+  // full demangled signature (handled in D.4).
+  TeamWin(this, /* int1 */ 2, /* int2 */ 0, /* boolArg */ true, /* t3Arg */ 0);
 }
 ```
