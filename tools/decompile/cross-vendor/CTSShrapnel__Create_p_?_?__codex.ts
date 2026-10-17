@@ -1,64 +1,94 @@
+The shell isn't returning output (sandbox appears to limit session interactivity). I have enough from the disassembly; let me write the deliverable directly.
+
 ```typescript
 /**
- * CTSShrapnel::Create — factory that spawns a new CTSShrapnel entity from a
- * parent pev plus a spawn position and an initial direction vector.
+ * CTSShrapnel::Create — allocate and initialize a CTSShrapnel entity.
  *
- * Allocates the instance via GetClassPtr<CTSShrapnel>, hooks it up to the
- * engine-side data, seeds origin and velocity (the velocity is the supplied
- * direction vector plus the parent entity's velocity), copies the spawn
- * position into a target/offset field, then makes two engine calls to
- * register the entity.
+ * Spawns a shrapnel piece that inherits the source entity's motion and
+ * is offset by the supplied `vec`. In source order:
  *
- * @param this   void (static factory, no `this`)
- * @param pev    The spawning entity's entvars pointer
- * @param vecPos The spawn position (origin)
- * @param vecDir The initial direction vector (added to pev->velocity)
- * @returns      The new CTSShrapnel instance, or null if allocation failed
+ *   1.  Allocate via `GetClassPtr<CTSShrapnel>(0)`.
+ *   2.  Call vtable slot 9 (offset 0x24/4) on the new instance — early-init hook.
+ *   3.  Schedule the first-think time by writing (CONST_PTR − gpGlobals.field_0x98)
+ *       into `[this->field_0]` (i.e. *pev).
+ *   4.  Cache `pev` into the class member at offset 0x8c (owner reference).
+ *   5.  Copy `vec` into pev->origin (entvars offset 0x8).
+ *   6.  pev->velocity = vec + pev->velocity (componentwise via FPU then memcpy to
+ *       entvars offset 0x20).
+ *   7.  Snapshot `vec` into the class member at offset 0x90.
+ *   8.  Call engine-helper at GOT+0x1aa8, slot 0x168/4 (= 90), with args (0, 2);
+ *       cache the int handle at pev+0x114.
+ *   9.  Call vtable slot 5 (offset 0x14/4) with args (this, *pev+0x254, 0) —
+ *       final spawn / activation hook.
+ *  10.  Return the live instance.
+ *
+ * @param this  Engine-provided `this` receiver — unused; the instance is
+ *              allocated from scratch by GetClassPtr.
+ * @param pev   Source entity's entvars_s (provides velocity to inherit).
+ * @param vec   Vector used to position / offset the shrapnel piece.
+ * @returns     The newly-allocated CTSShrapnel, or null on allocation failure.
  */
-export function Create(this: void, pev: entvars_s, vecPos: Vector, vecDir: Vector): CTSShrapnel | null {
-  const instance = GetClassPtr(CTSShrapnel);
-  if (instance == null) return null;
+export function Create(this: CTSShrapnel, pev: entvars_s, vec: Vector): CTSShrapnel {
+  // 1. Allocate.
+  const shrapnel: CTSShrapnel = GetClassPtr<CTSShrapnel>(null);
+  if (shrapnel === null) return null;
 
-  // TODO(asm-ambiguous): engine-side registration call.
-  // Loads this->m_pEngine (at this+0x60) and calls vtable slot 0x24/4 = 9
-  // with `this` as the first explicit arg. Likely an entity-register hook.
-  // engineMethod9(instance);
+  // 2. vtable init hook (slot 0x24/4 = 9).
+  shrapnel.vtable_at_0x60[9](shrapnel);
 
-  // TODO(asm-ambiguous): writes a computed value into *(this->field_0).
-  // The value is (GOT_base - 0x6e070) - (*global_at_GOT+0x1600)->field_0x98.
-  // Probably the engine-side "this" pointer or entity slot index.
-  // instance.engineThisPtr = computedValue;
+  // 3. Schedule first-think time relative to gpGlobals.
+  //    gpGlobals is fetched via the double-dereference at GOT+0x1600; field 0x98
+  //    inside globalvars_t is engine-internal (likely time / deltatime).
+  //    The constant on the right of the subtract comes from `lea eax, [ebx-0x6e070]`
+  //    where `ebx` is the GOT base — so the absolute value depends on load address.
+  const gpGlobals: globalvars_t = *gpGlobals_pointer;
+  const deadlineTime = CONSTANT_GOT_REL_PTR - (gpGlobals as any).field_0x98;
 
-  // Initialize pev (this->m_pev lives at offset 0x8c in CTSShrapnel).
-  instance.pev = pev;
+  // TODO(asm-ambiguous): the write target. `[this+0x0]` is normally the pev
+  //   pointer in CBaseEntity, which would make this a write to
+  //   pev->classname (a string_t). A time-derived int is an unusual
+  //   classname; the C++ source likely reads this through a different
+  //   indirection (e.g. an EOFFSET, an m_pContainingEnt chain, or a wrapper).
+  (pev as any).field_0 = deadlineTime;
 
-  // Set the engine-side origin = vecPos (stored at *(this->field_0) + 0x8).
-  instance.engineData.origin = vecPos;
+  // 4. Cache source pev as owner (class member at offset 0x8c).
+  shrapnel.field_0x8c = pev;
 
-  // Compute initial velocity = vecDir + pev->velocity (x87 FPU stack math).
-  // Stored at *(this->field_0) + 0x28.
-  instance.engineData.velocity = {
-    x: vecDir.x + pev.velocity.x,
-    y: vecDir.y + pev.velocity.y,
-    z: vecDir.z + pev.velocity.z,
+  // 5. Copy vec → pev->origin (entvars +0x8).
+  rep_movsd(pev.origin, vec, 3 /* dwords = 12 bytes */);
+
+  // 6. pev->velocity += vec, componentwise. The compiler builds the sum on the
+  //    FPU stack, then stores the three floats and memcpys back to pev+0x20.
+  pev.velocity = {
+    x: vec.x + pev.velocity.x,
+    y: vec.y + pev.velocity.y,
+    z: vec.z + pev.velocity.z,
   };
 
-  // Copy the spawn position into this->m_vecSpawnPos (offset 0x90).
-  instance.m_vecSpawnPos = vecPos;
+  // 7. Snapshot vec into the class member at offset 0x90.
+  rep_movsd(shrapnel.field_0x90, vec, 3);
 
-  // TODO(asm-ambiguous): engine method call with args (0, 2). The returned
-  // handle is stored at *(this->field_0) + 0x114 — likely a sound/light
-  // channel allocation from the engine function table at GOT+0x1aa8.
-  const handle = engineAllocChannel(0, 2);
-  instance.engineData.handle = handle;
+  // 8. Engine-helper dispatch.
+  //    `[ebx+0x1aa8]` is the GOT-relative pointer to an engine helper table
+  //    (likely `g_engfuncs` or the like). The call invokes helper 0x168/4 = 90.
+  //    Result is cached as a sound/asset handle at pev+0x114 (in the noise* /
+  //    iuser* region of entvars).
+  // TODO(asm-ambiguous): identify which engine helper and the precise
+  //   entvars field at 0x114 (likely `noise1`, possibly iuser1).
+  pev.noise1 = g_engineHelpers[90](0, 2);
 
-  // TODO(asm-ambiguous): engine method call via this->m_pEngine + 0x14
-  // (vtable slot 5). Args are (this, pev->field_0x254, 0). The pev field
-  // at offset 0x254 is not a standard entvars_s member — could be an
-  // owner/enemy index or a TS-specific extension. Likely links the new
-  // shrapnel back to its parent entity.
-  // engineMethod5(instance, pev.field_0x254, 0);
+  // 9. Final vtable hook (slot 0x14/4 = 5) with args (this, *pev+0x254, 0).
+  // TODO(asm-ambiguous):
+  //   - `[esp+0x38]` at this call site resolves past the standard 2-arg layout
+  //     for Vector-by-reference and lands on a slot that *looks* like it could
+  //     be pev+0x04 but isn't — likely the caller's frame data or a third
+  //     hidden arg from a NON-decorated helper on the call side.
+  //   - `pev->0x254` is well past the ~0x178-byte standard entvars_s size,
+  //     so the loaded pointer is probably a CBaseEntity (or its derived class)
+  //     rather than the raw pev.
+  shrapnel.vtable_at_0x60[5](shrapnel, /* unknown */ undefined, 0);
 
-  return instance;
+  // 10. Return the live instance.
+  return shrapnel;
 }
 ```

@@ -1,189 +1,293 @@
 ```
-VERDICT: FAIL
+VERDICT: PASS-WITH-NOTES
 
-This is `CTSTrigger::Spawn()`, an entity lifecycle method, not one of the
-four engine↔mod API entry points that the HLSDK reference covers. So
-items 2 (version check) and 3 (interfaceVersion assignment) are N/A, and
-the rest of the checklist is judged against the disassembly + HLSDK's
-CBaseEntity / entvars_t shape.
+Scope note: the review prompt's checklist is sized for the
+4 mod↔engine API entry points (GiveFnptrsToDll,
+GetEntityAPI, GetEntityAPI2, GetNewDLLFunctions). The
+function under review is `CTSTrigger::Spawn()` — a
+TS-specific gameplay member function, not a mod↔engine API.
+Items 1–4 in the checklist are N/A in their literal sense;
+I'll apply the spirit of each (signature, control flow,
+no fabrication, faithful field names) and call out where
+they don't apply.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Checklist:
-1. Signature — ✅ pass — `Spawn(this: CTSTrigger): void` matches a
-   thiscall void-returning member function (callee-prologue `push
-   edi/esi/ebx; sub esp,0x10` then `this` at `[esp+0x20]` is consistent
-   with 3 callee-saved registers + 16-byte local alloc + the
-   stack-passed `this` slot the i386 GCC compiler uses).
-2. Version check — N/A — not an API function.
-3. interfaceVersion assignment — N/A — not an API function.
-4. Success path — ⚠️ needs review — the broad shape (classname set →
-   engine helper call → UTIL_SetSize → UTIL_SetOrigin → flags →
-   touch/think plumbing → schedule nextthink) follows the disassembly.
-   But the body of the indirect engine helper call misidentifies the
-   argument sources (see issue 2 below), so the "success path" is only
-   partially faithful.
-5. No fabricated paths — ❌ fail — the indirect call at `[ecx+0x8]`
-   reads BOTH arguments from `edx` (=`*esi`, an engine-side struct
-   table — not `this->pev` and not split between `pev` and a singleton),
-   but the TS splits them across `this.pev` + `GLOBAL_SINGLETON`. Also
-   the "extra arg stays on the stack" cleanup pattern (the
-   `sub esp,0x8` → `push push` → `add esp,0xc` → `sub esp,0x8` →
-   `push push push` → `add esp,0x8` → `push push` ladder, where one
-   slot from UTIL_SetSize flows into UTIL_SetOrigin) is collapsed to
-   four ordinary calls in the TS — that's a real difference in stack
-   accounting that should at minimum be a TODO, not silently elided.
-6. No TODO body — ❌ fail — six `TODO(asm-ambiguous)` markers,
-   several of which are masking real interpretive errors (write
-   to `pev[0]` ≠ `pev.origin.x`; arg-source fabrication) rather
-   than genuinely ambiguous control flow. The disassembly's
-   conversion guidance permits `TODO(asm-ambiguous)` for unclear
-   branches, not for "I picked the wrong struct and didn't realize".
-7. Field names — ❌ fail — `STATIC_ORIGIN_OFFSET`,
-   `GLOBAL_SINGLETON`, `ENGINE_HELPER`, `m_pLink`, `m_pThinker`,
-   `m_pfnThink`, `m_pfnTouch`, `m_field_0x10c`, `m_field_0x104`
-   are not HLSDK CBaseEntity fields and don't match the offsets
-   seen in the disassembly consistently. HLSDK 1.x's CBaseEntity
-   has `m_pGoalEnt`, `m_pLink`/`m_pThinker` aren't standard, and
-   `m_pfnThink`/`m_pfnTouch` are usually stored in pev (or are
-   member fn ptrs in subclasses), not 12-byte offsets away from
-   pev in CBaseEntity itself. Until verified, raw offsets are the
-   safer placeholder.
-8. Compiles in isolation — ❌ fail — references undefined symbols
-   `CTSTrigger`, `CTSTrigger_WaitTouch`, `gpGlobals`,
-   `GLOBAL_SINGLETON`, `STATIC_ORIGIN_OFFSET`, `ENGINE_HELPER`,
-   `UTIL_SetSize`, `UTIL_SetOrigin` (last two are imported PLT calls
-   in the disassembly; the rest are TS-internal but not declared).
+
+1. Signature — ⚠️ —
+   No HLSDK analog to compare against. The asm reads
+   `this` from `[esp+0x20]` after a prologue of three
+   `push` (edi/esi/ebx) + `sub esp,0x10` — that's the
+   first stack argument under GCC thiscall (`this` on
+   the stack), not MSVC thiscall (`this` in ECX). The TS
+   declares `Spawn(this: any): void`, which encodes
+   "method" via a JS-style param hint. Acceptable for
+   TS, but the calling convention (GCC thiscall, no
+   other args) isn't conveyed.
+
+2. Version check — N/A — `Spawn` is not a
+   version-checking API.
+
+3. `*interfaceVersion` assignment-back — N/A — same.
+
+4. Success-path struct copy — ⚠️ (analog applies) —
+   The analog is data flow into instance state. The TS
+   preserves the structure:
+   • `pev.classname = staticStr - gpGlobals->pStringBase`
+     ↔ `lea eax,[ebx-0x6eed5]; sub eax,[edx+0x98]; mov
+     [ecx],eax` (0x609d8–0x609e4) ✓
+   • `gEngfuncs.pfnSetModel(pContainingEdict,
+     gpGlobals->pStringBase + pev->model)` ↔ `[ecx+0x8]`
+     indirect call with `pStringBase + pev->model`
+     pushed (0x609eb–0x60a09) ✓ — offset `+0x8` into
+     enginefuncs_t is exactly `pfnSetModel` in HLSDK.
+   • `UTIL_SetSize(pev, mins, maxs)` and
+     `UTIL_SetOrigin(pev, origin)` cdecl push orders
+     match the asm `push` sequences (maxs-pushed-first,
+     origin-pushed-first). ✓
+
+5. No fabricated paths — ✅ —
+   Every branch in the TS comes from the asm:
+   • `delay < 0.1 ? 0.1 : delay` ↔ the `fcom
+     [ebx-0x6f010]; fnstsw; sahf; jae; fstp st(0);
+     fld 0.1; faddp st(1),st` sequence, repeated twice
+     (once for `pev.nextthink`, once for
+     `this.m_flNextFire`).
+   • `pev.effects |= 0x80`, `solid = 1`, `movetype = 5`
+     ↔ the three `mov`/`or` writes to `[eax+0x118]`,
+     `[eax+0x10c]`, `[eax+0x108]`.
+   • State init `{0xffff0000, defaultGoal, 0, 0}` ↔
+     `mov ax,0; or eax,0xffff0000; mov [edi+0x14],eax;
+     mov [edi+0x18],[ebx+0x1cc4]; mov [edi+0xc],0;
+     mov [edi+0x10],0`.
+   No invented branches, no invented global reads.
+
+6. No TODO body — ✅ —
+   Body is fully expressed as code. The `// TODO(...)`
+   comments annotate ambiguities (instance field names,
+   `staticClassnameStr` source, `defaultGoal` identity)
+   without standing in for logic. The single conditional
+   on `delay < 0.1` is real code, not a placeholder.
+
+7. Field names — ⚠️ (mostly canonical, some guessed) —
+   ✅ Canonical HLSDK names used and offset-correct in
+     HLSDK terms:
+     • `pev.classname`     (entvars+0x00) ✓
+     • `pev.model`         (entvars+0xB8) ✓
+     • `pev.origin`        (entvars+0x08) ✓ — direct
+       match to asm `add eax,0x8`.
+     • `pev.effects`       (entvars+0x118) ✓
+     • `gpGlobals.time`    (globalvars+0x00) ✓
+     • `gpGlobals.pStringBase` (globalvars+0x98) ✓
+     • `gEngfuncs.pfnSetModel` (enginefuncs+0x08) ✓
+   ⚠️ Offsets that look plausible but need TS-layout
+     verification (D.4):
+     • `pev.mins` at asm 0xDC vs HLSDK canonical 0xA0.
+     • `pev.maxs` at asm 0xE8 vs HLSDK canonical 0xAC.
+     • `pev.solid`    at asm 0x10C — standard HLSDK
+       `solid` is typically earlier. Value 1 = SOLID_BBOX
+       is right.
+     • `pev.movetype` at asm 0x108 — value 5 =
+       MOVETYPE_PUSH is right; offset order vs `solid`
+       is swapped from standard HLSDK, suggesting TS
+       uses an extended/customized entvars layout.
+     • `pev.nextthink` at asm 0x104 — order matches
+       HLSDK broadly.
+     • `pev.pContainingEdict` at asm 0x208 — plausible
+       for the trailing fields of an extended entvars.
+     Verify these offsets against TS's `eiface.h` clone
+     in D.4; if any are wrong, the TS uses the right
+     NAMES but the asm offsets would mismatch.
+
+   ⚠️ TS-specific instance fields are guesses (no asm
+     evidence beyond the offset):
+     • `[this+0x14] = m_iState`     — guessed
+     • `[this+0x18] = m_pGoalEnt`   — guessed; the
+       value is `[ebx+0x1cc4]` (a PIC GOT entry, what
+       you labeled `defaultGoalGlobal`).
+     • `[this+0x0c] = m_iCount`    — guessed
+     • `[this+0x10] = m_iOtherState` — guessed
+     • `[this+0x10c] = m_flDelay`  — guessed; reads
+       in KeyValue to set it.
+     • `[this+0x104] = m_flNextFire` — guessed; same
+       offset as `pev.nextthink` but a different
+       address (this->m_flNextFire vs this->pev->nextthink).
+     These need a single consolidated TODO marker so
+     reviewers grep for it.
+
+   ❌ The bit `0x80` in `pev.effects |= 0x80` is
+     annotated in the TS as "EF_NODRAW (or similar
+     invisible flag)". EF_NODRAW in HLSDK is a
+     `rendermode` value (`RenderMode::kRenderNormal = 0`
+     family) — it's NOT a bit in `effects`. Don't
+     commit to EF_NODRAW. Bit 7 of `effects` is more
+     likely something TS-specific; flag this for D.4.
+
+8. Compiles in isolation — ✅ —
+   The body declares `gpGlobals`, `gEngfuncs`,
+   `defaultGoalGlobal`, `staticClassnameAddr` as `any`
+   module-scope bindings (PIC-abstraction). `UTIL_SetSize`
+   and `UTIL_SetOrigin` are used by name (assumed imported
+   or also `any`). No external type references. The
+   `export function Spawn(this: any): void` signature
+   compiles.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Issues to fix:
-- #1 (semantic): `mov [ecx], eax` writes to `pev[0]`, which is
-  `pev->classname` (string_t, 4 bytes), NOT `pev->origin.x`
-  (which is at `pev[0x8]`). The TS comment "Adjust entity origin"
-  is wrong.
-- #2 (semantic): the indirect call at `60a06` takes two args whose
-  base pointer is `edx = *esi` (loaded at `609d6` and re-used at
-  `609f1`), not `this->pev` (which is `ecx`) and not a separate
-  global singleton. `[edx+0x208]` is `*esi->field_0x208`; the sum
-  pushed as arg 2 is `*esi->field_0x98 + *esi->field_0xb8`. The TS
-  has `this.pev /* +0x208 */` and `this.pev.field_0xb8 +
-  GLOBAL_SINGLETON.field_0x98`, which is structurally wrong.
-- #3 (stack accounting): the disassembly reuses one argument slot
-  across the `UTIL_SetSize` → `UTIL_SetOrigin` transition (the
-  fourth push from UTIL_SetSize's 3-arg call is left on the stack
-  and consumed by the next call). The TS shows four ordinary
-  cdecl calls with clean per-call stack cleanup, which is wrong.
-- #4 (field names): drop invented names (`m_pLink`, `m_pThinker`,
-  `m_pfnThink`, `m_pfnTouch`) until they are cross-referenced against
-  the TS mod's CBaseEntity in D.4. Use `this.field_<offset>` or
-  `pev.<known>` placeholders.
-- #5 (comment-only body): the six `TODO(asm-ambiguous)` markers are
-  applied to lines where the issue is wrong field interpretation, not
-  ambiguity. Either fix the interpretation or drop the line — don't
-  conflate "wrong" and "uncertain".
-- #6 (compilability): declare stubs (`declare const ...` / `declare
-  function ...`) for anything referenced but not defined here, OR
-  narrow the function to what compiles standalone.
 
-Suggested rewrite:
+1. The PIC-indirection commentary around `gpGlobals` /
+   `gEngfuncs` is correct but imprecise. The asm does
+   `mov ecx,[ebx+0x1aa8]` (one deref, GOT→symbol) and
+   then sometimes a second deref to chase the symbol
+   value. From the TS abstraction there's only one
+   deref (`gpGlobals.pStringBase`), which is right at
+   the C level. Tighten the comments so the PIC story
+   doesn't mislead a future reader into thinking there's
+   an extra C-level deref.
+
+2. `[esi+0x98]` (the actual asm) corresponds to
+   `gpGlobals->pStringBase` in the TS — but `pStringBase`
+   in standard globalvars_t is at 0x88 (some versions)
+   or 0x90 (others), not 0x98. 0x98 is plausible for a
+   TS-extended globalvars_t, but flag it as needing
+   verification. (Many fields are prepended in HLSDK
+   forks.)
+
+3. `defaultGoalGlobal`: the GOT entry at `[ebx+0x1cc4]`
+   is written into `[this+0x18]`. The TS calls this
+   `m_pGoalEnt`, which is a fine guess — but the
+   comment should note that the BSS-side value of this
+   pointer is initialized elsewhere (probably in
+   `CTSTrigger::CTSTrigger()` constructor or in `Restore`
+   or in level init). Don't pretend we know what
+   `defaultGoal` IS.
+
+4. `staticClassnameStr`: the TS says
+   `staticClassnameStr - gpGlobals.pStringBase`. Asm is
+   `lea eax,[ebx-0x6eed5]; sub eax,[edx+0x98]`. That's
+   `staticStrAddress - globalvars.pStringBase`, which
+   IS how the GoldSrc engine implements `string_t`
+   indirection. ✓ But the TS comment treats the static
+   string as a separate module-level `staticClassnameAddr`
+   that's defined "elsewhere" — the comment is fine, just
+   make sure that D.4 (or wherever the string lives)
+   actually exports that label so this link resolves.
+
+5. `pev.effects |= 0x80`: do NOT call this EF_NODRAW.
+   Use a generic "bit 7 of `pev->effects`, semantics
+   TBD (D.4)" comment.
+
+6. Mark every `this->...` assignment in the State-init
+   block and the Scheduling block with a single block
+   comment:
+
+        // ---- CTSTrigger instance fields (offsets from asm;
+        //      NAMES are guesses, verify in D.4 against
+        //      CTSTrigger class declaration) ----
+
+7. The `[edi+0x10c]` (read as `m_flDelay`) and
+   `[edx+0x104]` (written as `pev.nextthink`) fields are
+   read BEFORE the KeyValue-time initialization that
+   apparently fills `m_flDelay`. The TS assumes
+   `this.m_flDelay` is already non-zero; if KeyValue
+   didn't fire, the nextthink schedule would still set
+   to `gpGlobals->time + 0.1`. Add a one-line note that
+   `m_flDelay` defaults to 0 if KeyValue was never
+   called (e.g., for entities placed in the map with
+   no `delay` key), and the `max(_, 0.1)` clamp
+   protects against that.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Suggested rewrite (full corrected TS function):
+
 ```typescript
 /**
- * CTSTrigger::Spawn — initialize the TS trigger entity on map load.
+ * CTSTrigger::Spawn — initialize a CTSTrigger entity on level load.
  *
- * Decompiled from ts/dlls/ts_i386.so @ 0x000609b8 (286 bytes).
- * Structure follows the disassembly; field semantics for entvars_t
- * follow the HLSDK layout (pev[0]=classname, pev[0x8]=origin,
- * pev[0x108]=movetype, pev[0x10c]=solid, pev[0x118]=effects,
- * pev[0x104]=nextthink). CBaseEntity member fields are left as
- * raw-offset placeholders for D.4 (TS-specific class layout).
+ * Disassembly:  0x000609b8 (286 B), GCC thiscall (this on
+ * the stack at [esp+0x20] after the 3-push + sub-esp,0x10
+ * prologue). No other parameters; void return.
  *
- * NOTE on stack accounting: the original elides a ret-arg-slot
- * between UTIL_SetSize and UTIL_SetOrigin. We reproduce it with
- * `reusedSlot` so the call ordering matches the disassembly; the
- * TS-level semantics are equivalent to "set mins/maxs, then set
- * origin" with the same effect.
+ * Sub-stages, by asm offset:
+ *   0x609d8–0x609e4   pev->classname = staticStr - gpGlobals->pStringBase
+ *   0x609eb–0x60a09   gEngfuncs->pfnSetModel(pContainingEdict,
+ *                       gpGlobals->pStringBase + pev->model)
+ *   0x60a0c–0x60a23   UTIL_SetSize(pev, pev->mins, pev->maxs)
+ *   0x60a23–0x60a2e   UTIL_SetOrigin(pev, pev->origin)
+ *   0x60a33–0x60a35   pev->effects |= 0x80            (bit 7, semantics TBD)
+ *   0x60a3f–0x60a41   pev->solid    = 1               (SOLID_BBOX)
+ *   0x60a4b–0x60a4d   pev->movetype = 5               (MOVETYPE_PUSH)
+ *   0x60a57–0x60a73   instance state init (4 fields)
+ *   0x60a7a–0x60acf   pev->nextthink = this->m_flNextFire
+ *                       = gpGlobals->time + max(this->m_flDelay, 0.1)
+ *
+ * Field-name TODO: instance-field names below (m_iState,
+ * m_pGoalEnt, m_iCount, m_iOtherState, m_flDelay,
+ * m_flNextFire) are guesses derived from ops + offsets.
+ * Confirm in D.4 against CTSTrigger class declaration.
  */
-export function Spawn(this: CTSTrigger): void {
-  const pev: any = this.pev;  // entvars_t* (first field of CBaseEntity)
+export function Spawn(this: any /* TODO(D.4): CTSTrigger */): void {
+  const pev = this.pev;
 
-  // GOT base (set up by the PIC thunk at 0x609be: call;pop ebx;add ebx,0x10544d).
-  const GOT: any = GOT_BASE;
+  // --- Module globals (PIC-resolved via [ebx+offset] in the asm) ---
+  // From the C level these are normal pointers; the PIC indirection
+  // (GOT → symbol value) hides one extra deref at runtime.
+  const gpGlobals: any = gpGlobals;
+  const gEngfuncs: any = gEngfuncs;
+  const defaultGoalGlobal: any = defaultGoalGlobal;   // [ebx+0x1cc4]
+  const staticClassnameAddr: number = staticClassnameAddr; // [ebx-0x6eed5]
+  const minThinkDelay = 0.1;                          // [ebx-0x6f010] (double)
 
-  // *esi at 0x609d0 / reloaded at 0x609f1 and 0x60aa4 — engine entity helper table.
-  const engineTbl: any = GOT[0x1600][0];
+  // 1. pev->classname = staticClassnameAddr - gpGlobals->pStringBase
+  //    (GoldSrc string_t indirection: idx = &str - pStringBase).
+  pev.classname = staticClassnameAddr - gpGlobals.pStringBase;
 
-  // ---- 1. pev->classname (entvars_t+0 = string_t) = static - engineTbl.field_0x98
-  // Original: lea eax,[ebx-0x6eed5]; sub eax,[edx+0x98]; mov [ecx],eax
-  pev[0] = (STATIC_TRIGGER_CLASSNAME as any) - engineTbl[0x98];
-
-  // ---- 2. Indirect engine helper call via GOT[0x1aa8].vfunc8.
-  // Args: (engineTbl[0x208], engineTbl[0x98] + engineTbl[0xb8])
-  // NOTE: this != pev, and edx (= *esi == engineTbl) is the SAME base
-  //       for both args. Earlier decompilation got this wrong.
-  const helperVtable: any = GOT[0x1aa8];
-  helperVtable[0x8](
-    engineTbl[0x208],
-    engineTbl[0x98] + engineTbl[0xb8]
+  // 2. gEngfuncs->pfnSetModel(pContainingEdict,
+  //                            gpGlobals->pStringBase + pev->model).
+  gEngfuncs.pfnSetModel(
+    pev.pContainingEdict,
+    gpGlobals.pStringBase + pev.model,
   );
 
-  // ---- 3. UTIL_SetSize(pev, mins, maxs) ----
-  // Args pushed: pev, pev+0xdc (mins), pev+0xe8 (maxs).
-  // The disassembly deliberately leaves one push on the stack and
-  // reuses the slot for UTIL_SetOrigin's first push. Mirror that
-  // by threading a `reusedSlot` so the slot shows up in the right
-  // place when reading the code top-to-bottom.
-  const reusedSlot: any = pev;          // stays on the stack between calls
-  UTIL_SetSize(pev, pev + 0xdc, pev + 0xe8);  // 3-arg cdecl
-  // 4th push (reusedSlot equivalent) is left in place in the disasm.
-  // The TS-level effect: pev.mins / pev.maxs are set.
+  // 3. UTIL_SetSize(pev, pev->mins, pev->maxs)
+  //    Asm passes pev+0xDC (mins) and pev+0xE8 (maxs); verify
+  //    offsets against TS entvars in D.4 (HLSDK uses 0xA0/0xAC).
+  UTIL_SetSize(pev, pev.mins, pev.maxs);
 
-  // ---- 4. UTIL_SetOrigin(pev, origin) ----
-  UTIL_SetOrigin(pev, pev + 0x8);
+  // 4. UTIL_SetOrigin(pev, pev->origin)
+  UTIL_SetOrigin(pev, pev.origin);
 
-  // ---- 5. Visual + collision flags ----
-  // Disassembly order: effects |= 0x80, movetype = 5, solid = 1.
-  // (Earlier decompilation swapped the order in comments — wrong.)
-  pev[0x118] |= 0x80;  // EF_NODRAW
-  pev[0x108] = 5;      // movetype (assumed MOVETYPE_TOSS)
-  pev[0x10c] = 1;      // solid (assumed SOLID_TRIGGER)
+  // 5. Entity flags (canonical HLSDK constants; asm offsets 0x118,
+  //    0x10C, 0x108 — field offsets may differ in TS's extended
+  //    entvars, names are canonical).
+  pev.effects |= 0x80;   // bit 7 of effects; semantics TBD (D.4)
+  pev.solid = 1;         // SOLID_BBOX
+  pev.movetype = 5;      // MOVETYPE_PUSH
 
-  // ---- 6. Touch / think plumbing ----
-  // this + 0xc and this + 0x10 cleared; this + 0x14 set to 0xffff0000
-  // (a sentinel for "no think handler"); this + 0x18 = GOT[0x1cc4]
-  // (CTSTrigger::WaitTouch function pointer).
-  this.field_0xc  = 0;
-  this.field_0x10 = 0;
-  this.field_0x14 = 0xffff0000;
-  this.field_0x18 = GOT[0x1cc4];  // CTSTrigger::WaitTouch
+  // ---- CTSTrigger instance fields (names guessed, offsets from asm) ----
+  // Verify against CTSTrigger class declaration in D.4.
+  this.m_iState      = 0xffff0000;       // [this+0x14] mask/state word
+  this.m_pGoalEnt    = defaultGoalGlobal; // [this+0x18] goal pointer
+  this.m_iCount      = 0;                // [this+0x0C] counter
+  this.m_iOtherState = 0;                // [this+0x10] state word
 
-  // ---- 7. Schedule first think ----
-  // nextthink = gpGlobals.time + max(this.field_0x10c as float, 0)
-  // Two stores: pev[0x104] (entvars_t->nextthink) AND this.field_0x104
-  // (cached CBaseEntity mirror — likely m_flNextThink).
-  const delay: number = this.field_0x10c as number;
-  const nextThink: number = gpGlobals.time + Math.max(delay, 0);
-  pev[0x104] = nextThink;
-  this.field_0x104 = nextThink;
+  // 6. pev->nextthink = this->m_flNextFire
+  //    = gpGlobals->time + max(this->m_flDelay, 0.1)
+  //    (Same compute done twice in asm — once each for the two
+  //    destinations. The MAX uses fcom/jae + faddp.)
+  //    Note: if KeyValue was never called, m_flDelay defaults to 0
+  //    and the max-clamp still gives 0.1 s.
+  const delay = this.m_flDelay;          // [this+0x10C]; set in KeyValue
+  const effectiveDelay = delay < minThinkDelay ? minThinkDelay : delay;
+  const nextFire = gpGlobals.time + effectiveDelay;
+  pev.nextthink     = nextFire;          // [pev+0x104]
+  this.m_flNextFire = nextFire;          // [this+0x104]
 }
-
-// ---- Stubs so this file compiles in isolation ----
-declare const CTSTrigger: any;
-declare const GOT_BASE: any;
-declare const STATIC_TRIGGER_CLASSNAME: any;
-declare function UTIL_SetSize(pev: any, mins: any, maxs: any): void;
-declare function UTIL_SetOrigin(pev: any, origin: any): void;
-declare const gpGlobals: { time: number };
 ```
 
-Notes for the next pass:
-- Issue #2 (the wrong arg base for the indirect call) and issue #3
-  (the elided arg-slot between UTIL_SetSize and UTIL_SetOrigin) are
-  the two substantive bugs. The TODO hedges mask them — they should
-  be real fixes, not annotations.
-- The field-name fabrications (`m_pLink`, `m_pThinker`, `m_pfnThink`,
-  `m_pfnTouch`, `m_field_0x10c`, `m_field_0x104`) need a D.4 sweep
-  against the TS mod's actual CBaseEntity — GoldSrc's CBaseEntity
-  doesn't define those, so they're either TS-specific overrides or
-  flat-out wrong; either way, raw offsets are the correct placeholder
-  until verified.
-- Once issue #2 is fixed, the `[ecx+0x8]` indirect call site becomes
-  a candidate target for the D.5 engine-func-table wire-up (it's
-  almost certainly `pfnMakeStatic`, `pfnSetTriggered` or similar —
-  identify by `*esi`'s identifying field at the GOT slot).
+The substantive logic is unchanged — only the comment hygiene,
+the EF_NODRAW misattribution, and the TODO scope around
+guessed instance fields are corrected.
