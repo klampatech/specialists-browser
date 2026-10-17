@@ -1,0 +1,42 @@
+[
+  {
+    "cls": "CTSAnimation",
+    "method": "GaitCloseCombat",
+    "size": 181
+  },
+  {
+    "cls": "CTSGun",
+    "method": "VKickback",
+    "size": 258
+  },
+  {
+    "cls": "CTSBomb",
+    "method": "CutWire",
+    "size": 340
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "SendObjectiveToHud",
+    "size": 340
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "SetTeamModelList",
+    "size": 478
+  },
+  {
+    "cls": "CTSGroundAmmo",
+    "method": "WaitTouch",
+    "size": 596
+  },
+  {
+    "cls": "CTSGun",
+    "method": "TakeWeapon",
+    "size": 1339
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "TeamWin",
+    "size": 1564
+  }
+]

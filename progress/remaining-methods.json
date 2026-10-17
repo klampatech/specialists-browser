@@ -1,0 +1,612 @@
+[
+  {
+    "cls": "CTSAmmoPack",
+    "method": "Precache",
+    "size": 1
+  },
+  {
+    "cls": "CTSDeadCorpse",
+    "method": "Precache",
+    "size": 1
+  },
+  {
+    "cls": "CTSGroundAmmo",
+    "method": "Precache",
+    "size": 1
+  },
+  {
+    "cls": "CTSModel",
+    "method": "Precache",
+    "size": 1
+  },
+  {
+    "cls": "CTSDeadCorpse",
+    "method": "TraceAttack",
+    "size": 1
+  },
+  {
+    "cls": "CTSGroundAmmo",
+    "method": "Use",
+    "size": 1
+  },
+  {
+    "cls": "CTSFog",
+    "method": "Spawn",
+    "size": 33
+  },
+  {
+    "cls": "CTSScoreGiver",
+    "method": "KeyValue",
+    "size": 37
+  },
+  {
+    "cls": "CTSKatanaWeapon",
+    "method": "Spawn",
+    "size": 44
+  },
+  {
+    "cls": "CTSSniperWeapon",
+    "method": "Spawn",
+    "size": 44
+  },
+  {
+    "cls": "CTSGrenadeWeapon",
+    "method": "Spawn",
+    "size": 44
+  },
+  {
+    "cls": "CTSGroundAmmo",
+    "method": "WaitThink",
+    "size": 49
+  },
+  {
+    "cls": "CTSMGWeapon",
+    "method": "Spawn",
+    "size": 54
+  },
+  {
+    "cls": "CTSSuperJump",
+    "method": "Spawn",
+    "size": 54
+  },
+  {
+    "cls": "CTSKnifeWeapon",
+    "method": "Spawn",
+    "size": 54
+  },
+  {
+    "cls": "CTSRifleWeapon",
+    "method": "Spawn",
+    "size": 54
+  },
+  {
+    "cls": "CTSPistolWeapon",
+    "method": "Spawn",
+    "size": 54
+  },
+  {
+    "cls": "CTSBigPistolWeapon",
+    "method": "Spawn",
+    "size": 54
+  },
+  {
+    "cls": "CTSShotgunAmmo",
+    "method": "Spawn",
+    "size": 63
+  },
+  {
+    "cls": "CTSEmitter",
+    "method": "KeyValue",
+    "size": 65
+  },
+  {
+    "cls": "CTSKnifeWeapon",
+    "method": "RandomKnife",
+    "size": 66
+  },
+  {
+    "cls": "CTSGrenade",
+    "method": "Precache",
+    "size": 78
+  },
+  {
+    "cls": "CTSBigPistolWeapon",
+    "method": "RandomBigPistol",
+    "size": 78
+  },
+  {
+    "cls": "CTSAmmoPack",
+    "method": "WaitThink",
+    "size": 78
+  },
+  {
+    "cls": "CTSDeadCorpse",
+    "method": "Spawn",
+    "size": 82
+  },
+  {
+    "cls": "CTSRifleAmmo",
+    "method": "Spawn",
+    "size": 93
+  },
+  {
+    "cls": "CTSBigPistolAmmo",
+    "method": "Spawn",
+    "size": 93
+  },
+  {
+    "cls": "CTSSniperAmmo",
+    "method": "Spawn",
+    "size": 96
+  },
+  {
+    "cls": "CTSRifleWeapon",
+    "method": "RandomRifle",
+    "size": 110
+  },
+  {
+    "cls": "CTSAmmoPack",
+    "method": "Fall",
+    "size": 123
+  },
+  {
+    "cls": "CTSEmitter",
+    "method": "CheckValues",
+    "size": 133
+  },
+  {
+    "cls": "CTSKnifeWeapon",
+    "method": "GetWeapon",
+    "size": 138
+  },
+  {
+    "cls": "CTSRifleWeapon",
+    "method": "GetWeapon",
+    "size": 138
+  },
+  {
+    "cls": "CTSPistolWeapon",
+    "method": "GetWeapon",
+    "size": 138
+  },
+  {
+    "cls": "CTSBigPistolWeapon",
+    "method": "GetWeapon",
+    "size": 138
+  },
+  {
+    "cls": "CTSPistolWeapon",
+    "method": "RandomPistol",
+    "size": 146
+  },
+  {
+    "cls": "CTSDeadCorpse",
+    "method": "WaitThink",
+    "size": 154
+  },
+  {
+    "cls": "CTSScoreGiver",
+    "method": "Spawn",
+    "size": 157
+  },
+  {
+    "cls": "CTSEmitter",
+    "method": "InitThink",
+    "size": 159
+  },
+  {
+    "cls": "CTSAmmoPack",
+    "method": "OnGround",
+    "size": 173
+  },
+  {
+    "cls": "CTSGroundAmmo",
+    "method": "OnGround",
+    "size": 179
+  },
+  {
+    "cls": "CTSEmitter",
+    "method": "Spawn",
+    "size": 180
+  },
+  {
+    "cls": "CTSPistolAmmo",
+    "method": "Spawn",
+    "size": 180
+  },
+  {
+    "cls": "CTSScoreGiver",
+    "method": "Use",
+    "size": 183
+  },
+  {
+    "cls": "CTSAmmoPack",
+    "method": "CreateAmmoPack",
+    "size": 191
+  },
+  {
+    "cls": "CTSSharedEmitter",
+    "method": "SV_UpdateClient",
+    "size": 202
+  },
+  {
+    "cls": "CTSGroundAmmo",
+    "method": "KeyValue",
+    "size": 203
+  },
+  {
+    "cls": "CTSGroundAmmo",
+    "method": "Fall",
+    "size": 229
+  },
+  {
+    "cls": "CTSGroundAmmo",
+    "method": "Spawn",
+    "size": 267
+  },
+  {
+    "cls": "CTSAmmoPack",
+    "method": "Spawn",
+    "size": 329
+  },
+  {
+    "cls": "CTSGrenade",
+    "method": "BounceTouch",
+    "size": 336
+  },
+  {
+    "cls": "CTSModel",
+    "method": "Spawn",
+    "size": 374
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "InitTeams",
+    "size": 380
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "SetTeamList",
+    "size": 380
+  },
+  {
+    "cls": "CTSTrigger",
+    "method": "WaitTouch",
+    "size": 398
+  },
+  {
+    "cls": "CTSGroundWeapon",
+    "method": "Spawn",
+    "size": 401
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "CheckForWallClimb",
+    "size": 403
+  },
+  {
+    "cls": "CTSKnife",
+    "method": "Spawn",
+    "size": 403
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "Init",
+    "size": 412
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "HandleStunt",
+    "size": 414
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "HandleWallClimb",
+    "size": 415
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "RespawnEntities",
+    "size": 418
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "Landing",
+    "size": 422
+  },
+  {
+    "cls": "CTSObjectiveManager",
+    "method": "Reset",
+    "size": 422
+  },
+  {
+    "cls": "CTSWorldGun",
+    "method": "Spawn",
+    "size": 433
+  },
+  {
+    "cls": "CTSSellZone",
+    "method": "SellTouch",
+    "size": 434
+  },
+  {
+    "cls": "CTSAnimation",
+    "method": "BlendJumpAnimations",
+    "size": 435
+  },
+  {
+    "cls": "CTSBomb",
+    "method": "Use",
+    "size": 451
+  },
+  {
+    "cls": "CTSTeamEscape",
+    "method": "WaitTouch",
+    "size": 452
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "HandleWheel",
+    "size": 470
+  },
+  {
+    "cls": "CTSShrapnel",
+    "method": "WaitThink",
+    "size": 472
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "SetPlayerTheOne",
+    "size": 480
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "GoWallClimb",
+    "size": 503
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "HandleSlide",
+    "size": 505
+  },
+  {
+    "cls": "CTSPhysicObject",
+    "method": "SavePhysics",
+    "size": 531
+  },
+  {
+    "cls": "CTSFlag",
+    "method": "Spawn",
+    "size": 538
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "GoBulletTime",
+    "size": 543
+  },
+  {
+    "cls": "CTSSharedEmitter",
+    "method": "EmitterKeyValue",
+    "size": 566
+  },
+  {
+    "cls": "CTSPowerUp",
+    "method": "SetupPowerUp",
+    "size": 579
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "GoWallJump",
+    "size": 584
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "PutPowerUp",
+    "size": 587
+  },
+  {
+    "cls": "CTSGun",
+    "method": "MultiplyClips",
+    "size": 596
+  },
+  {
+    "cls": "CTSGroundAmmo",
+    "method": "WaitTouch",
+    "size": 596
+  },
+  {
+    "cls": "CTSFlag",
+    "method": "BounceTouch",
+    "size": 613
+  },
+  {
+    "cls": "CTSAmmoPack",
+    "method": "WaitTouch",
+    "size": 620
+  },
+  {
+    "cls": "CTSWorldGun",
+    "method": "BounceTouch",
+    "size": 629
+  },
+  {
+    "cls": "CTSGun",
+    "method": "SecondaryAttack",
+    "size": 631
+  },
+  {
+    "cls": "CTSPowerUp",
+    "method": "WaitTouch",
+    "size": 660
+  },
+  {
+    "cls": "CTSFlag",
+    "method": "Fall",
+    "size": 677
+  },
+  {
+    "cls": "CTSFlag",
+    "method": "PlayerTakeFlag",
+    "size": 682
+  },
+  {
+    "cls": "CTSGun",
+    "method": "ShotgunReload",
+    "size": 686
+  },
+  {
+    "cls": "CTSHack",
+    "method": "Use",
+    "size": 689
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "ResetRestartRound",
+    "size": 695
+  },
+  {
+    "cls": "CTSWorldGun",
+    "method": "Fall",
+    "size": 709
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "GlobalSlowMotion2",
+    "size": 743
+  },
+  {
+    "cls": "CTSKnife",
+    "method": "WaitThink",
+    "size": 803
+  },
+  {
+    "cls": "CTSObjectiveManager",
+    "method": "KeyValue",
+    "size": 847
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "GoDive",
+    "size": 860
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "CloseAttack",
+    "size": 908
+  },
+  {
+    "cls": "CTSGroundWeapon",
+    "method": "GetWeapon",
+    "size": 932
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "PlayerVote",
+    "size": 1020
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "GoRoll",
+    "size": 1031
+  },
+  {
+    "cls": "CTSAnimation",
+    "method": "HandleCloseCombat",
+    "size": 1058
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "RestartRound",
+    "size": 1098
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "Play",
+    "size": 1130
+  },
+  {
+    "cls": "CTSGroundAmmo",
+    "method": "PutOnWall",
+    "size": 1143
+  },
+  {
+    "cls": "CTSGroundWeapon",
+    "method": "PutOnWall",
+    "size": 1143
+  },
+  {
+    "cls": "CTSShrapnel",
+    "method": "BounceTouch",
+    "size": 1144
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "InitHUD",
+    "size": 1256
+  },
+  {
+    "cls": "CTSGun",
+    "method": "TakeWeapon",
+    "size": 1339
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "CheckDeads",
+    "size": 1363
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "Think",
+    "size": 1375
+  },
+  {
+    "cls": "CTSBriefcase",
+    "method": "CaptureTouch",
+    "size": 1422
+  },
+  {
+    "cls": "CTSGun",
+    "method": "GrenadeIdle",
+    "size": 1476
+  },
+  {
+    "cls": "CTSGameRules",
+    "method": "CheckVotes",
+    "size": 1560
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "GoWheel",
+    "size": 1580
+  },
+  {
+    "cls": "CTSDMHill",
+    "method": "WaitTouch",
+    "size": 1686
+  },
+  {
+    "cls": "CBasePlayer",
+    "method": "SlowMotionFlow",
+    "size": 1768
+  },
+  {
+    "cls": "CTSStunt",
+    "method": "CheckForBreakables",
+    "size": 2196
+  },
+  {
+    "cls": "CTSSharedEmitter",
+    "method": "ParticleKeyValue",
+    "size": 2354
+  },
+  {
+    "cls": "CTSKnife",
+    "method": "BounceTouch",
+    "size": 2915
+  },
+  {
+    "cls": "CTSAnimation",
+    "method": "Animate",
+    "size": 7805
+  }
+]
