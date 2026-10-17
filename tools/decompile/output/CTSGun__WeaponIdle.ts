@@ -1,56 +1,58 @@
 /**
- * CTSGun::WeaponIdle — per-frame idle behavior for a CTSGun weapon.
+ * CTSGun::WeaponIdle — per-frame weapon idle behavior.
  *
- * Branches based on the gun's mode, the player's weapon state,
- * ammo, and the idle timer. See the cross-vendor review for the
- * rationale behind each TODO.
+ * Flow (from the disassembly):
+ *   1. If m_pWeaponInfo is null, delegate to CCombatIdle() and
+ *      return.
+ *   2. Mirror m_pWeaponInfo.m_iAmmo into this->m_iClip, then
+ *      point m_pWeaponInfo.m_pAmmoSource at one of two slots
+ *      in the player struct based on m_pWeaponInfo.m_bUseAmmo2.
+ *   3. Burst-mode auto-fire: if m_pWeaponInfo.m_bFireMode == 2
+ *      AND m_flTimeWeaponIdle <= [ebx-0x6de68] (a static double,
+ *      TODO), and m_pWeaponInfo.m_iShotsRemaining > 0, call
+ *      Fire() and decrement. Otherwise clamp the counter to 0.
+ *   4. If UTIL_WeaponTimeBase() < this->[esi+0xa8] (likely
+ *      m_flNextPrimaryAttack), return without idling.
+ *   5. If m_pPlayer.[0x348] (likely m_iWeaponState) == 2,
+ *      call GrenadeIdle(0) and return.
+ *   6. If InfiniteClips(m_pPlayer) == 0 AND m_iAmmo <= 0,
+ *      invoke the [this+0x60]+0x188 virtual (with this as the
+ *      single arg) and return.
+ *   7. If m_iAmmo == 0, return.
+ *   8. Schedule the next idle tick: m_flNextPrimaryAttack =
+ *      UTIL_WeaponTimeBase() + [ebx-0x6e768].
+ *   9. Pick an anim ID: (short)(*m_pAmmoSource) if non-null,
+ *      else 0. (m_pAmmoSource was set in step 2; this reuses
+ *      it as a pointer to a short.)
+ *  10. Invoke the [this+0x60]+0x174 virtual with4 args:
+ *      (this, animId, 0, (*this.__vtable_base)[0x114]).
  *
- * NOTE: CTSGun field offsets and the weapon-info struct layout
- * are being reconstructed separately (D.4). The type names below
- * are placeholders consistent with the PrimaryAttack convention.
+ * Ambiguities are marked TODO(asm-ambiguous) below.
  */
 export function WeaponIdle(this: CTSGun): void {
-  // === Branch 1: no weapon info → generic combat idle. ===
+  // 1. No weapon info → generic combat idle.
   if (this.m_pWeaponInfo === null) {
     this.CCombatIdle();
     return;
   }
 
-  // === Branch 2: sync clip + ammo source from weapon info. ===
+  // 2. Mirror ammo count; point ammo source at the right player slot.
   this.m_iClip = this.m_pWeaponInfo.m_iAmmo;
+  // TODO(asm-ambiguous): identify the player fields at offsets0x252
+  // and 0x28c. They are likely two distinct int counters (e.g. primary
+  // vs secondary ammo counters, or m_rgAmmo[ammoType] for two different
+  // ammo types). Don't pretend they're elements of one ammo array.
+  const ammoSlot = this.m_pWeaponInfo.m_bUseAmmo2 === 0 ? 0x252 : 0x28c;
+  this.m_pWeaponInfo.m_pAmmoSource =
+    this.m_pPlayer.ammoPtrAt(ammoSlot /* byte offset */);
 
-  // The pointer at m_pWeaponInfo+0x28 is set to one of two byte
-  // offsets within the player struct (m_pPlayer). The byte at
-  // m_pWeaponInfo+0x2c selects which. (0x252 / 0x28c are BYTE
-  // OFFSETS into the player struct, not array indices.)
-  // TODO(asm-ambiguous): identify the player fields at +0x252 /
-  // +0x28c — could be ammo counts, item slots, or anim indices.
-  this.m_pWeaponInfo.m_pSomeShortPtr =
-    this.m_pWeaponInfo.m_bUseAmmo2 === 0
-      ? (this.m_pPlayer + 0x252)
-      : (this.m_pPlayer + 0x28c);
-
-  // === Branch 3: per-frame firing animation. ===
-  // If the player's weaponCategory byte == 1 and shots remain at
-  // m_pWeaponInfo+0x8, dispatch a virtual call via
-  // [this.m_pOwnerInterface]+0x188/4 and exit.
-  // TODO(asm-ambiguous): identify this->m_pOwnerInterface (vtable?
-  // CBasePlayer*?) and the call target.
-  if (
-    this.m_pPlayer.weaponCategory === 1 &&
-    this.m_pWeaponInfo.m_iShotsRemaining !== 0
-  ) {
-    this.m_pOwnerInterface[0x188 / 4](this);
-    return;
-  }
-
-  // === Branch 4: burst autofire. ===
-  // While m_pWeaponInfo+0x2 == 2 (burst mode) AND the float at
-  // this+0x9c is <= the global cvar at [ebx-0x6de68]:
+  // 3. Burst auto-fire tick.
   if (this.m_pWeaponInfo.m_bFireMode === 2) {
-    // TODO(asm-ambiguous): identify the cvar at [ebx-0x6de68] —
-    //   likely a time threshold (gpGlobals->time? a slowmo cvar?).
-    if (this.m_flTimeWeaponIdle <= 0 /* cvar value */) {
+    // TODO(asm-ambiguous): the threshold is a static double at
+    // [ebx-0x6de68], not 0. Cross-reference strings-n5.txt for cvar
+    // candidates (likely sv_burstthreshold or similar).
+    const BURST_THRESHOLD =0.0; // placeholder; see TODO above
+    if (this.m_flTimeWeaponIdle <= BURST_THRESHOLD) {
       if (this.m_pWeaponInfo.m_iShotsRemaining > 0) {
         this.Fire();
         this.m_pWeaponInfo.m_iShotsRemaining--;
@@ -60,64 +62,57 @@ export function WeaponIdle(this: CTSGun): void {
     }
   }
 
-  // === Branch 5: bail if next-attack time hasn't elapsed. ===
+  // 4. Don't idle if next primary attack hasn't elapsed.
   const currentTime = UTIL_WeaponTimeBase();
-  if (currentTime < this.m_flNextPrimaryAttack) {
+  if (currentTime < this.m_flNextPrimaryAttack /* [esi+0xa8] */) {
     return;
   }
 
-  // === Branch 6: grenade state → delegate and exit. ===
-  if (this.m_pPlayer.weaponCategory === 2) {
+  // 5. Grenade state → delegate and exit.
+  // TODO(asm-ambiguous): [m_pPlayer+0x348] ==2 — likely m_iWeaponState.
+  if (this.m_pPlayer.m_iWeaponState === 2) {
     this.GrenadeIdle(0);
     return;
   }
 
-  // === Branch 7: auto-reload if not infinite-clip and out of ammo. ===
-  // Note: offset 0x80 is m_pOwner (per PrimaryAttack convention),
-  // not m_pPlayer. Both are CBasePlayer* but offset 0x80 is
-  // consistently used with player-method helpers in this class.
+  // 6. Out of ammo + not infinite-clips → virtual call.
+  // Note: this is the SAME vtable slot as step 9 below, just with
+  // different args. The TS must not rename them differently.
   if (
-    InfiniteClips(this.m_pOwner) === 0 &&
+    InfiniteClips(this.m_pPlayer) === 0 &&
     this.m_pWeaponInfo.m_iAmmo <= 0
   ) {
-    // Same vtable slot as branch 3 (the reload anim vs fire anim
-    // dispatch lives in the same vtable entry — the engine    // resolves which to play by inspecting m_pWeaponInfo state).
-    this.m_pOwnerInterface[0x188 / 4](this);
+    // TODO(asm-ambiguous): [this+0x60]+0x188 with one arg = this.
+    // The target function is not yet identified — D.4 work.
+    this.callVtable(/* offset */ 0x188, /* args */ [this]);
     return;
   }
 
-  // === Branch 8: bail if out of ammo (and infinite-clips off). ===
+  // 7. No ammo → bail.
   if (this.m_pWeaponInfo.m_iAmmo === 0) {
     return;
   }
 
-  // === Branch 9: schedule next idle tick + play idle anim. ===
-  // this.m_flNextPrimaryAttack = currentTime + cvar at [ebx-0x6e768].
-  // TODO(asm-ambiguous): identify the constant — likely a random
-  //   jitter or base idle interval.
-  this.m_flNextPrimaryAttack = currentTime + 0 /* TODO cvar */;
+  // 8. Schedule next idle tick.
+  // TODO(asm-ambiguous): [ebx-0x6e768] is a static double, likely
+  // sv_idleinterval or ts_idleplus. Not yet resolved.
+  this.m_flNextPrimaryAttack = currentTime + TS_IDLE_RANDOM_INTERVAL;
 
-  // Pick the anim id: m_pWeaponInfo+0x28 is a pointer to a short.
-  // When non-null, read the short; otherwise use 0. NOTE this is
-  // the SAME field set earlier as m_pSomeShortPtr — the assembly
-  // reuses it for anim-id lookup. Either the original reuses the
-  // field for two purposes, or one offset is wrong; flag for
-  // follow-up in D.4.
+  // 9. Pick an anim ID. m_pAmmoSource was set in step 2; we read
+  // its first short here.
   const animId =
-    this.m_pWeaponInfo.m_pSomeShortPtr !== null
-      ? (this.m_pWeaponInfo.m_pSomeShortPtr as any).short
+    this.m_pWeaponInfo.m_pAmmoSource !== null
+      ? this.m_pWeaponInfo.m_pAmmoSource.readShort(0)
       : 0;
 
-  // Final virtual call via [this.m_pOwnerInterface]+0x174/4:
-  //   arg1 = this
-  //   arg2 = animId
-  //   arg3 = 0
-  //   arg4 = *(this->vtable + 0x114)  ← NOT this.someField[0x114]
-  // The vtable pointer is the first 4 bytes of `this` (standard
-  // C++ Itanium ABI). Read at byte offset 0x114 in that vtable.
-  // TODO(asm-ambiguous): identify the call target and the vtable
-  //   entry at +0x114/4.
-  const vtable = this[0] as any;
-  const arg4 = vtable !== null ? vtable[0x114 / 4] : 0;
-  this.m_pOwnerInterface[0x174 / 4](this, animId, 0, arg4);
+  // 10. Final virtual call.
+  // TODO(asm-ambiguous): [this+0x60]+0x174, 4 args. The fourth arg
+  // is loaded from *(*this + 0x114) — a vtable-relative read of the
+  // base-class vtable, NOT a field of this.
+  this.callVtable(/* offset */ 0x174, /* args */ [
+    this,
+    animId,
+    0,
+    this.__vtable_base.readDword(0x114) /* vtable slot */,
+  ]);
 }

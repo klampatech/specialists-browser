@@ -1,13 +1,17 @@
 /**
  * CTSSlowMotion::ObjectCaps — returns 0 (FCAP_NONE).
  *
- * The entity exposes no engine capabilities: no save/restore transition,
- * no think override, no use-traversal, etc. Server-side only — clients
- * never query ObjectCaps for this class.
+ * Overrides the parent class's default (FCAP_ACROSS_TRANSITION) to opt
+ * this entity out of the engine's automatic save/restore capability.
+ * Persistence for this class still flows through its explicit
+ * Save/Restore/KeyValue overloads (see class siblings), not through
+ * ObjectCaps-driven transitions.
  *
- * @param this  The CTSSlowMotion entity instance (this in the original C++)
+ * Server-side only — clients never query ObjectCaps.
+ *
+ * @param this  The CTSSlowMotion entity instance (unused here)
  * @returns     0 (FCAP_NONE)
  */
-export function ObjectCaps(this: CTSSlowMotion): number {
+export function ObjectCaps(this: any): number {
   return 0;
 }
