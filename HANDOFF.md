@@ -22,18 +22,31 @@
 > and ready to begin building in Babylon for the full game" — meaning all
 > 281 methods need to be decompiled + consolidated before D.5.
 
-**Status as of 2026-10-16:** Option D Phase 1 in flight, single-vendor
+**Status as of 2026-10-16 (mid-session):** Option D Phase 1 in flight, single-vendor
 decomp (codex only — `claude` CLI is not installed on m5, was the
-"cross-vendor" partner). `decompile-review.py` was rewritten to use
+"cross-vendor" partner). `decompile-review.py` rewritten to use
 codex as both impl + reviewer.
 
-**D.4 progress: 32/281 methods (~11%) done.**
-**Remaining: 249 methods / ~80 KB of code.**
-Realistic per-method budget: 5–45 min (codex/M3 via local proxy at
-`127.0.0.1:8789`; proxy is the single bottleneck — one call at a time
-or queue dies). Aggregate wall-clock: 20–60+ hours across multiple
-sessions. **Multi-session task; track per-method progress in
+**D.4 progress: 48/281 methods (~17%) done.**
+**Remaining: 233 methods / ~75 KB of code.**
+Realistic per-method budget: 1–15 min observed (codex/M3 via local
+proxy at `127.0.0.1:8789`; proxy is the single bottleneck — one
+call at a time or queue dies). 1-byte methods take ~1 min,
+33-byte methods take 5+ min, large functions take 15-45 min.
+Aggregate wall-clock: 5–30+ hours across multiple sessions.
+**Multi-session task; track per-method progress in
 `progress/decomp-log.md`.**
+
+### Pipeline confirmed working (2026-10-16)
+
+First end-to-end pass through the fixed single-vendor pipeline:
+- `InitTeamScore__12CTSGameRulesPi` (1B empty stub) → done in ~1 min
+- `Holster__6CTSGuni` (33B) → codex done in ~3 min, review in flight
+- 5 more spawned as detached queue (Zoom, AlternateAttack,
+  UpdateTeamScores, ClearObjectiveList, GetTeamsNum) — proxy serializes
+- **Fix this session:** `decompile.py find_chunk` was matching the
+  wrong chunk (sibling mention vs. header). Now anchored to
+  `^# `<symbol>` —` regex. Confirmed via dry-run.
 
 ### D.4 deliverables (all in `src/mod/`)
 
