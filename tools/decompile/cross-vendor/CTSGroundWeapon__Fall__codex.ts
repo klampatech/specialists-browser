@@ -1,108 +1,78 @@
 ```typescript
 /**
- * CTSGroundWeapon::Fall — handle a ground weapon landing on a surface.
+ * CTSGroundWeapon::Fall — apply gravity + handle wall/ground landing
+ * effects for a TS ground weapon entity.
  *
- * Schedules the next think, attempts to wall-mount the weapon (if a
- * pev flag suggests wall contact), otherwise plays a landing sound
- * and lays the weapon flat on the floor (zeroing pitch + roll while
- * preserving yaw). Returns early if neither path's conditions are
- * met. After processing, links the owner entity and marks the weapon
- * as on the ground so subsequent calls short-circuit.
+ * Called by the engine (typically via pev->think scheduling) when
+ * the ground weapon should tick its physics for the frame. Branches
+ * on two spawnflag bits to either pin the weapon to a wall (PutOnWall
+ * + landing sound) or play a ground-landing sound + clear the model
+ * fields so the world weapon disappears.
  *
- * @param this  The CTSGroundWeapon entity instance
+ * @param this  The CTSGroundWeapon entity instance (this in the original C++)
  * @returns     void
  */
 export function Fall(this: CTSGroundWeapon): void {
-  // `self` is a typed-as-any view so we can poke class fields by raw
-  // offset until CTSGroundWeapon is fully modeled (D.4 task).
-  const self = this as any;
-  const pev = self.pev;
+  const pev = this.pev;
 
-  // Schedule next think at gpGlobals.time + small delay.
-  // pev + 0x104 = pev->nextthink (GoldSrc entvars_t).
-  // [ebx+0x1600] (post-PIC) is the gpGlobals pointer; [eax] is gpGlobals->time.
-  // Constant at [ebx-0x6f010] is a float stored as QWORD double in .rodata;
-  // its exact value (delay seconds) is unclear.
-  // TODO(asm-ambiguous): constant value TBD (placeholder 0.1).
-  pev.nextthink = 0.1 + (gpGlobals as any).time;
+  // ---- Gravity integration ---------------------------------------------
+  // asm: fld QWORD [GOT_const]; fadd sv_gravity->value; fstp DWORD [pev+0x104]
+  // The QWORD source is a precomputed double-precision constant; the
+  // destination field identity is unconfirmed.
+  // TODO(asm-ambiguous): QWORD source unidentified (could be a folded
+  // gravity-integration term involving gpGlobals->frametime); the
+  // field at pev+0x104 is also unknown (could be velocity.z in a
+  // non-standard entvars_t layout, gravity2, friction, or a TS-specific
+  // float field).
+  pev.field_0x104 = sv_gravity.value + gravConst;
 
-  // Branch A: wall contact.
-  // pev + 0x1a0 & 0x10 is a high-offset flag in the user-field region of
-  // entvars_t (NOT the standard pev->flags near +0x148).
-  // TODO(asm-ambiguous): flag meaning TBD — likely a TS-specific
-  // landing/contact bit, possibly distinct from the standard FL_ONGROUND.
-  if ((pev[0x1a0] & 0x10) !== 0) {
-    // Only try to wall-mount once. self[0x64] is a 1-byte flag
-    // (class offset; name TBD — likely m_bIsOnGround / m_bHasFallen).
-    if (self[0x64] === 0) {
-      // The disassembly inserts 12 bytes of stack junk before PutOnWall
-      // (`sub esp,0xc; push esi; call; add esp,0x10`) for stack-frame
-      // alignment — PutOnWall is 1143 bytes and likely needs 16-byte
-      // aligned locals.
-      self.PutOnWall();
-    }
-    playFallSound(pev);
-    // fall through to common cleanup
-  } else {
-    // Branch B: floor landing.
-    // pev + 0x1a5 & 0x02 is another high-offset flag.
-    // TODO(asm-ambiguous): flag meaning TBD — likely another TS-specific
-    // contact bit (perhaps "landed flat on floor, not on a slope/wall").
-    // Process if EITHER the pev flag is set OR self[0x64] is non-zero;
-    // otherwise early-return without scheduling anything.
-    if ((pev[0x1a5] & 0x02) === 0 && self[0x64] === 0) {
-      return;
-    }
-    playFallSound(pev);
-    // Lay the weapon flat on the floor.
-    // pev + 0x50 = angles.x, +0x54 = angles.y (preserved), +0x58 = angles.z.
-    // The disassembly zeros only +0x50 and +0x58, intentionally
-    // preserving yaw (rotation around the Z axis) so the weapon keeps
-    // its facing direction.
-    pev.angles.x = 0;
-    pev.angles.z = 0;
+  // ---- Branch on spawnflag bytes ---------------------------------------
+  // TODO(asm-ambiguous): field identities at pev+0x1a0 and pev+0x1a5
+  // are unidentified — probably TS-specific spawnflag bytes within
+  // some int field of entvars_t, but could be wholly custom struct fields.
+  const onWall     = (pev.field_0x1a0 & 0x10) !== 0;
+  const dropGround = (pev.field_0x1a5 & 0x02) !== 0;
+
+  // Bail out if neither flag is set and we haven't landed yet.
+  if (!onWall && !dropGround && !this.m_bLanded) {
+    return;
   }
 
-  // Common cleanup.
-  // self[0x60] is m_pOwner (a CBaseEntity*); call a virtual method on it
-  // at vtable offset 0x114, passing `self` as the arg.
-  // TODO(asm-ambiguous): method name TBD — likely SetThink(this) so that
-  // CTSGroundWeapon::WaitThink fires on the owner next, or possibly a
-  // direct call to WaitThink via a generic dispatch helper.
-  self[0x60][0x114](self);
-  self[0x64] = 1;
-}
+  // ---- WALL-only: pin to wall on first landing -------------------------
+  if (onWall && !this.m_bLanded) {
+    this.PutOnWall();
+  }
 
-// =========================================================================
-// Helpers + forward-declared engine API
-// =========================================================================
-
-/** Sample name (string at [ebx-0x6c1ba]). TODO: verify against strings-n5.txt. */
-const FALL_SOUND_SAMPLE = "weapons/fall.wav";
-
-/**
- * Play the weapon-on-floor / on-wall impact sound.
- *
- * EMIT_SOUND_DYN's demangled signature has 7 args (entity, channel,
- * sample, volume, attenuation, flags, pitch) but the disassembly
- * pushes 8 args before the call. The 8th ([ebx-0x6ec2c]) is probably
- * a TS-specific extension. Volume + attenuation come from cvar/mem
- * reads at [ebx-0x6f3fc] and [ebx-0x6e7e4]; exact cvar names TBD.
- */
-function playFallSound(pev: any): void {
-  (EMIT_SOUND_DYN as any)(
-    pev[0x208],                                  // edict_t* (pev + 0x208)
-    6,                                           // channel (likely CHAN_STATIC)
-    FALL_SOUND_SAMPLE,
-    (gpGlobals as any).sndVol ?? 1.0,            // volume   ([ebx-0x6f3fc])
-    (gpGlobals as any).sndAtt ?? 1.0,            // atten.   ([ebx-0x6e7e4])
-    0,                                           // flags    (= 0)
-    100,                                         // pitch    (0x64 = PITCH_NORM)
-    (gpGlobals as any).sndPitch ?? 100           // 8th arg — TODO: meaning TBD
+  // ---- Play landing sound (both paths) ---------------------------------
+  // Both branches emit the same sample ([ebx-0x6c1ba] in the GOT).
+  // TODO(asm-ambiguous): channel value 6 isn't a standard HL channel
+  // — probably a TS-specific channel or a flag bitmask.
+  EMIT_SOUND_DYN(
+    pev.pContainingEntity,   // edict
+    6,                       // channel (TS-specific)
+    landingSample,           // sound file
+    defaultVolume,           // volume
+    defaultAttenuation,      // attenuation
+    0,                       // flags
+    100                      // pitch (100 = normal)
   );
-}
 
-// Forward declarations — replace when the engine API module exists.
-declare const gpGlobals: any;
-declare function EMIT_SOUND_DYN(...args: any[]): void;
+  // ---- GROUND-only: clear the model fields -----------------------------
+  // Hides the world-spawned weapon model (it has been picked up or
+  // is about to be scheduled for removal).
+  // TODO(asm-ambiguous): offsets 0x50 / 0x58 likely modelindex /
+  // viewmodel in standard entvars_t, but unconfirmed.
+  if (!onWall) {
+    pev.field_0x50 = 0;
+    pev.field_0x58 = 0;
+  }
+
+  // ---- Schedule next think via virtual call ----------------------------
+  // [this+0x60] is a vtable pointer; vtable+0x114 is the 69th slot.
+  // TODO(asm-ambiguous): which sub-object's vtable and which method.
+  this.scheduleNextThink();
+
+  // ---- Mark landing handled --------------------------------------------
+  this.m_bLanded = true;
+}
 ```

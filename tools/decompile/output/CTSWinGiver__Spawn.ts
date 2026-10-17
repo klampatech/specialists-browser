@@ -1,83 +1,98 @@
 /**
  * CTSWinGiver::Spawn — initialise the WinGiver entity on level load.
  *
- * Sets pev->classname (computed against the engine string pool base),
- * resets the four standard entity-state fields (effects / solid /
- * flags / movetype), zeroes four WinGiver-side dwords, schedules
- * the first `nextthink = duration + gpGlobals->time`, and finally
- * dispatches a virtual call into a sub-object at this+0x60 with
- * `this` as the (caller-style) first arg and 12 bytes of
- * uninitialised stack following it.
+ * Faithful translation of `Spawn__11CTSWinGiver` (0x0007bf10, 157 B).
+ *  - Sets classname (string_t computed via PIC + engine string table base).
+ *  - Clears four pev visual-default fields.
+ *  - Zeroes four WinGiver-specific dwords (offsets 0x0c / 0x10 / 0x14 / 0x18).
+ *  - Schedules the first think via pev->0x104 (= HLSDK `nextthink`).
+ *  - Dispatches a virtual call through this->field_0x60->vtable[15].
  *
- * @param this  the CTSWinGiver entity instance
+ * All TS entvars_t / CTSWinGiver field identities are TODO-confirm.
  */
-export function Spawn(this: any): void {
-  // ---- PIC / GOT base -------------------------------------------------
-  // asm: call $+5; pop ebx; add ebx, N → ebx = GOT base.
-  // [ebx+0x1600] = &gpGlobals — verified: the deref chain lands on
-  // globalvars_t.pStringBase (@ 0x98 in globalvars_t), which only
-  // makes sense if edi was the address-of-the-gpGlobals-variable,
-  // not gpGlobals itself.
-  //
-  // The numeric constants below are PIC-runtime values; for a real
-  // PIC ABI they'd come from a helper, but for a D.4 standalone
-  // decompilation we annotate them inline. Placeholders kept as 0.
-  const GOT_BASE      = 0;        // [ebx], PIC base (asm: 0x7bf1b + 0xe9ef5)
-  const gpGlobalsAddr = 0;        // [ebx + 0x1600]; = &gpGlobals
-  const timeDelta     = (GOT_BASE - 0x6ecd0); // 8-byte double constant loaded via fld QWORD
 
-  // ---- pev visual/collision defaults ---------------------------------
-  // All offsets verified against HLSDK engine/progdefs.h entvars_t:
-  //   0x118 = effects   (int)
-  //   0x10c = solid     (int)
-  //   0x1a4 = flags     (int)
-  //   0x108 = movetype  (int)
-  // 0x118 = 0x80 sets effects to a visual-effect bit (likely
-  // EF_LIGHT = 0x80 in HL1 effect bits; verify against mod SDK).
-  // pev.classname at offset 0x00 holds a string_t (4-byte index
-  // into engine string pool) — the (pic_addr - pStringBase)
-  // subtraction reduces a rodata string address to that index.
+declare const GOT_BASE: number;
+
+class CTSWinGiver {
+  pev: any = null;
+  // Members zeroed in body (order in asm: 0x14, 0x18, 0x0c, 0x10;
+  // reordered here for clarity — independent stores).
+  field_0x0c = 0;
+  field_0x10 = 0;
+  field_0x14 = 0;
+  field_0x18 = 0;
+  // Pointer at offset 0x60; vtable slot 15 (= 0x3c / 4).
+  field_0x60: any = null;
+}
+
+export function Spawn(this: CTSWinGiver): void {
+  // ---- PIC base -----------------------------------------------------
+  // 0x1600 GOT slot points to an engine struct. We deref twice
+  // (engineStructPtr -> engineStruct -> first dword). The same
+  // engineStruct is used for both classname (offset 0x98, presumably
+  // a string-table base) and nextthink (offset 0, presumably a time).
+  // gpGlobals is unlikely outright (its struct is ~12 fields so
+  // +0x98 makes no sense in gpGlobals).
+  // TODO(asm-ambiguous): identify engineStruct against TS engine structs.
+  // TODO(asm-ambiguous): confirm string-table offset (0x98) and
+  // time-source offset (0) against the symbol table.
+  const engineStructPtr: any = (GOT_BASE as any) + 0x1600;
+  const engineStruct: any = readDword(engineStructPtr);
+  const engineStructDeref: any = readDword(engineStruct);
+
   const pev = this.pev;
-  pev.classname = (GOT_BASE - 0x6ce49) - intAt(gpGlobalsAddr + 0x98);
-  pev.effects   = 0x80;           // 0x118
-  pev.solid     = 0;              // 0x10c
-  pev.flags     = 0;              // 0x1a4
-  pev.movetype  = 0;              // 0x108
 
-  // ---- WinGiver-side state (4 dwords zeroed) -------------------------
-  // asm writes this[+0x14], [+0x18], [+0xc], [+0x10] in that order.
-  // We re-order for readability; the stores are independent.
-  // TODO(asm-ambiguous): identify the four WinGiver fields.
+  // ---- classname (string_t) -----------------------------------------
+  // asm: lea eax, [ebx-0x6ce49]; sub eax, [ecx+0x98]
+  // Standard PIC pattern for (literal_runtime_addr - string_table_base).
+  // [ecx+0x98] is the engine's runtime string-table base pointer;
+  // ecx == engineStruct.
+  pev.classname = (GOT_BASE - 0x6ce49) - readDword(engineStruct + 0x98);
+
+  // ---- pev visual-default fields (offsets not yet mapped to TS names)
+  // TODO(asm-ambiguous): confirm 0x118 / 0x10c / 0x1a4 / 0x108 against TS entvars_t.
+  pev['field_0x118'] = 0x80;
+  pev['field_0x10c'] = 0;
+  pev['field_0x1a4'] = 0;
+  pev['field_0x108'] = 0;
+
+  // ---- WinGiver-specific state (4 dwords) ---------------------------
   this.field_0x0c = 0;
   this.field_0x10 = 0;
   this.field_0x14 = 0;
   this.field_0x18 = 0;
 
-  // ---- Schedule first think ------------------------------------------
+  // ---- Schedule nextthink -------------------------------------------
   // asm: fld QWORD [ebx-0x6ecd0]; fadd DWORD [eax]; fstp DWORD [ecx+0x104]
-  //   eax = *gpGlobals = struct.time (the first float in globalvars_t)
-  //   ecx = this->pev (reloaded)
-  //   [ecx+0x104] = pev->nextthink (verified against entvars_t)
-  // The asm is FPU arithmetic; TS uses numeric +, which is
-  // value-equivalent for non-NaN floats.
-  // TODO(asm-ambiguous): identify the time-delta constant — is it
-  // the slowmo-friendly "schedule for next frame" 0.1, or a TS-
-  // specific WinGiver polling interval?
-  pev.nextthink = (timeDelta) + intAt(gpGlobalsAddr); // = (GOT_BASE-0x6ecd0) + gpGlobals->time
+  // 0x104 in pev is HLSDK `nextthink`; eax is engineStructDeref
+  // (a re-load of the same slot — same value as the classname path).
+  // TODO(asm-ambiguous): the fld QWORD / fadd DWORD size mismatch —
+  //   only the low 4 bytes of the constant participate. A literal
+  //   nextthink = time + 0.1f would emit `fld DWORD`, not `fld QWORD`.
+  //   Either the constant is genuinely stored as 8 bytes (rare) or
+  //   this is a peephole quirk; worth eyeballing the bytes at
+  //   GOT_BASE-0x6ecd0.
+  pev['field_0x104'] = (GOT_BASE - 0x6ecd0) + readDword(engineStructDeref);
 
-  // ---- Virtual method dispatch ---------------------------------------
-  // asm: sub esp, 0xc   ; 12 bytes of UNINITIALISED stack for 3 args
-  //      mov eax, [edx+0x60]   ; eax = this->member_0x60
-  //      push edx              ; cdecl: this is the first arg
-  //      call DWORD PTR [eax+0x3c]  ; callee = vtable slot 15
-  // The 3 stack-arg slots are NOT zeroed in the asm; passing
-  // explicit 0,0,0 would fabricate their contents. We drop them
-  // and rely on the callee reading `undefined` in JS — closer to
-  // the asm's uninitialised-stack semantics than explicit zeros.
-  // TODO(asm-ambiguous): identity of the sub-object at this+0x60
-  // and the function at vtable slot 15; confirm whether the
-  // callee actually reads the 3 uninitialised stack slots.
-  const subobj: any = this.member_0x60;
-  const callee: Function = subobj.vtable[15];
-  callee.call(this /* , 3 uninitialised stack slots per asm */);
+  // ---- Virtual call -------------------------------------------------
+  // asm: sub esp,0xc (uninitialised); mov eax,[edx+0x60]; push edx;
+  //      call [eax+0x3c]; add esp,0x20
+  // The 3 uninit dwords are real — the asm never writes them.
+  // Most likely a "schedule a callback" trampoline whose callee
+  // doesn't read them; passing explicit zeros would be a fabrication.
+  // TODO(asm-ambiguous): identity of this.field_0x60 and vtable slot 15.
+  // TODO(asm-ambiguous): why 3 extra dwords are uninitialised on the
+  //   stack — variadic helper, or stack scratch?
+  const iface: any = (this as any).field_0x60;
+  if (iface) {
+    (iface.vtable as any)[15].call(iface, this);
+  }
+}
+
+// Local helper so the file parses in isolation.
+// In a real build this would be a generated PIC stub.
+function readDword(addr: number): number {
+  // Placeholder for the decompiler — real implementation reads from
+  // the loaded module's data segment.
+  return 0 as any;
 }
