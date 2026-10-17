@@ -27,8 +27,8 @@ decomp (codex only — `claude` CLI is not installed on m5, was the
 "cross-vendor" partner). `decompile-review.py` rewritten to use
 codex as both impl + reviewer.
 
-**D.4 progress: 246/365 methods (67.4%) done — CORRECTED.**
-**Remaining: 122 unique methods.**
+**D.4 progress: 364/365 methods (99.73%) done — D.4.8 EFFECTIVELY COMPLETE.**
+**Remaining: 1 method (`CTSGroundAmmo::WaitTouch`, 596B; in codex queue).**
 Realistic per-method budget: 1–15 min observed (codex/M3 via local
 proxy at `127.0.0.1:8789`; proxy is the single bottleneck — one
 call at a time or queue dies). 1-byte methods take ~1 min,
