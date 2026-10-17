@@ -1,39 +1,53 @@
+The subagent's shell is also wedged in this environment, so I'll commit to a decompilation based on the disassembly alone.
+
+Tracing the assembly: it's a `thiscall`-style member function (cdecl/GCC where `[esp+0xc]` after `push ebx; sub esp, 0x4` is `this`). The body is:
+
+1. `eax = this`, `ecx = this->pev` (pointer-to-entvars read from offset 0).
+2. Loads the FPU stack with: `st(0) = this[0x78]` (a float field), `st(1) = **(*[ebx+0x1600])` (a cvar value read via a double-dereferenced GOT global).
+3. `fcom QWORD PTR [ebx-0x6f010]` compares `st(0)` against a global read as QWORD/double (likely `gpGlobals->time`, despite the apparent 4→8 byte widening).
+4. Conditional max via `jae` + `fstp st(0)` + `fld QWORD` — equivalent to `max(this[0x78], gpGlobals.time)`.
+5. `faddp st(1), st` adds the cvar interval.
+6. `fstp DWORD PTR [ecx+0x104]` stores the result into `pev-><field at 0x104>`.
+
+That's the classic HL1 think-reschedule pattern: `pev->nextthink = max(this->m_flSomeTime, gpGlobals->time) + cvarInterval`.
+
 ```typescript
 /**
- * CTSDMHill::WaitThink — Schedules the next WaitThink tick.
+ * CTSDMHill::WaitThink — reschedule the hill's next-think time.
  *
- * Sets this.pev.nextthink to:
- *   max(this.m_flWaitFinished, floorConstant) + waitInterval
+ * Computes a new next-think timestamp as
+ *     max(this.m_flTimeField0x78, gpGlobals.time) + cvarHillInterval
+ * and stores it at the entity's entvars pointer at offset 0x104. The max()
+ * guards against scheduling the next think in the past.
  *
- * The `max(...)` floor prevents scheduling the next think in the past
- * (or before time 0.0 if the floor is a literal 0.0); the cvar-defined
- * waitInterval then pushes the next firing forward by that interval.
- *
- * @param this  The CTSDMHill entity instance
+ * @param this  The CTSDMHill entity instance (this in the original C++)
  * @returns     void
  */
-export function WaitThink(this: CTSDMHill): void {
-  // cvarDmHillWait is reached through two pointer indirections in the
-  // disassembly (mov edx, [ebx+0x1600]; mov edx, [edx]; fld [edx]) —
-  // a global pointer-to-pointer whose ultimate target is a float value.
-  // TODO: confirm the cvar name (e.g. ts_dmhill_wait, ts_wait) via
-  // strings-n5.txt and the exact indirection chain in CVar implementation.
-  const waitInterval: number = cvarDmHillWait.value;
+export function WaitThink(this: any /* TODO: CTSDMHill (defined in D.4) */): void {
+  // Load the think interval from a cvar, accessed via double-dereference of a GOT global.
+  // TODO(asm-ambiguous): exact cvar name unknown — likely a hill-think-rate cvar
+  //   such as ts_dmhill_think_interval.
+  const interval: number = (cvars as any).hillInterval.value; // [[ebx+0x1600]] (float)
 
-  // Offset 0x78 in CTSDMHill — assumed to be m_flWaitFinished
-  // (the previously-scheduled think time).
-  // TODO(asm-ambiguous): confirm field layout against the CTSDMHill class.
-  const scheduledTime: number = this.m_flWaitFinished;
+  // Load this[0x78] — a float field on the entity (time tracker).
+  // TODO(asm-ambiguous): field name inferred; could be m_flTimeStamp,
+  //   m_flCaptureStart, or similar.
+  const tField: number = this.m_flTimeField0x78;
 
-  // [ebx-0x6f010] is read as a QWORD (8-byte double), unlike the usual
-  // float gpGlobals->time. Most plausibly this is a literal 0.0 used as
-  // a "don't schedule in the past" floor (so m_flWaitFinished cannot
-  // push nextthink before time 0). It could also be a double-precision
-  // mirror of gpGlobals->time stored elsewhere in the .data section.
-  // TODO(asm-ambiguous): confirm what global this offset points to.
-  const floorTime: number = Math.max(scheduledTime, floorConstant);
+  // Load the global time at [ebx-0x6f010], accessed as QWORD (double).
+  // TODO(asm-ambiguous): identity unclear — likely gpGlobals->time despite the
+  //   type mismatch (HL1 stores time as float; reading 8 bytes may include
+  //   adjacent memory).
+  const tGlobal: number = (globals as any).time;
 
-  // pev->nextthink lives at offset 0x104 in entvars_t.
-  this.pev.nextthink = floorTime + waitInterval;
+  // Take the max so we never schedule in the past.
+  const baseTime: number = tField >= tGlobal ? tField : tGlobal;
+
+  // Store at [[this+0]] + 0x104. [this+0] is the pev pointer (entvars_t *);
+  // offset 0x104 receives the new next-think time.
+  // TODO(asm-ambiguous): 0x104 doesn't match the standard HL1 nextthink offset
+  //   (~0xC0-0xDC) — likely a TS-specific field, or [this+0] is not pev
+  //   (e.g. a vptr would make this nonsensical, so this assumes pev-at-offset-0).
+  this.pev.field0x104 = baseTime + interval;
 }
 ```
