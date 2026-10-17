@@ -1,139 +1,165 @@
+I'll do the review based on the inputs you provided inline. Quick note: items 2/3 of the checklist (version check, `*interfaceVersion` assignment) are N/A for `CTSWorldGun::Use` — those are HLSDK engine↔mod interface concerns, but the function is a TS-internal `CBaseEntity` method override. I'll call it out as "N/A" rather than scoring it.
+
+I also walked through the FPU status bit myself before scoring, since your conversion guidance flagged the FPU comparison as ambiguous. Here's the result of that walkthrough against the disassembly:
+
+| FPU result of `fcomp [edx+0xcc]` | C3 | C2 | C0 | AH | `test ah,0x41` | ZF | `jne` |
+|---|---|---|---|---|---|---|---|
+| ST(0) > mem | 0 | 0 | 0 | 0x00 | 0x00 | 1 | not taken → call |
+| ST(0) < mem | 0 | 0 | 1 | 0x01 | 0x01 | 0 | taken → skip |
+| ST(0) = mem | 1 | 0 | 0 | 0x40 | 0x40 | 0 | taken → skip |
+| unordered | 1 | 1 | 1 | 0x47 | 0x41 | 0 | taken → skip |
+
+So fall-through (call GetWeapon) iff `ST(0) > [edx+0xcc]`, i.e. `globalTime > [pActivator+0xcc]`. The TS's condition is right.
+
+I also worked out the stack math carefully on the call site:
+
+```
+At entry:                    [esp+0x0] ret / [esp+0x4] p / [esp+0x8] useType / [esp+0xc] flValue
+After push ebx + sub 0x8:    [esp+0x10] p (≡ arg1)
+After sub 0x8 at 0x91183:    [esp+0x1c] useType (≡ arg2)
+push [esp+0x1c] at 0x91186:  pushes useType
+push edx at 0x9118a:         pushes p (= edx = arg1)
+call GetWeapon at 0x9118b:   push ret addr
+```
+
+Net args reaching GetWeapon: `(p, useType)`. **`flValue` is not pushed.**
+
+That's the bug.
+
+---
+
+## Review
+
 ```
 VERDICT: FAIL
 
-The function's shape (signature, comparison logic, control flow) is
-faithful to the disassembly, but the second argument passed to
-GetWeapon is wrong. Tracing the stack offsets from the prologue
-(`push ebx; sub esp, 0x8`) through the second `sub esp, 0x8` before
-the call shows that `[esp+0x1c]` is `useType`, not `flValue`. The TS
-code makes an unjustified guess where the offset analysis isunambiguous.
-
 Checklist:
-1. Signature — ✅ — `Use__11CTSWorldGunP11CBaseEntityT18USE_TYPEf`
-   parses as `(CBaseEntity*, USE_TYPE, float)`; the TS signature
-   `(this, p, useType, flValue)` matches.
-2. Version check — N/A — this is not an interface-version function.
-3. interfaceVersion assignment — N/A.
-4. Success path — ❌ — calls GetWeapon, but the second arg is
-   `flValue`; the disassembly pushes `[esp+0x1c]`, which (after the
-   second `sub esp, 0x8`) is `useType`. The data flow is wrong.
-5. No fabricated paths — ✅ — every branch in the TS maps to the
-   disassembly. The conditional, the cleanup epilogue, and the
-   `fcomp → fnstsw → test → jne` chain are all there.
-6. No TODO body — ✅ — body is real code; the TODOs annotate real
-   ambiguities (global identity, `0xcc` field meaning, GetWeapon's
-   extra arg).
-7. Field names — ⚠️ — `globalTime`, `activatorCooldownTime`,
-   `_globalPointerAt0x1600` are descriptive but invented; this is
-   acknowledged with TODOs, which is acceptable for D.3.
-8. Compiles in isolation — ⚠️ — references `CTSWorldGun` (not
-   defined here) and `GetWeapon` (not defined here). With minimal
-   stubs (or treating both as `any`) it compiles.
+1. Signature — ✅ — `Use(this: CTSWorldGun, p, useType, flValue): void` matches the
+   demangled symbol `Use__11CTSWorldGunP11CBaseEntityT18USE_TYPEf` ≡
+   `CTSWorldGun::Use(CBaseEntity*, USE_TYPE, float)` once `this` is made explicit.
+   Arg count (3 explicit) and return type (void) match.
+
+2. Version check — ⚠️ N/A — this is a TS-internal CBaseEntity method override,
+   not one of the engine↔mod interface functions. No version check expected.
+
+3. *interfaceVersion assignment — ⚠️ N/A — same reason; not a GetEntityAPI* /
+   GetNewDLLFunctions function.
+
+4. Success path — ❌ — the conditional structure is correct (`globalTime >
+   activatorCooldownTime` ⇔ fall through to GetWeapon), but the call itself is
+   wrong. The TS calls `GetWeapon.call(this, p, flValue)`, while the disassembly
+   pushes `useType` (from `[esp+0x1c]` after the second `sub esp,0x8`) and `edx`
+   (= `p`). It should be `GetWeapon.call(this, p, useType)`. `flValue` is
+   accepted by the C++ signature but is **not** forwarded — the empty 8 bytes
+   of `sub esp,0x8` before the call are stack alignment / cdecl spill padding,
+   not a 3rd-arg slot. This silently changes runtime semantics.
+
+5. No fabricated paths — ⚠️ — the control flow is faithful (one fcomp branch,
+   one tail cleanup → pop ebx / ret), but the call-site args were inferred from
+   the bare `GetWeapon(CBaseEntity*)` symbol text rather than verified against
+   the actual stack manipulation in the disassembly. That's the
+   fabrication — a partial one, but a fabrication nonetheless.
+
+6. No TODO body — ⚠️ — the function expresses its logic (conditional + call),
+   but four `TODO(asm-ambiguous)` comments cover:
+     - identity of the `[ebx+0x1600]` global chain
+     - meaning of `[p+0xcc]` float field
+     - which 2nd arg to pass to GetWeapon
+     - placeholder for the PIC global (`_globalPointerAt0x1600 = 0`)
+   Three of the four should resolve to concrete answers from the disassembly
+   itself, not stay as TODOs. The function shape is there, but the body is
+   still a sketch in places.
+
+7. Field names — ⚠️ — `globalTime` and `activatorCooldownTime` are plausible
+   guesses (likely `gpGlobals->time` and `m_flLastUseTime` / similar pickup
+   cooldown), but they're presented as named bindings while the actual read
+   is `(p as any)[0xcc]` magic-offset access. Either commit to the named
+   field (`activator.m_flLastUseTime`) with a `// confirmed via X` comment,
+   or keep it as a raw offset under a `// TODO` — picking a name without
+   evidence muddles the "typed vs. raw" distinction.
+
+8. Compiles in isolation — ✅ — uses `any` for unknown types, the `_globalPointerAt0x1600`
+   is declared with type `any` so `.deref.deref` typechecks, the `// TODO`
+   comments are not parsed by tsc, and `this: CTSWorldGun` only requires
+   CTSWorldGun to be in scope at the call site (not here).
 
 Issues to fix:
-- **Wrong second arg to GetWeapon** (the actual fail). Trace:
-  - Function entry (32-bit cdecl, `this` in `ecx`):
-    `[esp+0] = retaddr, [esp+4]=p, [esp+8]=useType, [esp+0xc]=flValue`
-  - After `push ebx; sub esp, 0x8`:
-    `[esp+0x10]=p` ← `mov edx, [esp+0x10]` confirms this is `p`
-    `[esp+0x14]=useType, [esp+0x18]=flValue`
-  - After the second `sub esp, 0x8` (at 0x91183):
-    `[esp+0x18]=p, [esp+0x1c]=useType, [esp+0x20]=flValue`
-  - Therefore `push DWORD PTR [esp+0x1c]` pushes `useType`,
-    and `push edx` pushes `p`.
-  The TS must forward `useType` as the second arg, not `flValue`.
-  As a side effect, `flValue` is dropped on the floor (the original
-  function never references it either — the comparison uses
-  `[edx+0xcc]` from `p`, and GetWeapon's demangled symbol is
-  `(CBaseEntity*)`, so `useType` may also be ignored by the callee
-  but the compiler still emits the push).
+- Call site passes the wrong 2nd arg. Change `GetWeapon.call(this, p, flValue)`
+  → `GetWeapon.call(this, p, useType)`. The disassembly at 0x91186 pushes
+  `[esp+0x1c]` (which is `useType`, not `flValue`).
+- `flValue` is silently dropped in this override. The C++ accepts it for
+  signature compatibility with `CBaseEntity::Use` but does not use it. State
+  that explicitly in a comment so the next reader doesn't assume forwarding.
+- The `sub esp,0x8` before the call at 0x91183 is cdecl spill / stack
+  alignment, *not* a hidden 3rd arg slot. Worth a one-line comment so the
+  next review doesn't make the same mistake.
+- `_globalPointerAt0x1600: any = 0` is a placeholder that won't reflect the
+  real PIC indirection pattern. Either write a small `readGOTFloat(offset)`
+  helper (and `TODO` it), or just inline the chain `(((globalBase as any) + 0x1600) as any)[0][0] as number`
+  with a clear `// [ebx + 0x1600] → *→ *→ float` comment.
+- Drop or qualify the guessed field names (`globalTime`,
+  `activatorCooldownTime`). Pick: (a) `// [p+0xcc] is a float; most likely
+  `m_flLastUseTime` or similar cooldown — TODO(asm-ambiguous)` and keep the
+  raw offset, or (b) bind to `CBaseEntity.m_flLastUseTime` once that's
+  defined. The hybrid "named binding to magic-offset read" is the worst of
+  both.
+- The four TODOs for "identity of [ebx+0x1600] chain" and "meaning of
+  [p+0xcc]" are legitimate unknowns (D.3 only) and should stay as TODOs.
+  The other two (GetWeapon args, PIC placeholder) can be resolved now
+  from the disassembly.
 
-- **"double-dereferences to a float" comment** (minor). The  disassembly actually performs three loads from the global chain:
-  `[ebx+0x1600] → [eax] → [eax]` (the last as a float). The TS code
-  writes it as `_globalPointerAt0x1600.deref.deref`, which is
-  correct for "two more derefs past the global load", but the
-  comment could be clearer. Not blocking.
-
-- **`_globalPointerAt0x1600 = 0` placeholder** will null-deref at
-  runtime. Acceptable as a D.3 stub; flag for D.5 when globals are
-  wired up. Not a fail for "compiles in isolation".
-
-Suggested rewrite (full TS function):
+Suggested rewrite:
 
 ```typescript
 /**
- * CTSWorldGun::Use — invoked when a world-spawned weapon entity is
- * "used" (touched or triggered). Reads a global time reference via
- * the PIC/GOT base, compares it to a float field on the activator,
- * and only delegates to GetWeapon to grant the weapon when the
- * global time has advanced past the activator's stored timestamp.
+ * CTSWorldGun::Use — invoked when a player touches / triggers a world-spawned
+ * weapon entity. The C++ signature accepts a `float flValue` for compatibility
+ * with `CBaseEntity::Use`, but this override drops it: `flValue` is not
+ * forwarded to GetWeapon, and GetWeapon itself doesn't take a float.
  *
- * @param this       The CTSWorldGun world-weapon entity instance
- * @param p          Activator (the entity trying to pick up the
- *                   weapon)
- * @param useType    USE_TYPE describing how the weapon was
- *                   triggered
- * @param flValue    Float value (inherited from CBaseEntity::Use;
- *                   this override does not reference it)
+ * Demangled:    CTSWorldGun::Use(CBaseEntity *p, USE_TYPE useType, float flValue)
+ * Address:      0x00091158  Size: 0x40 (64 bytes)
+ * External:     GetWeapon__11CTSWorldGunP11CBaseEntity@plt @ 0x00059f90
+ * External:     PIC/GOT base in ebx (call/pop/add at 0x9115c..0x91162)
+ *
+ * Logic: only grant the weapon when the global game time has advanced past
+ * a per-activator cooldown timestamp stored at `[p + 0xcc]`. When it has,
+ * delegate to `GetWeapon(pActivator, useType)`.
  */
 export function Use(
   this: CTSWorldGun,
-  p: any, // TODO: CBaseEntity (not yet defined)
-  useType: any, // TODO: USE_TYPE enum (not yet defined)
-  flValue: number,
+  p: any, // TODO(asm-ambiguous): CBaseEntity — not yet defined
+  useType: any, // TODO(asm-ambiguous): USE_TYPE enum — not yet defined
+  flValue: number, // accepted by signature; intentionally NOT forwarded
 ): void {
-  // PIC/GOT base in ebx (computed via the call/pop/add pattern at
-  // function start). [ebx + 0x1600] is a global pointer; the
-  // disassembly then loads [eax] twice more to reach a float —
-  // most plausibly gpGlobals->time via a wrapper struct.
-  // TODO(asm-ambiguous): identity of the global chain at
-  // [ebx+0x1600]
-  const _globalPointerAt0x1600: any = 0; // placeholder for the
-                                         // PIC global
+  // PIC/GOT base in ebx, computed via call/pop/add at 0x9115c..0x91162.
+  // [ebx + 0x1600] → ptr → ptr → float. Most plausibly gpGlobals->time, but
+  // the indirection depth needs a CBaseEntity/engineglobals header to confirm.
+  // TODO(asm-ambiguous): identity of the [ebx+0x1600] global chain
   const globalTime: number =
-    _globalPointerAt0x1600.deref.deref as number;
+    (((globalBase as any) + 0x1600) as any)[0][0] as number;
 
-  // [p + 0xcc] is a float field on the activator — most plausibly
-  // a "next pickup time" / cooldown timestamp the activator  // carries.
-  // TODO(asm-ambiguous): offset 0xcc meaning unclear without
-  // CBaseEntity field layout
-  const activatorCooldownTime: number =
-    (p as any)[0xcc] as number;
+  // [p + 0xcc] is a float on the activator — likely a pickup-cooldown
+  // timestamp (e.g. `m_flLastUseTime` or `m_flNextPickupTime`).
+  // TODO(asm-ambiguous): offset 0xcc on CBaseEntity; needs class layout
+  const activatorCooldown: number = (p as any)[0xcc] as number;
 
-  // The disassembly does
-  //   fcomp [p+0xcc]   ; ST(0) = global time, compare against [p+0xcc]
-  //   fnstsw ax ; ax = FPU status word
-  //   test   ah, 0x41  ; test C0 (bit 0 of AH) and C3 (bit 6 of AH)
-  //   jne    91193     ; skip the call if C0 OR C3 set
-  // so the call only fires when ST(0) > [p+0xcc] (strict greater,
-  // NaN excluded — both FPU and TS `>` agree on NaN behavior).
-  if (globalTime > activatorCooldownTime) {
-    // The disassembly pushes two stack args before the call:
-    //   sub esp, 0x8    //   push [esp+0x1c]  ; = useType (after the second sub:
-    //                     ; [esp+0x18]=p, [esp+0x1c]=useType,
-    //                     ; [esp+0x20]=flValue)
-    //   push edx          ; = p
-    //   call GetWeapon
-    //   add esp, 0x10    ; clean up sub + 2 pushes
+  // FPU compare via fcomp + fnstsw + test ah,0x41 + jne at 0x91176..0x91181.
+  // Falls through to the call only when ST(0) > [p+0xcc]; otherwise jumps
+  // to 0x91193 (epilogue: add esp,0x8 / pop ebx / ret).
+  if (globalTime > activatorCooldown) {
+    // Call-site args verified from disassembly:
+    //   0x91183: sub esp, 0x8              ; cdecl spill / stack alignment
+    //   0x91186: push DWORD PTR [esp+0x1c] ; useType (was [esp+0x8] pre-prologue)
+    //   0x9118a: push edx                  ; p (= edx, loaded at 0x91168)
+    //   0x9118b: call GetWeapon@plt
+    //   0x91190: add esp, 0x10              ; cdecl: 8 (spill) + 4 + 4 (args)
     //
-    // The demangled GetWeapon symbol only shows (CBaseEntity*), so
-    // useType may be ignored by the callee, but the compiler still
-    // emits the push. Forward useType faithfully; do NOT pass
-    // flValue (it's at [esp+0x20], never referenced here).
-    // TODO(asm-ambiguous): confirm whether GetWeapon actually
-    // reads useType, or whether the push is dead
+    // `flValue` is NOT pushed. The empty 8 bytes of `sub esp,0x8` are not
+    // a hidden 3rd-arg slot — they're stack alignment for the cdecl call.
     GetWeapon.call(this, p, useType);
   }
-  // flValue is intentionally dropped — neither the comparison nor
-  // the GetWeapon call reference it. (It's still in the signature
-  // because CBaseEntity::Use requires it.)
 }
 ```
 
-Note for the follow-up D.4 pass: when CTSWorldGun / USE_TYPE / CBaseEntity
-types are defined, replace the `any`s. When the global chain at
-`[ebx+0x1600]` is identified (probably via cross-referencing
-`gpGlobals` + a wrapper struct in the engine interface code), replace
-`_globalPointerAt0x1600.deref.deref` with a typed accessor (most
-likely something like `gpGlobals.time`).
-```
+The remaining TODO comments are legitimate unknowns for D.3 (we don't have `CBaseEntity` / `USE_TYPE` defined yet, and `gpGlobals` lives behind the PIC chain). Everything else should resolve to a concrete answer from the disassembly + class layout work in D.4.

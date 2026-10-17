@@ -1,60 +1,59 @@
-The shell isn't returning output (likely sandbox env). I'll proceed based on the disassembly analysis alone, using TODOs for the unknown classname constants.
-
-Analysis of the disassembly:
-
-- **PIC setup:** `call $+5; pop ebx; add ebx, 0xd4b77` → `ebx` is GOT base.
-- **`[esp+0x18]`** after four `push`es + return address = the first arg `pOther`.
-- **Two-level deref `[ebp+0x0]; [eax]`:** `pOther` is a `CBaseEntity*`. First field of `CBaseEntity` is `entvars_t* pev`; first field of `entvars_t` is `string_t classname`. So the chain lands on `pOther->pev->classname` (a `string_t` offset).
-- **`[ebx+0x1600]; [eax]; [edx+0x98]; add edi, eax`:** this is the HL SDK `STRING()` macro: `edx = gpGlobals; [edx+0x98] = gpGlobals->pStringBase; + classname_offset` → pointer to the actual classname C-string.
-- **First `repz cmpsb` (9 bytes):** on match (`cmp dl,al` equal, both flags cleared), `mov eax, 0; jmp exit` → returns 0. On mismatch, fall through to second compare.
-- **Second `repz cmpsb` (6 bytes):** the encode is `seta cl; setb dl; mov eax,0; cmp cl,dl; setne al`. `setne(0,0) = 0` and `setne(1,0) = 1` → returns 0 on match, 1 on mismatch.
-- **Net behavior:** return 0 if `pOther->pev->classname` matches either of two specific classnames; return 1 otherwise. In GoldSrc convention, `ShouldCollide` returning 0 means "treat as not solid to each other" — this is an ignore-list filter for the world gun (a static weapon pickup, e.g., so it doesn't get pushed by `func_wall` brushes or stuck on the local player).
-
 ```typescript
 /**
- * CTSWorldGun::ShouldCollide — collision filter for a static world-decorated
- * weapon pickup. Returns 0 (skip collision) when `pOther`'s classname matches
- * either of two hardcoded "ignore" classnames; returns 1 (collide normally)
- * otherwise.
+ * CTSWorldGun::ShouldCollide — decides whether a world-placed weapon
+ * pickup should physically collide with another entity.
  *
- * @param this    The CTSWorldGun (static world-decorated weapon pickup)
- * @param pOther  The candidate other entity
- * @returns       0 = do not collide, 1 = collide normally
+ * Returns false (skip collision) when pOther's classname matches one of
+ * the two excluded classnames baked into the binary's rodata; returns
+ * true (allow collision) otherwise.
+ *
+ * @param this  The CTSWorldGun entity (this in the original C++)
+ * @param pOther  The other entity being tested for collision
+ * @returns     true to allow collision, false to disable it
  */
 export function ShouldCollide(
   this: CTSWorldGun,
-  pOther: CBaseEntity,
-): number {
-  // The disassembly materializes GoldSrc's STRING() macro on
-  // `pOther->pev->classname` via:
-  //   edi = (*(*GOT[0x1600])[0x98]) + pOther->pev->classname
-  // i.e. gpGlobals->pStringBase + classname_string_t_offset.
-  // classname is the first field of entvars_t (offset 0), and pev is the
-  // first field of CBaseEntity — that's why we double-deref `[ebp+0]; [eax]`.
-  const otherClassname: string = STRING(pOther.pev.classname);
+  pOther: CBaseEntity
+): boolean {
+  // gpGlobals->pStringBase is the C-string table base that Half-Life's
+  // STRING() macro uses to resolve string_t offsets into C strings.
+  // [ebx+0x1600] is the GOT slot holding gpGlobals; [edx+0x98] then
+  // indexes the pStringBase field inside globalvars_t.
+  // TODO(asm-ambiguous): confirm GOT slot and the +0x98 pStringBase offset
+  //                       against the TS .so's data layout.
+  const pStringBase: number = (gpGlobals as any).pStringBase;
 
-  // TODO(asm-ambiguous): the two hardcoded classnames are read from .rodata
-  //   at GOT-relative addresses -0x6b6c5 (9 bytes) and -0x6e62b (6 bytes).
-  //   Look them up in tools/decompile/analysis/strings-n5.txt to confirm,
-  //   but plausible candidates given this is a world-weapon pickup are:
-  //     - 9 bytes: "func_wall"  (static world geometry the gun sits on)
-  //     - 6 bytes: "player"     (so the local player doesn't get stuck)
-  const IGNORE_LONG  = /* 9-byte classname constant */ "";
-  const IGNORE_SHORT = /* 6-byte classname constant */ "";
+  // pOther->pev->classname is a string_t (an int offset into the string
+  // table). In the TS server's CBaseEntity layout, pev sits at offset 0
+  // of the class — verified by the disassembly's [ebp+0] -> [eax] double
+  // dereference collapsing into "first field of pOther, then first field
+  // of that pointer".
+  // TODO: full CBaseEntity type comes from D.4; using any for now.
+  const classnameOffset = (pOther as any).pev.classname as number;
+  const classname: string = readCString(pStringBase + classnameOffset);
 
-  // First repz cmpsb (9 bytes): early-out, return 0 on match.
-  if (otherClassname === IGNORE_LONG) {
-    return 0;
+  // Block 1: 9-byte equality against the literal at [ebx-0x6b6c5] in the
+  // .so's rodata. The leading hypothesis is "world_gun" (the same class
+  // as `this`) — a typical TS policy is to skip collision between two
+  // stacked world guns.
+  // TODO(asm-ambiguous): literal not enumerated from this chunk; verify
+  //   against tools/decompile/analysis/strings-n5.txt or `objdump -s`.
+  const EXCLUDE_9BYTE = "world_gun"; // [ebx-0x6b6c5], 9 bytes
+  if (classname === EXCLUDE_9BYTE) {
+    return false;
   }
 
-  // Second repz cmpsb (6 bytes): the disassembly encodes the result via
-  //   seta cl; setb dl; mov eax,0; cmp cl,dl; setne al
-  // so semantically this is the same "return 0 on match" early-out,
-  // with a fall-through return-1 if no match.
-  if (otherClassname === IGNORE_SHORT) {
-    return 0;
+  // Block 2: 6-byte equality against the literal at [ebx-0x6e62b]. The
+  // leading hypothesis is "player" — a freshly-thrown world gun should
+  // pass through its owner instead of bouncing back at them.
+  // TODO(asm-ambiguous): literal not enumerated from this chunk; verify
+  //   against tools/decompile/analysis/strings-n5.txt or `objdump -s`.
+  const EXCLUDE_6BYTE = "player"; // [ebx-0x6e62b], 6 bytes
+  if (classname === EXCLUDE_6BYTE) {
+    return false;
   }
 
-  return 1;
+  // Classname matched neither exclusion — let the physics engine collide.
+  return true;
 }
 ```
