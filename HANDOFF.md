@@ -28,7 +28,8 @@ decomp (codex only — `claude` CLI is not installed on m5, was the
 codex as both impl + reviewer.
 
 **D.4 progress: 365/365 methods (100%) decompiled + D.5 READY (Stage 1).**
-**D.4.8 + D.4.9 + D.5.1 Stage 1 complete. D.5.2–5.11 next.**
+**D.4.8 + D.4.9 + D.5.1 Stage 1 + D.5.4 Player Controller complete.**
+**D.5.2 BSP→glTF, D.5.5 Type Contracts, D.5.6+ Bridge Glue next.**
 
 What "100% complete and ready to begin building in Babylon for the
 full game" means (per the user's goal + `docs/option-d-scope-d5-ready.md`)
