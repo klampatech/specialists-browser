@@ -198,6 +198,8 @@ export function onTick(ctx: EngineContext): void {
 export interface BabylonSceneDriver {
   readonly canvas: HTMLCanvasElement;
   readonly scene: unknown; // Babylon Scene, lazy-imported
+  /** Entity pool exposed for Phase 2 wiring. */
+  readonly entities: Map<EntityPtr, CBaseEntity>;
   loadMap(gltfUrl: string): Promise<void>;
   createPlayer(spawnPos: { x: number; y: number; z: number }): unknown;
   createBot(spawnPos: { x: number; y: number; z: number }, ai: unknown): unknown;
@@ -218,10 +220,11 @@ export function createBabylonSceneDriver(opts: BabylonDriverOptions): BabylonSce
   return {
     canvas: opts.canvas,
     scene: null,
-    async loadMap(_url: string) { /* TODO D.5.1 */ },
+    entities: ctx.entities,
+    async loadMap(_url: string) { /* TODO D.5.2 BSP→glTF */ },
     createPlayer(_pos) { return null; },
     createBot(_pos, _ai) { return null; },
     onTick(deltaMs) { ctx.deltaMs = deltaMs; onTick(ctx); },
-    dispose() { /* TODO D.5.1 */ },
+    dispose() { /* TODO */ },
   };
 }

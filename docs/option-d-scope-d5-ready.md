@@ -1,9 +1,14 @@
 # D.5 Ready — Babylon.js Integration Spec
 
-> **Status:** 2026-10-16 — D.4 in flight. **This doc defines what
-> "ready to begin building in Babylon for the full game" means.**
-> D.5 work begins once all 281 methods of `ts_i386.so` are decompiled
+> **Status:** 2026-10-16/17 — D.4.8 + D.4.9 + D.5.1 Stage 1 complete.
+> **This doc defines what "ready to begin building in Babylon for the
+> full game" means.** All 365 methods of `ts_i386.so` are decompiled
 > (or stubbed for v1) and consolidated into `src/mod/<class>.ts` files.
+> (Note: the original 281 figure was a raw T-type line count; the
+> true unique `(cls, method)` count after deduplication of vtable
+> thunks is **365**. Both numbers are correct in different contexts —
+> "281" = number of distinct T-type entries, "365" = number of
+> distinct method implementations.)
 
 ## TL;DR
 
@@ -29,7 +34,7 @@ fires pistol, kills the bot, takes screenshot. **All from a single
 
 ## What "100% decompiled" means concretely
 
-All 281 methods of `ts_i386.so` (T-type) decompiled. Per-class target:
+All 365 methods of `ts_i386.so` (T-type) decompiled. Per-class target:
 
 ```
 src/
@@ -89,10 +94,10 @@ interface.ts + slowmo.ts + slowmo-point.ts + weapons.ts (done)
 = minimum Phase 1 MVP (Kyle plays, pistols, kills 1 stub bot)
 ```
 
-That's roughly **120 methods** to decompile before D.5 can start.
+That's roughly **365 methods** to decompile before D.5 can start.
 (Phase 1 MVP-critical, not "100%".)
 
-**"Full game" requires all 281** minus lower-priority stubs.
+**"Full game" requires all 365** minus lower-priority stubs.
 
 ## D.5 architecture
 
@@ -238,7 +243,7 @@ In Kyle's words: "ready to begin building in Babylon for the full game."
 
 This is **achieved when**:
 
-1. All 281 methods of `ts_i386.so` are decompiled (or explicitly
+1. All 365 methods of `ts_i386.so` are decompiled (or explicitly
    stubbed for v1 with a `// STUB for v1` comment + reason).
 2. `src/mod/<class>.ts` exists per class with a doc-comment field
    map and consistent type contracts across methods.
@@ -268,7 +273,7 @@ This is **achieved when**:
 ## Cross-references
 
 - `HANDOFF.md` — current state + next task
-- `SPEC.md` — overall design spec (updated to reflect 281-method scope)
+- `SPEC.md` — overall design spec (updated to reflect 365-method scope)
 - `docs/option-d-scope.md` — Option D plan with 281-method scope
 - `references/` — workflow docs
 - `tools/decompile/batch.py` — the decomp pipeline
