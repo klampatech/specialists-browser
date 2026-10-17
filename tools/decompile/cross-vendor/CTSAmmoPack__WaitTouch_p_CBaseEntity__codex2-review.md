@@ -1,93 +1,90 @@
 ```
 VERDICT: FAIL
 
+(Note: the function under review is a TS gameplay method, not one of the 4
+HLSDK interface functions in the reference. Items 2 and 3 of the checklist
+are therefore N/A. The review focuses on the disassembly.)
+
 Checklist:
 1. Signature — ✅ — `WaitTouch(this: CTSAmmoPack, pOther: CBaseEntity): void`
-   matches the demangled `CTSAmmoPack::WaitTouch(p CBaseEntity)`. (Note:
-   this is a gameplay method, not one of the 4 engine↔mod interface
-   functions the rest of the checklist is built for; items 2–4 are N/A
-   and are omitted below.)
-
-2. Version check — N/A — `WaitTouch` is not a `GetEntityAPI*` /
-   `GetNewDLLFunctions` candidate.
-
-3. `*interfaceVersion` assignment-back — N/A.
-
-4. Success-path struct copy — N/A.
-
-5. No fabricated code paths — ❌ — Critical misread at stages 5 and 6:
-   the disassembly dereferences `this` (the pack), but the TS
-   dereferences `pOther` (the toucher) for the pack's armor value. See
-   the issues list for the exact instruction sites.
-
-6. No TODO body — ✅ — The body is fully expressed in code; the
-   `// TODO(asm-ambiguous):` notes are real ambiguity flags (the
-   `[pOther+0x60]` callback table, the `*pOther+0x208` edict, the
-   `*pOther+0x180` frozen-bit). They do not displace any logic.
-
-7. Field names — ⚠️ — `innerPtr` / `innerPtr2` are generic and
-   indistinguishable. The `+0x60` slot table, `+0x180` frozen byte,
-   `+0x1bc` armor value, `+0x208` edict, and `+0xa10` active-item
-   pointer are real engine fields and should be named (e.g.,
-   `pOther->pev`, `this->m_iArmorToGive`) once the binding layer
-   defines them. The "junk8th stack slot" comment is wrong — the
-   demangled type for EMIT_SOUND_DYN's 8th arg is `f` (float), not
-   "junk".
-
-8. Compiles in isolation — ✅ — All externals are declared
-   (`readDWord`, `readFloat`, `readByte`, `callIndirect`, `AddAmmo`,
-   `EMIT_SOUND_DYN`, `TakeArmor`, `UTIL_Remove`, plus the `GOT_BASE`
-   placeholder).
+   matches the demangled `CTSAmmoPack::WaitTouch(CBaseEntity*)`. Arg
+   count, arg order, return type all line up. `this` lives at
+   `[esp+0x30]` (= B+0x30), `pOther` at `[esp+0x34]` (= B+0x34), both
+   read correctly throughout the body.
+2. Version check — ⚠️ N/A — Not an interface function; pattern does not
+   apply.
+3. interfaceVersion assignment — ⚠️ N/A — Same.
+4. Success path — ❌ — Stages 1–4 (validity, weapon class check, slot
+   iteration, sound emit) are faithful. **Stage 5 (armor transfer) and
+   Stage 6 (UTIL_Remove gate) are wrong:** the disassembly consistently
+   reads `*this+0x1bc` (the **pack's** own armor), but the TS reads
+   `*pOther+0x1bc` (the **player's** armor). Concrete sub-failures:
+     - 91874–91880: `cvar vs *this+0x1bc` is reimplemented as
+       `armorCvar < curArmor` where `curArmor = *pOther+0x1bc`.
+     - 918ae–918b4: load `*this+0x1bc` for the FPU→int conversion is
+       reimplemented as `Math.trunc(armorCvar)`.
+     - 918e5–918eb: zero `*this+0x1bc` (the pack) is reimplemented as
+       `writeDWord(innerPtr2 + 0x1bc, 0)` against `innerPtr2 = *pOther`.
+     - 918fc–91913: `cvar vs *this+0x1bc` is reimplemented as
+       `armorCvar !== curArmor2` against `curArmor2 = *pOther+0x1bc`.
+   The arithmetic is: `B+0x30 = this`, and at 918e5 esp = B−0x10 so
+   `[esp+0x40] = B+0x30 = this`. Same for `[esp+0x38]` at 918ae with
+   esp = B−0x8. The TS code is reading the wrong entity.
+5. No fabricated paths — ❌ — The frozen-bit condition is inverted.
+   Disassembly (91891/91898): `test BYTE PTR [*pOther+0x180], 0x20;
+   jne 918a9` → when the bit is **set**, jump to 918a9 (FPU cleanup)
+   which falls through into the transfer code at 918ab. So
+   `bit set → transfer`. TS code: `if (!frozen) { ... transfer ... }`,
+   so `bit set → skip`. The TS code is missing the frozen-bit-set
+   transfer path entirely. (Whether the disassembly's literal direction
+   is the "intended" behavior is a separate question — flag it for the
+   maintainer — but the TS code is not what the assembly does.)
+6. No TODO body — ✅ — Function body is substantive; the TODOs are
+   inline comments on ambiguous field references, not placeholders.
+7. Field names — ⚠️ — `m_pActiveItem` at `+0xa10` and weapon class id
+   at `+0x88` are plausible TS-specific offsets, properly TODO-marked.
+   `cbTable` at `*(pOther+0x60)` with vtable slots `+0xb4` and `+0xc8`
+   is a reasonable read of the indirect-call pattern. The bug is not a
+   naming issue, it's that `+0x1bc` is treated as *player's* armor
+   (`innerPtr2 = readDWord(pOther)`) when the disassembly has it as
+   *pack's* armor (`*this+0x1bc`). The "zero the source armor" comment
+   suggests the AI understood the intent was "the pack's armor" — but
+   it pointed the write at the wrong struct.
+8. Compiles in isolation — ✅ — All helpers (`readDWord`, `readFloat`,
+   `readByte`, `writeDWord`, `readStringPtr`, `callIndirect`,
+   `AddAmmo`, `EMIT_SOUND_DYN`, `TakeArmor`, `UTIL_Remove`) are
+   declared. No external type references. `CTSAmmoPack` and
+   `CBaseEntity` are declared as empty interfaces, which is fine for
+   D.3.
 
 Issues to fix:
-
-- **[stage 5 — first compare, 0x91874..0x91880] Dereference is `*this`,
-  not `*pOther`.** The disassembly reads `[esp+0x30]` (= `this`),
-  dereferences once to `ecx = *this`, and compares the cvar with
-  `[ecx+0x1bc]` — i.e. the **pack's** armor value, not the toucher's.
-  The TS uses `innerPtr2 = readDWord(pOther)`, so it compares the cvar
-  with the *toucher's* armor. The flag check at 0x91891 (which reads
-  `[*pOther+0x180] & 0x20`) and the second compare at 0x9189a (which
-  reads `[*pOther+0x1bc]`) **do** correctly use `pOther` — so the
-  disassembly mixes both entities across stages 5–6, and the TS
-  silently collapses them to `pOther`. Introduce a separate
-  `thisInner` / `pOtherInner` pair.
-
-- **[stage 5 — `fistp` source, 0x918ae..0x918d7] Truncate `*this+0x1bc`,
-  not the cvar.** `fld [eax+0x1bc]` where `eax = *this`, then
-  `fistp` to int. That's the pack's armor, not the threshold. The
-  amount passed to `TakeArmor` is therefore the pack's armor. The
-  TS uses `Math.trunc(armorCvar)` — semantically wrong.
-
-- **[stage 5 — zero-write, 0x918e5..0x918eb] Write to `*this+0x1bc`,
-  not `*pOther+0x1bc`.** Same `this` vs `pOther` confusion. The TS
-  zeroes the toucher's armor instead of the pack's.
-
-- **[stage 6 — post-check, 0x918fc..0x91908] Dereference is `*this`,
-  not `*pOther`.** Same bug as the first compare. The comparison
-  decides whether to call `UTIL_Remove(this)`, and the answer depends
-  on whether the *pack's* armor is now equal to the cvar (typically
-  after the pack's armor was zeroed in stage 5).
-
-- **[stage 4 — 8th arg to `EMIT_SOUND_DYN`] Read as `float`, not
-  dword.** Demangled signature
-  `EMIT_SOUND_DYN__FP7edict_siPCcffiif` → last arg is `f`. The TS
-  uses `readDWord(GOT - 0x6ec2c)` and the misleading comment
-  "junk8th stack slot"; both are wrong.
-
-- **[stage 5 — 0x918a5 `jne` polarity] The TS inner condition
-  `if (curArmor !== armorCvar)` is actually correct**, but only by
-  accident: `jne` after `test ah, 0x40` jumps when `C3=1` (i.e. when
-  cvar == *pOther+0x1bc), so the equal-branch goes to 0x918fc and
-  the not-equal branch falls through to 0x918ab (the transfer). The
-  TS's "not equal → transfer" matches, but the comment "Re-check
-  exact equality" is misleading because the operand is the *toucher's*
-  armor (pOther's), not the *pack's*.
-
-- **[naming]** `innerPtr2` is reused for both the toucher deref (flag
-  check, inner compare — correct) and the pack deref (first compare,
-  truncate, zero-write, post-check — wrong). Two distinct locals make
-  the bug class impossible.
+- **Stage 5 entity:** swap `innerPtr2 = readDWord(pOther)` for
+  `readDWord(this)` (or a cached `packInner`) wherever the disassembly
+  reads/writes `+0x1bc` or stores the converted armor int.
+  - First comparison (91874–91880): compare `armorCvar` to `*this+0x1bc`,
+    not `*pOther+0x1bc`.
+  - Transfer amount (918b4): `Math.trunc(*this+0x1bc)`, not
+    `Math.trunc(armorCvar)`.
+  - Post-transfer zero (918eb): zero `*this+0x1bc`, not `*pOther+0x1bc`.
+- **Stage 5 frozen direction:** the disassembly's `jne` after
+  `test BYTE PTR [*pOther+0x180], 0x20` jumps into the transfer path
+  when the bit is set. Either the maintainer confirms that the bit-set
+  path is intended (and the TS code must be restructured to match), or
+  the disassembly is wrong / the bit is not FL_FROZEN. Either way, the
+  TS code as written inverts the literal assembly behavior — flag for
+  Kyle.
+- **Stage 6 entity:** the cvar-vs-armor comparison is against
+  `*this+0x1bc` (pack's armor), not `*pOther+0x1bc`.
+- **Comment accuracy:** "zero the source armor" is the right *verb* but
+  wrong *referent* in context. After the fix, it should read "zero the
+  pack's stored armor" or similar.
+- **Minor:** the disassembly's first comparison is `jae 918fa` after
+  `fcom` with the cvar already on the FPU stack — so the FPU top is
+  `*this+0x1bc`, and the cvar is `st(1)`. The frozen branch's `fstp  st(0)` pops the pack-armor value, leaving cvar on top for the
+  re-compare at 9189a. The TS code doesn't model the FPU stack at all
+  (uses regular floats); that's fine for a high-level rewrite, but if
+  anyone later rewrites this back into x86 they'll need to reinsert
+  the fpu discipline.
 
 Suggested rewrite (full TS function):
 
@@ -95,25 +92,21 @@ Suggested rewrite (full TS function):
 /**
  * CTSAmmoPack::WaitTouch — wait-for-touch handler for the ammo pack.
  *
- * Decompiled from `WaitTouch__11CTSAmmoPackP11CBaseEntity` at
- * ts/dlls/ts_i386.so+0x000916c0 (620 bytes).
- *
- * Two-stage sanity check on the toucher (calls into
- * [pOther+0x60]+0xc8 and [pOther+0x60]+0xb4, passing pOther as the
- * explicit first arg — most likely a TS-specific callback table or a
- * sub-object's vtable). Then verifies the toucher's active weapon
- * (`[pOther+0xa10]`, the CBasePlayer::m_pActiveItem) has class id
- * 0x10. Iterates 16 ammo slots (4 outer × 4 inner) and calls AddAmmo
- * on each non-zero slot; on success, zeros the slot and sets a "gave
- * ammo" flag. If any ammo was given, emits a pickup sound on the
- * toucher. Then does a cvar-driven armor transfer: compares the cvar
- * at GOT-0x6f408 with the **pack's** armor at `*this+0x1bc`, checks
- * the toucher's frozen bit at `*pOther+0x180 & 0x20`, re-checks that
- * the cvar doesn't already match the **toucher's** armor, and
- * transfers the pack's armor (truncated to int) to the toucher via
- * TakeArmor, zeroing the pack's armor afterwards. Finally, if the
- * cvar now equals the pack's armor (typically both 0), UTIL_Remove
- * the pack.
+ * Stage 1: validate the toucher via two vtable calls through
+ *   *(pOther+0x60) (offsets +0xc8 then +0xb4); both must return non-null.
+ * Stage 2: require the toucher's m_pActiveItem (pOther+0xa10) to be
+ *   non-null and have classid 0x10 (CTSGun).
+ * Stage 3: walk 16 ammo slots at this+0x64..this+0xa3 (4 outer × 4
+ *   inner, stride 0x10); on each non-zero slot, call AddAmmo with
+ *   ammoType = (outer*4 + inner) and zero the slot on success. Track
+ *   whether anything was given.
+ * Stage 4: if anything was given, play a pickup sound on the player.
+ * Stage 5: if the pack's stored armor exceeds a cvar threshold
+ *   (GOT-0x6f408), transfer the pack's armor to the player. The
+ *   player can be skipped if a frozen-like bit (*pOther+0x180 & 0x20)
+ *   is **set and** the player's current armor already equals the
+ *   threshold. After transfer, zero the pack's armor.
+ * Stage 6: if the pack's armor now equals the cvar threshold, UTIL_Remove.
  *
  * @param this   The CTSAmmoPack entity
  * @param pOther The entity that touched the pack
@@ -124,32 +117,21 @@ export function WaitTouch(this: CTSAmmoPack, pOther: CBaseEntity): void {
   // All [ebx-...] reads below resolve globals / cvars through this base.
   const GOT = 0; // TODO: real GOT base is computed at run-time
 
-  // The function is __cdecl; after the prologue `this` is at
-  // [esp+0x30] and pOther is at [esp+0x34].
-
-  // -------------------------------------------------------------------
   // Stage 1 — validity checks on the toucher
-  // -------------------------------------------------------------------
-  // [pOther+0x60] is a function-pointer table (or a sub-object whose
-  // vtable we use); +0xc8 and +0xb4 are called with pOther as the
-  // explicit first arg. Both must return non-zero to continue.
+  // TODO(asm-ambiguous): [pOther+0x60] is dereferenced as a pointer to
+  // a vtable-ish dispatch table; functions at +0xc8 and +0xb4 are
+  // called with `pOther` as their first arg. Both must return non-null.
   const cbTable: any = readDWord(pOther + 0x60);
   if (callIndirect(readDWord(cbTable + 0xc8), pOther) === 0) return;
   if (callIndirect(readDWord(cbTable + 0xb4), pOther) === 0) return;
 
-  // -------------------------------------------------------------------
-  // Stage 2 — verify active weapon and class id
-  // -------------------------------------------------------------------
-  const weapon = readDWord(pOther + 0xa10); // m_pActiveItem
+  // Stage 2 — verify active weapon and class
+  const weapon = readDWord(pOther + 0xa10); // m_pActiveItem (TS-specific offset)
   if (weapon === 0) return;
-  if (readDWord(weapon + 0x88) !== 0x10) return; // weapon class id
+  if (readDWord(weapon + 0x88) !== 0x10) return; // CTSGun class id
 
-  // -------------------------------------------------------------------
   // Stage 3 — iterate 16 ammo slots and AddAmmo each non-zero one
-  // -------------------------------------------------------------------
-  // Slots live on `this` starting at this+0x60 (4 outer × 4 inner,
-  // stride 0x10 per group, 4 bytes per slot). The loop counter's
-  // low byte is the ammo type index.
+  // Slots live at this+0x64 .. this+0xa3. ammoType = outer*4 + inner.
   let anyAdded = false;
   let counter = 0;
   for (let outer = 0; outer < 4; outer++) {
@@ -167,74 +149,57 @@ export function WaitTouch(this: CTSAmmoPack, pOther: CBaseEntity): void {
     counter += 4;
   }
 
-  // -------------------------------------------------------------------
   // Stage 4 — play pickup sound if we gave any ammo
-  // -------------------------------------------------------------------
   if (anyAdded) {
-    // [*pOther + 0x208] is the edict — most likely *pOther == pev and
-    // pev+0x208 is the edict handle, but the exact mapping is
-    // engine-version dependent.
-    const edict = readDWord(readDWord(pOther) + 0x208);
+    // TODO(asm-ambiguous): edx = *pOther; [edx+0x208] is the edict.
+    const innerPtr = readDWord(pOther);
+    const edict = readDWord(innerPtr + 0x208);
     EMIT_SOUND_DYN(
-      edict,                          // entity
-      3,                              // CHAN_VOICE
-      readStringPtr(GOT - 0x6c8da),   // sample name (string literal)
-      readFloat(GOT - 0x6f3fc),       // volume (cvar)
-      readFloat(GOT - 0x6e7e4),       // attenuation (cvar)
-      0,                              // flags
-      100,                            // pitch
-      readFloat(GOT - 0x6ec2c)        // 8th arg is `f` per demangling
+      edict,                         // entity
+      3,                             // CHAN_VOICE
+      readStringPtr(GOT - 0x6c8da),  // sample name
+      readFloat(GOT - 0x6f3fc),      // volume (cvar)
+      readFloat(GOT - 0x6e7e4),      // attenuation (cvar)
+      0,                             // flags
+      100,                           // pitch
+      readDWord(GOT - 0x6ec2c)       // specialFlags / extra (EMIT_SOUND_DYN2)
     );
   }
 
-  // -------------------------------------------------------------------
-  // Stage 5 — armor transfer (cvar-driven, with FL_FROZEN-style check)
-  // -------------------------------------------------------------------
-  // First compare: cvar vs PACK's armor [*this + 0x1bc] (read as float).
-  // Flag check:   *pOther + 0x180 bit 0x20 (FL_FROZEN-style).
-  // Second compare: cvar vs TOUCHER's armor [*pOther + 0x1bc].
-  // Transfer:    TakeArmor(pOther, trunc(PACK's armor)); PACK's armor = 0.
-  //
-  // NOTE: stages 5 and 6 mix `*this` (pack) and `*pOther` (toucher)
-  // dereferences. The original TS collapsed both to `*pOther`; this
-  // rewrite keeps them distinct.
-  const thisInner = readDWord(this);
-  const packArmor = readFloat(thisInner + 0x1bc);
+  // Stage 5 — armor transfer
+  // The PACK has its own stored armor at *this+0x1bc (NOT *pOther+0x1bc).
+  // The cvar at GOT-0x6f408 is the threshold. Logic:
+  //   if cvar >= pack_armor: skip — pack has nothing to give.
+  //   else: check the frozen-like bit (*pOther+0x180 & 0x20).
+  //     bit NOT set: compare cvar to *pOther+0x1bc; skip if equal.
+  //     bit set (or player_armor != cvar): transfer pack_armor → player,
+  //       then zero the pack's armor.
+  const packInner = readDWord(this);
+  const packArmor = readFloat(packInner + 0x1bc);
   const armorCvar = readFloat(GOT - 0x6f408);
 
   if (armorCvar < packArmor) {
-    const pOtherInner = readDWord(pOther);
-    const frozen = (readByte(pOtherInner + 0x180) & 0x20) !== 0;
+    const playerInner = readDWord(pOther);
+    const frozen = (readByte(playerInner + 0x180) & 0x20) !== 0;
     if (!frozen) {
-      // Second compare (0x9189a): cvar == toucheR's armor.
-      // jne at 0x918a5 jumps on equal (C3=1 after `test ah,0x40`),
-      // so equal → skip transfer, not-equal → fall through and transfer.
-      const toucherArmor = readFloat(pOtherInner + 0x1bc);
-      if (toucherArmor !== armorCvar) {
-        // `fld [*this+0x1bc]; fistp` — amount is PACK's armor (truncated).
-        const armorInt = Math.trunc(packArmor);
+      const playerArmor = readFloat(playerInner + 0x1bc);
+      if (playerArmor !== armorCvar) {
+        const armorInt = Math.trunc(packArmor); // transfer the pack's armor
         TakeArmor(pOther, armorInt);
-        writeDWord(thisInner + 0x1bc, 0); // zero the pack's armor
+        writeDWord(packInner + 0x1bc, 0); // zero the pack's stored armor
       }
     }
   }
 
-  // -------------------------------------------------------------------
-  // Stage 6 — remove the pack when cvar == pack's armor
-  // -------------------------------------------------------------------
-  // Re-compares the cvar with the **pack's** current armor; if they
-  // match, the pack has nothing left to give, so UTIL_Remove it.
-  const packArmor2 = readFloat(readDWord(this) + 0x1bc);
-  if (armorCvar !== packArmor2) {
-    // not equal → pack still useful → leave it
-  } else {
+  // Stage 6 — remove the pack if its remaining armor equals the threshold
+  if (packArmor === armorCvar) {
     UTIL_Remove(this);
   }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers / engine types referenced above. These are stand-ins; the real
-// definitions live in the engine-binding layer built in a later step.
+// definitions live in the engine-binding layer that's built in a later step.
 // ---------------------------------------------------------------------------
 
 declare const GOT_BASE: number;
@@ -255,38 +220,22 @@ declare function EMIT_SOUND_DYN(
   attenuation: number,
   flags: number,
   pitch: number,
-  eighthArg: number // float per demangled signature
+  specialFlags: number
 ): void;
 declare function TakeArmor(player: any, amount: number): void;
 declare function UTIL_Remove(entity: any): void;
 
 interface CTSAmmoPack {
-  // Slot counts at this+0x60+0x10*group+0x4*slot (4×4 = 16 ints).
-  // m_iArmorToGive at *this+0x1bc (read as float; the "pack's armor").
+  // ammo counts at +0x64 .. this+0xa3 (16 dwords, stride 4)
+  // stored armor at *this+0x1bc (read as float)
 }
 
 interface CBaseEntity {
-  // m_pActiveItem at +0xa10 (CBasePlayer-only)
-  // callback table at +0x60
-  // frozen bit at *pev+0x180 mask 0x20
-  // toucheR's armor at *pev+0x1bc
-  // edict at *pev+0x208
+  // pev typically at +0x4; m_pActiveItem at +0xa10 for players;
+  // +0x60 is a TS-specific callback/dispatch table pointer;
+  // +0x180 holds a flag byte (bit 0x20 is frozen-like);
+  // +0x1bc holds armor float (pev->armorvalue)
 }
 ```
 
-Key changes vs the original decompilation:
-
-1. `const thisInner = readDWord(this);` introduced in stage 5; used for
-   the first compare, the truncate source, and the zero-write.
-2. `Math.trunc(packArmor)` (was `Math.trunc(armorCvar)`).
-3. `writeDWord(thisInner + 0x1bc, 0)` (was `writeDWord(innerPtr2 + …)`).
-4. The flag check + second compare use `pOtherInner`; the inner
-   condition is `toucherArmor !== armorCvar` (was `curArmor !==
-   armorCvar`, which happened to match the polarity but used the wrong
-   value semantically — now it's named for what it is).
-5. Stage 6 reads `*this+0x1bc` (was `*pOther+0x1bc` via `innerPtr2`).
-6. EMIT_SOUND_DYN's 8th arg is `readFloat` (was `readDWord` +
-   "junk" comment).
-7. Added comment at the top of stage 5 explaining the two-entity
-   dereference pattern, so the next reviewer doesn't fall into the
-   same trap.
+Summary: the decompilation is structurally right and most of the data-flow is correct, but the armor section has been decompiled against the wrong entity (`*pOther` where the disassembly reads/writes `*this`), the transfer amount is sourced from the wrong field, and the frozen-bit branch direction is inverted. Fixes are localized to Stages 5 and 6. Everything else passes.

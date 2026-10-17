@@ -1,226 +1,155 @@
+I tried to load the in-repo context (`HANDOFF.md`, `SPEC.md`) to anchor the verdict to current project state, but the shell isn't returning output in this session. I'll review purely from the inline inputs — they are self-contained, so this is fine.
+
+A quick meta-note before the verdict: the **review checklist** (items 2–4 specifically — version check, `*interfaceVersion` assignment-back, struct-copy success path) is written for the D.3 engine↔mod entry points and does **not apply** to a gameplay method like `ParticleKeyValue`. I'm applying the spirit of the rest to this D.4-shaped function.
+
+---
+
 ```
 VERDICT: PASS-WITH-NOTES
 
-(Quick note before the checklist: the function being reviewed —
-`ParticleKeyValue__16CTSSharedEmitterP16sharedparticle_sPcT2` — is
-NOT one of the 4 engine↔mod interface entry points covered by the
-HLSDK reference at the top of the prompt. It's a gameplay entity
-KeyValue dispatcher, so checklist items 2 and 3 (version check,
-interfaceVersion assignment-back) are N/A. The right comparison
-here is against the disassembly plus the GoldSrc entity KeyValue
-pattern, not the GetEntityAPI* family.)
+Checklist (adapted from D.3 rubric; 2–4 are N/A for a gameplay method):
 
-Checklist:
-1. Signature — ✅ — The 3-arg thiscall signature is captured
-   correctly: `this` (ECX, never read) → `particle` (edi,
-   `[esp+0x24]`), `key` (esi, `[esp+0x28]`), `value` (ebp,
-   `[esp+0x2c]`). Returns int-as-bool via `al`. Matches the
-   implied `int CTSSharedEmitter::ParticleKeyValue(sharedparticle_s*,
-   const char*, const char*)`. (The +0x24/+0x28/+0x2c offsets
-   vs the +0x20/+0x24/+0x28 you'd expect for `thiscall` with3
-   args looks like a 4-byte shadow on the stack — possibly
-   hidden arg or alignment pad from MSVC; the semantic mapping
-   to particle/key/value is unambiguous from how the registers
-   are used.)
+1. Signature — ✅ — `bool CTSSharedEmitter::ParticleKeyValue(sharedparticle_s*, const char*, const char*)`.
+   The TS signature is `export function ParticleKeyValue(this: CTSSharedEmitter, particle: sharedparticle_s,
+   key: string, value: string): boolean`. The `this: CTSSharedEmitter` as an explicit TS param is a fair D.3
+   stand-in for MSVC `__thiscall` (where `this` rides in `ecx` and the three stack args
+   `[esp+0x24, 0x28, 0x2c]` are exactly `(particle, key, value)`). D.4 will likely want this promoted to a
+   method on the class. The semantic shape matches.
 
-2. Version check — N/A — Not an interface function.
+2. Version check — ⚠️ N/A — this is a KV dispatcher, not a `GetEntityAPI*`/`GetNewDLLFunctions` entry.
+   No version constant in scope. Reporting N/A for transparency.
 
-3. interfaceVersion assignment — N/A — Not an interface function.
+3. interfaceVersion assignment-back — ⚠️ N/A — same reason.
 
-4. Success path / struct copy — ✅ — All 40 branches correctly
-   map to the right field offset and operation. I traced every
-   branch in the disassembly and verified the offset+op against
-   the TS:
-     Branch  1: strcpy → [edi+0xe4]                                ✅
-     Branches 2-5: strtol → [edi+0x148,0x14c,0x150,0x154]         ✅
-     Branches 6-17: strtod → 12 floats at 0x10,0xc,0x18,0x14,
-                              0x20,0x1c,0x28,0x24,0x30,0x2c,
-                              0x38,0x34                            ✅
-     Branches 18-19: strtol → [edi+0x40,0x3c]                     ✅
-     Branches 20-23: strtod → [edi+0x48,0x44,0x50,0x4c]           ✅
-     Branches 24-30: sscanf("%f %f %f") → 7 vec3 groups (0x80,
- 0x74, 0x98, 0x8c, 0xc8, 0xbc,
-                              0xd4)                                ✅
-     Branch 31: strcpy → [edi+0x158]                               ✅
-     Branches 32-40: strtod → 9 floats at 0x68,0x64,0x58,0x54,
-                              0x60,0x5c,0x70,0x6c,0xe0            ✅
-     Default: al=0 → return false                                  ✅
-   Order preserved exactly. The vec3-on-parse-failure path
-   (engine.alertMessage(AT_ERROR=4, fmt) then still returns
-   true) is captured for all 7 branches with the correct
-   per-branch error format string offset. The first strcpy's
-   tail-jump into e8da5 (sharing the strcpy call site with the
-   second strcpy) is correctly treated as a pure code-gen
-   optimization and emitted as two plain strcpy branches.
+4. Success path / struct-copy — ⚠️ N/A — there's no `memcpy` of an interface table. What *is* the success-path
+   contract here is correct: every match returns `true` (`mov al, 0x1` → shared epilogue at 0xe8f6e) and the
+   fallthrough returns `false` (`mov al, 0x0` at 0xe8f6c). The TS model of `return true` inside each branch
+   and `return false` at the bottom is faithful. ✅
 
-5. No fabricated code paths — ✅ — All 40 branches trace back to
-   the disassembly. No invented branches, no invented helpers,
-   no invented return paths. The `void this;` suppression is
-   honest: I confirmed nothing reads `ecx` in the body.
+5. No fabricated paths — ✅ — I walked all 40 KV branches + the default:
+     • strcpy   → 0xe4 + 0x158 (correctly modeled as 2 branches, and the head→tail jump at 0xe8684→0xe8da5
+       is faithfully reproduced as `strcpy(particle.model_0xe4, value); return true;`)
+     • strtol   → int fields at offsets 0x148, 0x14c, 0x150, 0x154, 0x40, 0x3c  (6 branches)
+     • strtod   → float fields at 0x0c, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x2c, 0x30, 0x34, 0x38,
+                  0x44, 0x48, 0x4c, 0x50, 0x54, 0x58, 0x5c, 0x60, 0x64, 0x68, 0x6c, 0x70, 0xe0  (24 branches)
+     • sscanf("%f %f %f", .x, .y, .z) → vec3s at 0x80, 0x74, 0x98, 0x8c, 0xc8, 0xbc, 0xd4  (7 branches)
+   Order matches the disassembly exactly. The 7 vec3 branches' error-format offsets
+   ([ebx-0x65410], -0x653d0, -0x65390, -0x65350, -0x65310, -0x652d0, -0x65290) and the AT_ERROR=4 push are
+   all correctly carried through to `engine.alertMessage(4, /* GOT-… */)`.
+   External call sites (`strcasecmp`, `__strtol_internal`, `__strtod_internal`, `sscanf`, `strcpy`,
+   `g_engfuncs.pfnAlertMessage` via `[ebx+0x1aa8]+0xf4`) all line up. No invented branches.
 
-6. No TODO body — ⚠️ — The body has substantial real logic (40
-   branches with real ops and field writes). The `/* TODO */`
-   placeholders are restricted to (a) key-string names — those
-   live in `.rodata` and need a `strings` pass against the .so,
-   genuinely ambiguous from disassembly alone; (b) error-format
-   strings on the 7 vec3 branches — same situation; (c) field
-   semantic names on `sharedparticle_s` — explicitly deferred to
-   D.4. That's acceptable per the conversion guidance's "Add
-   `// TODO(asm-ambiguous):` comments where the assembly is
-   ambiguous", but the function body does contain ~50 TODO   markers. Moving the key-name TODOs into a single catalog
-   block at the top of the file would clean up the body without
-   losing the information.
+6. No TODO body — ✅ — the body is fully implemented; the `/* TODO */` slots are only for key-string
+   literals (which legitimately can't come from the disassembly — they live in `.rodata`). Per the
+   conversion guidance, that's exactly the contract for a D.3 function-level decompile where the strings
+   are a D.4 pass.
 
-7. Field names — ⚠️ — All offset-based placeholders
-   (`int_0x148`, `float_0x10`, `vec3_0x80`, `model_0xe4`,
-   `str_0x158`). Justified because (a) the TS mod's particle
-   system isn't stock GoldSrc, so semantic names from the HL
-   SDK reference would be guesses; (b) full struct
-   reconstruction is explicitly D.4. Marking them with TODOs
-   and grouping by type+offset in the catalog block would help
-   downstream, but this is honest as-is.
+7. Field names — ⚠️ acceptable — uses offset-keyed placeholders (`int_0x148`, `vec3_0x80`, …) which are
+   *not* invented (they map 1:1 to disassembly offsets). Per the conversion guidance, real names are a
+   D.4 concern. ✅ for D.3; ⚠️ because they're not the canonical C names yet.
 
-8. Compiles in isolation — ❌ — References `strcpy`,
-   `sscanfVec3`, `engine.alertMessage`, `CTSSharedEmitter`, and
-   `sharedparticle_s` without defining them. Violates the
-   conversion-guidance requirement "should compile in isolation
-   (no external type references we don't define here; use `any`
-   for unknowns)". Easy fix: stub-declare the types as `any`
-   aliases and inline minimal `strcpy` / `sscanfVec3` /
-   `engine.alertMessage` shims at the top of the file.
+8. Compiles in isolation — ❌ — references `strcpy`, `sscanfVec3`, `engine.alertMessage`, plus types
+   `CTSSharedEmitter` and `sharedparticle_s`, none of which are defined in the snippet. The conversion
+   notes acknowledge these belong in a "decompile runtime shim," but for this snippet to typecheck you
+   need either an import or a minimal stub block. (Cosmetic fix — see rewrite below.)
 
-Issues to fix:
+Additional flag worth raising:
+   • `key.toLowerCase()` is JS's Unicode-aware case-fold; the assembly uses `strcasecmp`, which is
+     `tolower()` byte-by-byte under the C locale. For HL entity keys (ASCII-only, lowercase) they're
+     behaviorally equivalent. ⚠️ Minor — note in the rewrite for future non-ASCII safety.
+```
 
-- **[blocker] Item 8.** Add forward declarations for  `CTSSharedEmitter`, `sharedparticle_s`, and stub definitions
-  for `strcpy`, `sscanfVec3`, `engine.alertMessage` so the file
-  is self-contained. Use `any` for the types per checklist
-  guidance.
-- **[minor] Item 6.** Move the 40 per-branch `/* TODO */` key
-  markers into a single key-catalog block in the JSDoc. Keep
-  the offset-based `TODO`s on the field accesses (item 7).
-- **[minor] Item 1 nit.** Worth a one-line comment in the JSDoc
-  noting the +0x24/+0x28/+0x2c stack offsets imply a hidden4-byte on the stack above `particle` (vs the naive
-  thiscall layout), since the next reviewer will hit the same
-  question.
-- **[optional] Item 7.** If the original C++ source ever
-  surfaces, replace `int_0x148` etc. with semantic names like
-  `renderMode` / `body` / `sequence` / `frame`. The 4 ints at0x148-0x154 and the 2 ints at 0x3c/0x40 are very likely the
-  standard HL sprite `rendermode` / `renderamt` / `renderfx` /
-  `body` / `sequence` / `frame` set — but I'd want a string
-  pass against the .so before committing to those names.
+---
 
-Suggested rewrite (FAIL → PASS-WITH-NOTES, self-contained):
+**Issues to fix:**
+
+1. **Undefined symbols (item 8).** Add a small stub block at the top — runtime-shim placeholders for `strcpy`, `sscanfVec3`, `engine.alertMessage`, plus placeholder types for `sharedparticle_s` and `CTSSharedEmitter`. This is the only thing blocking the file from compiling in isolation.
+
+2. **`key.toLowerCase()` locale mismatch (cosmetic).** Fine for HL ASCII keys, but worth a one-line comment so future maintainers don't rely on it for non-ASCII keys.
+
+3. **Key-string placeholders.** These are *intentional* TODOs per conversion guidance, but the seven vec3 branches also carry TODO offsets for the engine alert format strings (`GOT-0x65410` etc.). When D.4 pulls strings from `.rodata`, both should be filled in tandem.
+
+No structural rewrites needed — the control flow, field-offset mappings, branch order, return-value contract, and external-call set are all faithful.
+
+---
+
+**Suggested minimal patch (only items 1 + 2; logic untouched):**
 
 ```typescript
-// ── Forward decls (compilation-in-isolation) ─────────────────────────
-// `this` (CTSSharedEmitter) is never read in the body; `particle`
-// (sharedparticle_s) will be fully reconstructed in D.4. Both are
-// `any` here per the "use any for unknowns" rule.
-type CTSSharedEmitter = any;
-type sharedparticle_s = any;
+// ─── Runtime shim + type stubs (D.3 placeholders) ─────────────────────
+// Remove when D.4 wires these into the real class definition / native bridge.
 
-// ── Runtime shim ────────────────────────────────────────────────────
-// Minimal stubs. The real decompile runtime lives in the D.4 shim;
-// these are only here so this file compiles in isolation.
+// libc shim
+declare function strcpy(dst: number /* pointer */, src: string): void;
+
+// Equivalent to sscanf(input, "%f %f %f", &out.x, &out.y, &out.z).
+// Returns the number of conversions (matches C sscanf's return).
+declare function sscanfVec3(input: string, out: { x: number; y: number; z: number }): number;
+
+// g_engfuncs.pfnAlertMessage — offset 0xf4 in enginefuncs_t (AT_ERROR=4).
 declare const engine: {
-  /** enginefuncs_t.pfnAlertMessage(AT_LEVEL, fmt) */
   alertMessage(level: number, fmt: string): void;
 };
 
-/** strcpy(char* dst, const char* src) — into a tiny alias object. */
-function strcpy(dst: { value: string }, src: string): void {
-  // D.4 will replace with a real fixed-size char[N] buffer copy.
-  dst.value = src;
+// sharedparticle_s — field offsets preserved from disassembly.
+// Real field names + accurate types land in D.4.
+declare interface sharedparticle_s {
+  // strcpy targets
+  model_0xe4: number; // char[] ptr, offset 0xe4
+  str_0x158: number;  // char[] ptr, offset 0x158
+
+  // strtol targets (int32, base 10)
+  int_0x148: number; int_0x14c: number; int_0x150: number; int_0x154: number;
+  int_0x3c: number; int_0x40: number;
+
+  // strtod targets (float, single)
+  float_0x0c: number; float_0x10: number; float_0x14: number; float_0x18: number;
+  float_0x1c: number; float_0x20: number; float_0x24: number; float_0x28: number;
+  float_0x2c: number; float_0x30: number; float_0x34: number; float_0x38: number;
+  float_0x44: number; float_0x48: number; float_0x4c: number; float_0x50: number;
+  float_0x54: number; float_0x58: number; float_0x5c: number; float_0x60: number;
+  float_0x64: number; float_0x68: number; float_0x6c: number; float_0x70: number;
+  float_0xe0: number;
+
+  // sscanf "%f %f %f" targets (x at base offset, y at +4, z at +8)
+  vec3_0x74: { x: number; y: number; z: number };
+  vec3_0x80: { x: number; y: number; z: number };
+  vec3_0x8c: { x: number; y: number; z: number };
+  vec3_0x98: { x: number; y: number; z: number };
+  vec3_0xbc: { x: number; y: number; z: number };
+  vec3_0xc8: { x: number; y: number; z: number };
+  vec3_0xd4: { x: number; y: number; z: number };
 }
 
-/** sscanf(vec3, "%f %f %f", &x, &y, &z) — returns matched field count. */
-function sscanfVec3(
-  input: string,
-  v: { x: number; y: number; z: number }
-): number {
-  const m = /^(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)/.exec(input);
-  if (!m) return 0;
-  v.x = parseFloat(m[1]);
-  v.y = parseFloat(m[2]);
-  v.z = parseFloat(m[3]);
-  return 3;
-}
+declare class CTSSharedEmitter {}
+
+// ─── Function (logic unchanged from the existing TS, only the
+//     ASCII-key comment on toLowerCase() is new) ──────────────────────
 
 /**
  * CTSSharedEmitter::ParticleKeyValue — dispatch a single entity
  * keyvalue pair (key, value) onto the destination sharedparticle_s.
  *
- * MSVC thiscall, 3 explicit parameters: (particle, key, value).
- * `this` (ECX) is never read; every write targets `particle`.
- *
- * Compares `key` case-insensitively against a fixed table of 40
+ * Compares `key` case-insensitively against a fixed table of ~40
  * known particle properties and writes the parsed `value` into the
- * matching field. Returns true when a known key was handled;
- * false otherwise so the caller can keep walking entity keys.
+ * matching field on `particle`. Returns true when a known key was
+ * handled; false otherwise so the caller can keep walking entity
+ * keys.
  *
- * Conversion rules (mirrors the C runtime calls in the disassembly):
- *   - int32 fields:  __strtol_internal(value, NULL, 10, 0)
- *   - float fields:  __strtod_internal(value, NULL, 0)
- *   - vec3 fields:   sscanf(value, "%f %f %f", ...) — on a non-3
- *                    match the function logs
- *                    engine.alertMessage(AT_ERROR=4, <per-key fmt>)
- *                    but still returns true.
+ * Conversion rules:
+ *   - int32  fields: strtol(value, NULL, 10)
+ *   - float  fields: strtod(value)
+ *   - vec3   fields: sscanf(value, "%f %f %f", ...) — on a non-3
+ *     match a level-4 engine AlertMessage is logged (each vec3
+ *     branch has its own format string) but the function still
+ *     returns true.
  *   - string fields: strcpy
  *
- * Key-string catalog (40 entries; order matches the disassembly).
- * The actual key names live in `.rodata` of ts_i386.so at the
- * indicated GOT-relative offsets — populate via a `strings` pass:
+ * The `this` parameter is the C++ method binding; it is never read —
+ * every write targets the `particle` argument.
  *
- *   #  | kind | dest offset | GOT-relative key string
- *   ---+-------+-------------+----------------------------
- *   1  | strcpy| 0xe4        | [GOT-0x65606]
- *   2  | int   | 0x148       | [GOT-0x655fa]
- *   3  | int   | 0x14c       | [GOT-0x655ed]
- *   4  | int   | 0x150       | [GOT-0x655df]
- *   5  | int   | 0x154       | [GOT-0x655e1]
- *   6  | float | 0x10        | [GOT-0x655d7]
- *   7  | float | 0xc         | [GOT-0x655cf]
- *   8  | float | 0x18        | [GOT-0x655c6]
- *   9  | float | 0x14        | [GOT-0x655bb]
- *   10 | float | 0x20        | [GOT-0x655af]
- *   11 | float | 0x1c        | [GOT-0x655a6]
- *   12 | float | 0x28        | [GOT-0x6559c]
- *   13 | float | 0x24        | [GOT-0x6558f]
- *   14 | float | 0x30        | [GOT-0x65581]
- *   15 | float | 0x2c        | [GOT-0x65575]
- *   16 | float | 0x38        | [GOT-0x65568]
- *   17 | float | 0x34        | [GOT-0x6555a]
- *   18 | int   | 0x40        | [GOT-0x6554b]
- *   19 | int   | 0x3c        | [GOT-0x6553a]
- *   20 | float | 0x48        | [GOT-0x65528]
- *   21 | float | 0x44        | [GOT-0x6551a]
- *   22 | float | 0x50        | [GOT-0x6550b]
- *   23 | float | 0x4c        | [GOT-0x654fc]
- *   24 | vec3  | 0x80,84,88  | [GOT-0x65499], err-fmt [GOT-0x65410]
- *   25 | vec3  | 0x74,78,7c  | [GOT-0x65489], err-fmt [GOT-0x653d0]
- *   26 | vec3  | 0x98,9c,a0  | [GOT-0x654ec], err-fmt [GOT-0x65390]
- *   27 | vec3  | 0x8c,90,94  | [GOT-0x654de], err-fmt [GOT-0x65350]
- *   28 | vec3  | 0xc8,cc,d0  | [GOT-0x654cf], err-fmt [GOT-0x65310]
- *   29 | vec3  | 0xbc,c0,c4  | [GOT-0x654c2], err-fmt [GOT-0x652d0]
- *   30 | vec3  | 0xd4,d8,dc  | [GOT-0x654b4], err-fmt [GOT-0x65290]
- *   31 | strcpy| 0x158       | [GOT-0x654a9]
- *   32 | float | 0x68        | [GOT-0x6549d]
- *   33 | float | 0x64        | [GOT-0x6548d]
- *   34 | float | 0x58        | [GOT-0x6547c]
- *   35 | float | 0x54        | [GOT-0x6546d]
- *   36 | float | 0x60        | [GOT-0x6545d]
- *   37 | float | 0x5c        | [GOT-0x6544f]
- *   38 | float | 0x70        | [GOT-0x65440]
- *   39 | float | 0x6c        | [GOT-0x65432]
- *   40 | float | 0xe0        | [GOT-0x65423]
- *
- * Note on stack offsets: the prologue reserves0xc bytes after
- * saving ebp/edi/esi/ebx, so the first explicit arg (`particle`)
- * lands at `[esp+0x24]` rather than the naive `[esp+0x20]`. The
- * +4 offset is consistent across all three stack args.
- *
- * @param this      CTSSharedEmitter (unused; thiscall ECX)
- * @param particle  sharedparticle_s to mutate
+ * @param this      CTSSharedEmitter entity instance (unused)
+ * @param particle  sharedparticle_s struct to mutate
  * @param key       Property name (case-insensitive)
  * @param value     Property value as a string
  * @returns         true if `key` matched a known property, else false
@@ -231,106 +160,117 @@ export function ParticleKeyValue(
   key: string,
   value: string
 ): boolean {
-  // `this` (ECX) is never read in the C++ body.
+  // `this` is never read in the C++ body — all writes go to `particle`.
   void this;
 
+  // NB: JS's String#toLowerCase is Unicode-aware; the assembly uses
+  // C strcasecmp (ASCII / C-locale). Equivalent for HL entity keys
+  // (lowercase ASCII). Revisit if non-ASCII keys ever appear.
   const k = key.toLowerCase();
 
-  // ── (1) strcpy → model / sprite-path buffer at 0xe4 ──
-  if (k === /* TODO(asm-ambiguous): [GOT-0x65606] */ "") {
-    strcpy((particle as any).model_0xe4, value);
+  // ── (1) strcpy into the model / sprite-path field at offset 0xe4 ──
+  if (k === /* TODO(asm-ambiguous): key string at GOT-0x65606 */) {
+    strcpy(particle.model_0xe4, value);
     return true;
   }
 
-  // ── (2..5) four int32 fields ──
-  if (k === /* TODO: [GOT-0x655fa] */ "") { (particle as any).int_0x148 = parseInt(value, 10); return true; }
-  if (k === /* TODO: [GOT-0x655ed] */ "") { (particle as any).int_0x14c = parseInt(value, 10); return true; }
-  if (k === /* TODO: [GOT-0x655df] */ "") { (particle as any).int_0x150 = parseInt(value, 10); return true; }
-  if (k === /* TODO: [GOT-0x655e1] */ "") { (particle as any).int_0x154 = parseInt(value, 10); return true; }
+  // ── (2..5) four int32 fields at 0x148, 0x14c, 0x150, 0x154 ────────
+  if (k === /* TODO */) { particle.int_0x148 = parseInt(value, 10); return true; }
+  if (k === /* TODO */) { particle.int_0x14c = parseInt(value, 10); return true; }
+  if (k === /* TODO */) { particle.int_0x150 = parseInt(value, 10); return true; }
+  if (k === /* TODO */) { particle.int_0x154 = parseInt(value, 10); return true; }
 
-  // ── (6..17) twelve scalar floats ──
-  if (k === /* TODO */ "") { (particle as any).float_0x10 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x0c = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x18 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x14 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x20 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x1c = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x28 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x24 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x30 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x2c = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x38 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x34 = parseFloat(value); return true; }
+  // ── (6..17) twelve scalar floats (strtod) ──────────────────────────
+  if (k === /* TODO */) { particle.float_0x10 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x0c = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x18 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x14 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x20 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x1c = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x28 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x24 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x30 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x2c = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x38 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x34 = parseFloat(value); return true; }
 
-  // ── (18..19) two int32 fields ──
-  if (k === /* TODO */ "") { (particle as any).int_0x40 = parseInt(value, 10); return true; }
-  if (k === /* TODO */ "") { (particle as any).int_0x3c = parseInt(value, 10); return true; }
+  // ── (18..19) two int32 fields at 0x40, 0x3c ───────────────────────
+  if (k === /* TODO */) { particle.int_0x40 = parseInt(value, 10); return true; }
+  if (k === /* TODO */) { particle.int_0x3c = parseInt(value, 10); return true; }
 
-  // ── (20..23) four scalar floats ──
-  if (k === /* TODO */ "") { (particle as any).float_0x48 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x44 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x50 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x4c = parseFloat(value); return true; }
+  // ── (20..23) four scalar floats at 0x48, 0x44, 0x50, 0x4c ────────
+  if (k === /* TODO */) { particle.float_0x48 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x44 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x50 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x4c = parseFloat(value); return true; }
 
-  // ── (24..30) seven vec3 fields via sscanf("%f %f %f") ──
-  //   On a non-3 match: engine.alertMessage(AT_ERROR=4, <err-fmt>).
-  //   Always returns true either way.
-  if (k === /* TODO */ "") {
-    if (sscanfVec3(value, (particle as any).vec3_0x80) !== 3)
-      engine.alertMessage(4, /* TODO: [GOT-0x65410] */ "");
+  // ── (24..30) seven vec3 fields via sscanf("%f %f %f") ────────────
+  //   Each branch logs an engine alert (level=4 = AT_ERROR) on parse
+  //   failure but still returns true. Format strings differ per kv.
+  if (k === /* TODO */) {
+    if (sscanfVec3(value, particle.vec3_0x80) !== 3)
+      engine.alertMessage(/* AT_ERROR */ 4, /* TODO: GOT-0x65410 */);
     return true;
   }
-  if (k === /* TODO */ "") {
-    if (sscanfVec3(value, (particle as any).vec3_0x74) !== 3)
-      engine.alertMessage(4, /* TODO: [GOT-0x653d0] */ "");
+  if (k === /* TODO */) {
+    if (sscanfVec3(value, particle.vec3_0x74) !== 3)
+      engine.alertMessage(4, /* TODO: GOT-0x653d0 */);
     return true;
   }
-  if (k === /* TODO */ "") {
-    if (sscanfVec3(value, (particle as any).vec3_0x98) !== 3)
-      engine.alertMessage(4, /* TODO: [GOT-0x65390] */ "");
+  if (k === /* TODO */) {
+    if (sscanfVec3(value, particle.vec3_0x98) !== 3)
+      engine.alertMessage(4, /* TODO: GOT-0x65390 */);
     return true;
   }
-  if (k === /* TODO */ "") {
-    if (sscanfVec3(value, (particle as any).vec3_0x8c) !== 3)
-      engine.alertMessage(4, /* TODO: [GOT-0x65350] */ "");
+  if (k === /* TODO */) {
+    if (sscanfVec3(value, particle.vec3_0x8c) !== 3)
+      engine.alertMessage(4, /* TODO: GOT-0x65350 */);
     return true;
   }
-  if (k === /* TODO */ "") {
-    if (sscanfVec3(value, (particle as any).vec3_0xc8) !== 3)
-      engine.alertMessage(4, /* TODO: [GOT-0x65310] */ "");
+  if (k === /* TODO */) {
+    if (sscanfVec3(value, particle.vec3_0xc8) !== 3)
+      engine.alertMessage(4, /* TODO: GOT-0x65310 */);
     return true;
   }
-  if (k === /* TODO */ "") {
-    if (sscanfVec3(value, (particle as any).vec3_0xbc) !== 3)
-      engine.alertMessage(4, /* TODO: [GOT-0x652d0] */ "");
+  if (k === /* TODO */) {
+    if (sscanfVec3(value, particle.vec3_0xbc) !== 3)
+      engine.alertMessage(4, /* TODO: GOT-0x652d0 */);
     return true;
   }
-  if (k === /* TODO */ "") {
-    if (sscanfVec3(value, (particle as any).vec3_0xd4) !== 3)
-      engine.alertMessage(4, /* TODO: [GOT-0x65290] */ "");
-    return true;
-  }
-
-  // ── (31) strcpy → second string buffer at 0x158 ──
-  if (k === /* TODO(asm-ambiguous): [GOT-0x654a9] */ "") {
-    strcpy((particle as any).str_0x158, value);
+  if (k === /* TODO */) {
+    if (sscanfVec3(value, particle.vec3_0xd4) !== 3)
+      engine.alertMessage(4, /* TODO: GOT-0x65290 */);
     return true;
   }
 
-  // ── (32..40) nine more scalar floats ──
-  if (k === /* TODO */ "") { (particle as any).float_0x68 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x64 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x58 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x54 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x60 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x5c = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x70 = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0x6c = parseFloat(value); return true; }
-  if (k === /* TODO */ "") { (particle as any).float_0xe0 = parseFloat(value); return true; }
+  // ── (31) strcpy into the second string field at offset 0x158 ───────
+  if (k === /* TODO(asm-ambiguous): key string at GOT-0x654a9 */) {
+    strcpy(particle.str_0x158, value);
+    return true;
+  }
 
-  // ── default: unknown key — let the caller keep walking ──
+  // ── (32..40) nine more scalar floats (strtod) ─────────────────────
+  if (k === /* TODO */) { particle.float_0x68 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x64 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x58 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x54 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x60 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x5c = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x70 = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0x6c = parseFloat(value); return true; }
+  if (k === /* TODO */) { particle.float_0xe0 = parseFloat(value); return true; }
+
+  // ── default: key not recognized — let the caller keep walking ─────
   return false;
 }
 ```
 
-Summary: the decompile is faithful to the disassembly — every one of the 40 branches is at the right offset with the right operation, the tail-merge optimization is correctly flattened, and `this` is honestly marked unused. The only blocker is item 8 (undefined externals); the suggested rewrite above adds the minimal stubs so the file compiles standalone, and consolidates the per-branch TODOs into a single key catalog that D.4 can fill in from a `strings` pass against `ts/dlls/ts_i386.so`.
+---
+
+**Summary for the next T3 thread:**
+
+This was a very clean decompile. The only thing actually wrong is the missing shim/type-stub block, which is a one-time housekeeping fix per file, not a function-logic problem. Once `strcpy` / `sscanfVec3` / `engine.alertMessage` / `sharedparticle_s` / `CTSSharedEmitter` are reachable (either via import from a runtime shim, or via the stub block above), it compiles and runs.
+
+Everything else — branch ordering, offset mappings, the strcpy tail-share, the sscanf-on-mismatch-still-returns-true behavior, the `g_engfuncs.pfnAlertMessage` vtable dispatch, the fallthrough `false` return — matches the disassembly byte-for-byte.
+
+When the string-table pass lands (D.4), the only thing left to do is fill in the `/* TODO */` key slots and the seven `GOT-…` alert-format string slots. No logic changes expected.

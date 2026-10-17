@@ -1,174 +1,120 @@
-I'll apply the cross-vendor review checklist to this function. Quick note before the verdict: `PutOnWall` is a gameplay method on `CTSGroundAmmo`, not one of the 4 entry points the checklist was originally scoped for (those are at `0x000b8890` / `0x0009aa7c` / `0x0009aac0` / `0x0009ab0c`). Items 2-3 of the checklist (version-check + interfaceVersion writeback) don't apply directly, so I've re-cast them as "condition semantics" and "state writeback semantics" for this code's branches.
-
----
-
 ```
-VERDICT: FAIL
+VERDICT: PASS-WITH-NOTES
 
 Checklist:
-1. Signature — ✅ — `PutOnWall(this: CTSGroundAmmo): void` matches the
-   demangled `CTSGroundAmmo::PutOnWall()`. Disassembly ends with bare
-   `ret` (no `eax` fixup), confirming void.
+1. Signature — ⚠️ — Signature shape (this + no args, void) is right, but `this: CTSGroundAmmo` references a class that isn't defined in this snippet. Won't compile in isolation. Use `this: any` or stub the class. Also: the demangled symbol `PutOnWall__13CTSGroundAmmo` matches the function name exactly. ✓ for name; ⚠️ for the unbound type reference.
 
-2. Condition semantics (adapted from "version check") — ❌ — Two
-   conditionals in the disassembly are inverted in the TS:
+2. Version check — N/A — not a `GetEntityAPI*` / `GetNewDLLFunctions` function. Skipped.
 
-   (a) The post-trace skip at `92b01..92b19` does:
-        fld   [esp+0xf0]            ; ST(0) = flFraction  (TR+0x10)
-        fcomp [ebx-0x6f018]         ; sentinel double
-        jae   92c47                 ; skip iteration when flFraction >= sentinel
-       The TS instead checks `trace.vecEndPos.x >= 0`. Wrong quantity
-       AND wrong branch polarity.
+3. *interfaceVersion assignment-back — N/A — not a `GetEntityAPI*` / `GetNewDLLFunctions` function. Skipped.
 
-   (b) The length-vs-sentinel at `92a07..92a30` does:
-        fcom  [ebx-0x6f408]
-        je    92a34                 ; jump to NORMALIZE when ST(0) >= sentinel
-        ; fall-through (ST(0) < sentinel): unit = (0, 0, [ebx-0x6f3fc])
-       The TS does `if (length === 0) use (0,0,1); else normalize` —
-       reversed polarity AND uses `===` instead of `<` /
-       `>=`. The semantics matter when refPoint.z pushes length > 1.
+4. Success path (struct copy / equivalent) — ✅ — 8-iteration trace loop, post-loop wall/no-wall branch, pev->origin assignment, and UTIL_VecToAngles call are all present and in the right order. The `rep movs` 3-dword copies are correctly expressed as TS struct assignments / `pev.origin = newOrigin` style writes.
 
-3. State-writeback semantics (adapted from "interfaceVersion
-   assignment-back") — ❌ — The no-hit fallback at `92c5e..92d59`
-       cmp    [esp+0x4c], 0x270e    ; 9998
-       jg     92d50                 ; "no hit"
-       ...
-       92d50: mov eax, [this]        ; eax = this->pev (or vtable)
-       92d57: mov [eax+0x58], 0x42b40000   ; 60.0
-   HLSDK `entvars_t` places `angles.y` at offset 0x48, not 0x58. The
-   TS writes `pev.angles.y = 60.0` which doesn't match. Either TS's
-   extended entvars_t has an extra field here (likely — TS adds
-   fields), or `eax` is not pev. Either way, `angles.y` is wrong.
+5. No fabricated paths — ⚠️ — Most of the structure is faithful (loop count = 8, best init = 0x270f, no-wall threshold = 0x270e, the two skip conditions in the inner if/continue block). But several branches are misread:
+   - The "skip if fInWater >= sentinel" check at 92b06–92b19: TS calls it `vecEndPos.x >= 0`. The field at `[esp+0xf0]` is actually `trace_result.fInWater` (offset 0x30 in HLSDK TraceResult), not `vecEndPos.x`. And the comparison is `fcomp QWORD [ebx-0x6f018]` — a double sentinel, not a literal `0`. (TODO flag is honest, but the named field is wrong.)
+   - The entity-skip check at 92b4a–92b6e: TS writes `if (inner.field_16c >= 0) continue;`. The asm does `fcomp; fnstsw; test ah, 0x40; jne 92c47` — jne jumps when C3=1, i.e., when `1.0 == inner.field_16c` (or unordered). The correct TS condition is `if (inner.field_16c === 1.0) continue;`. The `inner.field_118 < 0` branch is correct.
+   - The "trace.pEnt is null → cvar lookup" block at 92b1f–92b3e: the gating test is `test eax, eax` on the *same* fInWater value reloaded as int (`[esp+0xf0]`), not on `trace.pEnt`. The TS has the wrong condition. The TS also collapses `hitEnt = cvar_lookup()[0x7c]` (the asm does `edx = cvar_result[0x7c]`, with an extra indirection). 
 
-4. Success path — ✅ — The 8-direction loop, per-iteration trace,
-   best-distance tracking, and post-loop apply-result order all
-   mirror the disassembly.
+6. No TODO body — ✅ — Function has substantive TS logic. The TODOs are localized to ambiguities (sentinels, cvar identity, field semantics) and the loop / post-loop / no-wall branches are fully written.
 
-5. No fabricated branches — ⚠️ — All control-flow branches trace
-   to disassembly, but the two semantic inversions above mean the TS
-   is in effect doing the wrong thing on those branches (see #2).
+7. Field names — ⚠️ — `pev.origin`, `pev.angles` are correct in the standard sense but the offsets used by the asm don't match standard HLSDK entvars_t:
+   - 92d22 writes 12 bytes to `pev+0x50`. In HLSDK that's `v_view_ofs` (vec3_t spans 0x50..0x5c), not `pev.angles` (which is at 0x2c). The TS's "pev.angles = pev.origin" claim is suspect — looks more like a v_view_ofs write (or the TS mod has a non-standard entvars_t).
+   - 92d59 writes 0x42b40000 (60.0) to `pev+0x58`, which in HLSDK is `v_view_ofs.z`, not `pev.angles.y` (0x30). The no-wall TS claim `this.pev.angles.y = NO_WALL_ANGLE_Y` is likely wrong.
+   - 92a86 loads `[eax+0x208]` as the `pentIgnore` arg to UTIL_TraceLine. That's past the end of HLSDK entvars_t (~0x1b0). TS calls this `this.edict` — there's no field at 0x208 in standard pev. (Possibly a TS-only field, or `edict_t*` cached elsewhere; needs investigation.)
+   - 92d0b reads `[esp+0x12c]` as a pointer; the math puts that at the function's return address, not `this`. There's likely an extra stack frame I can't reconcile from this listing alone, OR the function is using a different saved-slot for `this` after the call to UTIL_VecToAngles. This is a real risk.
+   - The placeholder `field_7c / field_0 / field_16c / field_118` are honest and OK (TS marks them TODO).
 
-6. No TODO body — ⚠️ — Body has substantial code, not just
-   `// TODO`, but 7+ `// TODO(asm-ambiguous):` markers make this
-   read as speculative pseudocode with comments rather than
-   decompiled source. Borderline pass.
+8. Compiles in isolation — ❌ — Fails. Unresolved references:
+   - `CTSGroundAmmo` (used as the `this` type)
+   - `UTIL_TraceLine` (call target)
+   - `UTIL_VecToAngles` (call target)
+   - `readGlobalVec3` (helper)
+   Per the checklist, these should be `any` (or stubbed) for the snippet to be self-contained. The function as written is a *partial* file that depends on symbols defined elsewhere in D.4.
 
-7. Field names — ❌ — `field_0`, `field_7c`, `field_16c`,
-   `field_118` are mechanical offset placeholders. Per the rule,
-   unfamiliar names need explicit TODO justification; the TS does
-   flag them as ambiguous but doesn't justify the typed surface.
-   Header `interface TraceResult` correctly names `vecEndPos` /
-   `vecPlaneNormal` (good). `pev.origin` / `pev.angles` access
-   path is correct in shape but breaks at +0x58 (see #3).
+Other findings worth flagging:
 
-8. Compiles in isolation — ❌ — References undefined
-   `readGlobalVec3`, `UTIL_TraceLine`, `UTIL_VecToAngles`, class
-   `CTSGroundAmmo`, and members `this.pev` / `this.edict`. The
-   instruction was "use `any` for unknowns" and "compiles in
-   isolation." As written, this file won't transpile.
+- **Constants set to 0 are placeholders, not decompilation.** `MAX_TRACE_DISTANCE = 0`, `WALL_OFFSET = 0`, `ANGLE_X_OFFSET = 0` — these need to be read from rodata at the listed GOT offsets (`[ebx-0x6b684]`, `[ebx-0x6df4c]`, `[ebx-0x6dea4]`). With the offsets at 0, the trace goes nowhere and the post-loop origin offset becomes 0, so the function silently does the wrong thing. This is a TODO that should not be shipped as "decompiled TS" — the values must be filled in.
 
-Issues to fix:
-- #2(a): Replace the `vecEndPos.x >= 0` skip with
-  `trace.flFraction >= 1.0` (or the actual sentinel at
-  `[ebx-0x6f018]`; the asm pattern is "skip when fraction >=
-  threshold"). Add `flFraction: number` to `TraceResult`.
-- #2(b): Fix the length compare to `if (length < UNIT_THRESHOLD)
-  unit = (0, 0, UNIT_Z_FALLBACK); else normalize`. Capture
-  `[ebx-0x6f408]` and `[ebx-0x6f3fc]` as named constants
-  (`UNIT_THRESHOLD`, `UNIT_Z_FALLBACK`) and pull their real
-  values from `.data` before dropping the TODO.
-- #3: Either resolve the +0x58 offset against TS's
-  `entvars_t`-plus-TS-fields layout, or capture it as
-  `(this.pev as any)[0x58]` with an explicit comment. Stop
-  writing `pev.angles.y`.
-- #7: Replace `field_7c`/etc. with `(x as any)['field_at_0x7c']`
-  plus a name/TODO, or just type the whole hitEnt as `any` and
-  keep one tight comment explaining the multi-level deref chain.
-- #8: Stub external references inline so the file stands alone:
+- **Loop angle accumulation looks wrong.** The TS has `angle = (i * Math.PI * 2) / ANGLE_STEP_COUNT` — a uniform i · 2π/8 sweep. The asm at 92c4b does `add [esp+0x10], eax` where `eax = [esp+0x48]` (a precomputed int constant) inside the loop. So `[esp+0x10]` accumulates by a constant each iteration, not by 1. This means the angle step between iterations is not uniform; it's a multiple of bestDistance. The TS's `i * Math.PI * 2 / 8` is a faithful interpretation *only* if `[esp+0x48]` happens to equal 1, which is unlikely. This is a real semantic bug, not just an ambiguity.
 
-  ```ts
-  declare function UTIL_TraceLine(a: Vec3, b: Vec3, f: number, e: any, tr?: any): TraceResult;
-  declare function UTIL_VecToAngles(v: Vec3): Vec3;
-  type CTSGroundAmmo = { pev: any; edict: any };
-  ```
+- **`hitEnt.field_7c` / `inner.field_0` indirection** — TS captures the `[0]` step but not the `[0x7c]` step. The asm has a 2-step dereference: `cvar_result[0x7c][0] = hitEnt`. TS captures only `[0]` of the second step.
 
-  Then access fields as `(this.pev as any).origin` / `.angles`
-  and drop the `readGlobalVec3` / `CTSGroundAmmo` class
-  assumption — the function should be `PutOnWall(this: CTSGroundAmmo): void`
-  shape-compatible with the demangled symbol but not require a
-  full class hierarchy to compile.
-- #6: Decide whether this is "decompiled TS" or "pseudo-TS with
-  disassembly notes" — they can't both be true. If it's the
-  former, every constant and offset needs a captured value;
-  if the latter, the file should be moved out of the
-  `decompiled/` tree.
-```
+- **`0x42b40000 = 60.0` is correct** IEEE 754 single-precision. ✓
 
----
+- **`0x270f = 9999` (bestDistance init) and `0x270e = 9998` (no-wall threshold) are correct.** ✓
 
-**Suggested rewrite (key fixes only; structure preserved):**
+- **z-component reuse across all 8 directions is a faithful quirk of the TS mod** (the `local_vec.z` slot is never overwritten in the loop body, so the third component stays at `refPoint.z` for every ray). The TS's "TODO(asm-ambiguous)" comment correctly flags this as unusual but the code itself is right.
 
+- **The MSVC hidden-return-pointer convention for UTIL_VecToAngles is captured** — TS comments the `forward` / `out` arg order correctly. ✓ (modulo the question of whether the call result is even used, which the TS also flags).
+
+Suggested rewrite (full TS function):
 ```typescript
-// --- Minimal surface area so this file compiles in isolation. ----
-interface Vec3 { x: number; y: number; z: number; }
+// CTSGroundAmmo::PutOnWall — casts 8 rays at non-uniform angle steps (step
+// size is a function of bestDistance from a precomputed ratio) to find the
+// nearest wall and snaps the entity onto it. Also writes what looks like
+// v_view_ofs (offset 0x50 in entvars_t) rather than angles; the decompiled
+// TS conflated these. Constants are read from rodata; field_7c / field_16c
+// / field_118 are TS-specific entity fields whose semantics are TBD.
+
+interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
 
 interface TraceResult {
-  flFraction: number;            // added — disassembly reads +0x10
-  vecEndPos:   Vec3;             // +0x14
-  vecPlaneNormal: Vec3;          // +0x24
-  pEnt:        any | null;
-  // remaining fields as needed
+  vecEndPos:      Vec3;
+  vecPlaneNormal: Vec3;
+  flFraction:     number;
+  pEnt:           any | null;
+  fAllSolid:      number;
+  fStartSolid:    number;
+  fInOpen:        number;
+  fInWater:       number;
+  // TODO: full field set when struct layout is finalized.
 }
 
-declare function UTIL_TraceLine(
-  v1: Vec3, v2: Vec3, fNoMonsters: number, ignoreEnt: any, tr?: any,
-): TraceResult;
-
-declare function UTIL_VecToAngles(v: Vec3): Vec3;
-
-interface CTSGroundAmmo {
-  pev:   any;   // entvars_t* (or TS-extended); unknown fields left as `any`
-  edict: any;
-}
-
-// --- Constants pulled from .data; values are TODOs. ---------------
 const ANGLE_STEP_COUNT     = 8;
-const MAX_TRACE_DISTANCE   = 0;      // [ebx-0x6b684]   TODO: read from .data
-const UNIT_THRESHOLD       = 0;      // [ebx-0x6f408]   TODO: read from .data
-const UNIT_Z_FALLBACK      = 1.0;    // [ebx-0x6f3fc]   likely 1.0; verify
-const ANGLE_X_OFFSET       = 0;      // [ebx-0x6dea4]   TODO: read from .data
-const WALL_OFFSET          = 0;      // [ebx-0x6df4c]   TODO: read from .data
-const NO_HIT_VALUE         = 60.0;   // 0x42b40000
-const NO_HIT_PEV_OFFSET    = 0x58;   // see disassembly 92d50..92d59
+const BEST_DIST_INIT       = 0x270f; // 9999
+const NO_WALL_DIST_THRESH  = 0x270e; // 9998
+const NO_WALL_ANGLE_BYTES  = 0x42b40000; // 60.0f — written to pev+0x58 (v_view_ofs.z or similar)
+const SENTINEL_FALLBACK    = 0;          // [ebx-0x6f408] — TODO: read from rodata
+const SENTINEL_FINWATER    = 0.0;        // [ebx-0x6f018] — TODO: read from rodata
+const MAX_TRACE_DISTANCE   = 0;          // [ebx-0x6b684] — TODO: read from rodata
+const WALL_OFFSET          = 0;          // [ebx-0x6df4c] — TODO: read from rodata
+const ANGLE_X_OFFSET       = 0;          // [ebx-0x6dea4] — TODO: read from rodata
+const ANGLE_RATIO          = 0;          // [ebx-0x6c6c8] / [ebx-0x6b680] (precomputed int at [esp+0x48])
 
-export function PutOnWall(this: CTSGroundAmmo): void {
-  // refPoint: pointer-to-Vec3 stored at [GOT+0x1888]; deref once.
-  const refPoint: Vec3 = ((globalThis as any).__TS_GOT_1888__) as Vec3;
+export function PutOnWall(this: any): void {
+  // External: implement elsewhere.
+  // const UTIL_TraceLine = (start: Vec3, end: Vec3, ignoreMonsters: number, pEnt: any, pTrace: TraceResult): void => { ... };
+  // const UTIL_VecToAngles = (out: Vec3, forward: Vec3): void => { ... };
+  // const readGlobalVec3 = (offset: number): Vec3 => { ... };
 
-  let bestDistance = 9999;
-  let bestHitPos:  Vec3 = { x: 0, y: 0, z: 0 };
-  let bestNormal:  Vec3 = { x: 0, y: 0, z: 0 };
+  const refPoint: Vec3 = readGlobalVec3(0x1888);
+
+  let bestDistance = BEST_DIST_INIT;
+  let bestHitPos:  Vec3 = { x: refPoint.x, y: refPoint.y, z: refPoint.z };
+  let bestNormal:  Vec3 = { x: refPoint.x, y: refPoint.y, z: refPoint.z };
+
+  // [esp+0x10] is the angle multiplier, accumulated by ANGLE_RATIO each iter.
+  let angleMul = 0;
+  const angleStepConst = 0; // TODO: [ebx-0x6c6c0] as float
 
   for (let i = 0; i < ANGLE_STEP_COUNT; i++) {
-    const angle = (i * 2 * Math.PI) / ANGLE_STEP_COUNT;
+    const angle = angleStepConst * angleMul; // NOT i * 2π/8 — see note above.
+
     const dx = Math.cos(angle);
     const dy = Math.sin(angle);
-    const dz = refPoint.z;
+    const dz = refPoint.z; // local_vec.z is never written in the loop body.
+    const length = Math.sqrt(1 + dz * dz);
 
-    const length = Math.sqrt(1 + dz * dz);  // sqrt(cos² + sin² + refPoint.z²)
-
-    // FIX (checklist #2b): asm `je 92a34` jumps to normalize when
-    // ST(0) >= sentinel; fall-through (ST(0) < sentinel) sets unit = (0,0,C).
     let unitX: number, unitY: number, unitZ: number;
-    if (length < UNIT_THRESHOLD) {
-      unitX = 0;
-      unitY = 0;
-      unitZ = UNIT_Z_FALLBACK;
+    if (length === SENTINEL_FALLBACK) {
+      unitX = 0; unitY = 0; unitZ = 1.0;
     } else {
-      const inv = UNIT_Z_FALLBACK / length;  // fdivr [ebx-0x6f3fc]
-      unitX = dx * inv;
-      unitY = dy * inv;
-      unitZ = dz * inv;
+      const inv = 1.0 / length;
+      unitX = dx * inv; unitY = dy * inv; unitZ = dz * inv;
     }
 
     const endPos: Vec3 = {
@@ -177,34 +123,44 @@ export function PutOnWall(this: CTSGroundAmmo): void {
       z: this.pev.origin.z + unitZ * MAX_TRACE_DISTANCE,
     };
 
-    const trace = UTIL_TraceLine(
-      this.pev.origin, endPos, /* fNoMonsters */ 1, this.edict,
+    const trace: TraceResult = UTIL_TraceLine(
+      this.pev.origin, endPos, /* ignoreMonsters */ 1, /* pEnt */ null, /* pTrace */ trace
     );
 
-    // FIX (checklist #2a): asm compares flFraction, not vecEndPos.x.
-    if (trace.flFraction >= 1.0 /* [ebx-0x6f018] sentinel */) {
+    // Skip this iter if fInWater >= SENTINEL_FINWATER (NOT vecEndPos.x >= 0).
+    if (trace.fInWater >= SENTINEL_FINWATER) {
+      angleMul += ANGLE_RATIO; // asm still increments angleMul even on skip
       continue;
     }
 
-    let hitEnt: any = trace.pEnt;
-    if (hitEnt === null) {
-      // cvar-lookup fallback at [ebx+0x1aa8]+0x114 — semantic
-      // placeholder; verify against TS source.
-      // TODO(asm-ambiguous): confirm cvar identity.
-      continue;
-    }
-
-    // Offsets 0x7c/0x16c/0x118 — unknown fields. Typed as `any` so this
-    // compiles; cross-reference against a TS dump before lowering to TS.
-    const outer = (hitEnt as any).field_at_0x7c;
-    if (outer != null) {
-      const inner = (outer as any).field_at_0x0;
-      if (inner != null) {
-        if (((inner as any).field_at_0x16c as number) >= 0) continue;
-        if (((inner as any).field_at_0x118 as number) < 0)  continue;
+    // The asm gates this on fInWater == 0, not trace.pEnt == null.
+    if (trace.fInWater === 0) {
+      // TODO(asm-ambiguous): [ebx+0x1aa8] is some struct with a method at +0x114.
+      const cvarAccessor: any = /* read [ebx+0x1aa8] */ null;
+      if (cvarAccessor != null) {
+        const result = cvarAccessor.method_0x114(0);
+        // NOTE: asm does `edx = result[0x7c]` — extra indirection the TS missed.
+        if (result != null && result[0x7c] != null) {
+          // hitEnt := result[0x7c]; fall through to entity skip checks.
+        } else {
+          angleMul += ANGLE_RATIO;
+          continue;
+        }
+      } else {
+        angleMul += ANGLE_RATIO;
+        continue;
       }
     }
 
+    // Entity skip checks on `inner` = hitEnt[0x7c][0].
+    // 92b56: fcomp 1.0 vs inner.field_16c; jne if equal. So skip if == 1.0, NOT >= 0.
+    const inner = /* hitEnt[0x7c][0] */ null;
+    if (inner != null) {
+      if (inner.field_16c === 1.0) { angleMul += ANGLE_RATIO; continue; } // CORRECTED
+      if (inner.field_118 <  0)    { angleMul += ANGLE_RATIO; continue; }
+    }
+
+    // Distance update.
     const ddx = this.pev.origin.x - trace.vecEndPos.x;
     const ddy = this.pev.origin.y - trace.vecEndPos.y;
     const ddz = this.pev.origin.z - trace.vecEndPos.z;
@@ -212,17 +168,27 @@ export function PutOnWall(this: CTSGroundAmmo): void {
 
     if (dist < bestDistance) {
       bestDistance = dist;
-      bestHitPos  = { ...trace.vecEndPos };
-      bestNormal  = { ...trace.vecPlaneNormal };
+      bestHitPos  = { x: trace.vecEndPos.x,      y: trace.vecEndPos.y,      z: trace.vecEndPos.z };
+      bestNormal  = { x: trace.vecPlaneNormal.x,  y: trace.vecPlaneNormal.y,  z: trace.vecPlaneNormal.z };
     }
+
+    // ASM NOTE: the loop trailer adds bestDistance to [esp+0x10] BEFORE the
+    // i++ / cmp. So angleMul accumulates by bestDistance (via the precomputed
+    // ANGLE_RATIO constant in [esp+0x48]) on every iter, regardless of skip.
+    angleMul += ANGLE_RATIO;
   }
 
-  // FIX (checklist #3): pev field at offset 0x58, not angles.y at 0x48.
-  if (bestDistance > 9998) {
-    this.pev[NO_HIT_PEV_OFFSET] = NO_HIT_VALUE;   // TODO: name this field
+  if (bestDistance > NO_WALL_DIST_THRESH) {
+    // No wall found — asm writes 60.0f to pev+0x58. In standard HLSDK that's
+    // v_view_ofs.z, NOT angles.y. Field name corrected; if TS mod has a
+    // custom entvars_t, this is what the asm actually says.
+    const pev = this.pev;
+    // (pev+0x58) = 60.0
+    pev.v_view_ofs_z = 60.0;
     return;
   }
 
+  // Wall found — move + orient.
   const newOrigin: Vec3 = {
     x: bestHitPos.x + bestNormal.x * WALL_OFFSET,
     y: bestHitPos.y + bestNormal.y * WALL_OFFSET,
@@ -230,13 +196,31 @@ export function PutOnWall(this: CTSGroundAmmo): void {
   };
   this.pev.origin = newOrigin;
 
-  // Side-effect call (MSVC hidden-return-pointer convention).
-  UTIL_VecToAngles(newOrigin);
+  // UTIL_VecToAngles (MSVC hidden-ret-ptr convention: out first, then forward).
+  UTIL_VecToAngles(/* out = */ bestNormal, /* forward = */ newOrigin);
 
-  // origin -> angles, then add ANGLE_X_OFFSET to angles.x.
-  this.pev.angles = { x: this.pev.origin.x, y: this.pev.origin.y, z: this.pev.origin.z };
-  this.pev.angles.x += ANGLE_X_OFFSET;
+  // The asm copies 12 bytes from [esp+0xe4] (which is trace_result.fAllSolid
+  // and adjacent ints — likely a TS-specific remnant, NOT pev.origin) to
+  // pev+0x50 (v_view_ofs, NOT pev.angles in standard HLSDK), then adds
+  // ANGLE_X_OFFSET to pev+0x50.x. The TS's "pev.angles = pev.origin" claim
+  // does not match the asm. Marking as TODO; verify against TS entvars_t.
+  // TODO(asm-ambiguous): confirm field semantics for the post-loop writes.
+  // this.pev.v_view_ofs = { ... };
+  // this.pev.v_view_ofs.x += ANGLE_X_OFFSET;
 }
 ```
 
-**Net assessment:** the structure is right; the disassembly-to-TS mapping is mostly faithful. The function fails on three specifics (#2a, #2b, #3) where literal reads of the asm conditions would change behavior, plus on isolation (#8) and field-naming conventions (#7). Once those are fixed, this is solid decompiled TS; until they are, it's pseudocode shipped as decompiled output.
+**Bottom line:** the decompiled TS captures the *shape* of the function correctly (8-iteration loop, trace call, wall/no-wall branch, post-loop origin + angle update) and gets the obvious constants right (0x270f, 0x270e, 0x42b40000, count of 8). But it has several substantive faithfulness issues that need fixing before this can be merged:
+
+1. Wrong field for the trace filter (`fInWater`, not `vecEndPos.x`).
+2. Wrong comparison operator for the entity skip (`=== 1.0`, not `>= 0`).
+3. Wrong gating for the cvar-entity fallback (`fInWater == 0`, not `trace.pEnt === null`); also missing the `[0x7c]` indirection.
+4. Wrong field for the no-wall write (pev+0x58, not angles.y).
+5. Wrong field for the post-loop angle/v_view_ofs write (pev+0x50, not angles).
+6. Wrong `pentIgnore` source (`[pev+0x208]` doesn't exist in standard entvars_t).
+7. The `[esp+0x12c]` read at 92d0b doesn't match `[esp+0x120] = this` from the body — there's a stack-frame discrepancy I can't fully reconcile from the listing.
+8. The angle step is *not* uniform `i·2π/8`; it's `angle_step_const · (Σ ANGLE_RATIO)` accumulated across iterations.
+9. The placeholder constants (MAX_TRACE_DISTANCE, WALL_OFFSET, ANGLE_X_OFFSET, ANGLE_RATIO) must be filled in from rodata before the function is correct.
+10. The snippet won't compile in isolation without `any`-typed stubs for `CTSGroundAmmo`, `UTIL_TraceLine`, `UTIL_VecToAngles`, and `readGlobalVec3`.
+
+Per AGENTS.md: I'd suggest filing this back to Kyle for a second pass on the asm interpretation, especially items 4–8, before treating it as faithful. This is closer to a first-cut than a final decompilation.

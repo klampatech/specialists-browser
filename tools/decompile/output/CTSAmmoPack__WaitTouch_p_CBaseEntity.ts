@@ -1,25 +1,21 @@
 /**
  * CTSAmmoPack::WaitTouch — wait-for-touch handler for the ammo pack.
  *
- * Decompiled from `WaitTouch__11CTSAmmoPackP11CBaseEntity` at
- * ts/dlls/ts_i386.so+0x000916c0 (620 bytes).
- *
- * Two-stage sanity check on the toucher (calls into
- * [pOther+0x60]+0xc8 and [pOther+0x60]+0xb4, passing pOther as the
- * explicit first arg — most likely a TS-specific callback table or a
- * sub-object's vtable). Then verifies the toucher's active weapon
- * (`[pOther+0xa10]`, the CBasePlayer::m_pActiveItem) has class id
- * 0x10. Iterates 16 ammo slots (4 outer × 4 inner) and calls AddAmmo
- * on each non-zero slot; on success, zeros the slot and sets a "gave
- * ammo" flag. If any ammo was given, emits a pickup sound on the
- * toucher. Then does a cvar-driven armor transfer: compares the cvar
- * at GOT-0x6f408 with the **pack's** armor at `*this+0x1bc`, checks
- * the toucher's frozen bit at `*pOther+0x180 & 0x20`, re-checks that
- * the cvar doesn't already match the **toucher's** armor, and
- * transfers the pack's armor (truncated to int) to the toucher via
- * TakeArmor, zeroing the pack's armor afterwards. Finally, if the
- * cvar now equals the pack's armor (typically both 0), UTIL_Remove
- * the pack.
+ * Stage 1: validate the toucher via two vtable calls through
+ *   *(pOther+0x60) (offsets +0xc8 then +0xb4); both must return non-null.
+ * Stage 2: require the toucher's m_pActiveItem (pOther+0xa10) to be
+ *   non-null and have classid 0x10 (CTSGun).
+ * Stage 3: walk 16 ammo slots at this+0x64..this+0xa3 (4 outer × 4
+ *   inner, stride 0x10); on each non-zero slot, call AddAmmo with
+ *   ammoType = (outer*4 + inner) and zero the slot on success. Track
+ *   whether anything was given.
+ * Stage 4: if anything was given, play a pickup sound on the player.
+ * Stage 5: if the pack's stored armor exceeds a cvar threshold
+ *   (GOT-0x6f408), transfer the pack's armor to the player. The
+ *   player can be skipped if a frozen-like bit (*pOther+0x180 & 0x20)
+ *   is **set and** the player's current armor already equals the
+ *   threshold. After transfer, zero the pack's armor.
+ * Stage 6: if the pack's armor now equals the cvar threshold, UTIL_Remove.
  *
  * @param this   The CTSAmmoPack entity
  * @param pOther The entity that touched the pack
@@ -30,32 +26,21 @@ export function WaitTouch(this: CTSAmmoPack, pOther: CBaseEntity): void {
   // All [ebx-...] reads below resolve globals / cvars through this base.
   const GOT = 0; // TODO: real GOT base is computed at run-time
 
-  // The function is __cdecl; after the prologue `this` is at
-  // [esp+0x30] and pOther is at [esp+0x34].
-
-  // -------------------------------------------------------------------
   // Stage 1 — validity checks on the toucher
-  // -------------------------------------------------------------------
-  // [pOther+0x60] is a function-pointer table (or a sub-object whose
-  // vtable we use); +0xc8 and +0xb4 are called with pOther as the
-  // explicit first arg. Both must return non-zero to continue.
+  // TODO(asm-ambiguous): [pOther+0x60] is dereferenced as a pointer to
+  // a vtable-ish dispatch table; functions at +0xc8 and +0xb4 are
+  // called with `pOther` as their first arg. Both must return non-null.
   const cbTable: any = readDWord(pOther + 0x60);
   if (callIndirect(readDWord(cbTable + 0xc8), pOther) === 0) return;
   if (callIndirect(readDWord(cbTable + 0xb4), pOther) === 0) return;
 
-  // -------------------------------------------------------------------
-  // Stage 2 — verify active weapon and class id
-  // -------------------------------------------------------------------
-  const weapon = readDWord(pOther + 0xa10); // m_pActiveItem
+  // Stage 2 — verify active weapon and class
+  const weapon = readDWord(pOther + 0xa10); // m_pActiveItem (TS-specific offset)
   if (weapon === 0) return;
-  if (readDWord(weapon + 0x88) !== 0x10) return; // weapon class id
+  if (readDWord(weapon + 0x88) !== 0x10) return; // CTSGun class id
 
-  // -------------------------------------------------------------------
   // Stage 3 — iterate 16 ammo slots and AddAmmo each non-zero one
-  // -------------------------------------------------------------------
-  // Slots live on `this` starting at this+0x60 (4 outer × 4 inner,
-  // stride 0x10 per group, 4 bytes per slot). The loop counter's
-  // low byte is the ammo type index.
+  // Slots live at this+0x64 .. this+0xa3. ammoType = outer*4 + inner.
   let anyAdded = false;
   let counter = 0;
   for (let outer = 0; outer < 4; outer++) {
@@ -73,74 +58,57 @@ export function WaitTouch(this: CTSAmmoPack, pOther: CBaseEntity): void {
     counter += 4;
   }
 
-  // -------------------------------------------------------------------
   // Stage 4 — play pickup sound if we gave any ammo
-  // -------------------------------------------------------------------
   if (anyAdded) {
-    // [*pOther + 0x208] is the edict — most likely *pOther == pev and
-    // pev+0x208 is the edict handle, but the exact mapping is
-    // engine-version dependent.
-    const edict = readDWord(readDWord(pOther) + 0x208);
+    // TODO(asm-ambiguous): edx = *pOther; [edx+0x208] is the edict.
+    const innerPtr = readDWord(pOther);
+    const edict = readDWord(innerPtr + 0x208);
     EMIT_SOUND_DYN(
-      edict,                          // entity
-      3,                              // CHAN_VOICE
-      readStringPtr(GOT - 0x6c8da),   // sample name (string literal)
-      readFloat(GOT - 0x6f3fc),       // volume (cvar)
-      readFloat(GOT - 0x6e7e4),       // attenuation (cvar)
-      0,                              // flags
-      100,                            // pitch
-      readFloat(GOT - 0x6ec2c)        // 8th arg is `f` per demangling
+      edict,                         // entity
+      3,                             // CHAN_VOICE
+      readStringPtr(GOT - 0x6c8da),  // sample name
+      readFloat(GOT - 0x6f3fc),      // volume (cvar)
+      readFloat(GOT - 0x6e7e4),      // attenuation (cvar)
+      0,                             // flags
+      100,                           // pitch
+      readDWord(GOT - 0x6ec2c)       // specialFlags / extra (EMIT_SOUND_DYN2)
     );
   }
 
-  // -------------------------------------------------------------------
-  // Stage 5 — armor transfer (cvar-driven, with FL_FROZEN-style check)
-  // -------------------------------------------------------------------
-  // First compare: cvar vs PACK's armor [*this + 0x1bc] (read as float).
-  // Flag check:   *pOther + 0x180 bit 0x20 (FL_FROZEN-style).
-  // Second compare: cvar vs TOUCHER's armor [*pOther + 0x1bc].
-  // Transfer:    TakeArmor(pOther, trunc(PACK's armor)); PACK's armor = 0.
-  //
-  // NOTE: stages 5 and 6 mix `*this` (pack) and `*pOther` (toucher)
-  // dereferences. The original TS collapsed both to `*pOther`; this
-  // rewrite keeps them distinct.
-  const thisInner = readDWord(this);
-  const packArmor = readFloat(thisInner + 0x1bc);
+  // Stage 5 — armor transfer
+  // The PACK has its own stored armor at *this+0x1bc (NOT *pOther+0x1bc).
+  // The cvar at GOT-0x6f408 is the threshold. Logic:
+  //   if cvar >= pack_armor: skip — pack has nothing to give.
+  //   else: check the frozen-like bit (*pOther+0x180 & 0x20).
+  //     bit NOT set: compare cvar to *pOther+0x1bc; skip if equal.
+  //     bit set (or player_armor != cvar): transfer pack_armor → player,
+  //       then zero the pack's armor.
+  const packInner = readDWord(this);
+  const packArmor = readFloat(packInner + 0x1bc);
   const armorCvar = readFloat(GOT - 0x6f408);
 
   if (armorCvar < packArmor) {
-    const pOtherInner = readDWord(pOther);
-    const frozen = (readByte(pOtherInner + 0x180) & 0x20) !== 0;
+    const playerInner = readDWord(pOther);
+    const frozen = (readByte(playerInner + 0x180) & 0x20) !== 0;
     if (!frozen) {
-      // Second compare (0x9189a): cvar == toucheR's armor.
-      // jne at 0x918a5 jumps on equal (C3=1 after `test ah,0x40`),
-      // so equal → skip transfer, not-equal → fall through and transfer.
-      const toucherArmor = readFloat(pOtherInner + 0x1bc);
-      if (toucherArmor !== armorCvar) {
-        // `fld [*this+0x1bc]; fistp` — amount is PACK's armor (truncated).
-        const armorInt = Math.trunc(packArmor);
+      const playerArmor = readFloat(playerInner + 0x1bc);
+      if (playerArmor !== armorCvar) {
+        const armorInt = Math.trunc(packArmor); // transfer the pack's armor
         TakeArmor(pOther, armorInt);
-        writeDWord(thisInner + 0x1bc, 0); // zero the pack's armor
+        writeDWord(packInner + 0x1bc, 0); // zero the pack's stored armor
       }
     }
   }
 
-  // -------------------------------------------------------------------
-  // Stage 6 — remove the pack when cvar == pack's armor
-  // -------------------------------------------------------------------
-  // Re-compares the cvar with the **pack's** current armor; if they
-  // match, the pack has nothing left to give, so UTIL_Remove it.
-  const packArmor2 = readFloat(readDWord(this) + 0x1bc);
-  if (armorCvar !== packArmor2) {
-    // not equal → pack still useful → leave it
-  } else {
+  // Stage 6 — remove the pack if its remaining armor equals the threshold
+  if (packArmor === armorCvar) {
     UTIL_Remove(this);
   }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers / engine types referenced above. These are stand-ins; the real
-// definitions live in the engine-binding layer built in a later step.
+// definitions live in the engine-binding layer that's built in a later step.
 // ---------------------------------------------------------------------------
 
 declare const GOT_BASE: number;
@@ -161,20 +129,19 @@ declare function EMIT_SOUND_DYN(
   attenuation: number,
   flags: number,
   pitch: number,
-  eighthArg: number // float per demangled signature
+  specialFlags: number
 ): void;
 declare function TakeArmor(player: any, amount: number): void;
 declare function UTIL_Remove(entity: any): void;
 
 interface CTSAmmoPack {
-  // Slot counts at this+0x60+0x10*group+0x4*slot (4×4 = 16 ints).
-  // m_iArmorToGive at *this+0x1bc (read as float; the "pack's armor").
+  // ammo counts at +0x64 .. this+0xa3 (16 dwords, stride 4)
+  // stored armor at *this+0x1bc (read as float)
 }
 
 interface CBaseEntity {
-  // m_pActiveItem at +0xa10 (CBasePlayer-only)
-  // callback table at +0x60
-  // frozen bit at *pev+0x180 mask 0x20
-  // toucheR's armor at *pev+0x1bc
-  // edict at *pev+0x208
+  // pev typically at +0x4; m_pActiveItem at +0xa10 for players;
+  // +0x60 is a TS-specific callback/dispatch table pointer;
+  // +0x180 holds a flag byte (bit 0x20 is frozen-like);
+  // +0x1bc holds armor float (pev->armorvalue)
 }

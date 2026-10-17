@@ -1,91 +1,115 @@
+// Stub globals — fill in during D.5 wiring. Kept as `any` so the function
+// compiles in isolation.
+declare const gpGlobals: { time: number };
+declare const g_engfuncs: {
+  pfnMessageBegin: (dest: number, msgType: number, origin: any, ed: any) => void;
+  pfnWriteByte:    (b: number) => void;
+  pfnWriteShort:   (s: number) => void;
+  pfnWriteString:  (s: any) => void;
+  pfnMessageEnd:   () => void;
+};
+declare const cv_resetround: { value: number };
+declare function TSHudMessageAll(
+  channel: number, x: number, y: number,
+  r: number, g: number, b: number,
+  fadeIn: number, fadeOut: number, holdTime: number, fx: number,
+  msg: string
+): void;
+
+// TS-specific engine function table slot offsets (defined elsewhere).
+const MSG_ALL = 2;
+const g_msgRestartRound_1 = 0;     // TODO: identify (low-byte at [ebx+0x1be8])
+const g_msgRestartRound_2 = 0;     // ditto, for the per-team broadcast
+const kRestartHudMessage   = "";  // TODO: string literal at [ebx-0x6e67f]
+const kMinElapsedConst     = 0;    // TODO: float at [ebx-0x6f408]
+const kRoundRestartOffset  = 0;    // TODO: double at [ebx-0x6f018]
+declare const g_pRoundCtx: { field_0xc: any }; // a `*Ctx` reinterpret-cast
+
 /**
- * CTSGameRules::ResetRestartRound — clears round-restart bookkeeping
- * on the CTSGameRules instance: stamps it with the current game
- * time, zeros per-record fields, broadcasts HUD messages for any
- * active records (gated on a non-zero leading byte of each name),
- * and finally pushes a global HUD notification.
+ * CTSGameRules::ResetRestartRound — resets a round-restart info record,
+ * clears per-team record flags, broadcasts HUD messages for any active
+ * team records, and emits a final global HUD notification.
  *
- * Original demangled symbol: `CTSGameRules::ResetRestartRound(int)`
- * g++ ABI: `void CTSGameRules::ResetRestartRound(int count)` — `this`
- * is the implicit first stack arg.
- *
- * @param this    The CTSGameRules instance (implicit in C++).
- * @param count   Loop gate: if `<= 1`, the per-record loop is skipped.
+ * Demangled signature `ResetRestartRound(int)` is misleading: the binary
+ * has THREE explicit args. The `int` is the second arg; the third arg is
+ * a separate struct pointer.
  */
-export function ResetRestartRound(this: CTSGameRules, count: number): void {
-  // Gate: byte at this+0 ∈ {2,3} proceeds unconditionally.
-  // Otherwise the global at *[ebx+0x152c] is checked; if zero, return.
-  // TODO(asm-ambiguous): resolve cvar name from strings-n5.txt.
-  if (this[0] < 2 || this[0] > 3) {
+export function ResetRestartRound(
+  this: CTSGameRules,
+  info: any,                 // arg1: round-restart info record (ptr)
+  arg2: number,              // arg2: loop-bound / mode (compared with 1)
+  arg3: any                  // arg3: has a `float` field at +0xc
+): void {
+  // Gate (asm 68763..68779):
+  //   if state ∈ {2,3} → skip cvar check; else if cvar == 0 → return.
+  const stateByte = (info.state ?? 0) & 0xff;
+  if (stateByte < 2 || stateByte > 3) {
     if (cv_resetround.value === 0) return;
   }
 
-  this.field_8 = 0;
-  // fld QWORD [ebx-0x6f018] + fadd DWORD [eax]:
-  //   global double (realtime?) plus deref'd float (g_timeOffset?).
-  this.curtime = realtime + g_timeOffset;
+  // info.field_c = double constant + (float)[ebx+0x1600]_field_0
+  // (asm 68787..68793; outer's value is *separate* from the loop's ctxPtr.)
+  info.field_8 = 0;
+  info.field_c = kRoundRestartOffset + gpGlobals.time;
 
-  // First HUD broadcast: gated on the byte at this+0x10.
-  if (this[0x10] !== 0) {
-    // max(this[0xc] - *(*(ebx+0x1600)), *(ebx-0x6f408))
-    // simplifies to max(realtime, g_minElapsed) once curtime is
-    // substituted — keep the literal form for fidelity.
-    const elapsed = Math.max(this.curtime - g_timeOffset, g_minElapsed);
-    const elapsedInt = Math.trunc(elapsed);
+  // First-name broadcast (gated by info[0x10]; asm 6879d..68825).
+  if (info.flag_10 !== 0) {
+    // elapsed = floor( max(arg3.field_c - gpGlobals.time, kMinElapsedConst) )
+    const elapsed = Math.max(
+      (arg3?.field_0xc ?? 0) - gpGlobals.time,
+      kMinElapsedConst
+    );
+    const elapsedInt = elapsed | 0;
 
-    // Disassembly pushes msg_dest = 0x2 (NOT MSG_ALL=6); TODO verify.
-    g_engfuncs.pfnMessageBegin(/*MSG_PVS?*/ 0x2, g_msgRestartRound_1, null, 0);
+    g_engfuncs.pfnMessageBegin(MSG_ALL, g_msgRestartRound_1, null, 0);
     g_engfuncs.pfnWriteByte(elapsedInt);
     g_engfuncs.pfnWriteByte(0);
     g_engfuncs.pfnMessageEnd();
   }
 
-  // Per-record loop. Two iterations, gated on count > 1.
-  // Record layout (offsets relative to `this`):
-  //   record[i] base   = this + 0x10 + i*0x118
-  //   .time_int        = base + 0x0c  (dword, int-truncated time)
-  //   .field_10        = base + 0x10  (dword, zeroed)
-  //   .field_14        = base + 0x14  (dword, zeroed; later WriteShort'd)
-  //   .first_string    = base + 0x18  (null-terminated, leading byte
-  //                                    acts as the "active" flag)
-  //   .time_int_2      = base + 0x98  (dword, int-truncated time)
-  //   .field_9c        = base + 0x9c  (dword, zeroed)
-  //   .field_a0        = base + 0xa0  (dword, zeroed; later WriteShort'd)
-  //   .second_string   = base + 0xa4  (null-terminated, leading byte
-  //                                    acts as the "active" flag)
-  if (count > 1) {
+  // Loop guard (asm 68828..6882d): if arg2 ≤ 1, skip the per-team records
+  // loop but STILL call the final TSHudMessageAll below. This branch was
+  // missing from the prior decompile.
+  if (arg2 > 1) {
+    // 2 iterations; explicit stride 0x118 (slot = 280 bytes, holding two
+    // sub-records of size ≈140 bytes each at slot+0xc and slot+0x98).
     for (let i = 0; i < 2; i++) {
-      // First-name slot: zero + stamp int(time).
-      this[0x20 + i * 0x118] = 0;
-      this[0x24 + i * 0x118] = 0;
-      this[0x1c + i * 0x118] = Math.trunc(gpGlobals.time);
+      const slotBase = info + 0x10 + i * 0x118;
 
-      // If first name's leading byte is non-zero, broadcast.
-      if (this[0x28 + i * 0x118] !== 0) {
-        g_engfuncs.pfnMessageBegin(0x2, g_msgRestartRound_2, null, 0);
-        g_engfuncs.pfnWriteString(readCString(this + 0x28 + i * 0x118));
-        g_engfuncs.pfnWriteShort(this[0x24 + i * 0x118]); // just zeroed
+      // Clear first sub-record fields.
+      slotBase[0x10] = 0;
+      slotBase[0x14] = 0;
+
+      // slot[0xc] = (int)*global.field_0xc — but this int is REINTERPRETED
+      // as a POINTER later (see WriteShort calls below). Model as a
+      // `*SubCtx` pointer; both sub-records carry the SAME pointer.
+      const ctxPtr: any = g_pRoundCtx.field_0xc;
+      slotBase[0xc] = ctxPtr;
+
+      // First-name broadcast (gated by slotBase[0x18] == non-zero byte).
+      if (slotBase[0x18] !== 0) {
+        g_engfuncs.pfnMessageBegin(MSG_ALL, g_msgRestartRound_2, null, 0);
+        g_engfuncs.pfnWriteString(slotBase + 0x18);     // first string
+        g_engfuncs.pfnWriteShort(ctxPtr[0x14]);         // [ctx+0x14], NOT slot[0x14]
         g_engfuncs.pfnWriteShort(0);
         g_engfuncs.pfnMessageEnd();
       }
 
-      // Second-name slot: zero + stamp int(time).
-      this[0xac + i * 0x118] = 0;
-      this[0xb0 + i * 0x118] = 0;
-      this[0xa8 + i * 0x118] = Math.trunc(gpGlobals.time);
-
-      // If second name's leading byte is non-zero, broadcast.
-      if (this[0xb4 + i * 0x118] !== 0) {
-        g_engfuncs.pfnMessageBegin(0x2, g_msgRestartRound_2, null, 0);
-        g_engfuncs.pfnWriteString(readCString(this + 0xb4 + i * 0x118));
-        g_engfuncs.pfnWriteShort(this[0xb0 + i * 0x118]); // just zeroed
+      // Second sub-record.
+      slotBase[0x9c] = 0;
+      slotBase[0xa0] = 0;
+      slotBase[0x98] = ctxPtr;                          // same pointer
+      if (slotBase[0xa4] !== 0) {
+        g_engfuncs.pfnMessageBegin(MSG_ALL, g_msgRestartRound_2, null, 0);
+        g_engfuncs.pfnWriteString(slotBase + 0xa4);     // second string
+        g_engfuncs.pfnWriteShort(ctxPtr[0xa0]);         // [ctx+0xa0], NOT slot[0xa0]
         g_engfuncs.pfnWriteShort(0);
         g_engfuncs.pfnMessageEnd();
       }
     }
   }
 
-  // Final global HUD broadcast (6 cdecl args: 3 bytes + 2 ints + string).
-  // TODO(asm-ambiguous): resolve string literal at [ebx-0x6e67f].
+  // Final HUD broadcast (always called, even when we skipped the loop).
+  // asm 689e3..689ff: 6 args + 2 pad dwords → call TSHudMessageAll.
   TSHudMessageAll(0, 0, 0, 8, 0x1e, kRestartHudMessage);
 }

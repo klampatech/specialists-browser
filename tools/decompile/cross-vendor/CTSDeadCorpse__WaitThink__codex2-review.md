@@ -1,143 +1,142 @@
+I'll analyze the disassembly carefully, walk through the FPU stack ops, and apply the checklist. The big thing to flag up front: the checklist is designed for the 4 interface entry points (`GiveFnptrsToDll`/`GetEntityAPI*`/`GetNewDLLFunctions`), but the function under review is `CTSDeadCorpse::WaitThink` — a class method. I'll re-interpret items 2/3/4 as N/A and re-anchor the rest on the actual goal: faithfulness to the disassembly.
+
+---
+
+## Analysis of the disassembly
+
+Recovered control-flow and operand semantics (skipping the PIC thunk):
+
+| Block | Operands | Effect |
+|---|---|---|
+| `60471–60487` | `[esi+0]` → `pev`; `[ebx+0x1600]` → `gpGlobals`; `[ebx-0x6f010]` is a QWORD constant (`THINK_DELAY`); `pev+0x104` → `nextthink` | `pev->nextthink = gpGlobals->time + THINK_DELAY` |
+| `6048d–604a5` | `[esi+0x64]` (`die_time`) `fcomp` `gpGlobals->time`; `jae` to 604a8; fall-through calls `UTIL_Remove(this)` and jumps to epilogue | if `die_time < gpGlobals->time`: remove and return |
+| `604a8–604ee` | reload `gpGlobals`; `pev+0x14c` receives final alpha | `fsub`, `fld FADE_TIME_SCALE; fmul [esi+0x68]`, `fld MAX_FADE_SECONDS; fcom st(1); jbe`, `fdivp`, `fld ALPHA_SCALE; fmul st(1),st; fxch; fcom st(1); test ah,0x41; jne` then `fstp` twice — exactly the `min(min(...) , ...)` pattern the TS code shows |
+
+The FPU-stack semantics of the inner block check out (the `test ah, 0x41` is testing C0+C3 from `fcom` after `fnstsw ax` to detect "st(0) > st(1) is false", which collapses the two `fstp`/`fstp st(1)` paths into "use the cap when `ratio * ALPHA_SCALE > ALPHA_SCALE`, else keep the unclamped value" — i.e. `Math.min`. The TS code matches this.
+
+`UTIL_Remove` is called with `esi` (this) on the stack via cdecl, with a 12-byte stack reservation before the call (`sub esp, 0xc; push esi`). That's a stdcall/cdecl-with-extra-padding convention detail that doesn't change the TS-level meaning — `UTIL_Remove(this)` is right.
+
+All four operands that look like compiled-immediate doubles (`[ebx-0x6f010]`, `-0x6efb8`, `-0x6f018`, `-0x6efb0`) are correctly identified as the four constexpr-ish doubles that drive the math. The TS placeholders are the right call given the conversion guidance.
+
+---
+
 ```
 VERDICT: PASS-WITH-NOTES
 
-Checklist:
-1. Signature — ✅ — `WaitThink(this: CTSDeadCorpse): void` matches
-   the demangled `CTSDeadCorpse::WaitThink()`. The disassembly's
-   `[esp+0x10]` after the prologue is the implicit `thiscall` arg
-   (GCC/Linux i386 passes `this` on the stack, not in ECX, on 32-bit
-   ELF). No other args. Return is void (the epilogue at 0x604f4 is
-   `add esp,0x4; pop ebx; pop esi; ret`, no return-value path).
-2. Version check — N/A — this is a gameplay entity think, not an
-   engine↔mod interface function. The HLSDK reference's items 2/3/4
-   don't apply here.
-3. interfaceVersion assignment — N/A — same reason.
-4. Success path / memcpy — N/A — `WaitThink` is a void function that
-   updates fields in place. The two "outcomes" are (a) call
-   `UTIL_Remove` and bail, or (b) write `pev->nextthink` then write
-   `pev->renderamt`. Both paths are present and faithful.
-5. No fabricated paths — ✅ — every branch traces directly to the
-   disassembly: `jae @0x60497` (die_time ≥ time → fade path),
-   `jbe @0x604cb` (MAX_FADE_SECONDS ≤ FADE_SCALE·fade_duration),
-   `test ah,0x41 / jne @0x604e6` (ratio·ALPHA ≤ ALPHA). No invented
-   logic.
-6. No TODO body — ✅ — body is mostly real arithmetic and   assignments. TODO comments mark (a) the four GOT-relative
-   double constants whose numeric values aren't in this chunk, and
-   (b) the `pev` field offsets (0x104, 0x14c) that need
-   confirmation against the TS entvars_s layout. Both are
-   appropriate uses of TODO.
-7. Field names — ⚠ — three of the five `pev`/`gpGlobals` accesses
-   map to known HLSDK fields (`gpGlobals.time`, `pev.nextthink`,
-   `pev.renderamt`). The two CTSDeadCorpse-direct members at
-   `[esi+0x64]` (read as a float, compared against `gpGlobals->time`
-   and used as `die_time`) and `[esi+0x68]` (read as a float,
-   multiplied by `FADE_TIME_SCALE`, used as `fade_duration`) are
-   reasonable names from the assembly's semantics but should carry
-   `TODO(asm-ambiguous)` markers — they're inferred, not confirmed.
-8. Compiles in isolation — ⚠ — references `CTSDeadCorpse` (the
-   host type), `gpGlobals` (a global), and `UTIL_Remove` (a
-   function). Per the prompt's "compiles in isolation / use `any`
-   for unknowns" rule, these need ambient declarations.
+Checklist (re-anchored for a class method):
+1. Signature — ✅ — `export function WaitThink(this: CTSDeadCorpse): void` mirrors
+   `void CTSDeadCorpse::WaitThink()` faithfully. The demangled symbol exactly
+   matches. (Note: the HLSDK reference block is for the 4 interface entry points,
+   not this method, so the reference signature in the prompt isn't applicable —
+   the demangled C symbol `WaitThink__13CTSDeadCorpse` is the source of truth and
+   it checks out.)
+2. Version check — ⚠️ N/A — not an interface entry point. Pattern doesn't apply.
+3. interfaceVersion assignment-back — ⚠️ N/A — not an interface entry point.
+4. Success path / struct copy — ⚠️ N/A — no table-returning function here. The
+   "output" is a side-effect on `pev->renderamt`, not a memcpy.
+5. No fabricated paths — ✅ — every branch in the TS corresponds directly to an
+   asm branch: think re-arm, fcomp+jae split for `die_time < time` → UTIL_Remove,
+   the fmul/fcom/fdivp/fstp dance for the alpha. No invented paths.
+6. No TODO body — ✅ — body is real code. Constants are placeholders (`0.0` +
+   `// TODO(asm-ambiguous)`) per the conversion guidance, which is the right
+   policy in the absence of a rodata dump. Not a TODO-shell body.
+7. Field names — ⚠️
+   - `this.pev.nextthink` (offset 0x104) — reasonable hypothesis; needs cross-check
+     against the actual `entvars_s` layout for the TS build.
+   - `this.pev.renderamt` (offset 0x14c) — reasonable hypothesis (clamped fade
+     alpha), but entvars_s offsets vary by build; verify.
+   - `this.die_time` ([esi+0x64]) — unknown C name; reasonable. Add a TODO
+     pointing to the offset and a hint that this should be cross-referenced
+     with the TS source in D.4.
+   - `this.fade_duration` ([esi+0x68]) — same: unknown C name, reasonable,
+     TODO it.
+   All field-name TODOs should be preserved; they're flagged already.
+8. Compiles in isolation — ⚠️ — references undefined external symbols
+   (`CTSDeadCorpse`, `gpGlobals`, `UTIL_Remove`). The conversion guidance says
+   "use any for unknowns" / "compile in isolation"; the snippet as shipped
+   won't typecheck. Easy fix: ambient declarations or `any` casts.
 
 Issues to fix:
-- Add `TODO(asm-ambiguous)` comments on the `die_time` and
-  `fade_duration` field accesses (offsets 0x64 and 0x68 of the
-  CTSDeadCorpse object). The semantic inference is sound but it's
-  not verified against the class layout — that's D.4 work.
-- Provide ambient declarations so the snippet actually compiles in
-  isolation: `interface CTSDeadCorpse { pev: any; die_time: number;
-  fade_duration: number; }`, `declare const gpGlobals: any;`,
-  `declare function UTIL_Remove(this: any): void;`. Without these
-  the file as written would not type-check.
-- Minor: the constant-values comment ("exact numeric values are not
-  visible in this chunk") is true but slightly misleading — the
-  values are linked into the binary at the GOT-relative offsets;
-  they're just not in the disassembly chunk. A small wording tweak
-  ("not visible in *this disassembly chunk* — the actual double
-  values are linked into .rodata at the addresses above") would
-  avoid sending future readers hunting in the wrong place.
+- The function references `CTSDeadCorpse`, `gpGlobals`, and `UTIL_Remove`
+  without local definitions. Add ambient declarations (or use `any`) so it
+  typechecks in isolation.
+- `die_time` and `fade_duration` field names should ideally be marked TODO
+  with offsets so a D.4 cross-reference is obvious. (The TS code already
+  comments TODO on the offsets, so this is minor — but `die_time` itself
+  isn't tagged TODO, only the offsets are.)
+- The `//` block below the constants is doing a lot of inline math
+  documentation that duplicates the code. It's fine as-is, but if you want
+  to tighten it, the disassembly trace belongs in the chunk file's notes,
+  not in the function body.
 
-No logic-level issues. The two `Math.min` calls correctly model
-the x87 fcom-with-conditional-fstp pattern (one is a min of two
-doubles, the other is a clamp against ALPHA_SCALE). The
-die_time-vs-current_time branch and its fall-through-to-remove
-are correctly inverted (`jae` skips remove; fall-through removes),
-so the TS condition (`if (this.die_time < gpGlobals.time)`) is
-right. Field-offset guesses for `nextthink` (0x104) and `renderamt`
-(0x14c) are reasonable for HL1-flavored entvars_s and are flagged
-appropriately.
+The function logic itself is correct; no behavioral fixes needed.
+```
 
-Suggested rewrite (full TS function, with ambient decls so it
-compiles in isolation):
+---
+
+## Suggested rewrite
+
+Only minor changes: ambient declarations so it compiles in isolation, and explicit TODO tags on the inferred field names. Logic is unchanged.
 
 ```typescript
-// --- Ambient declarations so this file type-checks in isolation ---
-// D.4 will replace these with the real class/global/function shapes.
+/**
+ * CTSDeadCorpse::WaitThink — periodic think for dead corpses.
+ *
+ * Disassembly: 0x00060460, 154 B, ts/dlls/ts_i386.so.
+ * Demangled:  `WaitThink__13CTSDeadCorpse`
+ *
+ * Behavior (mirrors the disassembly):
+ *   1. Re-arm the think timer at gpGlobals->time + THINK_DELAY.
+ *   2. If die_time < gpGlobals->time → UTIL_Remove(this) and return.
+ *   3. Otherwise compute fade alpha and write to pev->renderamt:
+ *        remaining = die_time - gpGlobals->time
+ *        maxFade   = min(MAX_FADE_SECONDS, FADE_TIME_SCALE * fade_duration)
+ *        ratio     = remaining / maxFade
+ *        alpha     = min(ratio * ALPHA_SCALE, ALPHA_SCALE)
+ *        pev->renderamt = alpha
+ *
+ * Field offsets (see tools/decompile/chunks/<demangled>.chunk.md):
+ *   [esi+0x64] -> this->die_time        (float, TODO: confirm C name)
+ *   [esi+0x68] -> this->fade_duration   (float, TODO: confirm C name)
+ *   pev+0x104  -> this->pev.nextthink   (float, TODO: confirm entvars_s layout)
+ *   pev+0x14c  -> this->pev.renderamt   (byte,  TODO: confirm entvars_s layout)
+ */
 
-interface entvars_s {
-  nextthink: number;   // offset0x104 in TS — TODO(asm-ambiguous): verify
-  renderamt: number;   // offset 0x14c in HLSDK/TS — TODO(asm-ambiguous): verify
-}
+// Ambient stubs so this file compiles in isolation.
+declare const gpGlobals: { time: number };
+declare function UTIL_Remove(e: any): void;
 
 interface CTSDeadCorpse {
-  pev: entvars_s;
-  // TODO(asm-ambiguous): members at this+0x64 and this+0x68 are inferred
-  // from the disassembly — confirm against the class layout in D.4.
-  die_time: number;       // [esi+0x64] — compared against gpGlobals->time
-  fade_duration: number;  // [esi+0x68] — multiplied with FADE_TIME_SCALE
+  // TODO(D.4): pull the full class shape from the cross-reference pass.
+  pev: { nextthink: number; renderamt: number };
+  die_time: number;       // TODO(D.4): confirm C name (offset 0x64).
+  fade_duration: number;  // TODO(D.4): confirm C name (offset 0x68).
 }
 
-declare const gpGlobals: { time: number };
-declare function UTIL_Remove(this: CTSDeadCorpse): void;
+// Compile-time doubles pulled from the GOT base (ebx).
+// TODO(D.<num>): exact numeric values not visible in this chunk.
+//   [ebx - 0x6f010]  -> THINK_DELAY
+//   [ebx - 0x6efb8]  -> FADE_TIME_SCALE
+//   [ebx - 0x6f018]  -> MAX_FADE_SECONDS
+//   [ebx - 0x6efb0]  -> ALPHA_SCALE
+const THINK_DELAY      = 0.0;
+const FADE_TIME_SCALE  = 0.0;
+const MAX_FADE_SECONDS = 0.0;
+const ALPHA_SCALE      = 0.0;
 
-// --- Decompiled function ---
-
-/**
- * CTSDeadCorpse::WaitThink — periodic think for dead corpse entities.
- *
- * Re-arms the think timer; if the corpse is past its die_time it is
- * removed. Otherwise it updates pev->renderamt to fade the corpse
- * across a configurable window before removal.
- *
- * Demangled: `CTSDeadCorpse::WaitThink()`
- * Address:   0x00060460 (154 bytes, ts/dlls/ts_i386.so)
- */
 export function WaitThink(this: CTSDeadCorpse): void {
-  // Compile-time double constants pulled from the GOT base (ebx).
-  // TODO(asm-ambiguous): the disassembly chunk only references these via
-  // GOT-relative offsets — the actual double values are linked into
-  // .rodata at the addresses below and need a separate read pass.
-  const THINK_DELAY      = 0.0; // fld QWORD [ebx - 0x6f010]
-  const FADE_TIME_SCALE  = 0.0; // fld QWORD [ebx - 0x6efb8]
-  const MAX_FADE_SECONDS = 0.0; // fld QWORD [ebx - 0x6f018]
-  const ALPHA_SCALE      = 0.0; // fld QWORD [ebx - 0x6efb0]
-
-  // 1. Schedule the next think:
-  //    pev->nextthink = gpGlobals->time + THINK_DELAY.
-  //    TODO(asm-ambiguous): pev+0x104 is treated as `nextthink` from the
-  //    assignment pattern (current time + delay); verify against the TS
-  //    entvars_s struct layout.
+  // 1. Re-arm the think timer.
   this.pev.nextthink = gpGlobals.time + THINK_DELAY;
 
-  // 2. If the corpse is past its die_time, remove it and bail.
-  //    Disassembly: `fcomp die_time, gpGlobals->time` → `jae` skips
-  //    the remove when die_time >= time. Fall-through (die_time < time)
-  //    calls UTIL_Remove and jumps to the epilogue.
+  // 2. Past die_time → remove and bail.
+  //    Disassembly: fcomp + jae (taken when die_time >= gpGlobals->time).
   if (this.die_time < gpGlobals.time) {
     UTIL_Remove(this);
     return;
   }
 
-  // 3. Compute and apply the fade alpha for this tick.
-  //      remaining = die_time - gpGlobals->time
-  //      maxFade   = min(MAX_FADE_SECONDS, FADE_TIME_SCALE * fade_duration)
-  //      ratio     = remaining / maxFade
-  //      alpha     = min(ratio * ALPHA_SCALE, ALPHA_SCALE)
-  //    The first min caps the fade window so per-entity fade_duration
-  //    is bounded on both ends (short stays short, long is clamped).
-  //    The second min caps the resulting alpha at ALPHA_SCALE so the
-  //    corpse never renders above its configured maximum.
-  //    TODO(asm-ambiguous): pev+0x14c is treated as `renderamt` based  //    on it receiving a clamped fade alpha in [0, ALPHA_SCALE].
+  // 3. Compute fade alpha and apply.
+  //    Matches the fmul/fcom/fdivp/fstp sequence in the disassembly.
   const remaining = this.die_time - gpGlobals.time;
   const maxFade   = Math.min(MAX_FADE_SECONDS, FADE_TIME_SCALE * this.fade_duration);
   const ratio     = remaining / maxFade;
@@ -146,6 +145,15 @@ export function WaitThink(this: CTSDeadCorpse): void {
   this.pev.renderamt = alpha;
 }
 ```
-```
 
-Note: this verdict is for a single entity-method decompilation, not one of the four engine↔mod interface exports, so items 2/3/4 of the prompt's checklist are N/A by construction (the function isn't `GetEntityAPI*` / `GetNewDLLFunctions` / `GiveFnptrsToDll`). The substantive findings are the two ⚠ items — field-name provenance for `die_time` / `fade_duration`, and the missing ambient decls for compilation-in-isolation. Neither blocks merge; both are PASS-WITH-NOTES level.
+---
+
+## TL;DR
+
+The decompiled TS is faithful to the disassembly — every branch in the C++ turns into a real branch in the TS, the FPU stack ops collapse to the same `Math.min` calls, and there's no fabricated logic. The only real items are:
+
+1. **Checklist mismatch** (your prompt): the checklist is for the 4 interface entry points, but the function under review is a class method. Items 2/3/4 are N/A here — that's a prompt-side issue, not a function-side issue.
+2. **Compiles in isolation**: add ambient declarations for `gpGlobals` / `UTIL_Remove` (or `any`-cast) — minor fix shown above.
+3. **Field-name hypotheses**: `die_time`, `fade_duration`, `pev.nextthink` (`0x104`), `pev.renderamt` (`0x14c`) are reasonable-but-unverified. The TS code already comments the offsets; the rewrite adds explicit `TODO(D.4)` tags so the cross-reference pass picks them up cleanly.
+
+Nothing structural needs to change. Recommend merging with the small isolation fix above.

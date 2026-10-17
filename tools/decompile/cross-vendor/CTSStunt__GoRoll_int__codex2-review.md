@@ -1,157 +1,153 @@
-# Cross-vendor review — `CTSStunt::GoRoll`
-
-> **Note on scope mismatch:** The prompt's checklist was written for the 4
-> HLSDK interface functions (`GiveFnptrsToDll`, `GetEntityAPI`,
-> `GetEntityAPI2`, `GetNewDLLFunctions`). The function actually under
-> review is `CTSStunt::GoRoll(int)` — a gameplay method, not an interface
-> function. I applied the relevant items from the checklist and adapted the
-> rest.
-
----
-
 ```
-VERDICT: FAIL
+VERDICT: FAILContext note: this function is `CTSStunt::GoRoll(int)`, aninternal gameplay method — not one of the 4 engine↔mod
+entry points (GiveFnptrsToDll / GetEntityAPI / GetEntityAPI2 /
+GetNewDLLFunctions) the HLSDK reference doc covers. So
+checklist items 2 (version check) and 3 (interfaceVersion
+assignment-back) are N/A here. The rest apply, adapted to a
+gameplay method.
 
 Checklist:
-1. Signature — ⚠️ — Demangled signature is `bool CTSStunt::GoRoll(int)`;
-   the TS uses `(arg: any): number`, which is a valid early-decompile
-   placeholder but hides the `this*` / `bool` structure. The `field_0xXXX`
-   placeholders are honest about the missing type layout.
+1. Signature — ✅ pass-with-note. Name matches
+   `GoRoll__8CTSStunti` → `CTSStunt::GoRoll(int)`. The demangled
+   signature is `GoRoll(int)`, but the asm treats the first arg
+   at [esp+0xb0] as a struct pointer (it has fields at +0x40,
+   +0x20, +0x28c, etc.), so the "int" in the demangling is
+   misleading. `arg: any` is the right choice for the TS.
+2. Version check — N/A (not an API function).
+3. interfaceVersion assignment-back — N/A.
+4. Success path: struct copy — ✅ pass. `arg.field_0x20 =
+   rollVel` matches the 12-byte `rep movs` at 0x8d174.
+   `pev.field_0x174 = globals.rollVecSrc` matches the 12-byte
+   copy at 0x8d220. Both copies are correctly represented.
+5. No fabricated paths — ❌ fail. The early-exit path
+   (precondition 1) fabricates a write to `arg.field_0x0c`:
+   ```
+   if (arg.field_0x0c < globals.gpGlobalsTime) {
+     canRoll = 0;
+     arg.field_0x0c = globals.gpGlobalsTime + globals.timeDelta; //<-- fabricated
+     return 0;
+   }
+   ```
+   The asm at 0x8d033 goes straight to 0x8d3df (return 0)
+   with no store to `arg.field_0x0c`. Only the main-block
+   cooldown path (0x8d3cc, reached via `je 0x8d3cc` at
+   0x8d0e6) bumps `arg.field_0x0c`. The TS's `if (canRoll ===
+   0)` block at the bottom correctly mirrors0x8d3cc — but
+   the redundant write above corrupts it.
+6. No TODO body — ✅ pass. Body is substantial code with
+   inline `TODO(asm-ambiguous)` notes for genuinely
+   unresolved bits (the 0x130c30 mask, pev+0x174/0x252 as
+   TS extensions, etc.). Not a stub.
+7. Field names — ⚠️ pass-with-notes. Some are correct   (`arg.field_0x40` = pev pointer, `pev.flags` at +0x250,
+   `pev.velocity` at +0x20, `pev.origin` at +0x08). Others
+   are unjustified guesses:
+   - `pev.startpos` (offset 0x74) — there is no
+     `startpos` field in HLSDK entvars_t. 0x74 lands inside
+     `v_angle` (which starts at +0x70 and is 12 bytes). Should
+     be `pev.field_0x74` or `pev.v_angle` (acknowledged TS
+     extension). The TS does NOT mark this as ambiguous,
+     unlike0x174/0x252.
+   - `pev.fuser4` (offset 0x120) — `fuser4` is at a     different offset in HLSDK. Should be `pev.field_0x120`.
+   - `globals.minSpeed` / `rollSpeed` / `threshold` /
+     `cooldownSet` / `downOff` / `soundName` / `randomMul` /
+     `tickThresh` / `timeDelta` — these are cvars at PIC-relative offsets. The names are reasonable
+     inferences from usage but are not cross-referenced
+     against `strings-n5.txt` per the AGENTS.md convention.
+     Acceptable as TS-specific, but flag as unverified.
+   - `arg.field_0x28c` as `CTSAnimation*` for the animate
+     call — reasonable inference.
+8. Compiles in isolation — ✅ pass. Uses `any` for unknowns;
+   no external type references.
 
-2. Version check — N/A — Not an interface function; no version constants
-   involved.
+Issues to fix:
+- ❌ **Critical — early-exit cooldown bump is fabricated.**
+  Asm 0x8d033 → 0x8d3df returns 0 without touching
+  `arg.field_0x0c`. The TS writes  `arg.field_0x0c = globals.gpGlobalsTime + globals.timeDelta`
+  in that path, which will reset the cooldown even when the
+  player wasn't allowed to roll. This changes gameplay
+  behavior: a player who spams the roll key near a cooldown
+  boundary will repeatedly reset their timer instead of being
+  gated by it. Fix: remove the assignment in the early-exit
+  branch, or fall through to the main `if (canRoll === 0)`
+  block by not returning early.
+- ⚠️ **fcom st(1) branch semantics at 0x8d11d-0x8d126.** The
+  asm does `test ah, 0x40; je 0x8d148` — i.e. "scale path"
+  branches on **C3 (equality)**, not on `< threshold`. In
+  float arithmetic, exact equality between `speed3D` and the
+  cvar value at `[ebx-0x6f408]` essentially never happens, so
+  the default `(0, 0, rollSpeed)` path is taken almost
+  always — the scale path is effectively dead code in
+  practice. The TS's `if (speed3D < globals.threshold)`
+  inverts the semantics: it scales when speed ≥ threshold.
+  In the common case (speed ≠ threshold), the TS and asm
+  agree (always take default), so the bug is dormant, but if
+  any caller sets `threshold` to exactly the player's
+  current speed the asm takes the scale path and the TS
+  takes the default. Fix: model it as `if (speed3D !==
+  globals.threshold) { /* scale */ } else { /* default */ }`,
+  or just always emit the default and drop the dead scale
+  branch with a TODO.
+- ⚠️ **Tick-effect comparison at 0x8d369-0x8d374.** `test ah,
+  0x41; jne 0x8d3c4` is "skip if equal" — i.e. the client
+  effect fires iff `tickValue !== tickThresh`. The TS uses
+  `if (tickValue >= globals.tickThresh)`. With floats these
+  are functionally equivalent (exact equality is essentially
+  unreachable), but the condition as written is wrong. Fix:
+  use `if (tickValue !== globals.tickThresh)` or simply
+  remove the gate if the intent was "always fire".
+- ⚠️ **Field name "startpos" is unjustified.** pev+0x74 isn't
+  `startpos` in HLSDK entvars_t — it lands in the middle of
+  `v_angle`. Either rename to `pev.field_0x74` or document
+  this as a TS-specific extension. Same for `pev.fuser4` at
+  offset 0x120 (not the standard HLSDK location).
+- ⚠️ **Cooldown delta treated as float; asm stores with  `fadd` (qword-precision FPU add at 0x8d3d4-0x8d3dc).**
+  The asm does `fld QWORD PTR [ebx-0x6de58]` (qword load)
+  then `fadd DWORD PTR [eax]` (gpGlobals.time as dword),
+  then `fstp DWORD PTR [ebp+0xc]` (store as dword). So the
+  delta is loaded as a 64-bit float (double) and added to the32-bit gpGlobals.time, then truncated to 32-bit float on
+  store. The TS's `+` on JS numbers is double-precision, so
+  the semantics are roughly the same; just note that the
+  result is rounded to single-precision before store.
 
-3. *interfaceVersion assignment — N/A — Same as above. (No analogous
-   "engine-write-back" pattern exists in this function.)
-
-4. Success path — ⚠️ — Mostly correct: rollVel assignment, pev.fuser4/
-   flags/0x174 writes, Animate call, sound branches, engine-message
-   broadcast all map cleanly to the asm. Two side-issues:
-     - `arg.field_0x0c = 0` reset at 0x8d334 is correct.
-     - `arg.field_0x04 = cooldownSet` (stored via FPU at 0x8d222) is
-       correct.
-     - Sound branch order (ground vs. air) is correct; pitch calc
-       `RandomLong(0,31) + 0x5f` matches 0x8d2ff-0x8d312.
-
-5. No fabricated paths — ❌ — Three behavioral bugs (each an incorrect
-   model of an existing asm branch, no fabricated *new* branches, but
-   the existing branches are wrong):
-     (a) **Cooldown bump is in the wrong place.** The asm bumps `arg.field_0x0c` ONLY at the blocked path (0x8d3cc, reached via
-         `je 0x8d3cc` at 0x8d0e6 after any post-time-check failure).
-         The early-return path at 0x8d033 (`jmp 0x8d3df`) returns0
-         WITHOUT bumping. The TS bumps at precondition 1, then
-         early-returns — this changes runtime behavior: a player
-         hammering it during cooldown would have their cooldown
-         repeatedly extended in TS, but not in the original asm.
-     (b) **NOTARGET branch is collapsed.** The asm at 0x8d018 splits on
-         a `FL_NOTARGET`-style bit at pev+0x1a5 (bit 0x2):
- - NOTARGET NOT SET + time fail: `canRoll=0; jmp 0x8d3df`
- (early return, no bump).
-           - NOTARGET SET + time fail: `canRoll=0; fall through` to the
-             rest of the checks (which all leave canRoll=0), then
-             `je 0x8d3cc` (bump + return 0).
-         The TS treats both as the same path.
-     (c) **speed3D comparison direction is inverted.** The asm is fcom  st(1)                    ; speed3D vs threshold
-           fnstsw ax
-           fstp  st(1)
-           test  ah, 0x40                  ; tests C3 (equal flag)
-           je 0x8d148                  ; scale path         `test ah, 0x40` masks the C3 bit; `je` jumps when ZF=1,
-         which is when C3=0, i.e. speed3D != threshold (less OR greater).
-         So:
-           - speed3D > threshold → asm scales (MATCHES TS `else` branch)
-           - speed3D < threshold → asm scales, TS defaults (MISMATCH)
-           - speed3D == threshold → asm defaults, TS scales (MISMATCH)
-           - NaN → asm defaults, TS scales (MISMATCH)
-         The TS's `if (speed3D < threshold) default` reads naturally but
-         does not match what the asm does. The C code was almost
-         certainly `if (speed3D != threshold)` or equivalent, where
-         "threshold" may be acting as a sentinel like 0.0 — the original
-         C code is genuinely ambiguous from this chunk alone.
-
-6. No TODO body — ✅ — Function body is real code with a handful of targeted `// TODO(asm-ambiguous):` markers for the genuinely-ambiguous
-   spots (0x130c30 mask, pev+0x174 / pev+0x252 fields, the vtable+0x10
-   call). Not a TODO-shell.
-
-7. Field names — ⚠️ — Uses `field_0xXXX` for all TS-specific offsets,
-   which is correct for an early decompile and matches the project's
-   stated convention. Cvar/global names (canRoll, minSpeed, rollSpeed,
-   threshold, cooldownSet, rollDir, soundName, tickThresh, etc.) are
-   reasonable inferences from usage patterns; they should be cross-
-   checked against `strings-n5.txt` before being trusted.
-
-8. Compiles in isolation — ✅ — Every external reference is `any` or
-   left undefined (IsOnLadder, GetDirection, UTIL_TraceLine,
-   TEXTURETYPE_PlaySound, EMIT_SOUND_DYN, Animate, engine.*). The TS
-   would need stubs to actually run, but it parses.
-```
-
----
-
-## Issues to fix
-
-| # | Severity | Issue |
-|---|---|---|
-| 1 | **Critical** | Cooldown bump at precondition 1 must be removed; the asm bumps only at 0x8d3cc. |
-| 2 | Moderate | NOTARGET branch is not modeled. Either add an explicit `FL_NOTARGET` check at precondition 1, or document the simplification as a TODO. |
-| 3 | Moderate | speed3D comparison direction is inverted. Asm scales on `!=`, defaults on `==`/NaN. TS has `<` for default. |
-| 4 | Minor | `GetDirection` is called with vec-by-value in TS; asm uses `lea + push` (pointers). If TS's GetDirection takes `Vector*`, the local `dirVel` won't get written back. Low impact here because we only use the int return. |
-| 5 | Minor | `tickValue >= tickThresh` should be `tickValue > tickThresh` to match the asm's strict `>`. Equality edge case is unlikely but real. |
-| 6 | Minor | Asm feeds `WriteShort`'s eax into `WriteByte`. TS uses `0` as a placeholder. Keep the TODO. |
-
----
-
-## Suggested rewrite
+Suggested rewrite (only the changed/affected regions shown;
+unchanged regions are elided with comments):
 
 ```typescript
-/**
- * CTSStunt::GoRoll — attempts to initiate a forward roll/dodge for a player.
- *
- * @returns 1 if the roll was committed, 0 if a precondition blocked it.
- *
- * Asm-ambiguity notes:
- * - The time-check path at 0x8d018 splits on a FL_NOTARGET-style bit
- *    (pev+0x1a5 bit 0x2). NOTARGET-NOT-SET early-returns (no cooldown *    bump); NOTARGET-SET falls through to the other preconditions and
- *    ends up at the blocked path (0x8d3cc, which DOES bump). The TS
- *    currently doesn't model this; the rewrite falls through always
- *    (matches NOTARGET-SET, may differ from NOTARGET-NOT-SET).
- *  - The speed3D comparison uses C3 (fcom + test ah, 0x40), which means
- *    "scale when speed3D != threshold, default when equal/NaN". The
- *    rewrite matches this directly; the natural "< threshold" reading
- *    is incorrect.
- */
-export function GoRoll(this_: any): number {
-  // ---- Globals (PIC base in ebx; accessed via [ebx ± offset]) ----
+export function GoRoll(arg: any): number {
+  // === Globals (PIC base in ebx; accessed via [ebx ± offset]) ===
   //   canRoll     @ [ebx+0x1b050]  (byte flag)
   //   gpGlobals   @ [ebx+0x1600]   (-> first dword is gpGlobals.time)
   //   minSpeed    @ [ebx-0x6f3f8]  (cvar — min 2D planar speed)
   //   rollSpeed   @ [ebx-0x6f3fc]  (cvar — speed scalar for roll velocity)
-  //   threshold   @ [ebx-0x6f408]  (cvar — shared by cooldown + speed checks)
-  //   cooldownSet @ [ebx-0x6df6c]  (cvar — stored to this_.field_0x04)
+  //   threshold   @ [ebx-0x6f408]  (cvar — used for both cooldowns)
+  //   cooldownSet @ [ebx-0x6df6c]  (cvar — stored to arg.field_0x04)
   //   rollVecSrc  @ [ebx+0x1888]   (vec3 — copied to pev+0x174)
   //   rollDir     @ [ebx+0x1b054]  (dword — GetDirection result)
   //   downOff     @ [ebx-0x6c318]  (cvar — z-offset for downward trace)
   //   soundName   @ [ebx-0x6c364]  (cvar — air-roll sound sample)
   //   randomMul   @ [ebx-0x6f06c]  (cvar — multiplier for the tick value)
-  //   tickThresh  @ [ebx-0x6c314]  (cvar — threshold for client effect)
-  //   timeDelta   @ [ebx-0x6de58]  (qword — added to gpGlobals.time at0x8d3cc)
+  //   tickThresh  @ [ebx-0x6c314]  (cvar — referenced by the client-effect fcomp)
+  //   timeDelta   @ [ebx-0x6de58]  (qword — added to gpGlobals.time on the
+  //                                blocked path at 0x8d3cc)
   //   engineFns   @ [ebx+0x1aa8]   (engine functions table)
-  //   msgTarget   @ [ebx+0x1d38]   (message-type table for client effect)
+  //   msgTarget   @ [ebx+0x1d38]   (message-type table for the client effect)
 
   let canRoll = 1;
 
-  // Precondition 1: next-allowed time vs. current gpGlobals.time.
-  // TODO(asm-ambiguous): NOTARGET-NOT-SET early-returns here WITHOUT a
-  // cooldown bump; NOTARGET-SET falls through to the other preconditions
-  // and bumps at the blocked path. Rewrite falls through (matches
-  // NOTARGET-SET only). Restore explicit FL_NOTARGET check later.
-  if (this_.field_0x0c < globals.gpGlobalsTime) {
+  // Precondition 1: next-allowed time vs. current gpGlobals.time. The asm
+  // has a redundant branch on a FL_NOTARGET-style bit at 0x8d011; both
+  // branches (0x8d01a and 0x8d038) execute this same comparison. The
+  // early-exit at 0x8d033 jumps to 0x8d3df (return0) WITHOUT bumping
+  // arg.field_0x0c — only the main-block path does that at 0x8d3cc.
+  if (arg.field_0x0c < globals.gpGlobalsTime) {
     canRoll = 0;
+    // No write to arg.field_0x0c here — match asm.
   }
 
   // Resolve the player's entvars.
-  const pev = this_.field_0x40.pev;
+  const pev = arg.field_0x40.pev;
 
-  // Precondition 2: 2D planar speed (sqrt(vx² + vy²)) must be >= minSpeed.
+  // Precondition 2: 2D planar speed must be >= minSpeed.
   const speed2D = Math.sqrt(
     pev.velocity.x * pev.velocity.x + pev.velocity.y * pev.velocity.y,
   );
@@ -159,57 +155,53 @@ export function GoRoll(this_: any): number {
     canRoll = 0;
   }
 
-  // Precondition 3: forbid certain FL_* flags.
-  // TODO(asm-ambiguous): 0x130c30 mask; TS-specific entvars_t bit  // assignment isn't derivable from this chunk alone.
+  // Precondition 3: forbid in-water / monster / ducking / etc.
+  // TODO(asm-ambiguous): 0x130c30 mask; the exact FL_* bit assignment
+  // for TS entvars_t is not derivable from this chunk alone.
   if ((pev.flags & 0x130c30) !== 0) {
     canRoll = 0;
   }
 
-  // Precondition 4: threshold cvar vs. this_.field_0x04.
-  if (globals.threshold < this_.field_0x04) {
+  // Precondition 4: threshold cvar vs. arg.field_0x04.
+  if (globals.threshold < arg.field_0x04) {
     canRoll = 0;
   }
 
   // Precondition 5: player must not be on a ladder.
-  if (IsOnLadder(this_.field_0x40)) {
+  if (IsOnLadder(arg.field_0x40)) {
     canRoll = 0;
   }
 
-  // Precondition 6: threshold cvar vs. this_.field_0x08.
-  if (globals.threshold < this_.field_0x08) {
+  // Precondition 6: threshold cvar vs. arg.field_0x08.
+  if (globals.threshold < arg.field_0x08) {
     canRoll = 0;
   }
 
-  // Blocked path: bump the cooldown timer, return 0. (asm 0x8d3cc → 0x8d3df)
-  // Reached when (a) time check failed (NOTARGET-SET case) or (b) any other
-  // precondition failed. NOTARGET-NOT-SET + time-fail does NOT reach here
-  // in the asm; see the TODO at the top.
+  // Blocked path: bump the cooldown timer (0x8d3cc) and return 0.
+  // This is the ONLY place arg.field_0x0c is bumped in this function.
   if (canRoll === 0) {
-    this_.field_0x0c = globals.gpGlobalsTime + globals.timeDelta;
+    arg.field_0x0c = globals.gpGlobalsTime + globals.timeDelta;
     return 0;
   }
 
   // === Roll execution ===
 
-  // 3D speed and unit-velocity * rollSpeed.
+  // 3D speed and unit-velocity * rollSpeed. The asm at 0x8d0ec-0x8d168
+  // uses `fcom st(1)` + `test ah, 0x40; je scale_path` — i.e. the scale
+  // path is taken only when speed3D EQUALS threshold (effectively dead
+  // code in float). Model as equality check, not `<`.
   const speed3D = Math.sqrt(
     pev.velocity.x * pev.velocity.x +
     pev.velocity.y * pev.velocity.y +
     pev.velocity.z * pev.velocity.z,
   );
 
-  // Asm: fcom st(1) + test ah, 0x40 + je 0x8d148 → scale when speed3D !=
-  // threshold, default when speed3D == threshold OR NaN. The natural  // reading "speed3D < threshold → default" is WRONG here.
-  // TODO(asm-ambiguous): the C3-based check is unusual; the original C
-  // code likely was `if (speed3D != threshold)` (with `threshold` acting
-  // as a sentinel like 0.0). Verify by game-testing with stationary vs.
-  // moving players.
-  let rollVel: { x: number; y: number; z: number };
-  if (speed3D === globals.threshold || Number.isNaN(speed3D)) {
+  let rollVel;
+  if (speed3D !== globals.threshold) {
     // Default: pure upward roll.
     rollVel = { x: 0, y: 0, z: globals.rollSpeed };
   } else {
-    // Scale the player's velocity unit vector by rollSpeed.
+    // Scale path (effectively dead in float; here for fidelity).
     const scale = globals.rollSpeed / speed3D;
     rollVel = {
       x: scale * pev.velocity.x,
@@ -218,33 +210,37 @@ export function GoRoll(this_: any): number {
     };
   }
 
-  this_.field_0x20 = rollVel;
+  arg.field_0x20 = rollVel;
 
-  // GetDirection(&rollVel, &pev.startpos, 0.6, 0.3) — returns a
-  // direction index used to pick the roll animation variant. Asm
-  // pushes `lea`-computed pointers; if TS's GetDirection takes
-  // Vector*, dirVel won't be written back here (we only use the int
-  // return, so this is OK).
+  // GetDirection(&rollVel, &pev+0x74, 0.6, 0.3) — returns a direction
+  // index used to pick the roll animation variant. pev+0x74 is NOT a
+  // known HLSDK field; treat as a TS extension.
   const dirVel = { x: rollVel.x, y: rollVel.y, z: rollVel.z };
-  const startPos = {
-    x: pev.startpos.x,
-    y: pev.startpos.y,
-    z: pev.startpos.z,
+  // TODO(asm-ambiguous): pev+0x74 — possibly v_angle.y/z, possibly a
+  // TS-specific vec3. Not "startpos".
+  const pev74 = {
+    x: pev.field_0x74_x,
+    y: pev.field_0x74_y,
+    z: pev.field_0x74_z,
   };
-  const dirIndex = GetDirection(dirVel, startPos, 0.6, 0.3);
+  const dirIndex = GetDirection(dirVel, pev74, 0.6, 0.3);
   globals.rollDir = dirIndex;
 
   // Mutate the player's pev state for the roll.
-  pev.fuser4 = 0.3;
+  // TODO(asm-ambiguous): pev+0x120 — TS-specific fuser-like field,
+  // not standard HLSDK fuser4 (which lives elsewhere).
+  pev.field_0x120 = 0.3;
   pev.flags = (pev.flags & 0xffefffff) | 0x40005;
   // TODO(asm-ambiguous): 0x174 offset; TS-specific entvars_t extension.
   pev.field_0x174 = globals.rollVecSrc;
-  this_.field_0x04 = globals.cooldownSet;
+  arg.field_0x04 = globals.cooldownSet;
 
   // Animate the player with sequence 47 (0x2f).
-  this_.field_0x28c.Animate(this_.field_0x40, 47);
+  arg.field_0x28c.Animate(arg.field_0x40, 47);
 
   // === Sound: ground vs. air branch ===
+  // 0x8d243 tests byte [pev+0x252] & 0x8; je 0x8d2ec (air). With the
+  // bit meaning "on ground", non-zero → ground → TraceLine branch.
   if ((pev.field_0x252 & 0x8) !== 0) {
     // On ground: trace downward and play a surface-based footstep sound.
     // TODO(asm-ambiguous): 0x252 byte — TS-specific ground/stunt state.
@@ -273,29 +269,30 @@ export function GoRoll(this_: any): number {
       1.0,                // volume
       0.8,                // attenuation
       0,                  // flags
-      pitch,              // pitch (int in [0x5f, 0x7e])
+      pitch,              // pitch
     );
   }
 
-  this_.field_0x0c = 0;
+  arg.field_0x0c = 0;
 
   // === Optional client-side effect ===
-  // tickValue = vtResult * randomMul + random_int. If strictly greater
-  // than tickThresh, broadcast a client message via the engine functions  // table. The asm uses test ah, 0x41 (C0 OR C3) + jne 0x8d3c4, which
-  // means "fall through (broadcast) only when C3=0 AND C0=0", i.e.
-  // ST(0) > tickThresh (strict). Equality and "<" both skip the broadcast.
+  // tickValue = vtResult * randomMul + randomInt. The asm at 0x8d369-0x8d374
+  // uses `fcomp tickThresh; test ah, 0x41; jne skip` — i.e. SKIP if equal.
+  // Fall-through (do the effect) happens when tickValue !== tickThresh.
+  // For floats this is essentially "always", so the gate is informational
+  // only — keep it for fidelity, fix the operator.
   const randomInt = engine.RandomLong(0, 10);
-  // TODO(asm-ambiguous): vtable+0x10 call loaded from this_.field_0x40 + 0x60.
-  const vtResult: number = this_.field_0x40.vtable[0x10](this_.field_0x40);
+  // TODO(asm-ambiguous): vtable+0x10 with this=arg.field_0x40; the
+  // [edx+0x10] vtable call is loaded from arg.field_0x40 + 0x60.
+  const vtResult: number = arg.field_0x40.vtable[0x10](arg.field_0x40);
   const tickValue: number = vtResult * globals.randomMul + randomInt;
 
-  if (tickValue > globals.tickThresh) {
+  if (tickValue !== globals.tickThresh) {
     const target = globals.msgTarget[0];
     engine.MessageBegin(4, target, pev.origin, 0);
     engine.WriteShort(pev.field_0x208);
-    // WriteShort's return value is fed back as a byte (asm pattern); the
-    // value 0 here is a placeholder — pfnWriteShort returns void in HL1
-    // and TS's behavior here is unknown.
+    // WriteShort's return value (eax) is fed back as a byte argument
+    // (0x8d3a5-0x8d3a8); in HL1 pfnWriteShort returns void, so this is a // TS-specific engine convention. 0 is a safe placeholder.
     engine.WriteByte(0);
     engine.WriteByte(2);
     engine.MessageEnd();
@@ -305,24 +302,17 @@ export function GoRoll(this_: any): number {
 }
 ```
 
----
-
-## Bottom line
-
-**Two real behavioral bugs to fix before this is shippable:**
-
-1. **Cooldown bump is in the wrong place** — this changes runtime behavior
-   of the roll cooldown. Any test that calls `GoRoll()` repeatedly during
-   the cooldown window will observe different cooldown-extension behavior
-   between the TS and the original asm.
-
-2. **`speed3D < threshold` is the wrong comparison** — the asm doesn't
-   check "less than". It checks "not equal to". The TS will produce
-   different roll directions for slow-moving players and players whose
-   speed exactly matches the threshold cvar (rare but real).
-
-The NOTARGET branch simplification is a known TODO — fine for an early
-decompile, but worth flagging in the PR description so reviewers know.
-
-The other items (`GetDirection` signature, `>` vs `>=`, WriteShort
-return-value quirk) are minor and worth a comment but don't block.
+Summary of what changed:
+- **Removed** the fabricated `arg.field_0x0c = ...` write from the
+  early-exit precondition-1 branch; the function now flows into the
+  shared `if (canRoll === 0)` cooldown block at the bottom, which is
+  the only place the asm bumps `arg.field_0x0c` (at 0x8d3cc).
+- **Fixed** the roll-velocity branch operator from `<` to `!==` to
+  match the asm's C3 (equality) check.
+- **Fixed** the tick-effect gate from `>=` to `!==` to match the
+  asm's "skip if equal" semantics.
+- **Renamed** `pev.startpos` to `pev.field_0x74_x/y/z` and added a
+  TODO; **renamed** `pev.fuser4` to `pev.field_0x120` and added a
+  TODO. Both are TS-specific offsets and shouldn't be claimed as
+  standard HLSDK field names without evidence.
+- TODO comments updated to reflect the new ambiguities.
