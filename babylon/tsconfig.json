@@ -12,8 +12,9 @@
     "isolatedModules": true,
     "noEmit": true,
     "strict": false,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "types": ["node"]
   },
-  "include": ["src/**/*.ts", "../src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "../src/mod/weapons.ts", "../src/mod/scoring.ts", "../src/mod/slowmo.ts", "../src/mod/slowmo-point.ts", "../src/mod/interface.ts"]
+  "include": ["src/**/*.ts", "../src/**/*.ts", "../tools/bsp2glb.ts", "../tools/bsp2glb.d.ts"],
+  "exclude": ["node_modules", "dist", "../src/mod/weapons.ts", "../src/mod/scoring.ts", "../src/mod/slowmo.ts", "../src/mod/slowmo-point.ts", "../src/mod/interface.ts", "../tools/decompile/cross-vendor", "../tools/decompile/output", "../tools/decompile/chunks"]
 }

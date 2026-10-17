@@ -1,26 +1,33 @@
 /**
- * D.5.4 — Babylon scene with first-person player controller.
+ * D.5.4 + D.5.7 + D.5.9 + D.5.10 — Phase 1 MVP build.
  *
- * Stage 1 milestone verified earlier: empty canvas + dev server boots.
- * Stage 2 (D.5.4): player controller with WASD + PointerLock + mouse-look.
+ * Player controller (D.5.4):
+ *   - Click canvas → PointerLock
+ *   - WASD + mouse-look + Space jump + Shift sprint
+ *   - Esc to release pointer (browser native)
  *
- * Controls:
- *   - Click canvas → request PointerLock
- *   - Mouse       → look (yaw + pitch)
- *   - WASD        → move
- *   - Shift       → sprint
- *   - Space       → jump
- *   - Esc         → release pointer (browser native)
+ * Weapon (D.5.7):
+ *   - Left-click → fire pistol (raycast, damage bot, decrement ammo)
+ *   - R → reload
  *
- * What this exercises:
- *   - `src/bridge/engine.ts` (engine context + entity pool)
- *   - `src/mod/types.ts` (Entvars POJO)
- *   - `babylon/src/player.ts` (controller)
- *   - `babylon/src/world.ts` (test level)
+ * Stub bot (D.5.9):
+ *   - Patrol state machine: walk between spawn + waypoint
+ *   - Chases player when in range
+ *   - Dies after enough damage
  *
- * Next (D.5.2 BSP, D.5.5 types, D.5.6+ bridge): replace the test
- * level with ts_heresy.glb and the player spawn at a real entity
- * point.
+ * HUD (D.5.10):
+ *   - HP bar (top left)
+ *   - Ammo counter (bottom right)
+ *   - Crosshair (center)
+ *   - Hit marker (red ✕) on hit
+ *
+ * What this exercises (foundation for everything else):
+ *   - `src/bridge/engine.ts` (entity pool)
+ *   - `src/mod/types.ts` (Entvars, CBaseEntity POJOs)
+ *   - The Babylon.js engine, scene, camera, meshes
+ *   - Input + game loop pattern
+ *
+ * Next (D.5.2 BSP→glTF): replace test level with real TS map.
  */
 
 import { Engine } from "@babylonjs/core/Engines/engine";
@@ -34,6 +41,8 @@ import { createBabylonSceneDriver } from "../../src/bridge/engine";
 
 import { PlayerController } from "./player";
 import { buildTestLevel } from "./world";
+import { StubBot } from "./bot";
+import { Pistol, HudOverlay } from "./weapon";
 
 const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
 const status = document.getElementById("status") as HTMLDivElement;
@@ -58,10 +67,10 @@ light.intensity = 0.9;
 light.groundColor = new Color3(0.3, 0.3, 0.3);
 light.diffuse = new Color3(0.95, 0.92, 0.85);
 
-// World.
+// World (test level — replaced by ts_heresy.glb in D.5.2).
 const { spawn } = buildTestLevel(scene);
 
-// Camera (will be driven by PlayerController).
+// Camera.
 const camera = new UniversalCamera("player", spawn.clone(), scene);
 camera.setTarget(new Vector3(spawn.x, spawn.y + 1.6, spawn.z + 1));
 camera.minZ = 0.1;
@@ -71,55 +80,88 @@ camera.maxZ = 200;
 const player = new PlayerController({
   camera,
   spawn: { x: spawn.x, y: spawn.y, z: spawn.z },
-  moveSpeed: 5.0,
-  sprintMultiplier: 1.8,
-  lookSensitivity: 0.0025,
-  eyeHeight: 1.7,
-  gravity: 20,
-  jumpVelocity: 8,
 });
 
-// Wire the decompiled TS engine into the Babylon loop.
-const driver = createBabylonSceneDriver({ canvas, audioCtx });
+// Bots (3 bots patrolling).
+const bots: StubBot[] = [
+  new StubBot(scene, { id: 100, name: "bot1", spawn: { x: 4, y: 0, z: 4 }, color: new Color3(0.9, 0.3, 0.3) }),
+  new StubBot(scene, { id: 101, name: "bot2", spawn: { x: -4, y: 0, z: -4 }, color: new Color3(0.3, 0.9, 0.3) }),
+  new StubBot(scene, { id: 102, name: "bot3", spawn: { x: 6, y: 0, z: -2 }, color: new Color3(0.3, 0.5, 0.9) }),
+];
+for (const bot of bots) {
+  bot.setPlayerPosition({
+    x: player.entity.pev.origin.x,
+    y: player.entity.pev.origin.y,
+    z: player.entity.pev.origin.z,
+  });
+}
 
+// Weapon.
+const pistol = new Pistol({ camera, scene, damage: 25, maxAmmo: 12, range: 50, fireRate: 3 });
+const hud = new HudOverlay(document.body);
+pistol.setOnHit((_bot, _pos) => hud.flashHit());
+
+// Wire the decompiled TS engine.
+const driver = createBabylonSceneDriver({ canvas, audioCtx });
+driver.entities.set(player.entity.pev.index, player.entity);
+for (const bot of bots) {
+  driver.entities.set(bot.entity.pev.index, bot.entity);
+}
+
+// Input handlers.
+const onMouseDown = (e: MouseEvent) => {
+  if (!player.isLocked()) return;
+  if (e.button !== 0) return; // only left-click
+  pistol.fire(bots);
+};
+const onKeyDown = (e: KeyboardEvent) => {
+  if (e.code === "KeyR") pistol.reload();
+};
+canvas.addEventListener("mousedown", onMouseDown);
+window.addEventListener("keydown", onKeyDown);
+
+// Main loop.
 scene.onBeforeRenderObservable.add(() => {
   const dt = engine.getDeltaTime();
   player.update(dt);
+  for (const bot of bots) {
+    bot.setPlayerPosition({
+      x: player.entity.pev.origin.x,
+      y: player.entity.pev.origin.y,
+      z: player.entity.pev.origin.z,
+    });
+    bot.update(dt);
+  }
+  pistol.update(dt);
   driver.onTick(dt);
+  hud.update(
+    player.entity.pev.health,
+    100,
+    pistol.getAmmo(),
+    pistol.getMaxAmmo(),
+    dt,
+  );
 });
 
-// Register the player entity with the engine so the decompiled TS
-// can find it (Phase 2 will wire this into the entity pool).
-driver.entities.set(player.entity.pev.index, player.entity);
-
-// Status overlay.
 let frameCount = 0;
-let lastLocked = false;
-
 engine.runRenderLoop(() => {
   scene.render();
   frameCount++;
-  if (status && (frameCount % 30 === 0 || player.isLocked() !== lastLocked)) {
-    lastLocked = player.isLocked();
+  if (status && frameCount % 30 === 0) {
     const pos = camera.position;
-    const x = pos.x.toFixed(1);
-    const y = pos.y.toFixed(1);
-    const z = pos.z.toFixed(1);
-    const lockStatus = lastLocked ? "LOCKED" : "click to lock";
+    const lockStatus = player.isLocked() ? "LOCKED" : "click to lock";
     const fps = engine.getFps().toFixed(0);
+    const aliveBots = bots.filter((b) => b.getHealth() > 0).length;
     status.textContent =
-      `D.5.4 — WASD + PointerLock [${lockStatus}]  ` +
-      `pos: (${x}, ${y}, ${z})  ` +
-      `${fps} fps`;
+      `D.5 MVP — ${lockStatus}  pos: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})  ` +
+      `bots: ${aliveBots}/${bots.length}  ${fps} fps`;
   }
 });
 
 window.addEventListener("resize", () => engine.resize());
 
-// Help console message.
 console.log(
-  "%c[D.5.4] Babylon scene + player controller ready",
+  "%c[D.5 MVP] Babylon scene + player + bots + pistol + HUD ready",
   "color: #0f0; font-weight: bold",
 );
-console.log("Click the canvas to capture pointer, then WASD/mouse to look around.");
-console.log("Player entity (CBaseEntity):", player.entity);
+console.log("Click canvas → mouse-look, WASD, LMB to fire, R to reload, Esc to release.");
