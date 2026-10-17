@@ -27,15 +27,23 @@ decomp (codex only — `claude` CLI is not installed on m5, was the
 "cross-vendor" partner). `decompile-review.py` rewritten to use
 codex as both impl + reviewer.
 
-**D.4 progress: 48/281 methods (~17%) done.**
-**Remaining: 233 methods / ~75 KB of code.**
+**D.4 progress: 246/365 methods (67.4%) done — CORRECTED.**
+**Remaining: 122 unique methods.**
 Realistic per-method budget: 1–15 min observed (codex/M3 via local
 proxy at `127.0.0.1:8789`; proxy is the single bottleneck — one
 call at a time or queue dies). 1-byte methods take ~1 min,
 33-byte methods take 5+ min, large functions take 15-45 min.
-Aggregate wall-clock: 5–30+ hours across multiple sessions.
+Aggregate wall-clock: 1–6+ hours of codex time.
 **Multi-session task; track per-method progress in
-`progress/decomp-log.md`.**
+`progress/decomp-log.md` and `progress/remaining-methods.json`.**
+
+> **Correction (2026-10-16, mid-session):** Earlier sessions reported
+> "281 methods" based on T-type line count in `nm-D-CTS-specific.txt`.
+> The actual unique method count is **365** — many methods have
+> multiple T-type entries (compiler creates vtable thunks, etc.).
+> The `(cls, method)` deduplication yields 365, not 281. We had been
+> measuring percentage against 281, so reports of "87-90% complete"
+> were overstated. **True progress is 67%.** 122 methods remain.
 
 ### Pipeline confirmed working (2026-10-16)
 
