@@ -1,42 +1,43 @@
+// Ambient declarations so this snippet compiles in isolation.
+// D.4 will wire these up properly against the actual class and
+// engine wrapper.
+declare class CTSPistolWeapon {}
+declare function RANDOM_LONG(min: number, max: number): number;
+
 /**
- * CTSPistolWeapon::RandomPistol — pick a random pistol type for
- * this weapon.
+ * CTSPistolWeapon::RandomPistol — pick a random pistol type ID.
  *
- * Rolls `g_engfuncs.pfnRANDOM_LONG(1, 7)` and dispatches via a
- * jump-table switch on `(rolled - 1)` to return one of the pistol
- * type IDs below.
+ * Calls the engine's `RANDOM_LONG(1, 7)` and dispatches via a 7-entry
+ * jump table on `(rolled - 1)`. The disassembly shows six distinct
+ * case-target blocks (returning 8, 9, 14, 21, 22, 28) plus a default
+ * (returning 1) — 7 code targets for 7 table entries.
  *
- * Disassembly (146 B at 0xb9ba4):
- *   - PIC base0x166410 via `call +0x9; pop ebx; add ebx, 0xac263`
- *   - Load `[ebx+0x1aa8]` → g_engfuncs (engine function table)
- *   - Call `[eax+0x168]` → g_engfuncs.pfnRANDOM_LONG(1, 7)
- *   - `sub eax, 0x1` → switch on (rolled - 1)
- *   - `cmp eax, 0x6; ja default` → values 0..6 dispatched,
- *     >6 → default
- *   - Jump table at `[ebx - 0xac230]` = 0xBA1E0 (outside chunk).
- *   - Case targets visible in-chunk return 0x8, 0x9, 0xe, 0x15,
- *     0x16, 0x1c; default returns 1. Case 6 likely duplicates *     default per the jump table.
+ * The actual jump table sits at 0xb9de0, outside this 146-byte chunk,
+ * so case index 6 (rolled == 7) cannot be verified from the
+ * disassembly alone. We route it to the default (1), which is the
+ * most common MSVC pattern when a case has no distinguishing code;
+ * if a D.4 cross-reference shows a 7th case target, the mapping
+ * should be updated.
  *
- * `this` is unused — this is a static-like RNG dispatch helper
- * (no `this` dereferences in the disassembly).
- *
- * @returns Pistol type ID consumed by the engine's spawn code.
+ * @returns Pistol type ID: 1 (default), 8, 9, 14, 21, 22, or 28.
  */
-
-// Stubs so this file compiles in isolation. In D.5 these will be
-// wired to the real engine bindings from `src/mod/interface.ts`.
-declare const g_engfuncs: any;            // enginefuncs_t, see D.3
-declare class CTSPistolWeapon {}          // gameplay entity, see D.4
-
 export function RandomPistol(this: CTSPistolWeapon): number {
-  const rolled = g_engfuncs.pfnRANDOM_LONG(1, 7);
+  // PIC: ebx = 0x166010 (image base).
+  //   [ebx + 0x1aa8]      → g_engfuncs (enginefuncs_t *)
+  //   [g_engfuncs + 0x168] → pfnRANDOM_LONG(min, max)
+  // Stack: 16 bytes of alignment padding (2× sub esp,0x8) + 2× push
+  // arg. Cleaned with add esp,0x10 + add esp,0x8 before ret.
+  const rolled = RANDOM_LONG(1, 7);
+
+  // `sub eax, 1; cmp eax, 6; ja default` → case index = rolled - 1.
   switch (rolled - 1) {
-    case 0: return 0x8;
-    case 1: return 0x9;
-    case 2: return 0xe;
+    case 0: return 0x08;
+    case 1: return 0x09;
+    case 2: return 0x0e;
     case 3: return 0x15;
     case 4: return 0x16;
     case 5: return 0x1c;
-    default: return 1;  // case 6 + out-of-range, see jump table
+    // TODO(asm-ambiguous): case 6 (rolled == 7) — see file note.
+    default: return 0x01;
   }
 }

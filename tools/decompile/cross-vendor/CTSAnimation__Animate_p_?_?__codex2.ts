@@ -1,181 +1,162 @@
 /**
  * CTSAnimation::Animate — per-frame animation dispatcher for a player.
  *
- * Demangled:   CTSAnimation::Animate(CBasePlayer*, int)
- * Disassembly: 0x0005b470, 7805 bytes
+ * Demangled:  CTSAnimation::Animate(CBasePlayer*, int)
+ * Address:    0x0005b470
+ * Size:       7805 bytes (0x1e7d)
+ * Sibling:    CTSAnimation::HandleCloseCombat (0x5d8d0, 1058 B)
  *
- * Body shape (from the disassembly):
- *   1. Compute horizontal speed from [pPlayer+0x20].
- *   2. If player is alive, not ducking, and not in close combat,
- *      blend walk/aim layers based on sequence (4 → run, 2 → walk).
- *   3. Pre-switch close-combat gate: if sequence ∈ {0x28..0x39}
- *      and not already in close combat, call GaitCloseCombat.
- *   4. First switch on (sequence + 1), 59-case jump table at
- *      [picBase + (sequence+1)*4 - 0x10a640]. Each leaf gates on
- *      player state flags ([pPlayer+0x1a5], [pPlayer+0x250]) and
- *      either builds an anim-name via strcpy/strcat from
- *      [pPlayer+0xb58] (the anim-extension buffer) and calls
- *      SetAnim/BlendAnimationsByDir, or dispatches to
- *      BlendAnimationsForSlide / HandleCloseCombat.
- *   5. Post-switch: HandleCloseCombat if in CQC, else a second
- *      59-case switch on sequence (jump table at
- *      [picBase+n*4-0x109e54]) that resolves the final anim name.
- *   6. If the resolved layer.sequence ([pPlayer+0x12c]) differs
- *      from the player's current sequence ([pPlayer+0x128]),
- *      copy it over, zero [pPlayer+0x130], and call
- *      ResetSequenceInfo.
+ * High-level shape (per disassembly):
+ *   1. horizSpeed = sqrt(pev.velocity.x^2 + pev.velocity.y^2)
+ *   2. if !isDucking && alive: BlendAnimationsByDir on sequences 4 and 2
+ *   3. close-combat overlay (sequences 0x28..0x39 except 0x33)
+ *   4. 59-case switch on (sequence + 1)         (jump tbl @ ebx-N)
+ *      each case: state checks → strcpy/strcat anim name →
+ *      SetAnim(this, pPlayer, name, bodyPart, flags) → bodyWeight
+ *   5. post-switch: HandleCloseCombat OR 2nd 59-case resolver
+ *      (jump tbl @ ebx-M) that picks the final anim string
+ *   6. if pev.sequence != pev.gaitsequence:
+ *        pev.sequence = pev.gaitsequence;
+ *        pev.frame = 0;
+ *        pPlayer->ResetSequenceInfo();
  *
- * Field offsets are pinned to the disassembly (ebp == pPlayer
- * after `mov ebp, [esp+0xa4]`). Names are deliberately NOT
- * fabricated — they're marked TODO until verified against
- * `tools/decompile/references/tsentity.md` once that exists.
+ * @param this     CTSAnimation instance (does NOT own pev)
+ * @param pPlayer  CBasePlayer* being animated (owns pev at offset 0)
+ * @param sequence current sequence index (int)
  */
-
-// External helpers (defined elsewhere in the project):
-declare function IsInCloseCombat(this_: any, sequence: number): number;
-declare function GaitCloseCombat(this_: any, pPlayer: any): number;
-declare function BlendAnimationsByDir(
-  this_: any, pPlayer: any, angles: any, dir: any,
-  ext: any, pitch: number, yaw: number, bodyPart: number,
-): void;
-declare function BlendAnimationsForSlide(this_: any, pPlayer: any): void;
-declare function SetAnim(
-  this_: any, pPlayer: any, name: any, body: number, flags: number,
-): void;
-declare function HandleCloseCombat(
-  this_: any, pPlayer: any, sequence: number,
-): void;
-declare function LookupSequence(this_: any, name: any): number;
-declare function ResetSequenceInfo(this_: any): void;
-
-// Offsets via the player arg (EBP in the asm). Adjust names once
-// the TS player-struct header is reverse-engineered.
-const OFF_VEL = 0x20;            // velocity (Vector; .x at +0, .y at +4)
-const OFF_BUTTONS = 0x1a5;       // buttons byte (0x02 = duck)
-const OFF_FLAGS = 0x250;         // FL_* bitfield
-const OFF_ANIMEXT = 0xb58;       // anim-extension char[?]
-const OFF_GAIT_SEQ = 0x128;      // pev.sequence
-const OFF_LAYER_SEQ = 0x12c;     // this.layer.sequence
-const OFF_LAYER_FRAME = 0x130;   // this.layer.frame
-const OFF_ACTIVE_ITEM = 0x60;    // points at a vtable; vtable+0xB4 = ???
-
-// Reading helpers. Cast to any so we don't need the struct def.
-function readFloat(p: any, off: number): number {
-  // TODO(derive): float-at-offset accessor. For now, treat p as
-  // a Float32Array-like view into the player memory.
-  return 0;
-}
-
 export function Animate(
-  this: any,            // CTSAnimation* — kept as `any` until the
-                        // CTSAnimation struct is reverse-engineered
-  pPlayer: any,         // CBasePlayer* — this is the EBP-anchored struct
-                        // in the disassembly
+  this: CTSAnimation,
+  pPlayer: any, // CBasePlayer* — full type in D.4
   sequence: number,
 ): void {
-  // ---- 1. Horizontal speed from velocity X/Y ----
-  const vx = readFloat(pPlayer, OFF_VEL);
-  const vy = readFloat(pPlayer, OFF_VEL + 4);
-  const horizSpeed = Math.hypot(vx, vy);
+  // Disassembly prologue: 4×push + sub esp 0x8c + PIC call/pop/add ebx.
+  // Stack layout: [esp+0xa0]=this, [esp+0xa4]=pPlayer, [esp+0xa8]=sequence.
+  // Disassembly sets ebp=[esp+0xa4] and never reloads — so every
+  // [ebp+…] access in the asm is a pPlayer.… field access in TS.
 
-  // ---- 2. State flags ----
-  const ducking = (pPlayer as any)[OFF_BUTTONS] & 0x02;
-  // [pPlayer+0x60] is a vtable-bearing sub-object. The vtable
-  // slot 0xB4 is whatever its "IsAlive()" is — keep symbolic.
-  // TODO(derive): identify the sub-object at +0x60 (likely the
-  // active item / a pev-cached base) and rename.
-  const alive = !!(pPlayer as any)[OFF_ACTIVE_ITEM]; // placeholder
+  if (sequence < 0) return; // 5b48d/5b495: cmp [sequence],0 ; js end
 
-  // ---- 3. Movement-layer blends (sequence 4 = run, 2 = walk) ----
-  if (alive && !ducking) {
+  // --- 1. horizSpeed = sqrt(pev.velocity.x^2 + pev.velocity.y^2) ---
+  // 5b49b..5b4ac: [pPlayer+0]→pev; [pev+0x20]=vx; [pev+0x24]=vy; fmul×2; faddp; fsqrt.
+  const horizSpeed = Math.hypot(
+    pPlayer.pev.velocity.x, pPlayer.pev.velocity.y,
+  );
+
+  // --- 2a. state flags ---
+  // 5b4b0..5b4ba: test BYTE PTR [pev+0x1a5], 0x02 → IN_DUCK.
+  const isDucking = (pPlayer.pev.button & 0x02) !== 0;
+  // 5b4c0..5b4d2: eax = [pPlayer+0x60]; call [eax+0xb4] → "IsAlive"-like.
+  // [pPlayer+0x60] is some vtable-bearing sub-object (likely m_pActiveItem
+  // or similar). TODO(D.4): resolve the field; for D.3 keep the indirection.
+  const alive = !!(pPlayer.field_0x60?.IsAlive?.());
+
+  // --- 2b. movement blends (run/walk layer + gun-aim) when alive & not ducking ---
+  if (alive && !isDucking) {
+    // 5b4df..5b537: sequence===4 && !IsInCloseCombat && horizSpeed > THRESH
     if (sequence === 4 && !IsInCloseCombat(this, sequence) &&
-        horizSpeed > /* cvar at ebx-0x6f400 */ 0) {
-      // TODO(derive): the two `3e99999a` / `3f19999a` constants
-      // are pitch/yaw thresholds (0.3 / 0.6). Mirror them as
-      // named locals.
+        horizSpeed > /* cvar @ ebx-0x6f400 */ 0 /* TODO(D.4) */) {
+      // 5b5af..5b5d9: BlendAnimationsByDir(this, pPlayer, angles, vel,
+      //                               animExtension, 0.3, 0.6, bodyPart=0x1c)
       BlendAnimationsByDir(
-        this, pPlayer,
-        /* angles */ null,                        // [pPlayer+0x74]
-        /* dir    */ null,                        // normalized vel
-        /* ext    */ (pPlayer as any)[OFF_ANIMEXT],
-        /* pitch  */ 0.3, /* yaw */ 0.6,
-        /* body   */ 0x1c,
+        this, pPlayer, pPlayer.pev.angles,
+        normalize(pPlayer.pev.velocity), pPlayer.animExtension,
+        /* pitch= */ 0.3, /* yaw= */ 0.6, /* bodyPart= */ 0x1c,
       );
     }
+    // 5b5e1..5b67f: sequence===2
     if (sequence === 2) {
       BlendAnimationsByDir(
-        this, pPlayer, null, null,
-        (pPlayer as any)[OFF_ANIMEXT],
-        0.3, 0.6, /* body */ 0x5c,
+        this, pPlayer, pPlayer.pev.angles,
+        normalize(pPlayer.pev.velocity), pPlayer.animExtension,
+        /* pitch= */ 0.3, /* yaw= */ 0.6, /* bodyPart= */ 0x5c,
       );
     }
   }
 
-  // ---- 4. Pre-switch close-combat gate ----
+  // --- 3. close-combat overlay ---
+  // 5b682..5b7a8: if [pev+0x1a5]&0x02 (ducking) skip; IsInCloseCombat →
+  // if [pPlayer+0x78]!=0 skip; if IsInCloseCombat re-check skip;
+  // if [pPlayer+0x60]->IsAlive==0 skip; if sequence in
+  // {0x28,0x2f,0x30,0x31,0x32,0x36,0x37,0x38,0x39} skip; else if
+  // GaitCloseCombat(this,pPlayer) → set didCloseCombat=1.
+  // Net: any sequence in [0x28..0x39] EXCEPT 0x33 may set didCloseCombat.
   let didCloseCombat = false;
-  // Sequence must be one of {0x28..0x39} minus specific exclusions.
-  // The asm enumerates them one cmp at a time; we keep that shape.
-  const blockedSeqs = new Set([0x28, 0x2f, 0x30, 0x36, 0x32, 0x31,
-                              0x37, 0x38, 0x39]);
-  if (sequence >= 0x28 && sequence <= 0x39 && !blockedSeqs.has(sequence)
-      && !IsInCloseCombat(this, sequence) && alive && !ducking) {
-    GaitCloseCombat(this, pPlayer);
-    didCloseCombat = true;
+  const isBlockedSeq = (
+    sequence === 0x28 || sequence === 0x2f || sequence === 0x30 ||
+    sequence === 0x31 || sequence === 0x32 || sequence === 0x36 ||
+    sequence === 0x37 || sequence === 0x38 || sequence === 0x39
+  );
+  if (
+    !isDucking &&
+    !IsInCloseCombat(this, sequence) &&
+    pPlayer.field_0x60 /* m_pActiveItem? */ /* TODO(D.4) */ !== 0 &&
+    !isBlockedSeq
+  ) {
+    if (GaitCloseCombat(this, pPlayer)) {
+      didCloseCombat = true;
+    }
   }
 
-  // ---- 5. First 59-case switch on (sequence + 1) ----
-  // Jump table at [picBase + (sequence+1)*4 - 0x10a640].
-  // Each case has its own state-gated body in the asm; the body is
-  // intentionally NOT reproduced here. v1.0 needs a per-case
-  // implementation derived from the disassembly chunk.
+  // --- 4. 59-case switch on (sequence + 1) ---
+  // Jump table at [ebx + (sequence+1)*4 - 0x10a640]; 5b7b0..5b7ce.
+  // Each leaf does: state checks → strcpy from data tbl → strcat with
+  // animExtension → SetAnim(this, pPlayer, name, bodyPart, flags) →
+  // write layer bodyWeight / flags.
   switch (sequence + 1) {
-    case 0x00: /* TODO: implement from 0x5b7d0..0x5b8e2 */ break;
-    case 0x01: /* TODO */ break;
-    case 0x02: /* handled by walk layer above */ break;
-    case 0x03: /* TODO */ break;
-    case 0x04: /* TODO (walking alive+ladder+duck gate) */ break;
-    case 0x05: case 0x06: case 0x07: /* TODO */ break;
-    case 0x08: case 0x09: /* TODO */ break;
-    case 0x0a: /* TODO: ladder anim resolution (see 0x5b8e2..) */
-      /* ...0x0a..0x27 ... */
-      break;
-    case 0x28: /* blocked dying/dying-in-CQC */ break;
-    case 0x29: /* ducking anims (see 0x5b914..) */ break;
+    case 0x00: /* "long idle" land */ break;
+    case 0x01: /* minor flinch */ break;
+    case 0x02: /* walk (handled in step 2b) */ break;
+    case 0x03: /* ducking */ break;
+    case 0x04: /* walk (alive + !ladder + !duck) */ break;
+    case 0x05: case 0x06: case 0x07: break;
+    case 0x08: case 0x09: /* weapon-specific */ break;
+    case 0x0a: case 0x0b: case 0x0c: case 0x0d:
+    case 0x0e: case 0x0f: case 0x10: case 0x11:
+    case 0x12: case 0x13: case 0x14: case 0x15:
+    case 0x16: case 0x17: case 0x18: case 0x19:
+    case 0x1a: case 0x1b: case 0x1c: case 0x1d:
+    case 0x1e: case 0x1f: case 0x20: case 0x21:
+    case 0x22: case 0x23: case 0x24: case 0x25:
+    case 0x26: case 0x27:
+      /* TODO(D.4): empty for D.3 — see 5b7d0..5b8b4 (jump-table data)
+         and the leaf blocks that follow. */ break;
+    case 0x28: /* dying — close-combat gate, fall through */ break;
+    case 0x29: /* ducking-related */ break;
     case 0x2a: case 0x2b: /* ladder */ break;
-    case 0x2e: case 0x2f: case 0x30: case 0x31: case 0x32: break;
-    case 0x33: /* weapon-specific (anim-extension + body 0x94,
-                  layer.bodyWeight 2.0); see 0x5c0a4..0x5c1b5 */ break;
-    case 0x36: case 0x37: case 0x38: case 0x39: break;
+    case 0x2e: case 0x2f: case 0x30: case 0x31: case 0x32: /* blocked */ break;
+    case 0x33:
+      /* weapon-specific: builds "<animExt>_<action>" via
+         [ebx-0x6f692]/[ebx-0x6f68c] + strcat; SetAnim(...,0x92, 0);
+         layer.bodyWeight=2.0 (0x40000000); layer.body=1.0 (0x3f800000). */
+      // TODO(D.4)
+      break;
+    case 0x36: case 0x37: case 0x38: case 0x39: /* blocked */ break;
     case 0x3a: /* last case */ break;
-    default: break;
   }
 
-  // ---- 6. Post-switch: close combat or final anim ----
-  const skipCloseCombat = (pPlayer as any)[/* gate */ 0];
+  // --- 5. post-switch: close combat or final sequence resolver ---
   if (!didCloseCombat) {
+    // 5bf60..5bf97: if IsInCloseCombat(this, sequence) → HandleCloseCombat.
     if (IsInCloseCombat(this, sequence)) {
       HandleCloseCombat(this, pPlayer, sequence);
     } else if (sequence <= 0x39) {
-      // 2nd nested 59-case switch on `sequence`
-      // (jump table at [picBase+n*4-0x109e54]). Each leaf builds
-      // an anim name and calls SetAnim(pPlayer, 0x94, 0). v1.0
-      // needs a per-leaf implementation here.
-      resolveFinalAnim(this, pPlayer, sequence); // TODO: implement
+      // 5bf9c..5cffa: 2nd 59-case switch on `sequence` (jump table
+      // at [ebx + n*4 - 0x109e54]). Each leaf: state checks,
+      // GetDirection, strcpy/strcat with anim-extension suffix,
+      // SetAnim(this, pPlayer, name, 0x94, 0); layer.bodyWeight=3.0.
+      resolveFinalAnim(this, pPlayer, sequence);
     }
   }
 
-  // ---- 7. Seq-diff reset ----
-  const playerSeq = (pPlayer as any)[OFF_GAIT_SEQ];   // [pPlayer+0x128]
-  const layerSeq  = (pPlayer as any)[OFF_LAYER_SEQ];   // [pPlayer+0x12c]
-  if (playerSeq !== layerSeq) {
-    (pPlayer as any)[OFF_GAIT_SEQ]   = layerSeq;
-    (pPlayer as any)[OFF_LAYER_FRAME] = 0;
-    ResetSequenceInfo((pPlayer as any)[/* pev ptr at */ 0]);
+  // --- 6. tail: sync pev.sequence from pev.gaitsequence ---
+  // 5d004..5d2da: if (pev.sequence != pev.gaitsequence) {
+  //   pev.sequence = pev.gaitsequence;
+  //   pev.frame = 0;
+  //   pPlayer->ResetSequenceInfo();
+  // }
+  if (pPlayer.pev.sequence !== pPlayer.pev.gaitsequence) {
+    pPlayer.pev.sequence = pPlayer.pev.gaitsequence;
+    pPlayer.pev.frame = 0;
+    ResetSequenceInfo(pPlayer); // pPlayer, NOT this.pev
   }
 }
-
-// Stub — to be filled with the 2nd-nested-switch implementation
-// once the per-case disassembly is reviewed.
-declare function resolveFinalAnim(
-  this_: any, pPlayer: any, sequence: number,
-): void;

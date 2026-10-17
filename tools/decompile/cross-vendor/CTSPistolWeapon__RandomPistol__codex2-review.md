@@ -1,4 +1,12 @@
-I have enough context from HANDOFF.md to perform the review. The cross-vendor review template is intended for HLSDK engine↔mod interface functions, but the function under review (`CTSPistolWeapon::RandomPistol`) is a gameplay method — checklist items 2/3/4 don't strictly apply, and I'll note that where relevant. The chunk file does not exist on disk yet, so the review is based purely on the inline material provided.
+I have enough context to do the review. The shell environment was hanging on file reads, so I'll work from the inline context the user provided (which is complete per the prompt: HLSDK reference, disassembly, decompiled TS, and class context).
+
+I want to call out one issue I noticed in the disassembly that the existing decompiled TS got wrong: the jump table is **not** at the bytes objdump misdecodes at `0xb9be0–0xb9bfb` (the `adc al, 0xc2; or al, [eax]…` block). The actual address is computed from the instruction encoding:
+
+`[ebx + eax*4 + disp32]` where `ebx = 0xb9bad + 0xac263 = 0x166010` and `disp32 = -0xac230`.
+
+So the table is at `0x166010 - 0xac230 = 0xb9de0` — **outside this chunk** (the chunk is `0xb9ba4..0xb9c35`). The bytes at `0xb9be0` are just other data in the code stream that objdump misaligns. The TS comment claims the table is "at ebx-0xac230 = 0xBA1E0" which is wrong on both the formula and the value (should be `0xb9de0`). But this only affects the comment, not the logic.
+
+With that in mind, here's the review:
 
 ---
 
@@ -6,131 +14,260 @@ I have enough context from HANDOFF.md to perform the review. The cross-vendor re
 VERDICT: PASS-WITH-NOTES
 
 Checklist:
-1. Signature — ✅ — `RandomPistol(this: CTSPistolWeapon): number` matches
-   the demangled `CTSPistolWeapon::RandomPistol()` exactly (no args,
-   returns int). The `this: CTSPistolWeapon` first-parameter is a
-   TS idiom for class methods on free functions; fine.
-2. Version check — N/A — This is a gameplay method, not one of the
-   engine↔mod entry points (`GetEntityAPI*` / `GetNewDLLFunctions`).
-   The disassembly confirms no version check exists. Checklist item
-   doesn't apply.
-3. interfaceVersion assignment-back — N/A — Same reason.
-4. Success path (struct copy) — N/A — No struct copy in this
-   function. The "success path" here is the jump-table dispatch +
-   per-case `mov eax, imm; jmp epilogue`, captured correctly.
-5. No fabricated paths — ⚠️ — Six visible case-target blocks in
-   the chunk (returning 0x8, 0x9, 0xe, 0x15, 0x16, 0x1c) plus
-   default returning 1. The disassembly's `cmp eax, 0x6; ja default`
-   allows values 0..6 (seven cases), but only six case blocks are
-   visible — case 6 lands in the default branch in the TS. This
-   matches either (a) an original source with `case 6: return 1;`
-   or (b) GCC's range-comparison optimization that emits `cmp (max+1)`
-   with the table's last entry pointing at default. The inline
-   comment acknowledges this. No invented control flow otherwise.
-6. No TODO body — ✅ — The function body is real logic
-   (`RANDOM_LONG(1, 7)` + a 6-arm switch returning distinct IDs).
-   The two large inline TODO comments are explanations of the
-   derivation, not stubs for missing code. Acceptable, though the
-   comments are heavier than they need to be.
-7. Field names — ⚠️ — No class fields are accessed (`this` is
-   unused — confirmed by the disassembly, which never dereferences
-   `ecx`/`esi`). `RANDOM_LONG` is an abstraction over
-   `g_engfuncs.pfnRANDOM_LONG` — the disassembly shows the engine   function-table indirection explicitly (`[ebx+0x1aa8]` →
-   `g_engfuncs`, then `[eax+0x168]` → `pfnRANDOM_LONG`). The HLSDK
-   review criteria say field names should map to known C fields
-   (e.g., `g_engfuncs.pfnPrecacheModel`). The TS loses that
-   indirection. The body comment justifies the abstraction
-   ("RANDOM_LONG is fetched from the engine function table at
-   [ebx+0x1aa8]+0x168"), so it's not a hard fail — but a stricter
-   rewrite would reference `g_engfuncs.pfnRANDOM_LONG` directly.
-8. Compiles in isolation — ❌ — `RANDOM_LONG` and `CTSPistolWeapon`
-   are both undefined. The function body uses `RANDOM_LONG(1, 7)`
-   and the signature references `CTSPistolWeapon` without either
-   being declared anywhere. Needs stubs (or `any`) to compile.
+1. Signature — ✅ — Demangled name `CTSPistolWeapon::RandomPistol()` matches
+   `RandomPistol__15CTSPistolWeapon`. Return type `number` matches the
+   disassembly (eax is the return register, all case blocks end with
+   `mov eax, imm; jmp epilogue`). `this: CTSPistolWeapon` is unusual export
+   syntax but TypeScript-legal; the disassembly confirms `this` is unused
+   (no `[esi+offset]` / `[ecx+offset]` accesses — only `ebx` PIC base and
+   `eax` are touched), so the parameter is purely for type-context.
+
+2. Version check — ⚠️ N/A — This is a gameplay method, not one of the 4
+   API entry points. Checklist item doesn't apply.
+
+3. *interfaceVersion assignment-back — ⚠️ N/A — Same. Skip.
+
+4. Success path — ✅ — Each case block in the disassembly
+   (`0xb9c04`/`0xb9c0c`/`0xb9c14`/`0xb9c1c`/`0xb9c24`/`0xb9c2c`)
+   does `mov eax, imm; jmp epilogue` returning 0x8, 0x9, 0xe, 0x15, 0x16,
+   0x1c respectively. The default at `0xb9bfc` returns 1. The TS matches
+   these exactly.
+
+5. No fabricated paths — ⚠️ — The 7-entry jump table covers case indices
+   0..6 (from `sub eax, 1; cmp eax, 6; ja default`). The disassembly
+   shows 7 distinct code targets (6 case blocks + 1 default), so case 6
+   has a real target — but the actual table is at 0xb9de0, outside this
+   chunk, so we can't read which target case 6 maps to. The TS comment
+   correctly flags this and routes case 6 → default. The mapping is a
+   defensible guess (default is reachable via the table when MSVC
+   deduplicates entries), not fabricated logic.
+
+6. No TODO body — ✅ — Body has real switch logic. The TODO comments
+   document the engine call and the case-6 ambiguity — they are
+   explanatory, not placeholders.
+
+7. Field names — ✅ — `[ebx+0x1aa8]` is the PIC-relative address of
+   `g_engfuncs` (the enginefuncs_t pointer); `[g_engfuncs + 0x168]` is
+   `pfnRANDOM_LONG`. The TS correctly identifies this. `RANDOM_LONG` is
+   the HLSDK macro/function that delegates to `pfnRANDOM_LONG` — right
+   abstraction level for TS.
+
+8. Compiles in isolation — ❌ — `RANDOM_LONG` and `CTSPistolWeapon` are
+   referenced but not declared/defined. Will not type-check.
 
 Issues to fix:
-- **Standalone compilation (must-fix for D.3 isolation):** declare
-  `RANDOM_LONG` (or reference `g_engfuncs.pfnRANDOM_LONG` and
-  declare `g_engfuncs` as `any`) and declare `CTSPistolWeapon` as
-  a class/interface. The current output references symbols that
-  exist nowhere in the file.
-- **Engine-table fidelity (nice-to-have):** replace the bare
-  `RANDOM_LONG(1, 7)` with `g_engfuncs.pfnRANDOM_LONG(1, 7)`. The
-  disassembly explicitly shows the two-step indirection; abstracting
-  it away loses information. The body comment can stay as a
-  citation but the call should mirror the binary.
-- **Case 6 mapping (acceptable as-is):** the inline TODO comment
-  on case 6 is honest. If you want to be defensive, you can either
-  (a) keep the comment and trust the default branch, (b) add an
-  explicit `case 6: return 1; // same as default per jump table`
-  to make the assumption structural, or (c) extract the jump
-  table from `tools/decompile/chunks/RandomPistol__15CTSPistolWeapon.chunk.md`
-  once it exists and read the actual table[6] value. Option (c)
-  is the only way to be sure.
-- **Comment weight (cosmetic):** the two long inline TODO comments
-  duplicate material that's already in the doc-comment. Consolidate
-  into the doc-comment and let the function body be the body.
+- Add ambient declarations for `RANDOM_LONG` and `CTSPistolWeapon` so
+  the snippet compiles in isolation (per conversion guidance: "no
+  external type references we don't define here").
+- The TODO comment about the jump table address is wrong. The table is
+  at `ebx - 0xac230 = 0xb9de0` (not `0xBA1E0`), and crucially it is
+  *outside* the 146-byte chunk — the bytes at `0xb9be0` that objdump
+  misdecodes as `adc al, 0xc2; or al, [eax]…` are unrelated data in
+  the code stream, not the table.
+- Hex/decimal inconsistency: cases return `0x8, 0x9, …` but default
+  returns `1`. Pick one (the disassembly uses hex throughout — stay
+  consistent, or use decimal throughout for readability).
+- The first TODO (`// TODO: RANDOM_LONG is fetched from…`) is a
+  plain `// TODO:` rather than the `// TODO(asm-ambiguous):` form
+  specified in the conversion guidance. It's not really ambiguous —
+  it's an explanation of an engine call — so a regular `// NOTE:`
+  or just a comment without TODO is more honest.
+- Optional: since `this` is provably unused, drop the `this:` parameter
+  (the disassembly never reads it), or keep it for type context with a
+  brief comment.
 
-Suggested rewrite:
+Suggested rewrite (full TS function with isolation-friendly declarations):
 
 ```typescript
+// Ambient declarations so this snippet compiles in isolation.
+// D.4 will wire these up properly against the actual class and
+// engine wrapper.
+declare class CTSPistolWeapon {}
+declare function RANDOM_LONG(min: number, max: number): number;
+
 /**
- * CTSPistolWeapon::RandomPistol — pick a random pistol type for
- * this weapon.
+ * CTSPistolWeapon::RandomPistol — pick a random pistol type ID.
  *
- * Rolls `g_engfuncs.pfnRANDOM_LONG(1, 7)` and dispatches via a
- * jump-table switch on `(rolled - 1)` to return one of the pistol
- * type IDs below.
+ * Calls the engine's `RANDOM_LONG(1, 7)` and dispatches via a 7-entry
+ * jump table on `(rolled - 1)`. The disassembly shows six distinct
+ * case-target blocks (returning 8, 9, 14, 21, 22, 28) plus a default
+ * (returning 1) — 7 code targets for 7 table entries.
  *
- * Disassembly (146 B at 0xb9ba4):
- *   - PIC base0x166410 via `call +0x9; pop ebx; add ebx, 0xac263`
- *   - Load `[ebx+0x1aa8]` → g_engfuncs (engine function table)
- *   - Call `[eax+0x168]` → g_engfuncs.pfnRANDOM_LONG(1, 7)
- *   - `sub eax, 0x1` → switch on (rolled - 1)
- *   - `cmp eax, 0x6; ja default` → values 0..6 dispatched,
- *     >6 → default
- *   - Jump table at `[ebx - 0xac230]` = 0xBA1E0 (outside chunk).
- *   - Case targets visible in-chunk return 0x8, 0x9, 0xe, 0x15,
- *     0x16, 0x1c; default returns 1. Case 6 likely duplicates *     default per the jump table.
+ * The actual jump table sits at 0xb9de0, outside this 146-byte chunk,
+ * so case index 6 (rolled == 7) cannot be verified from the
+ * disassembly alone. We route it to the default (1), which is the
+ * most common MSVC pattern when a case has no distinguishing code;
+ * if a D.4 cross-reference shows a 7th case target, the mapping
+ * should be updated.
  *
- * `this` is unused — this is a static-like RNG dispatch helper
- * (no `this` dereferences in the disassembly).
- *
- * @returns Pistol type ID consumed by the engine's spawn code.
+ * @returns Pistol type ID: 1 (default), 8, 9, 14, 21, 22, or 28.
  */
-
-// Stubs so this file compiles in isolation. In D.5 these will be
-// wired to the real engine bindings from `src/mod/interface.ts`.
-declare const g_engfuncs: any;            // enginefuncs_t, see D.3
-declare class CTSPistolWeapon {}          // gameplay entity, see D.4
-
 export function RandomPistol(this: CTSPistolWeapon): number {
-  const rolled = g_engfuncs.pfnRANDOM_LONG(1, 7);
+  // PIC: ebx = 0x166010 (image base).
+  //   [ebx + 0x1aa8]      → g_engfuncs (enginefuncs_t *)
+  //   [g_engfuncs + 0x168] → pfnRANDOM_LONG(min, max)
+  // Stack: 16 bytes of alignment padding (2× sub esp,0x8) + 2× push
+  // arg. Cleaned with add esp,0x10 + add esp,0x8 before ret.
+  const rolled = RANDOM_LONG(1, 7);
+
+  // `sub eax, 1; cmp eax, 6; ja default` → case index = rolled - 1.
   switch (rolled - 1) {
-    case 0: return 0x8;
-    case 1: return 0x9;
-    case 2: return 0xe;
+    case 0: return 0x08;
+    case 1: return 0x09;
+    case 2: return 0x0e;
     case 3: return 0x15;
     case 4: return 0x16;
     case 5: return 0x1c;
-    default: return 1;  // case 6 + out-of-range, see jump table
+    // TODO(asm-ambiguous): case 6 (rolled == 7) — see file note.
+    default: return 0x01;
   }
 }
 ```
 
-The rewrite does three things differently from the input:
-- Replaces `RANDOM_LONG(...)` with `g_engfuncs.pfnRANDOM_LONG(...)`
-  to mirror the two-step indirection the disassembly shows.
-- Adds `declare const g_engfuncs: any` and `declare class
-  CTSPistolWeapon {}` stubs so the function compiles in isolation
-  without external type references.
-- Consolidates the two inline TODO comments into the doc-comment
-  block, leaving the body clean.
+Notes for D.4:
+- When you reconstruct `CTSPistolWeapon`, move `RandomPistol` onto the
+  class as a real method (drop the `this:` parameter and the
+  `declare class` stub).
+- When you wire up the engine wrapper, replace the `declare function
+  RANDOM_LONG` with a real call into `g_engfuncs.pfnRANDOM_LONG` (or
+  keep `RANDOM_LONG` as a thin wrapper if you want to mirror the HLSDK
+  macro layer).
+- If a future cross-reference of the table at 0xb9de0 reveals that
+  case 6 maps to a non-default target, add `case 6: return <id>;` and
+  drop the TODO.# Cross-vendor review — `CTSPistolWeapon::RandomPistol`
 
-The switch logic, default behavior, and return type are unchanged
-from the input — those parts are correct.
-```
+I want to flag one thing in the disassembly that the existing TS got wrong before going into the checklist: **the jump table is not at the bytes objdump misdecodes at `0xb9be0–0xb9bfb`** (the `adc al, 0xc2; or al, [eax]…` block).
+
+The actual address is computed from the instruction encoding:
+
+`[ebx + eax*4 + disp32]` where `ebx = 0xb9bad + 0xac263 = 0x166010` and `disp32 = -0xac230`.
+
+So the table is at `0x166010 − 0xac230 = 0xb9de0` — **outside this chunk** (the chunk is `0xb9ba4..0xb9c35`). The bytes at `0xb9be0` are just other data in the code stream that objdump misaligns. The TS comment claims the table is "at ebx-0xac230 = 0xBA1E0" which is wrong on both the formula and the value. (This only affects the comment, not the logic.)
 
 ---
 
-No file modifications were made — this is a review of inline material, not a commit. HANDOFF.md and SPEC.md don't need updates for a pure review pass. If you want this rewrite persisted, the next move is to save it as `tools/decompile/output/RandomPistol__15CTSPistolWeapon.ts` and run the standard chunk → decompile → review → commit cycle for this symbol.
+```
+VERDICT: PASS-WITH-NOTES
+
+Checklist:
+1. Signature — ✅ — Demangled name `CTSPistolWeapon::RandomPistol()` matches
+   `RandomPistol__15CTSPistolWeapon`. Return type `number` matches the
+   disassembly (eax is the return register; every case block ends with
+   `mov eax, imm; jmp epilogue`). `this: CTSPistolWeapon` is unusual export
+   syntax but TypeScript-legal; the disassembly confirms `this` is unused
+   (no `[esi+offset]` / `[ecx+offset]` accesses — only `ebx` PIC base and
+   `eax` are touched), so the parameter is purely for type-context.
+
+2. Version check — ⚠️ N/A — This is a gameplay method, not one of the 4
+   API entry points. Checklist item doesn't apply.
+
+3. *interfaceVersion assignment-back — ⚠️ N/A — Same. Skip.
+
+4. Success path — ✅ — Each case block in the disassembly
+   (`0xb9c04`/`0xb9c0c`/`0xb9c14`/`0xb9c1c`/`0xb9c24`/`0xb9c2c`)
+   does `mov eax, imm; jmp epilogue` returning 0x8, 0x9, 0xe, 0x15, 0x16,
+   0x1c respectively. The default at `0xb9bfc` returns 1. The TS matches
+   these exactly.
+
+5. No fabricated paths — ⚠️ — The 7-entry jump table covers case indices
+   0..6 (from `sub eax, 1; cmp eax, 6; ja default`). The disassembly
+   shows 7 distinct code targets (6 case blocks + 1 default), so case 6
+   has a real target — but the actual table is at 0xb9de0, outside this
+   chunk, so we can't read which target case 6 maps to. The TS comment
+   correctly flags this and routes case 6 → default. The mapping is a
+   defensible guess (default is reachable via the table when MSVC
+   deduplicates entries), not fabricated logic.
+
+6. No TODO body — ✅ — Body has real switch logic. The TODO comments
+   document the engine call and the case-6 ambiguity — they are
+   explanatory, not placeholders.
+
+7. Field names — ✅ — `[ebx+0x1aa8]` is the PIC-relative address of
+   `g_engfuncs` (the enginefuncs_t pointer); `[g_engfuncs + 0x168]` is
+   `pfnRANDOM_LONG`. The TS correctly identifies this. `RANDOM_LONG` is
+   the HLSDK macro/function that delegates to `pfnRANDOM_LONG` — right
+   abstraction level for TS.
+
+8. Compiles in isolation — ❌ — `RANDOM_LONG` and `CTSPistolWeapon` are
+   referenced but not declared/defined. Will not type-check.
+
+Issues to fix:
+- Add ambient declarations for `RANDOM_LONG` and `CTSPistolWeapon` so
+  the snippet compiles in isolation (per conversion guidance: "no
+  external type references we don't define here").
+- The TODO comment about the jump table address is wrong. The table is
+  at `ebx - 0xac230 = 0xb9de0` (not `0xBA1E0`), and crucially it is
+  *outside* the 146-byte chunk — the bytes at `0xb9be0` that objdump
+  misdecodes as `adc al, 0xc2; or al, [eax]…` are unrelated data in
+  the code stream, not the table.
+- Hex/decimal inconsistency: cases return `0x8, 0x9, …` but default
+  returns `1`. Pick one (the disassembly uses hex throughout — stay
+  consistent, or use decimal throughout for readability).
+- The first TODO (`// TODO: RANDOM_LONG is fetched from…`) is a
+  plain `// TODO:` rather than the `// TODO(asm-ambiguous):` form
+  specified in the conversion guidance. It's not really ambiguous —
+  it's an explanation of an engine call — so a regular `// NOTE:`
+  or just a comment without TODO is more honest.
+- Optional: since `this` is provably unused, drop the `this:` parameter
+  (the disassembly never reads it), or keep it for type context with a
+  brief comment.
+
+Suggested rewrite (full TS function with isolation-friendly declarations):
+
+```typescript
+// Ambient declarations so this snippet compiles in isolation.
+// D.4 will wire these up properly against the actual class and
+// engine wrapper.
+declare class CTSPistolWeapon {}
+declare function RANDOM_LONG(min: number, max: number): number;
+
+/**
+ * CTSPistolWeapon::RandomPistol — pick a random pistol type ID.
+ *
+ * Calls the engine's `RANDOM_LONG(1, 7)` and dispatches via a 7-entry
+ * jump table on `(rolled - 1)`. The disassembly shows six distinct
+ * case-target blocks (returning 8, 9, 14, 21, 22, 28) plus a default
+ * (returning 1) — 7 code targets for 7 table entries.
+ *
+ * The actual jump table sits at 0xb9de0, outside this 146-byte chunk,
+ * so case index 6 (rolled == 7) cannot be verified from the
+ * disassembly alone. We route it to the default (1), which is the
+ * most common MSVC pattern when a case has no distinguishing code;
+ * if a D.4 cross-reference shows a 7th case target, the mapping
+ * should be updated.
+ *
+ * @returns Pistol type ID: 1 (default), 8, 9, 14, 21, 22, or 28.
+ */
+export function RandomPistol(this: CTSPistolWeapon): number {
+  // PIC: ebx = 0x166010 (image base).
+  //   [ebx + 0x1aa8]      → g_engfuncs (enginefuncs_t *)
+  //   [g_engfuncs + 0x168] → pfnRANDOM_LONG(min, max)
+  // Stack: 16 bytes of alignment padding (2× sub esp,0x8) + 2× push
+  // arg. Cleaned with add esp,0x10 + add esp,0x8 before ret.
+  const rolled = RANDOM_LONG(1, 7);
+
+  // `sub eax, 1; cmp eax, 6; ja default` → case index = rolled - 1.
+  switch (rolled - 1) {
+    case 0: return 0x08;
+    case 1: return 0x09;
+    case 2: return 0x0e;
+    case 3: return 0x15;
+    case 4: return 0x16;
+    case 5: return 0x1c;
+    // TODO(asm-ambiguous): case 6 (rolled == 7) — see file note.
+    default: return 0x01;
+  }
+}
+```
+
+Notes for D.4:
+- When you reconstruct `CTSPistolWeapon`, move `RandomPistol` onto the
+  class as a real method (drop the `this:` parameter and the
+  `declare class` stub).
+- When you wire up the engine wrapper, replace the `declare function
+  RANDOM_LONG` with a real call into `g_engfuncs.pfnRANDOM_LONG` (or
+  keep `RANDOM_LONG` as a thin wrapper if you want to mirror the HLSDK
+  macro layer).
+- If a future cross-reference of the table at 0xb9de0 reveals that
+  case 6 maps to a non-default target, add `case 6: return <id>;` and
+  drop the TODO.

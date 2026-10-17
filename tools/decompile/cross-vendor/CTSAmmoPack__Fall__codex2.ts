@@ -1,81 +1,75 @@
-// Ambient engine globals — values loaded via PIC/GOT from the original DLL.
-// TODO(D.5/D.6): replace with CVAR_GET_FLOAT("sv_gravity") and
-//       gpGlobals->frametime accessors once the engine-callback layer
-//       is wired up.
-declare const frameTimeGlobal: number; // static double at [ebx-0x6ecd8] — meaning unverified
-declare const sv_gravity: number;      // cvar float at [*[ebx+0x1600]]
+// Ambient engine symbols loaded via i386 PIC into ebx. These reflect live
+// engine state at *call time*, not compile-time constants — replace with
+// `CVAR_GET_FLOAT` / `gpGlobals->*` / `cvar->value` lookups once the
+// engine-callback layer is wired up.
+//
+// Identity caveats (the asm gives us addresses, not names):
+//   - `[ebx+0x1600]` is a *pointer* that's derefed once before each use,
+//     so the value is the first field of a struct reachable through that
+//     pointer. Candidates:
+//       * `gpGlobals->time`    (time is offset 0 of `globalvars_t`)
+//       * `sv_gravity->value`  (would require a non-standard `cvar_t`
+//                               layout where `value` is at offset 0 —
+//                               standard HL1 puts `name` at offset 0).
+//   - `[ebx-0x6ecd8]` is loaded with `fld QWORD`, so it's a true 8-byte
+//     IEEE double, NOT a float pair and NOT a 4-byte float. Candidates:
+//     a static double in .rodata, `sv_gravity` cached as `double`, or a
+//     tick-rate constant stored as double.
+declare const frameTime: number;        // `[ebx-0x6ecd8]` — true f64 (TODO)
+declare const sv_gravity: number;       // `[ebx+0x1600][0]` — f32 chain-deref (TODO)
 declare function UTIL_Remove(ent: CTSAmmoPack): void;
 
 /**
- * CTSAmmoPack::Fall — per-tick physics for the ammo pack entity.
+ * `CTSAmmoPack::Fall` — per-tick physics step for the ammo pack entity.
  *
- * 1. Initialize pev->flFallVel from a static double plus sv_gravity.
- * 2. If the partial-ground flag is set, clear modelindex + frame and
- *    dispatch OnGround.
- * 3. If an internal class counter falls below sv_gravity, remove the
- *    entity.
- *
- * @param this  CTSAmmoPack instance (`this` passed implicitly per C++ thiscall).
- * @returns     void
+ * Disassembly at `0x00091544` (123 bytes) decomposes into three blocks:
+ *   1. `pev->flFallVel = (f64)[ebx-0x6ecd8] + (f32)[[ebx+0x1600]]`
+ *   2. If `pev->flags & 0x2`: zero `pev->velocity.x` and
+ *      `pev->velocity.z`, leaving `pev->velocity.y` untouched, then
+ *      dispatch `OnGround()`.
+ *   3. If `[esi+0xa4] < (f32)[[ebx+0x1600]]` (same float as block 1):
+ *      call `UTIL_Remove(this)`.
  */
 export function Fall(this: CTSAmmoPack): void {
   const pev = this.pev;
 
-  // pev->flFallVel = (double)<static> + (float)sv_gravity->value
-  // ASM: fld  QWORD [ebx-0x6ecd8]
-  //      fadd DWORD [eax]            ; eax = *(*[ebx+0x1600]) = sv_gravity
-  //      fstp DWORD [edx+0x104]      ; edx = this->pev
-  // TODO(asm-ambiguous): confirm [ebx-0x6ecd8] is gpGlobals->frametime
-  //       (widened to double) vs. some other integration constant.
-  pev.flFallVel = frameTimeGlobal + sv_gravity;
+  // Capture the chain-loaded float once — the asm loads it twice (block 1
+  // and block 3), so the same expression must serve both call sites.
+  const chainVal = sv_gravity;
 
-  // If the partial-ground flag is set, zero modelindex + frame and
-  // dispatch OnGround.
-  //
-  // ASM:
-  //   mov   eax, [esi]              ; eax = this->pev
-  //   test  BYTE [eax+0x1a5], 0x2
-  //   je    skip
-  //   mov   DWORD [eax+0x50], 0     ; *** was misinterpreted as velocity.x ***
-  //   mov   eax, [esi]
-  //   mov   DWORD [eax+0x58], 0     ; *** was misinterpreted as velocity.z ***
-  //   call  OnGround__11CTSAmmoPack@plt
-  //
-  // The asm writes to pev+0x50 and pev+0x58. In standard HL entvars_t,
-  // those are `modelindex` (0x50) and `frame` (0x58), NOT velocity
-  // components (velocity is 0x20-0x2b). Confirmed against the
-  // community HLSDK offsets and the class context table.
-  //
-  // TODO(asm-ambiguous): the `test BYTE` + mask 0x2 is unusual for
-  //   4-byte flags. If pev->flags is at 0x1a4 (standard layout), the
-  //   byte-at-+1 + mask-0x2 test is the compiler's encoding of
-  //   `flags & 0x200` (FL_PARTIALGROUND, bit 9). Update the mask once
-  //   the TS mod's flag field offset is confirmed; if the TS mod has
-  //   a 1-byte custom flag at 0x1a5 with bit 1 = "partial ground",
-  //   leave it as & 0x2 and adjust the comment.
-  if ((pev.flags as number & 0x200) !== 0) {
-    pev.modelindex = 0;   // asm: [pev+0x50] = 0
-    pev.frame      = 0;   // asm: [pev+0x58] = 0
+  // ----- Block 1: fall-velocity update ----------------------------------
+  // `fld QWORD [ebx-0x6ecd8]`  → double onto x87 stack
+  // `fadd DWORD [eax]`         → add (eax = *(*[ebx+0x1600]))
+  // `fstp DWORD [edx+0x104]`   → truncate back to float, store as flFallVel
+  // pev.flFallVel = frameTime + chainVal
+  pev.flFallVel = frameTime + chainVal;
+
+  // ----- Block 2: landing handler ---------------------------------------
+  // `test BYTE [eax+0x1a5], 0x2` / `je 91598`
+  // Standard HL1 FL_ONGROUND = 1<<0 (mask 0x1). Mask 0x2 is FL_FLY (1<<1)
+  // in vanilla HL1, or a TS-specific flag (e.g., a partially-grounded
+  // state, an OpFor-style FL_PARTIALGROUND, or a CTSAmmoPack custom flag).
+  // TODO(asm-ambiguous): confirm the 0x2 bit against the mod's flag map.
+  if ((pev.flags & 0x2) !== 0) {
+    // The asm zeros [pev+0x50] and [pev+0x58] but skips [pev+0x54] — i.e.,
+    // velocity.x and velocity.z are cleared while velocity.y is left alone.
+    // Odd for a "landed" handler (usually you'd clear all of velocity or
+    // just z), but it's what's in the binary.
+    pev.velocity.x = 0;
+    pev.velocity.z = 0;
     this.OnGround();
   }
 
-  // If a CTSAmmoPack member at class+0xa4 drops below sv_gravity,
-  // remove the entity.
-  //
-  // ASM:
-  //   fld   DWORD [esi+0xa4]
-  //   fcomp DWORD [*sv_gravity]
-  //   jae   skip
-  //   call  UTIL_Remove
-  //
-  // Note: esi is `this`, not `pev`; the offset 0xa4 is in the class
-  // layout, NOT in pev. Naming this `m_fFallVel` would collide with
-  // the standard pev->flFallVel symbol above. Keep TODO until
-  // CreateAmmoPack/Spawn disassembly reveals the field's role
-  // (airtime? bounce count? fall-start timestamp?).
-  // TODO(asm-ambiguous): confirm field purpose; rename `m_flAirTime`
-  //       or similar once known.
-  if ((this as any).m_fUnknown_a4 < sv_gravity) {
+  // ----- Block 3: auto-despawn ------------------------------------------
+  // `fcomp DWORD [edx]` / `fnstsw ax` / `sahf` / `jae 915b9`
+  // → branch taken when ST(0) >= memory, i.e. when [esi+0xa4] < chainVal.
+  // The field at +0xa4 is unknown. m_fDieTime is a placeholder; the
+  // "compare and remove" idiom is much more naturally expressed as a die
+  // timer, a think-threshold, or a fall-distance accumulator than as a
+  // literal fall velocity.
+  // TODO(asm-ambiguous): identify the field — candidates `m_flDieTime`,
+  //       `m_flNextThink`, or a fall-distance accumulator.
+  if (this.m_fDieTime < chainVal) {
     UTIL_Remove(this);
   }
 }

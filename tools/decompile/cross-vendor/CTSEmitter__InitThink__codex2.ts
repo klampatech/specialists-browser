@@ -1,41 +1,59 @@
 /**
  * CTSEmitter::InitThink — validates the linked target entity on first
- * activation and self-removes if the target is missing or of the wrong
- * class. Faithful port of the 32-bit x86 disassembly at 0x00064308.
+ * activation. Looks up the entity targeted by this emitter's
+ * `m_szTargetname`, confirms it is a `ts_particle`, and self-removes
+ * otherwise.
+ *
+ * Called as the entity's first think after Spawn(). Has no success
+ * work — the absence of removal is the signal to Spawn/InitThink's
+ * caller that the link is valid.
+ *
+ * @param this  The CTSEmitter entity instance (this in the original C++)
+ * @returns     void
  */
-export function InitThink(this: any /* CTSEmitter */): void {
-  // [edi+0x80] -> pev->targetname (entvars_t::targetname at +0x80, pev at
-  // +0 on CBaseEntity, so this is `pev->targetname` — a string_t int).
-  // The disassembly passes the raw pointer to UTIL_FindEntityByTargetname;
-  // the engine-side macro does STRING() resolution on the candidate
-  // entities it iterates.
-  const target = UTIL_FindEntityByTargetname(null, this.pev.targetname);
+export function InitThink(this: CTSEmitter): void {
+  // [edi + 0x80] is dereferenced as a const char* and pushed straight
+  // to UTIL_FindEntityByTargetname — NO STRING() resolution is applied.
+  // Therefore this is NOT pev->targetname (which is a string_t int at
+  // entvars_t offset 0x80 and would require STRING()). It is a cached
+  // `char* m_szTargetname` member that CTSEmitter stores as the
+  // already-resolved target name, populated earlier (likely from
+  // KeyValue / Spawn).
+  const targetname: string = (this as any).m_szTargetname;
+
+  // Walk the engine entity list from the start, looking for a targetname
+  // match. NULL start means "from the beginning of the list".
+  const target: any = UTIL_FindEntityByTargetname(null, targetname);
+
+  // gpGlobals + 0x98 = pStringBase (the engine string table base).
+  // Inlined as: *gpGlobals → *(gpGlobals + 0x98) →
+  //   pStringBase + target->pev->classname.
+  //
+  // target->pev is at CBaseEntity offset 0; pev->classname is at
+  // entvars_t offset 0 (so [edx] == classname for edx = pev).
+  function resolveClassname(t: any): string {
+    return STRING(t.pev.classname);
+  }
+
+  const expectedClassname = "ts_particle"; // .rodata: GOT-0x6ec79
 
   if (target === null) {
-    // Branch 1: no entity with this targetname. Disassembly: alert at
-    // level 4 with format string at .rodata (GOT-0x6eb10), then
-    // UTIL_Remove(this) at 0x6439b.
-    ALERT(4 /* at_warning */, "<fmt @ GOT-0x6eb10>", this.pev.targetname);
+    // .rodata at GOT-0x6eb10 — content not surfaced by
+    // strings-n5.txt; requires a `.rodata` dump to resolve.
+    // TODO(asm-ambiguous): pull the actual format string from .rodata.
+    ALERT(4, /* TODO_FMT_NO_TARGET */ "%s", targetname);
     UTIL_Remove(this);
     return;
   }
 
-  // STRING() inlined as the canonical 3-step indirection:
-  //   [ebx+0x1600] -> &gpGlobals
-  //   *(&gpGlobals) -> gpGlobals
-  //   gpGlobals+0x98 -> pStringBase
-  //   + target->pev->classname (string_t int) -> const char*.
-  const actualClass: string = STRING(target.pev.classname);
-  const expectedClass: string = "<literal @ GOT-0x6ec79>"; // e.g. classname
-
-  if (actualClass !== expectedClass) {
-    // Branch 2: strcmp returned nonzero. Disassembly: same alert dispatch,
-    // then UTIL_Remove(this) at 0x6439b. On success (je 643a3) control
-    // falls straight through to the epilogue with no side effects.
-    ALERT(4 /* at_warning */, "<fmt @ GOT-0x6eaf0>", this.pev.targetname);
+  if (resolveClassname(target) !== expectedClassname) {
+    // Resolved from tools/decompile/analysis/strings-n5.txt line 4469.
+    ALERT(4, "'%s' is definitely not a ts_particle.", targetname);
     UTIL_Remove(this);
     return;
   }
 
-  // Success: target exists and class matches; no follow-up think scheduled.
+  // Success: target exists and is a ts_particle. No-op return —
+  // any downstream think/install is the caller's job.
+  // (Disassembly: `je 0x643a3` jumps straight to the epilogue.)
 }

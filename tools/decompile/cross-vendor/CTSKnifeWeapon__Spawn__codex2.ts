@@ -1,37 +1,68 @@
 /**
- * CTSKnifeWeapon::Spawn
+ * CTSKnifeWeapon::Spawn — initializes the knife weapon entity.
  *
- * Disassembly summary (from tools/decompile/chunks/Spawn__14CTSKnifeWeapon.chunk.md):
- *   esi = this                                           // [esp+0x10]
- *   eax = this->m_pPlayer                                // [esi + 0x60]
- *   push this; call [eax + 0x11c]                        // virtual on owner
- *   this->m_pKnife = eax                                 // [esi + 0xa4]
- *   push this; call Spawn__15CTSGroundWeapon@plt         // parent Spawn
- *   add esp, 0x14; pop ebx/esi; ret
+ * Disassembly trace (b9de4..b9e19):
+ *   1. PIC prologue: call $+5 / pop ebx / add ebx, 0xac022
+ *      → ebx = 0x165ed10 (module GOT base).  ebx is never
+ *      dereferenced in this body, so the prologue is elided.
+ *   2. esi = [esp+0x10] = this     (single arg, void return)
+ *   3. eax = [esi+0x60]            ; sub-object pointer
+ *   4. push esi; call [eax+0x11c]  ; indirect vtable dispatch
+ *      with `this` as the only arg. The vtable slot is at byte
+ *      0x11c = vtable slot 71 (32-bit). Slot name `GetWeapon`
+ *      is inferred (sister method `CTSKnifeWeapon::GetWeapon`
+ *      uses the same 0x11c dispatch on pEntity).
+ *   5. [esi+0xa4] = eax            ; cache the matching weapon
+ *   6. [esp] = esi; call Spawn__15CTSGroundWeapon@plt(this)
  *
- *   Prologue sets up EBX as a PIC/GOT base (call $+5; pop ebx;
- *   add ebx, 0xac022) but never dereferences it in this body,
- *   so it is elided in TS.
+ * Field offsets (ASM-INFERRED, see class layout note below):
+ *   this->+0x60   named `m_pPlayer` here    — a CBaseEntity* used
+ *                  as the vtable holder for the dispatch in step 4.
+ *   this->+0xa4   named `m_pKnife` here     — caches the return
+ *                  value of step 4.
+ *
+ * Layout cross-check: HANDOFF.md pins `m_pPlayer` at +0x80 for
+ * CTSGun (same inheritance chain). The +0x60 offset here is
+ * therefore suspect — the field might be `m_pResolved` or some
+ * other intermediate sub-object. Re-verify against the
+ * CTSKnifeWeapon class layout dump when available.
  */
-export function Spawn(this: CTSKnifeWeapon): void {
-  // ---- 1. Resolve the owner's knife (their inventory slot for this knife class) ----
-  const owner = this.m_pPlayer;
-  // m_pPlayer is a CBasePlayer. vtable slot index 0x11c/4 == 71.
-  // TODO(asm-ambiguous): the assembly calls an unnamed virtual at
-  // vtable[71] of the owner with (this : CBaseEntity*). The slot
-  // is INFERRED to be `CBasePlayer::GetWeapon(CBaseEntity*)` from
-  // HLSDK + the sibling symbol's signature, NOT from the assembly
-  // itself. The sibling `GetWeapon__14CTSKnifeWeaponP11CBaseEntity`
-  // is a *different* method (CTSKnifeWeapon's own override, same
-  // name + signature, on a different class) and is not what's
-  // being called here.
-  const matchingKnife = owner.GetWeapon(this);
 
-  // ---- 2. Cache the resolved knife on this ground entity ----
+// --- Type stubs so this file compiles in isolation ----------------
+// Replace with the real class declarations in D.4 / `weapons.ts`.
+class CTSKnifeWeapon {
+  // ASM-INFERRED field names (TODO(asm-inferred)):
+  m_pPlayer: any;   // [this+0x60]  — sub-object used as vtable holder
+  m_pKnife: any;    // [this+0xa4]  — cached matching knife weapon
+
+  // Virtual slot [m_pPlayer + 0x11c] is inferred to be GetWeapon.
+  // TODO(asm-inferred): confirm against a CBasePlayer vtable dump.
+  GetWeapon(self: any): any;
+}
+
+declare const CTSGroundWeapon: {
+  Spawn: (self: any) => void;
+};
+// -----------------------------------------------------------------
+
+export function Spawn(this: CTSKnifeWeapon): void {
+  // PIC prologue elided (ebx never dereferenced in this body).
+
+  // [b9dfc..b9dff]  load this->m_pPlayer and push `this` as the
+  //                  single argument to the vfn.
+  const owner = this.m_pPlayer;
+
+  // [b9e00..b9e06]  indirect dispatch on owner's vtable slot 71,
+  //                  cache the returned matching weapon on `this`.
+  //
+  // TODO(asm-ambiguous): the disassembler omits `mov ecx, eax` for
+  //                      the `this` of this vfn; the `__thiscall`
+  //                      convention requires it in the binary.
+  const matchingKnife = owner.GetWeapon(this);
   this.m_pKnife = matchingKnife;
 
-  // ---- 3. Delegate standard ground-weapon spawn to the parent ----
-  // PLT-resolved (non-virtual) call to CTSGroundWeapon::Spawn
-  // with `this` as the sole argument.
+  // [b9e0c..b9e0f]  delegate to CTSGroundWeapon::Spawn.
+  //                  Parent is pinned by the @plt symbol
+  //                  `Spawn__15CTSGroundWeapon@plt`.
   CTSGroundWeapon.Spawn(this);
 }
