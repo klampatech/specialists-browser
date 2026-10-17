@@ -102,3 +102,97 @@ Done: 0/5 newly-spawned (proxy still queueing)
 [2026-10-16 19:00:58]   Remaining: 233
 [2026-10-16 19:01:09]   review pid=3615763 for Holster__6CTSGuni
 [2026-10-16 19:01:09]   Will continue to decompile methods in next session — see HANDOFF.md
+[2026-10-16 19:03:54] === Spawn review: AlternateAttack__6CTSGun ===
+[2026-10-16 19:03:54]   review pid=3625525
+[2026-10-16 19:03:54] === Spawn review: ClearObjectiveList__12CTSGameRules ===
+[2026-10-16 19:03:54]   review pid=3625526
+[2026-10-16 19:03:54] === Spawn review: GetTeamsNum__12CTSGameRules ===
+[2026-10-16 19:03:54]   review pid=3625527
+[2026-10-16 19:03:54] ---
+[2026-10-16 19:03:54] Done spawning 3 reviews. They will run via proxy queue.
+[2026-10-16 19:03:54] Updating HANDOFF will be in next session. End of session.
+[2026-10-16 19:04:41] === RESUMED SESSION ===
+[2026-10-16 19:04:41] Canonical outputs: 49 / 281 (17.4%)
+[2026-10-16 19:04:41] Remaining: 232
+[2026-10-16 19:04:41] 
+Detached codex processes: 0
+[2026-10-16 19:04:41] Detached review processes: 3
+[2026-10-16 19:04:41]   kyle     3625525 3544325  0 19:03 ?        00:00:00 /home/kyle/.hermes/tools/python-3.14.7+20260901-linux-x64/bin/python3 tools/decompile/decompile-review.py Al
+[2026-10-16 19:04:41]   kyle     3625526 3544325  0 19:03 ?        00:00:00 /home/kyle/.hermes/tools/python-3.14.7+20260901-linux-x64/bin/python3 tools/decompile/decompile-review.py Cl
+[2026-10-16 19:04:41]   kyle     3625527 3544325  0 19:03 ?        00:00:00 /home/kyle/.hermes/tools/python-3.14.7+20260901-linux-x64/bin/python3 tools/decompile/decompile-review.py Ge
+[2026-10-16 19:04:41] 
+Codex first-pass outputs: 55
+[2026-10-16 19:04:41]   CTSGun__AlternateAttack__codex.ts: 1338B (mtime=1792195358)
+[2026-10-16 19:04:41]   CTSGun__Zoom_int__codex.ts: 1432B (mtime=1792195301)
+[2026-10-16 19:04:41]   CTSGameRules__GetTeamsNum__codex.ts: 1288B (mtime=1792195290)
+[2026-10-16 19:04:41]   CTSGameRules__UpdateTeamScores_int_int__codex.ts: 1721B (mtime=1792195290)
+[2026-10-16 19:04:41]   CTSGameRules__ClearObjectiveList__codex.ts: 876B (mtime=1792195280)
+[2026-10-16 19:04:41]   CTSGun__Holster_int__codex.ts: 1135B (mtime=1792194950)
+[2026-10-16 19:04:41]   CTSGameRules__InitTeamScore_p_?_int__codex.ts: 599B (mtime=1792194711)
+[2026-10-16 19:04:41]   CTSGun__CCombatAttack__codex.ts: 21002B (mtime=1792188811)
+[2026-10-16 19:04:41]   CTSGun__UpdateClientData_p_CBasePlayer__codex.ts: 7942B (mtime=1792187853)
+[2026-10-16 19:04:41]   CTSGun__UpdateClientData__codex.ts: 7942B (mtime=1792187787)
+[2026-10-16 19:04:41] 
+Review-related files (codex2): 4
+[2026-10-16 19:04:41]   CTSGun__Holster_int__codex2-review.md: 4136B
+[2026-10-16 19:04:41]   CTSGun__Holster_int__codex2.ts: 947B
+[2026-10-16 19:04:41]   CTSGameRules__InitTeamScore_p_?_int__codex2.ts: 857B
+[2026-10-16 19:04:41]   CTSGameRules__InitTeamScore_p_?_int__codex2-review.md: 3586B
+[2026-10-16 19:04:45] 
+Proxy health: OK (4.1s)
+[2026-10-16 19:04:54] === Status of 3 in-flight reviews ===
+[2026-10-16 19:04:54]   AlternateAttack__6CTSGun: pid=3625525 state=S
+[2026-10-16 19:04:54]     canonical: PENDING
+[2026-10-16 19:04:54]   ClearObjectiveList__12CTSGameRules: pid=3625526 state=Z
+[2026-10-16 19:04:54]     canonical: PENDING
+[2026-10-16 19:04:54]   GetTeamsNum__12CTSGameRules: pid=3625527 state=S
+[2026-10-16 19:04:54]     canonical: PENDING
+[2026-10-16 19:04:54] 
+=== Codex outputs without reviews: 52 ===
+[2026-10-16 19:04:54]   CTSGun__AlternateAttack__codex.ts (mtime=1792195358)
+[2026-10-16 19:04:54]   CTSGun__Zoom_int__codex.ts (mtime=1792195301)
+[2026-10-16 19:04:54]   CTSGameRules__GetTeamsNum__codex.ts (mtime=1792195290)
+[2026-10-16 19:04:54]   CTSGameRules__UpdateTeamScores_int_int__codex.ts (mtime=1792195290)
+[2026-10-16 19:04:54]   CTSGun__CCombatAttack__codex.ts (mtime=1792188811)
+[2026-10-16 19:04:54]   CTSGun__UpdateClientData_p_CBasePlayer__codex.ts (mtime=1792187853)
+[2026-10-16 19:04:54]   CTSGun__UpdateClientData__codex.ts (mtime=1792187787)
+[2026-10-16 19:04:54]   CTSGun__CCombatBlock__codex.ts (mtime=1792186348)
+[2026-10-16 19:04:54]   CTSGun__CCombatIdle__codex.ts (mtime=1792185340)
+[2026-10-16 19:04:54]   CTSGameRules__TeamWin_int_int_bool_?__codex.ts (mtime=1792182063)
+[2026-10-16 19:05:18] === Spawn review: Zoom__6CTSGuni ===
+[2026-10-16 19:05:18]   review pid=3646616
+[2026-10-16 19:05:18] === Spawn review: UpdateTeamScores__12CTSGameRulesii ===
+[2026-10-16 19:05:18]   review pid=3646617
+[2026-10-16 19:05:18] ---
+[2026-10-16 19:05:18] Now also spawn next codex calls for more methods while reviews run.
+[2026-10-16 19:05:35] === Next 8 priority methods to spawn codex for ===
+[2026-10-16 19:05:35]   CTSStunt::SlotBonus (20B) - SlotBonus__8CTSStunt
+[2026-10-16 19:05:35]   CTSGameRules::UpdateTeamScores (21B) - UpdateTeamScores__12CTSGameRulesii
+[2026-10-16 19:05:35]   CTSStunt::NextDive (21B) - NextDive__8CTSStunt
+[2026-10-16 19:05:35]   CTSAnimation::IsInCloseCombat (31B) - IsInCloseCombat__12CTSAnimationi
+[2026-10-16 19:05:35]   CTSAnimation::DisableBulletDance (35B) - DisableBulletDance__12CTSAnimationP11CBasePlayer
+[2026-10-16 19:05:35]   CTSAnimation::EnableBulletDance (35B) - EnableBulletDance__12CTSAnimationP11CBasePlayer
+[2026-10-16 19:05:35]   CTSGun::Zoom (53B) - Zoom__6CTSGuni
+[2026-10-16 19:05:35]   CTSStunt::HandleDive (58B) - HandleDive__8CTSStunt
+[2026-10-16 19:05:35] 
+=== Spawning codex (detached) ===
+[2026-10-16 19:05:35]   spawned #1: SlotBonus (20B) pid=3660555
+[2026-10-16 19:05:35]   skip UpdateTeamScores__12CTSGameRulesii: codex output exists
+[2026-10-16 19:05:35]   spawned #2: NextDive (21B) pid=3660742
+[2026-10-16 19:05:35]   spawned #3: IsInCloseCombat (31B) pid=3660930
+[2026-10-16 19:05:35]   spawned #4: DisableBulletDance (35B) pid=3661264
+[2026-10-16 19:05:35]   spawned #5: EnableBulletDance (35B) pid=3661684
+[2026-10-16 19:05:36]   skip Zoom__6CTSGuni: codex output exists
+[2026-10-16 19:05:36]   spawned #6: HandleDive (58B) pid=3662977
+[2026-10-16 19:05:36] 
+Spawned 6 codex calls (detached)
+[2026-10-16 19:05:36] Proxy serializes; expect 1-15 min each. Will continue in next loop iteration.
+[2026-10-16 19:08:49] === Spawning 6 reviews for newly-done codex outputs ===
+[2026-10-16 19:08:49]   review pid=3694274 for SlotBonus__8CTSStunt
+[2026-10-16 19:08:49]   review pid=3694275 for NextDive__8CTSStunt
+[2026-10-16 19:08:49]   review pid=3694276 for IsInCloseCombat__12CTSAnimationi
+[2026-10-16 19:08:49]   review pid=3694277 for DisableBulletDance__12CTSAnimationP11CBasePlayer
+[2026-10-16 19:08:49]   review pid=3694278 for EnableBulletDance__12CTSAnimationP11CBasePlayer
+[2026-10-16 19:08:49]   review pid=3694279 for HandleDive__8CTSStunt
+[2026-10-16 19:08:49] 
+Done. Output count: 54/281 = 19.2%
