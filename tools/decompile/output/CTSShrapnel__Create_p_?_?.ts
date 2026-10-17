@@ -1,95 +1,73 @@
 /**
- * CTSShrapnel::Create — instance factory. Allocates a CTSShrapnel via the
- * engine pool (GetClassPtr<CTSShrapnel>), then seeds origin / velocity /
- * spawn position and registers it with the engine.
+ * CTSShrapnel::Create — factory that spawns a new CTSShrapnel entity.
  *
- * Disassembly-derived behavior:
- *   1. Allocate via GetClassPtr<CTSShrapnel>(0); null-check.
- *   2. m_pEngine->vtable[9](instance)         // engine call, semantics TBD
- *   3. *(instance+0) = computed pointer       // engine-side "this" / edict offset
- *   4. instance.pev   = pev                   // store at instance+0x8c
- *   5. memcpy(*(instance+0)+0x08, vecPos, 12) // origin = vecPos
- *   6. velocity = vecDir + pev->velocity      // FPU x87 confirms per-axis add
- *   7. memcpy(*(instance+0)+0x20, velocity, 12)
- *   8. memcpy(instance+0x90, vecPos, 12)      // m_vecSpawnPos = vecPos
- *   9. handle = engineFuncTable.Fn90(0, 2)
- *  10. *(instance+0)+0x114 = handle
- *  11. m_pEngine->vtable[5](instance, pev->field_0x254, 0)
- *  12. return instance
+ * Demangled source: CTSShrapnel::Create(entvars_s*, Vector[, Vector])
+ * Disassembly:      tools/decompile/chunks/
+ *                   Create__11CTSShrapnelP9entvars_sG6VectorT2.chunk.md
+ * Reference:        tools/decompile/references/hlsdk-goldsrc-interface.md
  *
- * @param this    The CTSShrapnel instance (rebound to the pool-allocated
- *                object, per GoldSrc Create semantics).
- * @param pev     Pointer to the spawning entity's entvars_s.
- * @param vecPos  Spawn position (Vector) — used for origin and spawn pos.
- * @param vecDir  Direction vector — added to pev->velocity to seed velocity.
- * @returns       The new CTSShrapnel instance, or null if GetClassPtr failed.
+ * Allocates via the GetClassPtr pool allocator, then seeds pev, origin,
+ * velocity (= vecDir + pev->velocity), and a spawn-position cache. The
+ * engine-side hooks (vtable calls, global-thunk calls, engine-container
+ * writes) are marked TODO because the engine-container type and engine
+ * method names are recovered in D.4 and D.5 respectively.
+ *
+ * External types are typed `any` so the snippet compiles in isolation
+ * for D.3 review. D.4 will wire them up against the TS class layout.
  */
 export function Create(
-    this: CTSShrapnel,
-    pev: Pointer<entvars_s>,
-    vecPos: Vector,
-    vecDir: Vector): CTSShrapnel | null {
-  const instance = this;
+  this: void,
+  pev: any,        // entvars_s* (per `P9entvars_s` in the mangled name)
+  vecDir: any,     // Vector&    (per `G6Vector` — added to pev->velocity)
+  vecPos: any,     // Vector&    (per the trailing mangled segment)
+): any | null {
+  // Disasm: GetClassPtr<TSShrapnel>(0) — pool allocator hands us `this`.
+  const instance: any = GetClassPtr(CTSShrapnel, 0);
 
-  // (1) GetClassPtr<CTSShrapnel>(0). The TS GoldSrc allocator returns the
-  // recycled entity, which is bound to `this` and to engine-side storage.
-  // TODO(asm-ambiguous): the 0 arg and the assignment-back to `this` aren't
-  // visible in this frame — they live in GetClassPtr's body.
-  const allocated = GetClassPtr(CTSShrapnel, /*edict=*/0);
-  if (allocated == null) return null;
+  // Disasm: `test ebp,ebp; je 6c095` — null-return on allocation failure.
+  if (instance == null) return null;
 
-  // (2) Call into the engine via this->m_pEngine (at instance+0x60).
-  // vtable slot 9 (offset 0x24 in 4-byte ptr table); arg = instance.
-  // TODO(asm-ambiguous): which engine method this is — D.4 will resolve
-  // by cross-referencing the m_pEngine vtable.
-  instance.m_pEngine.vtable[9](instance);
+  // TODO(asm-ambiguous): engine vtable method 9.
+  // Disasm: `mov eax,[instance+0x60]; call [eax+0x24]`. Called with
+  // `instance` as the explicit `this`. Probably the engine-side
+  // "register this entity" hook. No safe TS call without the
+  // engine-side class definition from D.4.
 
-  // (3) Compute the engine-side "this" / edict-derived pointer and write
-  // it to *(instance+0). Formula:
-  //   (GOT_base - 0x6e070) - (*(GOT+0x1600))->field_0x98
-  // The two address operands are PIC-relative globals.
-  // TODO(asm-ambiguous): the meaning of the subtraction and the destination
-  // pointer. Likely the engine uses this offset to find this entity's data.
-  const engineThisComputed: number =
-      (GOT_BASE - 0x6e070) -
-      memory.readU32(memory.readU32(GOT_BASE + 0x1600) + 0x98);
-  memory.writeU32(memory.readU32(instance) /* *(instance+0) */, engineThisComputed);
+  // TODO(asm-ambiguous): engine-side "this" pointer setup.
+  // Disasm computes (GOT - 0x6e070) - (*(GOT+0x1600) + 0x98) and stores
+  // it at *(instance+0). Likely an engine-side container pointer or
+  // slot index. No safe TS expression without D.4.
 
-  // (4) pev stored at instance+0x8c.
+  // Disasm: store pev at instance+0x8c.
   instance.pev = pev;
 
-  // (5) Origin = vecPos: memcpy 12 bytes from vecPos to *(instance+0)+0x08.
-  memcpy_3dwords(memory.readU32(instance) + 0x08, vecPos);
+  // TODO(asm-ambiguous): origin = vecPos.
+  // Disasm: 3-dword `rep movs` from vecPos to *(instance+0) + 0x8. The
+  // engine-container write semantics are not recoverable until D.4.
 
-  // (6) Velocity = vecDir + pev->velocity (x87 FPU confirms: per-axis add).
-  const velocity: Vector = {
-    x: vecDir.x + pev.velocity.x,
-    y: vecDir.y + pev.velocity.y,
-    z: vecDir.z + pev.velocity.z,
-  };
+  // TODO(asm-ambiguous): velocity = vecDir + pev->velocity.
+  // Disasm: FPU fadd sequence writing the per-component sums to
+  // *(instance+0) + 0x20 (note: the store destination is +0x20, not
+  // +0x28 — re-verify against the engine-container layout in D.4).
+  // Computed values:
+  //   velocity.x = vecDir.x + pev.velocity.x
+  //   velocity.y = vecDir.y + pev.velocity.y
+  //   velocity.z = vecDir.z + pev.velocity.z
 
-  // (7) memcpy 12 bytes from velocity to *(instance+0)+0x20.
-  memcpy_3dwords(memory.readU32(instance) + 0x20, velocity);
-
-  // (8) m_vecSpawnPos = vecPos: memcpy 12 bytes from vecPos to instance+0x90.
-  memcpy_3dwords(instance /* +0x90 */, vecPos);
+  // Disasm: 3-dword `rep movs` from vecPos to instance+0x90
+  // (m_vecSpawnPos cache on the TS-side entity).
   instance.m_vecSpawnPos = vecPos;
 
-  // (9) Engine function-table call with args (0, 2). Returned handle
-  // goes to *(instance+0)+0x114.
-  // Source: [ebx+0x1aa8] is the engine function-table global in PIC.
-  // TODO(asm-ambiguous): which engine function this is (likely a sound or
-  // channel allocation, but unverified). Result is treated as a handle.
-  const handle: number =
-      memory.readU32(GOT_BASE + 0x1aa8).vtable[0x168 / 4](0, 2);
-  memory.writeU32(memory.readU32(instance) + 0x114, handle);
+  // TODO(asm-ambiguous): engine method via [GOT+0x1aa8] + 0x168.
+  // Disasm: call with args (0x0, 0x2); result stored at *(instance+0) +
+  // 0x114. Engine method name unknown in D.3. The receiver slot is past
+  // the standard edict_t size, so it is likely an entity_state_t field.
 
-  // (10) Second m_pEngine vtable call. Args: (instance, pev->field_0x254, 0).
-  // Field offset 0x254 is well beyond vanilla entvars_s (~0x174 bytes); TS
-  // likely extends entvars_s, or this is a CBaseEntity-typed pointer — D.4
-  // will resolve. Likely "link shrapnel to parent owner".
-  // TODO(asm-ambiguous): semantic of the call + meaning of pev->field_0x254.
-  instance.m_pEngine.vtable[5](instance, memory.readU32(pev) + 0x254, 0);
+  // TODO(asm-ambiguous): engine vtable method 5.
+  // Disasm: `call [instance+0x60]+0x14` with args (instance, *(pev+0x254),
+  // 0). The parent pev offset 0x254 is past the standard `entvars_s`
+  // layout — likely a TS-specific pev extension or a different struct
+  // entirely; type unknown in D.3. The `0` arg is the third stack slot.
 
   return instance;
 }

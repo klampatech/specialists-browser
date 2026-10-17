@@ -1,80 +1,57 @@
 ```typescript
 /**
- * CBasePlayer::DeactivateSlowMotionFlow — tears down this player's active
- * slow-motion flow. Calls vtable[5](entity, 1.0f, 0) on this player and
- * every entity that was tracked as part of the flow, then empties the two
- * tracking arrays on the player.
+ * CBasePlayer::DeactivateSlowMotionFlow — clears this player's slow-motion
+ * state, then walks both slow-motion tracked arrays and deactivates any
+ * entry whose end-timestamp has passed.
  *
- * @param this  The CBasePlayer instance (this in the original C++)
+ * @param this  The CBasePlayer entity (this in the original C++)
  * @returns     void
  */
-export function DeactivateSlowMotionFlow(this: CBasePlayer): void {
-  // Helper — invokes vtable[5](entity, 1.0f, 0).
-  // In the binary:
-  //   mov eax, [entity+0x60]   ; vtable pointer at offset 0x60
-  //   call [eax+0x14]          ; index 5 (0x14 / 4)
-  // Args read semantically as "reset rate to neutral 1.0, off".
-  const deactivate = (entity: any): void => {
-    const vtable = entity[0x60] as any;
-    vtable[5].call(entity, 1.0, 0);
-  };
+export function DeactivateSlowMotionFlow(this: any /* TODO: CBasePlayer */): void {
+  // 1. Restore this player's slow-motion state.
+  //    The disassembly loads a vtable pointer at [this+0x60], then
+  //    indirect-calls through [ptr+0x14] with args (1.0, 0). Best-guess
+  //    match for the (float, char) signature:
+  //    CBasePlayer::GoSlow(1.0, 0) — restore normal speed, deactivate.
+  // TODO(asm-ambiguous): offset 0x60 as vtable slot is unusual; could also
+  //   be a member pointer to a sub-object with its own vtable.
+  this.GoSlow(1.0, 0);
 
-  // ── (1) Deactivate this player. ─────────────────────────────────────
-  deactivate(this);
+  // 2. Clear this player's slow-motion state fields.
+  this.slowMotionField_0x180 = 0;
+  this.slowMotionTimestamp_0x17c = 0;
+  this.slowMotionActiveFlag_0x175 = 0;
 
-  // ── (2) Clear this player's slow-motion bookkeeping fields. ──────────
-  (this as any)[0x180] = 0; // dword (int / timer)        — TODO: offset meaning unclear
-  (this as any)[0x17c] = 0; // dword (int / timer; occasionally read as float)
-  (this as any)[0x175] = 0; // byte flag (flow-active)
+  // 3. Walk the first tracked-entity array (this + 0x188, stride 4).
+  //    Loop count: *(*(GOT + 0x1600) + 0x90) — engine-side global count
+  //    (likely max-clients / edict-count surrogate).
+  const trackedCount: number = this._getGlobalTrackedCount();
+  for (let i = 0; i < trackedCount; i++) {
+    const entry = this.slowMotionTracked1[i];
+    if (entry == null) continue;
 
-  // ── (3) External flow-target array. ─────────────────────────────────
-  // Bound comes from a global pointer chain:
-  //   [*(GLOBALS + 0x1600)][0x90]
-  // Assembly loop is `for (ebp=1; ebp <= count; ++ebp)` with esi
-  // advancing by 4 from 0x184, so slot offsets are [this + 0x188 + (i-1)*4].
-  // TODO(asm-ambiguous): the global symbol at +0x1600 and the field
-  //   at +0x90 are not yet identified — likely a player-array length
-  //   (maxClients-style) per the i-from-1 loop convention.
-  const extCount =
-    (((GLOBALS /* TODO: see strings-n5.txt */ as any)[0x1600] as any)[0] as any)[0x90] as number;
-  for (let i = 1; i <= extCount; i++) {
-    const slotOffset = 0x188 + (i - 1) * 4;
-    const target = (this as any)[slotOffset] as any;
-    if (target == null) continue;
-
-    // The original fcomp checks target[0x17c] against a global float at
-    // [GLOBALS - 0x6f408] (likely gpGlobals->time). Only on EQUAL do we
-    // call vtable[5] and clear the flag; on NOT-EQUAL we just clear the
-    // slot. Either way the slot is emptied at the end.
-    // TODO(asm-ambiguous): the semantic intent of the equality test
-    //   (e.g., "timer just hit zero" vs "already expired" vs
-    //   "still at the boundary") is not recoverable from the assembly.
-    if (target[0x17c] === (GLOBALS /* TODO */ as any).time) {
-      deactivate(target);
-      target[0x175] = 0;
+    // If the entry's slow-motion timer has expired, deactivate it.
+    // TODO(asm-ambiguous): `test ah, 0x40` after `fcomp [entry+0x17c]`
+    //   against the global time — the bit maps to C2 in the FPU status
+    //   word (set only for unordered/NaN). The semantic intent here is
+    //   "entry's slow-motion timer has expired".
+    if (gpGlobals.time >= entry.slowMotionTimestamp_0x17c) {
+      entry.GoSlow(1.0, 0);
+      entry.slowMotionActiveFlag_0x175 = 0;
     }
-    (this as any)[slotOffset] = 0;
+    this.slowMotionTracked1[i] = null;
   }
 
-  // ── (4) Local flow-target array. ────────────────────────────────────
-  // Length is a signed byte on `this` (movsx eax, [this+0x288]).
-  // Assembly loop is `for (ebp=0; ebp < count; ++ebp)` with esi
-  // advancing by 4 from 0x200, so slot offsets are [this + 0x208 + i*4].
-  const localCount = ((this as any)[0x288] as number) | 0;
-  for (let i = 0; i < localCount; i++) {
-    const slotOffset = 0x208 + i * 4;
-    const target = (this as any)[slotOffset] as any;
-    if (target == null) continue;
-    deactivate(target);
-    (this as any)[slotOffset] = 0;
+  // 4. Walk the second tracked-entity array (this + 0x208, stride 4).
+  //    Loop count: [this + 0x288] (signed byte).
+  const secondaryCount: number = this.slowMotionCount_0x288;
+  for (let i = 0; i < secondaryCount; i++) {
+    const entry = this.slowMotionTracked2[i];
+    if (entry == null) continue;
+
+    entry.GoSlow(1.0, 0);
+    this.slowMotionTracked2[i] = null;
   }
-  (this as any)[0x288] = 0;
+  this.slowMotionCount_0x288 = 0;
 }
-
-// === External PIC/GOT globals stub ========================================
-// ebx-relative globals from the binary. Real symbol names + meanings TBD;
-// cross-reference tools/decompile/analysis/strings-n5.txt and the GOT base
-// computed at the function prologue (call $+5; pop ebx; add ebx, 0xdf368).
-// TODO(asm-ambiguous): +0x1600, -0x6f408 offsets need resolving.
-declare const GLOBALS: any;
 ```
