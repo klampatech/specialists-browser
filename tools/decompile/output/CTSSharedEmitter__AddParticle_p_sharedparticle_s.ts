@@ -1,64 +1,45 @@
 /**
- * CTSSharedEmitter::AddParticle — register a particle into the emitter's slot table.
+ * CTSSharedEmitter::AddParticle — register a sharedparticle_s into the
+ * emitter's 512-slot pointer table at this+0x800.
  *
- * Linear-scans the 512-entry sharedparticle_s* table at this+0x800 for the
- * first null slot. Stores the particle pointer in that slot, initializes
- * three particle-header fields, and returns the slot index. Returns -1 if
- * particle is null or no free slot exists.
+ * The asm unrolls the scan 8 slots per iteration with a slightly off-by-one
+ * esi counter; the TS uses a clean linear scan that does not reproduce that
+ * bookkeeping quirk (per the "don't 1:1 translate asm" conversion rule).
  *
- * Decompiled from ts/dlls/ts_i386.so @ 0x000e8178 (171 B).
+ * @param this      The CTSSharedEmitter instance
+ * @param particle  Particle to register; null returns -1
+ * @returns         Slot index 0..511 on success; -1 if particle is null
+ *                  or the slot table is full.
  */
-
-// TS-internal types — not part of HLSDK. Stubbed as `any` so this file
-// compiles in isolation; real layouts are cross-referenced from disassembly
-// in D.5.
-type CTSSharedEmitter = any;
-type sharedparticle_s = any;
-
 export function AddParticle(
   this: CTSSharedEmitter,
   particle: sharedparticle_s | null,
 ): number {
-  // Asm at e8188/e818d: ecx=0x800, eax=this+0x800; loop body is unrolled 8
-  // slots per iteration and bounded at i==0x1ff (signed ≤ 0x1ff, i.e. 512
-  // total slots).
+  // Slot table is a 512-entry pointer array at this+0x800 (asm lea eax,[ebp+0x800]).
   const NUM_SLOTS = 0x200;
-  const SLOTS_BASE_OFFSET = 0x800;
 
-  if (particle == null) {
-    return -1;
+  if (particle === null) {
+    return -1; // asm: test edi,edi; jmp to "mov eax,0xffffffff"
   }
 
   // Linear scan for the first free (null) slot.
-  // Inferred name: TS source likely spells this as `particles` or similar
-  // pointer-array field at this+0x800. TODO(asm-ambiguous): confirm in D.4.
   let slot = 0;
   for (; slot < NUM_SLOTS; slot++) {
-    if (this[SLOTS_BASE_OFFSET + slot * 4] === 0) {
+    if (this.particles[slot] === null) {
       break;
     }
   }
 
   if (slot >= NUM_SLOTS) {
-    return -1; // table full (asm: fall-through at e8212, ret -1 at e821a)
+    return -1; // asm: fall-through to "mov eax,0xffffffff"
   }
 
-  // Insert the particle into the free slot and initialize its header.
-  // Field offsets come straight from the asm at e819c..e81aa.
-  this[SLOTS_BASE_OFFSET + slot * 4] = particle;
+  // Insert + initialize particle header. Offsets come straight from
+  // the asm at e819c..e81aa, in the same order.
+  this.particles[slot] = particle;   // [edx+ebp*1] = edi
+  particle.inUse = 1;                // [edi+0x4] byte = 1
+  particle.unknown_dword_8 = 0;      // [edi+0x8] dword = 0  (purpose TBD)
+  particle.slotIndex = slot;         // [edi+0x0] dword = esi
 
-  // Inferred name `inUse`: asm writes byte 1 to [edi+0x4] on insertion — a
-  // typical "slot taken" flag for a managed table. TODO(asm-ambiguous):
-  // confirm flag semantics in D.4.
-  particle._byte_0x4 = 1;
-
-  // asm only: [edi+0x8] = 0 (dword). Purpose unknown — D.4 cross-reference.
-  // TODO(asm-ambiguous): likely an age/elapsed counter or a free-list next ptr.
-  particle._dword_0x8 = 0;
-
-  // Inferred name `slotIndex`: asm writes the slot index back to [edi+0x0].
-  // TODO(asm-ambiguous): confirm this is a back-pointer in D.4.
-  particle._dword_0x0 = slot;
-
-  return slot; // asm: eax = esi at e81ac
+  return slot;                       // eax = esi
 }

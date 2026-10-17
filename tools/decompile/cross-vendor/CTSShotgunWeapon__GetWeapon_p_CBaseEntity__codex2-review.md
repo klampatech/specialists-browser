@@ -1,94 +1,152 @@
-I notice the cross-vendor review prompt is structured for engine↔mod interface functions (GetEntityAPI*), but the function under review is a gameplay method (`CTSShotgunWeapon::GetWeapon`). The HLSDK reference doesn't directly apply — I'll review against the disassembly, which is what matters here. Items 2-4 of the checklist are not applicable to a gameplay method, so I'll mark them ⚠️ N/A.
+Shell is broken in this session (exec_command sessions connect but produce no output, and there's no `read_file` tool). I have all the inputs the user loaded inline, so I'll do the review from those. Per `AGENTS.md` I would normally read `HANDOFF.md` and `SPEC.md` first, but the sandbox is read-only and the shell is non-functional — flagging as a noted-but-not-actioned step. This review is itself the in-scope task; I won't try to update `HANDOFF.md` from a read-only sandbox with a broken shell.
 
-Tracing the prologue carefully:
-- 4 pushes (ebp, edi, esi, ebx) + `sub esp, 0xc` = 28 bytes of prologue.
-- Per GCC x86 cdecl for member functions, `this` is the first implicit arg at `[E+4]`, so after the prologue `[esp+0x20] = this`, `[esp+0x24] = pEntity`.
-- At `b95cf-b95d2`: `sub esp, 0x8; push [esp+0x2c]` — this pushes `[new_esp - 8 + 0x2c] = [new_esp + 0x24] = pEntity`. Then `push ebp` pushes `this`.
+One meta-observation up front, since it affects the checklist: **the function under review is not one of the 4 HLSDK entry points** (`GiveFnptrsToDll`, `GetEntityAPI`, `GetEntityAPI2`, `GetNewDLLFunctions`) that the reference document covers. It's a TS class method — `CTSShotgunWeapon::GetWeapon(p CBaseEntity)`. So checklist items 2 (version check), 3 (`*interfaceVersion` write-back), and 4 (struct copy on success) are **N/A by design**. I'll mark them with ⚠️ + the N/A reason rather than fail them. Items 1, 5, 6, 7, 8 are applicable.
 
-So the parent call is `parent.GetWeapon(this, pEntity)`, not `parent.GetWeapon(pEntity, ???)` as the TS comment claims. The TS appears to have miscounted the prologue (forgetting `sub esp, 0xc`) and missed the `sub esp, 0x8` adjustment before b95d2.
+There's a much more serious issue underneath, which I'll surface as the primary "Issue to fix":
+
+---
 
 ```
 VERDICT: FAIL
 
 Checklist:
-1. Signature — ✅ — `GetWeapon(this: CTSShotgunWeapon, pEntity: CBaseEntity): void` matches the demangled symbol `CTSShotgunWeapon::GetWeapon(p CBaseEntity)`. Free-function form with explicit `this` is fine for decompiled TS.
-2. Version check — ⚠️ N/A — not an engine-interface function.
-3. interfaceVersion assignment — ⚠️ N/A — not an engine-interface function.
-4. Success path: struct copy — ⚠️ N/A — no struct copy involved.
-5. No fabricated paths — ❌ — The TS systematically misidentifies `this` (the shotgun) as `pEntity` (the picker-upper). The asm loads `[esp+0x20]` into `ebp` once and uses `ebp` for every field access — that is `this`, not `pEntity`. Every flag check, vtable lookup, cache write, receiver load, and the cached-id push is on `this` in the asm but on `pEntity` in the TS. Additionally, the parent call is `parent.GetWeapon(this, pEntity)` (a method call with `this` as the implicit `this`), but the TS calls it as a free function `groundWeaponGetWeapon(pEntity, undefined)` — args are in the wrong order and `undefined as any` is a phantom placeholder.
-6. No TODO body — ✅ — Real code, not placeholder-only. The `TODO(asm-ambiguous)` comments annotate genuine unknowns (field identities) without replacing the code.
-7. Field names — ⚠️ — `pev`, `flags` are standard. Offsets `0x60`, `0xa4`, `0x118`, `0x208`, `0x11c`, `0x1f2`, `0x1aa8`, `0x8` are magic numbers from the asm; the TODO comments justify them. Inconsistent representation: `vtable[0x11c]` uses byte offset while `funcTable[2]` uses DWORD index for the same kind of access (`[esi+0x8]` is byte offset 0x8 = DWORD index 2).
-8. Compiles in isolation — ✅ — `any` is used for unknown offsets, external types (`CTSShotgunWeapon`, `CBaseEntity`) and helpers (`getWeaponInfo`, `groundWeaponGetWeapon`) are referenced but not defined here, which is acceptable for a decompiled fragment.
+1. Signature — ✅ — `(this: CTSShotgunWeapon, pEntity: CBaseEntity): void` matches the demangled
+   `GetWeapon__16CTSShotgunWeaponP11CBaseEntity` (= `CTSShotgunWeapon::GetWeapon(p CBaseEntity)`).
+   Return type `void` is correct — the disassembly pops saved regs and `ret`s with no value pushed.
+2. Version check — ⚠️ — N/A: this is a class method, not one of the 4 entry points covered by the
+   HLSDK reference. The checklist criterion doesn't apply.
+3. interfaceVersion assignment-back — ⚠️ — N/A: same reason. There is no `*interfaceVersion` in
+   this code path.
+4. Success path (struct copy) — ⚠️ — N/A: same reason. The disassembly does a real virtual
+   dispatch + global-function-table call, not a struct copy.
+5. No fabricated code paths — ⚠️ — The control-flow graph (early-out, parent call, conditional
+   vtable dispatch, get_weapon_info, function-table call) is faithful. No invented branches.
+   BUT the function operates on the wrong object (see Issue #1 below) — that's a semantic
+   misread of `ebp`, not a fabricated control flow. Marking ⚠️ because the criterion is narrowly
+   about control flow, which is preserved.
+6. No TODO body — ✅ — Substantial executable code. The TODOs are inline commentary, not a
+   comment-only body.
+7. Field names — ❌ — Two real issues:
+     a) `pEntity.pev.flags & 0x80` is wrong. The disassembly accesses byte at `[pev+0x118]`,
+        not `pev->flags`. `pev->flags` is at offset `0xc4` in HLSDK's `entvars_t` (32-bit).
+        `0x118` is some other field in the entvars tail (or a TS-specific extension). The
+        "0x80" *bit* interpretation (js on a byte = high-bit set) is correct, but the
+        *field* is unidentified.
+     b) Every field access in the body is on the wrong object (see Issue #1), so even
+        fixing the offset to `pev+0x118` isn't enough — it needs to be `this->pev+0x118`.
+8. Compiles in isolation — ❌ — References `CTSShotgunWeapon` and `CBaseEntity` as type names
+   that aren't declared in this file. The prompt's rule is "no external type references we
+   don't define here; use `any` for unknowns." Both should be `any` (or declared here).
 
 Issues to fix:
-- `ebp = [esp+0x20]` is `this`, not `pEntity`. Every field access that uses `ebp` in the asm must use `this` in the TS:
-  - Flag check (`pEntity.pev.flags` → `this.pev.flags`).
-  - Vtable ptr load (`(pEntity as any)[0x60]` → `(this as any)[0x60]`).
-  - Vtable call target (`vtable[0x11c](pEntity)` → `vtable[0x11c](this)`).
-  - Cache write (`(pEntity as any)[0xa4] = …` → `(this as any)[0xa4] = …`).
-  - Receiver (`(pEntity.pev as any)[0x208]` → `(this.pev as any)[0x208]`).
-  - `getWeaponInfo` arg (`(pEntity as any)[0xa4]` → `(this as any)[0xa4]`).
-- Parent call: the asm pushes `pEntity` then `ebp = this`, then calls the parent. That's `parent.GetWeapon(this, pEntity)`. Replace `groundWeaponGetWeapon(pEntity, undefined as any)` with `groundWeaponGetWeapon.call(this, pEntity)`. Drop the `undefined` placeholder and the misleading "second arg from the caller's stack" comment — the asm's `push [esp+0x2c]` (after the `sub esp, 0x8`) is `pEntity` itself, not something above the args. The demangler's single explicit arg is correct; there is no missing second arg.
-- `0x80` flag interpretation: the asm tests `BYTE [pev+0x118]`. The TS comment "kill-queue / notarget-style marker" is speculation; `0x80` is bit 7 of a byte, not a standard HLSDK flag at the standard offsets. Mark as ambiguous rather than asserting semantics.
-- Pick one offset convention: either byte offsets (`funcTable[0x8]`, `vtable[0x11c]`) or DWORD indices (`funcTable[2]`, `vtable[0x47]`). The asm is byte-offset, so byte-offset is the more faithful choice.
-- `globalThis as any` for the GOT entry is a representation choice; the comment should make clear this stands in for the .so data segment at `[ebx+0x1aa8]`, not for an actual JS global.
+
+1. **CRITICAL — body operates on the wrong object.** The disassembly is GCC thiscall-on-stack
+   on x86-32 Linux (no `mov ecx, …` before the parent call; both args are pushed; PLT entry
+   at 0x59f20 doesn't fix up `ecx`). Therefore `ebp` is the **first stack arg = `this`** (the
+   CTSShotgunWeapon), not `pEntity`. Every `[ebp+0x…]` in the disassembly is on `this`, not
+   on the picker. The TS code reads all of these as `pEntity.[…]`, which means:
+     - the early-out flag check is on the wrong entity
+     - the vtable dispatch at `[ebp+0x60]` is on the wrong object
+     - the cached weapon-type id at `[ebp+0xa4]` is on the wrong object
+     - the function-table receiver `[ebp+0]->pev+0x208` is on the wrong object
+   The only correct use of `pEntity` is as the second stack arg forwarded to
+   `CTSGroundWeapon::GetWeapon` (which the TS gets right as a forwarding, though it passes
+   `undefined` — see Issue #4).
+
+2. **WRONG — `pev.flags`.** Even with Issue #1 fixed, the field name `pev.flags` is wrong.
+   The disassembly's offset is `[pev+0x118]`, and HLSDK's `pev->flags` is at `[pev+0xc4]`.
+   Use `[pev+0x118]` (with a TODO explaining the field is unidentified) or a clearly-
+   hypothetical name like `pev.tsFlagAt0x118`.
+
+3. **WRONG — type names `CTSShotgunWeapon` / `CBaseEntity` not declared.** Per the prompt's
+   "compiles in isolation" rule, type references must be declared in-file or be `any`. Use
+   `any` for both.
+
+4. **TODO-INCOMPLETE — second arg to parent call.** The disassembly pushes
+   `[esp+0x2c]` (which computes to the caller's `pEntity` slot) as the second arg to
+   `CTSGroundWeapon::GetWeapon`. The TS passes `undefined as any`. The fix is to forward
+   `pEntity` (see rewrite). The comment that the demangled parent signature only shows
+   one arg is true, but the disassembly is the spec; the demangled signature is just
+   stale/misleading — the actual callee takes two stack args.
+
+5. **MINOR — `funcTable[2]` reasoning.** The comment in the TS correctly notes that
+   `[esi+0x8]` = 3rd 4-byte slot in a table of pointers = index 2. ✅ — leaving as-is.
 
 Suggested rewrite:
 
 ```typescript
 /**
- * CTSShotgunWeapon::GetWeapon — pickup handler invoked when an entity
- * picks up a shotgun weapon from the ground.
+ * CTSShotgunWeapon::GetWeapon — pickup handler invoked when an entity picks
+ * up a shotgun weapon from the ground.
  *
- * Behaviour (from the asm):
- *   1. If `this->pev->byte_at_0x118 & 0x80` is set, skip the pickup.
- *   2. Delegate to CTSGroundWeapon::GetWeapon (called as a method on
- *      `this`, with `pEntity` as the explicit CBaseEntity*).
- *   3. Re-check the same flag; if set, dispatch through a function-
- *      pointer table at `this+0x60` (entry at offset 0x11c) and cache
- *      the returned weapon-type id at `this+0xa4`.
- *   4. Resolve the weapon-info struct via `get_weapon_info(cached_id)`
- *      and dispatch a global at `[GOT+0x1aa8]+0x8` with
- *      `(this->pev->field_at_0x208, weaponInfo + 0x1f2)`.
+ * Calling convention: GCC thiscall-on-stack (x86-32 Linux). `this` is the
+ * first stack arg = `ebp` for the whole function. The picker (`pEntity`)
+ * is the second stack arg; it is *not* read directly by this function —
+ * it is only forwarded to the parent CTSGroundWeapon::GetWeapon.
+ *
+ * All `[ebp+0x…]` accesses in the disassembly are on `this` (the weapon
+ * being picked up), not on `pEntity` (the picker).
  */
-export function GetWeapon(this: CTSShotgunWeapon, pEntity: CBaseEntity): void {
-  // 1. Early-out: skip the pickup if `this` is flagged at pev+0x118.
-  if (((this.pev as any)[0x118] & 0x80) !== 0) {
+export function GetWeapon(this: any /* CTSShotgunWeapon */, pEntity: any /* CBaseEntity */): void {
+  // pev is the first data member of CBaseEntity (inherited as the vptr is
+  // typically at offset 0 in single-inheritance, and the disassembly does
+  // [ebp+0] to load it). Use `any` because the offset inside the C++ object
+  // is a compiler-layout detail.
+  const pev: any = this[0];
+
+  // 1. Early-out: skip the pickup if a TS-specific flag at pev+0x118 has
+  //    its high bit set. The disassembly does `cmp BYTE PTR [pev+0x118], 0`
+  //    followed by `js end` (jump-on-sign fires when a signed byte < 0,
+  //    i.e. the 0x80 bit is set). This is NOT `pev->flags` (which sits at
+  //    offset 0xc4 in HLSDK's entvars_t). The field at 0x118 is unidentified.
+  // TODO(asm-ambiguous): identify pev+0x118. Bit 0x80 = "skip pickup".
+  if ((pev[0x118] & 0x80) !== 0) {
     return;
   }
 
-  // 2. Delegate to the parent class. The asm pushes (pEntity, this)
-  // right-to-left, which at the callee yields (this, pEntity) — i.e.,
-  // a method call with `this` bound.
-  groundWeaponGetWeapon.call(this, pEntity);
+  // 2. Delegate to CTSGroundWeapon::GetWeapon with the same (this, pEntity)
+  //    pair. The parent's demangled signature only lists 1 explicit arg,
+  //    but the disassembly pushes two stack args before the PLT call —
+  //    i.e. it forwards both `this` and the caller's `pEntity`.
+  groundWeaponGetWeapon(this, pEntity);
 
-  // 3. If `this` is now flagged, fetch its weapon-type id via a
-  // virtual dispatch and cache it at field offset 0xa4.
-  if (((this.pev as any)[0x118] & 0x80) !== 0) {
-    // TODO(asm-ambiguous): `this+0x60` is treated as a function-pointer
-    // table (likely a TS-specific vtable). The entry at offset 0x11c is
-    // called with `this` as the receiver; the returned value is cached.
-    const vtable = (this as any)[0x60] as {
+  // 3. Re-check the same flag. If now set, dispatch a virtual method on
+  //    `this` (via a function-pointer table at object offset 0x60, entry
+  //    at 0x11c) and cache the returned weapon-type id at object offset
+  //    0xa4. The vtable being at offset 0x60 (not 0) is unusual for single
+  //    inheritance and suggests multiple inheritance, a TS-specific vptr
+  //    placement, or a non-virtual function-pointer table.
+  if ((pev[0x118] & 0x80) !== 0) {
+    // TODO(asm-ambiguous): the "vtable" at this[0x60] and its 0x11c-th
+    // entry (index 0x47) are unidentified.
+    const vtable = this[0x60] as {
       [offset: number]: (self: any) => number;
     };
-    (this as any)[0xa4] = vtable[0x11c](this);
+    this[0xa4] = vtable[0x11c](this);
   }
 
-  // 4. Look up the TS weapon-info struct for the cached weapon-type id,
-  // then dispatch through a global function table to apply the pickup
-  // effect.
-  // TODO(asm-ambiguous): `this->pev+0x208` is a TS-specific field whose
-  // meaning is unclear from this chunk alone.
-  const receiver = (this.pev as any)[0x208];
-  // TODO(asm-ambiguous): the global at GOT+0x1aa8 (represented here as
-  // a stand-in slot on `globalThis`) holds a function-pointer table;
-  // the entry at byte offset 0x8 is called with (receiver, info+0x1f2).
+  // 4. Always: look up the TS weapon-info struct for the cached weapon-type
+  //    id, then dispatch through a global function table (PIC base + 0x1aa8,
+  //    function index 2) passing (this->pev+0x208, info+0x1f2). 0x1f2 is
+  //    an offset into the TSWeaponInfo struct (likely a sound or string
+  //    field; unidentified).
+  const receiver = pev[0x208]; // TODO(asm-ambiguous): pev+0x208 unidentified
   const funcTable = (globalThis as any)[0x1aa8] as Array<
     (receiver: any, info: number) => void
   >;
-  const info = getWeaponInfo((this as any)[0xa4]);
-  funcTable[2](receiver, info + 0x1f2);
+  const info = getWeaponInfo(this[0xa4]) + 0x1f2;
+  funcTable[2](receiver, info);
 }
 ```
 
-Note on context: I didn't read `HANDOFF.md` or `SPEC.md` because this prompt is self-contained (disassembly + TS + checklist inline) and `AGENTS.md` instructs agents to read them when picking up phase work, not when answering a scoped review question. If you'd like me to also surface anything from the project's `HANDOFF.md` that's relevant to this review (e.g., whether there's an established convention for representing `this`-binding in the TS), say the word and I'll go fetch it.
+Notes for the next pass:
+- The two biggest items (#1, #2) should be re-verified after the next TS-gold-source pass —
+  the disassembly-vs-demangling discrepancy (parent takes 2 stack args but demangled as 1)
+  suggests the demangler is reading from a stale header. Worth checking whether other
+  `GetWeapon__1NCTSxxxWeapon…` siblings have the same shape.
+- The "vtable at object offset 0x60" is worth a separate investigation across the rest of
+  the CTS*Weapon family — if it's a pattern, it's almost certainly a TS-specific
+  dispatch table (e.g. a `IWeaponBehavior*` or a custom interface), not a C++ vtable.
+- I'd suggest capturing this review's outcome in `HANDOFF.md` under whichever PR is
+  landing this decompile (I can't write to it from this session — sandbox is read-only
+  and the shell is non-functional — so flagging it for whoever picks this up).
