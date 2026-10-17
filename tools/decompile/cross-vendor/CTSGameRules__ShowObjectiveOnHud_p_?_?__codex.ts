@@ -1,56 +1,47 @@
-The shell is unresponsive so I'll work from the disassembly + project rules directly. Here's my read of the chunk:
-
-**Calling convention.** After `push edi; push esi; push ebx` (12 B of callee-saves) and `sub esp, 0x8` (8 B of locals), `[esp+0x18]` holds the first caller-pushed arg and `[esp+0x1c]` holds the second. The eventual `cmp BYTE PTR [esp+0x24]` lands exactly on the second caller arg, confirming the second arg is a `bool` and the first is the `CTSObjective*` — i.e. **MSVC `__thiscall`, `this` in ECX**.
-
-**The two pushes of `[esp+0x1c]`.** That's the *bool*, not the pointer — odd shape, almost certainly a compiler artifact around calling `FindIndexByObjective`. The effective behavior is `this->FindIndexByObjective(pObjective) → index`.
-
-**The rest is classic HL1 message-burst.** `MESSAGE_BEGIN(MSG_ONE=2, *pPlayer, 0, 0)` → `WRITE_BYTE(index)` → `WRITE_BYTE(show ? 1 : 0)` → `MESSAGE_END()`, with the engine dispatcher's vtable resolved from `[ebx+0x1aa8]` and the player handle from `[ebx+0x1884]`.
-
 ```typescript
 /**
- * CTSGameRules::ShowObjectiveOnHud — emit a HUD-update message to the
- * local player to show or hide the given objective's indicator.
+ * CTSGameRules::ShowObjectiveOnHud — broadcast an objective's HUD show/hide state to clients.
  *
- * Sequence: look up the objective's slot index, then write a 2-byte
- * payload (slot index, show flag) to the client via the engine's
- * message API (begin → write byte → write byte → end).
+ * Resolves the objective's wire index via FindIndexByObjective(), then sends a
+ * user message carrying that index and a normalized 0/1 show flag.
  *
- * @param this       The CTSGameRules game-rules singleton
- * @param pObjective The objective whose HUD state to update
- * @param show       true = show on HUD, false = hide
+ * @param this       The CTSGameRules game-rules singleton.
+ * @param pObjective The objective to show or hide on the client HUD.
+ * @param bShow      true → show the objective, false → hide it.
  * @returns          void
  */
 export function ShowObjectiveOnHud(
   this: CTSGameRules,
   pObjective: CTSObjective,
-  show: boolean,
+  bShow: boolean,
 ): void {
-  // 1. Resolve the objective's slot index.
-  // TODO(asm-ambiguous): the asm pushes [esp+0x1c] (the bool arg) twice
-  // before calling FindIndexByObjective — likely a __thiscall callee
-  // with `this` in ECX and `pObjective` passed via a register, but the
-  // chunk doesn't make the second arg explicit. Behavior: returns index.
+  // Resolve the objective's wire index for the client-side objective table.
   const index: number = this.FindIndexByObjective(pObjective);
 
-  // 2. Globals via the PIC/GOT base in ebx.
-  //    [ebx + 0x1884] -> handle for the local player (recipient).
-  //    [ebx + 0x1aa8] -> engine / message-dispatcher vtable.
-  // TODO: confirm names against tools/decompile/analysis/strings-n5.txt.
-  const pPlayer = GOT_0x1884;        // TODO: real symbol
-  const pEngine = GOT_0x1aa8;        // TODO: real symbol
+  // Begin a user message: (msgType=0x2, msgId, pOrigin=NULL, pEdict=NULL),
+  // then WriteShort(index), WriteByte(bShow ? 1 : 0), End().
+  //
+  // TODO(asm-ambiguous): the GOT globals at [ebx+0x1884] and [ebx+0x1aa8]
+  //   resolve to (a) the current user-message id (e.g. gmsgShowObjective,
+  //   dereferenced once before being pushed) and (b) a message-buffer
+  //   vtable object whose methods at +0xb8 (Begin), +0xc0 (WriteShort /
+  //   WriteByte), and +0xbc (End) we invoke below.
+  // TODO(asm-ambiguous): 0x2 is one of the engine's MSG_* msg-type
+  //   constants (likely MSG_ONE / MSG_ALL) — confirm against the engine enum.
+  const msgBuffer: any = null;
+  const msgId: number = 0;
+  msgBuffer.Begin(0x2, msgId, null, null);
 
-  // 3. Begin a MSG_ONE (msgtype = 2) message targeting *pPlayer, origin (0, 0).
-  //    pfnMessageBegin analog lives at vtable + 0xb8.
-  pEngine.vtable[0xb8](2, pPlayer[0], 0, 0);
+  // WriteShort(index): the asm reuses the top stack slot (which originally
+  // held the msgType literal) as the WriteShort arg, overwriting it with
+  // `index` via `mov [esp], edi` before invoking WriteShort.
+  msgBuffer.WriteShort(index);
 
-  // 4. Write the objective index as the first payload byte.
-  //    pfnWriteByte analog lives at vtable + 0xc0.
-  pEngine.vtable[0xc0](index);
+  // Normalize bShow to 0/1 (`mov eax,0; cmp BYTE PTR [...],0; setne al`)
+  // and call WriteByte.
+  msgBuffer.WriteByte(bShow ? 1 : 0);
 
-  // 5. Write the show/hide flag (1 = show, 0 = hide) as the second byte.
-  pEngine.vtable[0xc0](show ? 1 : 0);
-
-  // 6. End the message. pfnMessageEnd analog lives at vtable + 0xbc.
-  pEngine.vtable[0xbc]();
+  // End the message.
+  msgBuffer.End();
 }
 ```
