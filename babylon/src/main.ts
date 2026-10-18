@@ -5,29 +5,25 @@
  *   - Click canvas → PointerLock
  *   - WASD + mouse-look + Space jump + Shift sprint
  *   - Esc to release pointer (browser native)
+ *   - HP, take damage, die, respawn
  *
  * Weapon (D.5.7):
  *   - Left-click → fire pistol (raycast, damage bot, decrement ammo)
  *   - R → reload
  *
- * Stub bot (D.5.9):
- *   - Patrol state machine: walk between spawn + waypoint
- *   - Chases player when in range
- *   - Dies after enough damage
+ * Bots (D.5.9):
+ *   - Patrol → Chase → ATTACK state machine
+ *   - Bots shoot at player when in range + in FOV
+ *   - Bots have wall collision
+ *   - Bots tip over when killed, respawn after 4s
  *
  * HUD (D.5.10):
- *   - HP bar (top left)
+ *   - HP bar (top left) + damage flash
  *   - Ammo counter (bottom right)
  *   - Crosshair (center)
  *   - Hit marker (red ✕) on hit
- *
- * What this exercises (foundation for everything else):
- *   - `src/bridge/engine.ts` (entity pool)
- *   - `src/mod/types.ts` (Entvars, CBaseEntity POJOs)
- *   - The Babylon.js engine, scene, camera, meshes
- *   - Input + game loop pattern
- *
- * Next (D.5.2 BSP→glTF): replace test level with real TS map.
+ *   - Kill counter (top right) + kill notification
+ *   - YOU DIED banner on death
  */
 
 import { Engine } from "@babylonjs/core/Engines/engine";
@@ -41,7 +37,7 @@ import { createBabylonSceneDriver } from "../../src/bridge/engine";
 
 import { PlayerController } from "./player";
 import { buildTestLevel } from "./world";
-import { StubBot } from "./bot";
+import { StubBot, BotWorld } from "./bot";
 import { Pistol, HudOverlay } from "./weapon";
 
 const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
@@ -81,29 +77,59 @@ const player = new PlayerController({
   camera,
   spawn: { x: spawn.x, y: spawn.y, z: spawn.z },
 });
-// Wall collision: room is 24×24 centered at origin, height 6
-// (player radius 0.4 leaves a small buffer so you don't see
-// the wall clipping through the camera).
+// Wall collision: room is 24×24 centered at origin
 player.setBounds({ minX: -12, maxX: 12, minZ: -12, maxZ: 12 });
 
-// Bots (3 bots patrolling).
+// Bots.
 const bots: StubBot[] = [
-  new StubBot(scene, { id: 100, name: "bot1", spawn: { x: 4, y: 0, z: 4 }, color: new Color3(0.9, 0.3, 0.3) }),
-  new StubBot(scene, { id: 101, name: "bot2", spawn: { x: -4, y: 0, z: -4 }, color: new Color3(0.3, 0.9, 0.3) }),
-  new StubBot(scene, { id: 102, name: "bot3", spawn: { x: 6, y: 0, z: -2 }, color: new Color3(0.3, 0.5, 0.9) }),
+  new StubBot(scene, { id: 100, name: "bot_red", spawn: { x: 4, y: 0, z: 4 }, color: new Color3(0.9, 0.3, 0.3) }),
+  new StubBot(scene, { id: 101, name: "bot_green", spawn: { x: -4, y: 0, z: -4 }, color: new Color3(0.3, 0.9, 0.3) }),
+  new StubBot(scene, { id: 102, name: "bot_blue", spawn: { x: 6, y: 0, z: -2 }, color: new Color3(0.3, 0.5, 0.9) }),
 ];
+
+// Weapon (player) + HUD.
+const pistol = new Pistol({ camera, scene, damage: 25, maxAmmo: 12, range: 50, fireRate: 3 });
+const hud = new HudOverlay(document.body);
+pistol.setOnHit((_bot, _pos) => hud.flashHit());
+
+// Player damage/death/respawn callbacks
+player.onDamage = (_amount, _hp) => {
+  hud.flashDamage();
+};
+player.onDeath = () => {
+  hud.showDeath();
+  hud.addNotification("YOU DIED");
+};
+player.onRespawn = () => {
+  hud.hideDeath();
+  hud.addNotification("Respawned");
+};
+player.onKill = (name) => {
+  hud.incrementKills(name);
+};
+
+// Bot world: wire each bot to the same world (player + bounds + callbacks).
+const world: BotWorld = {
+  bounds: { minX: -12, maxX: 12, minZ: -12, maxZ: 12 },
+  player: {
+    x: spawn.x, y: spawn.y, z: spawn.z,
+    alive: () => player.isAlive(),
+  },
+  onDealDamage: (_bot, amount) => {
+    player.damage(amount);
+  },
+  onKilled: (_bot) => {
+    // Could trigger a "bot respawned" notification, but bots are silent for now.
+  },
+};
 for (const bot of bots) {
+  bot.attachWorld(world);
   bot.setPlayerPosition({
     x: player.entity.pev.origin.x,
     y: player.entity.pev.origin.y,
     z: player.entity.pev.origin.z,
   });
 }
-
-// Weapon.
-const pistol = new Pistol({ camera, scene, damage: 25, maxAmmo: 12, range: 50, fireRate: 3 });
-const hud = new HudOverlay(document.body);
-pistol.setOnHit((_bot, _pos) => hud.flashHit());
 
 // Wire the decompiled TS engine.
 const driver = createBabylonSceneDriver({ canvas, audioCtx });
@@ -115,8 +141,12 @@ for (const bot of bots) {
 // Input handlers.
 const onMouseDown = (e: MouseEvent) => {
   if (!player.isLocked()) return;
+  if (!player.isAlive()) return;
   if (e.button !== 0) return; // only left-click
-  pistol.fire(bots);
+  const result = pistol.fire(bots);
+  if (result.hit) {
+    player.awardKill(result.hit.name);
+  }
 };
 const onKeyDown = (e: KeyboardEvent) => {
   if (e.code === "KeyR") pistol.reload();
@@ -128,14 +158,16 @@ window.addEventListener("keydown", onKeyDown);
 scene.onBeforeRenderObservable.add(() => {
   const dt = engine.getDeltaTime();
   player.update(dt);
-  for (const bot of bots) {
-    bot.setPlayerPosition({
-      x: player.entity.pev.origin.x,
-      y: player.entity.pev.origin.y,
-      z: player.entity.pev.origin.z,
-    });
-    bot.update(dt);
+  if (player.isAlive()) {
+    for (const bot of bots) {
+      bot.setPlayerPosition({
+        x: player.entity.pev.origin.x,
+        y: player.entity.pev.origin.y,
+        z: player.entity.pev.origin.z,
+      });
+    }
   }
+  for (const bot of bots) bot.update(dt);
   pistol.update(dt);
   driver.onTick(dt);
   hud.update(
@@ -155,10 +187,11 @@ engine.runRenderLoop(() => {
     const pos = camera.position;
     const lockStatus = player.isLocked() ? "LOCKED" : "click to lock";
     const fps = engine.getFps().toFixed(0);
-    const aliveBots = bots.filter((b) => b.getHealth() > 0).length;
+    const aliveBots = bots.filter((b) => b.isAlive()).length;
+    const statusPrefix = player.isAlive() ? "" : "[DEAD] ";
     status.textContent =
-      `D.5 MVP — ${lockStatus}  pos: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})  ` +
-      `bots: ${aliveBots}/${bots.length}  ${fps} fps`;
+      `D.5 MVP — ${statusPrefix}${lockStatus}  pos: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})  ` +
+      `bots: ${aliveBots}/${bots.length}  kills: ${player.getKills()}  ${fps} fps`;
   }
 });
 
@@ -169,3 +202,4 @@ console.log(
   "color: #0f0; font-weight: bold",
 );
 console.log("Click canvas → mouse-look, WASD, LMB to fire, R to reload, Esc to release.");
+console.log("Bots shoot back! 1.5s invulnerability after respawn.");

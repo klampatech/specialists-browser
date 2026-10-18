@@ -86,6 +86,22 @@ export class PlayerController {
   private listeners: Array<() => void> = [];
   /** World bounds (XZ) for wall collision. null = no bounds. */
   private bounds: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
+  /** Player is alive (HP > 0). Controls input / camera. */
+  private alive = true;
+  /** Respawn timer (seconds remaining). */
+  private respawnTimer = 0;
+  /** Invulnerability after respawn (seconds). */
+  private invulnTimer = 0;
+  /** Kill counter. */
+  private kills = 0;
+  /** Callback when player takes damage (for HUD flash). */
+  onDamage: ((amount: number, hp: number) => void) | null = null;
+  /** Callback when player dies. */
+  onDeath: (() => void) | null = null;
+  /** Callback when player kills something. */
+  onKill: ((name: string) => void) | null = null;
+  /** Callback when player respawns. */
+  onRespawn: (() => void) | null = null;
 
   constructor(opts: PlayerControllerOptions) {
     this.opts = { ...DEFAULT_OPTS, ...opts };
@@ -123,6 +139,50 @@ export class PlayerController {
     this.bounds = b;
   }
 
+  /** Is the player alive? */
+  isAlive(): boolean {
+    return this.alive;
+  }
+
+  /** Get kill count. */
+  getKills(): number {
+    return this.kills;
+  }
+
+  /** Award a kill (called by main.ts when player kills a bot). */
+  awardKill(name: string): void {
+    this.kills++;
+    this.onKill?.(name);
+  }
+
+  /** Damage the player. Returns true if fatal. */
+  damage(amount: number): boolean {
+    if (!this.alive) return false;
+    if (this.invulnTimer > 0) return false;
+    this.entity.pev.health = Math.max(0, this.entity.pev.health - amount);
+    this.onDamage?.(amount, this.entity.pev.health);
+    if (this.entity.pev.health <= 0) {
+      this.alive = false;
+      this.respawnTimer = 3.0; // 3s to respawn
+      this.onDeath?.();
+      return true;
+    }
+    return false;
+  }
+
+  /** Respawn at spawn. Called by main.ts after respawnTimer expires. */
+  respawn(): void {
+    this.alive = true;
+    this.entity.pev.health = 100;
+    this.invulnTimer = 1.5; // 1.5s of invuln
+    this.velY = 0;
+    this.camera.position.set(this.spawn.x, this.spawn.y + this.eyeHeight, this.spawn.z);
+    this.yaw = 0;
+    this.pitch = 0;
+    this.camera.rotation.set(0, 0, 0);
+    this.onRespawn?.();
+  }
+
   /** Manually request pointer lock. */
   requestPointerLock(): void {
     const canvas = this.camera.getEngine().getRenderingCanvas();
@@ -137,7 +197,18 @@ export class PlayerController {
   update(deltaMs: number): void {
     const dt = Math.min(deltaMs / 1000, 0.1); // clamp to 100ms (avoid tunneling)
 
-    // Look (only when locked)
+    // Respawn countdown
+    if (!this.alive) {
+      this.respawnTimer -= dt;
+      if (this.respawnTimer <= 0) {
+        this.respawn();
+      }
+      return; // skip input / movement while dead
+    }
+
+    if (this.invulnTimer > 0) this.invulnTimer -= dt;
+
+    // Look (only when locked AND alive)
     if (this.locked) {
       // Yaw rotates around Y, pitch around X.
       // Babylon's UniversalCamera uses left-handed coords where

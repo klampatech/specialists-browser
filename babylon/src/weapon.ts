@@ -175,6 +175,18 @@ export class HudOverlay {
   private crosshair: HTMLElement;
   private hitMarker: HTMLElement;
   private hitMarkerTime = 0;
+  /** Damage flash — red overlay on the screen when player takes damage. */
+  private damageFlash: HTMLElement;
+  private damageFlashTime = 0;
+  /** Kill counter (top right). */
+  private killText: HTMLElement;
+  private kills = 0;
+  /** Death banner — big "YOU DIED" overlay. */
+  private deathBanner: HTMLElement;
+  private deathBannerTime = 0;
+  /** Notification log (kill messages). */
+  private notify: HTMLElement;
+  private notifications: Array<{ text: string; timer: number }> = [];
 
   constructor(parent: HTMLElement) {
     // Build HUD
@@ -241,6 +253,48 @@ export class HudOverlay {
     `;
     this.hitMarker.textContent = "✕";
     this.root.appendChild(this.hitMarker);
+
+    // Damage flash (red overlay)
+    this.damageFlash = document.createElement("div");
+    this.damageFlash.style.cssText = `
+      position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+      background: radial-gradient(circle, transparent 30%, rgba(255,0,0,0.6) 100%);
+      opacity: 0; transition: opacity 0.1s;
+      pointer-events: none;
+    `;
+    this.root.appendChild(this.damageFlash);
+
+    // Kill counter (top right)
+    this.killText = document.createElement("div");
+    this.killText.style.cssText = `
+      position: absolute; top: 40px; right: 20px;
+      font-size: 18px; color: #ff0;
+      text-shadow: 2px 2px 0 #000;
+    `;
+    this.root.appendChild(this.killText);
+    this.killText.textContent = "KILLS: 0";
+
+    // Death banner
+    this.deathBanner = document.createElement("div");
+    this.deathBanner.style.cssText = `
+      position: absolute; top: 30%; left: 50%;
+      transform: translate(-50%, -50%);
+      color: #f00; font-size: 80px; font-weight: bold;
+      text-shadow: 4px 4px 0 #000;
+      opacity: 0; transition: opacity 0.2s;
+      letter-spacing: 8px;
+    `;
+    this.deathBanner.textContent = "YOU DIED";
+    this.root.appendChild(this.deathBanner);
+
+    // Notification log (bottom left)
+    this.notify = document.createElement("div");
+    this.notify.style.cssText = `
+      position: absolute; bottom: 60px; left: 10px;
+      color: #ff0; font-size: 16px;
+      text-shadow: 1px 1px 0 #000;
+    `;
+    this.root.appendChild(this.notify);
   }
 
   update(health: number, maxHealth: number, ammo: number, maxAmmo: number, deltaMs: number): void {
@@ -251,6 +305,7 @@ export class HudOverlay {
                                                 "#f00";
     this.hpText.textContent = `HP: ${Math.max(0, Math.round(health))}`;
     this.ammoText.textContent = `${ammo} / ${maxAmmo}`;
+    this.killText.textContent = `KILLS: ${this.kills}`;
 
     if (this.hitMarkerTime > 0) {
       this.hitMarkerTime -= deltaMs / 1000;
@@ -258,11 +313,54 @@ export class HudOverlay {
         this.hitMarker.style.opacity = "0";
       }
     }
+    if (this.damageFlashTime > 0) {
+      this.damageFlashTime -= deltaMs / 1000;
+      if (this.damageFlashTime <= 0) {
+        this.damageFlash.style.opacity = "0";
+      }
+    }
+    if (this.deathBannerTime > 0) {
+      this.deathBannerTime -= deltaMs / 1000;
+      if (this.deathBannerTime <= 0) {
+        this.deathBanner.style.opacity = "0";
+      }
+    }
+    // Update notifications
+    this.notifications = this.notifications.filter((n) => {
+      n.timer -= deltaMs / 1000;
+      return n.timer > 0;
+    });
+    this.notify.innerHTML = this.notifications.map((n) => n.text).join("<br/>");
   }
 
   flashHit(): void {
     this.hitMarker.style.opacity = "1";
     this.hitMarkerTime = 0.15;
+  }
+
+  flashDamage(): void {
+    this.damageFlash.style.opacity = "1";
+    this.damageFlashTime = 0.2;
+  }
+
+  showDeath(): void {
+    this.deathBanner.style.opacity = "1";
+    this.deathBannerTime = 3.0;
+  }
+
+  hideDeath(): void {
+    this.deathBanner.style.opacity = "0";
+    this.deathBannerTime = 0;
+  }
+
+  incrementKills(name: string): void {
+    this.kills++;
+    this.addNotification(`+ ${name}`);
+  }
+
+  addNotification(text: string): void {
+    this.notifications.unshift({ text, timer: 3.0 });
+    if (this.notifications.length > 5) this.notifications.length = 5;
   }
 
   dispose(): void {
