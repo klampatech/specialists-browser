@@ -250,6 +250,10 @@ const onMouseDown = (e: MouseEvent) => {
   }
 };
 let audioMuted = false;
+let slowMoFactor = 1.0;
+let slowMoEndTime = 0;
+let slowMoActive = false;
+
 const onKeyDown = (e: KeyboardEvent) => {
   if (e.code === "KeyR") {
     pistol.reload();
@@ -268,10 +272,16 @@ const onKeyDown = (e: KeyboardEvent) => {
     const r = tryDecompSpawn();
     if (!r.ok) console.warn("[decomp] Spawn error:", r.error);
   }
-  // Y to test decomp slow-mo
+  // Y to trigger decomp slow-mo
   if (e.code === "KeyY") {
-    const r = tryDecompSlowMotion(0.5, true);
+    // Call the decompiled GlobalSlowMotion2 (the TS mod's slow-mo logic)
+    const r = tryDecompSlowMotion(0.25, true);
     if (!r.ok) console.warn("[decomp] SlowMotion error:", r.error);
+    // Apply the slow factor to the Babylon render loop by scaling dt
+    slowMoFactor = 0.25;
+    slowMoEndTime = performance.now() + 1500; // 1.5s of slow-mo
+    slowMoActive = true;
+    hud.addNotification("SLOW-MO");
   }
   // L to toggle engine log
   if (e.code === "KeyL") {
@@ -291,7 +301,17 @@ document.addEventListener("click", resumeAudio, { once: true });
 
 // Main loop.
 scene.onBeforeRenderObservable.add(() => {
-  const dt = engine.getDeltaTime();
+  const rawDt = engine.getDeltaTime();
+  // Apply slow-mo factor to dt
+  let dt = rawDt;
+  if (slowMoActive) {
+    if (performance.now() > slowMoEndTime) {
+      slowMoFactor = 1.0;
+      slowMoActive = false;
+    } else {
+      dt = rawDt * slowMoFactor;
+    }
+  }
   player.update(dt);
   if (player.isAlive()) {
     for (const bot of bots) {
