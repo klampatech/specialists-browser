@@ -51,7 +51,7 @@ const DEFAULT_OPTS: Required<Omit<PlayerControllerOptions, "camera" | "spawn">> 
 };
 
 /** Keys being held. */
-const KEY_MAP: Record<string, "forward" | "back" | "left" | "right" | "sprint" | "jump"> = {
+const KEY_MAP: Record<string, "forward" | "back" | "left" | "right" | "sprint" | "jump" | "crouch"> = {
   KeyW: "forward",
   ArrowUp: "forward",
   KeyS: "back",
@@ -63,6 +63,9 @@ const KEY_MAP: Record<string, "forward" | "back" | "left" | "right" | "sprint" |
   ShiftLeft: "sprint",
   ShiftRight: "sprint",
   Space: "jump",
+  ControlLeft: "crouch",
+  ControlRight: "crouch",
+  KeyC: "crouch", // alt
 };
 
 /**
@@ -76,7 +79,12 @@ export class PlayerController {
   readonly entity: CBaseEntity;
   readonly opts: Required<Omit<PlayerControllerOptions, "camera" | "spawn">>;
   readonly spawn: { x: number; y: number; z: number };
-  readonly eyeHeight: number;
+  /** Current eye height (mutated by crouch logic). */
+  eyeHeight: number;
+  /** Standing eye height (target when not crouched). */
+  readonly eyeHeightStanding: number;
+  /** Crouch eye height. */
+  readonly eyeHeightCrouch: number;
 
   private keys = new Set<string>();
   private locked = false;
@@ -94,6 +102,18 @@ export class PlayerController {
   private invulnTimer = 0;
   /** Kill counter. */
   private kills = 0;
+  /** Current eye height (interpolates between standing and crouch). */
+  private currentEyeHeight: number;
+  /** Standing eye height. */
+  private standingEyeHeight: number;
+  /** Crouch eye height. */
+  private crouchEyeHeight: number;
+  /** Crouch transition speed (units/sec). */
+  private crouchSpeed = 6;
+  /** Crouched flag. */
+  private crouched = false;
+  /** Move speed multiplier when crouched. */
+  private crouchSpeedMultiplier = 0.55;
   /** Callback when player takes damage (for HUD flash). */
   onDamage: ((amount: number, hp: number) => void) | null = null;
   /** Callback when player dies. */
@@ -107,7 +127,9 @@ export class PlayerController {
     this.opts = { ...DEFAULT_OPTS, ...opts };
     this.camera = opts.camera;
     this.spawn = opts.spawn;
-    this.eyeHeight = this.opts.eyeHeight;
+    this.eyeHeightStanding = this.opts.eyeHeight;
+    this.eyeHeightCrouch = this.opts.eyeHeight * 0.45; // ~0.77 if standing is 1.7
+    this.eyeHeight = this.eyeHeightStanding;
 
     // Position camera at spawn + eye height.
     this.camera.position.set(opts.spawn.x, opts.spawn.y + this.eyeHeight, opts.spawn.z);
@@ -208,6 +230,18 @@ export class PlayerController {
 
     if (this.invulnTimer > 0) this.invulnTimer -= dt;
 
+    // Crouch transition (smooth interpolate)
+    this.crouched = this.keys.has("crouch");
+    const targetEye = this.crouched ? this.eyeHeightCrouch : this.eyeHeightStanding;
+    if (Math.abs(this.eyeHeight - targetEye) > 0.001) {
+      const dir = Math.sign(targetEye - this.eyeHeight);
+      this.eyeHeight += dir * this.crouchSpeed * dt;
+      if ((dir > 0 && this.eyeHeight > targetEye) ||
+          (dir < 0 && this.eyeHeight < targetEye)) {
+        this.eyeHeight = targetEye;
+      }
+    }
+
     // Look (only when locked AND alive)
     if (this.locked) {
       // Yaw rotates around Y, pitch around X.
@@ -224,8 +258,10 @@ export class PlayerController {
     if (this.keys.has("back")) forward -= 1;
     if (this.keys.has("right")) right += 1;
     if (this.keys.has("left")) right -= 1;
-    const sprinting = this.keys.has("sprint");
-    const speed = this.opts.moveSpeed * (sprinting ? this.opts.sprintMultiplier : 1);
+    const sprinting = this.keys.has("sprint") && !this.crouched; // can't sprint while crouched
+    const speed = this.opts.moveSpeed
+      * (sprinting ? this.opts.sprintMultiplier : 1)
+      * (this.crouched ? this.crouchSpeedMultiplier : 1);
 
     // Compute movement direction in world space.
     // Forward = camera yaw (rotation.y), strafe = perpendicular.
@@ -256,7 +292,8 @@ export class PlayerController {
     const onGround = pos.y <= this.spawn.y + this.eyeHeight + 0.001;
     if (onGround) {
       this.velY = 0;
-      if (this.keys.has("jump")) {
+      // Can't jump while crouched (would clip through ceiling)
+      if (this.keys.has("jump") && !this.crouched) {
         this.velY = this.opts.jumpVelocity;
       }
     } else {

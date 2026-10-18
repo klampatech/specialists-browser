@@ -77,11 +77,14 @@ export class StubBot {
   /** "see" angle — within 35° of forward. */
   private static readonly FOV_COS = Math.cos((35 * Math.PI) / 180);
   /** Attack range — how close to fire. */
-  private static readonly ATTACK_RANGE = 18;
+  private static readonly ATTACK_RANGE = 14;
   /** Max engagement range — beyond this, bot goes back to PATROL. */
-  private static readonly ENGAGE_RANGE = 30;
+  private static readonly ENGAGE_RANGE = 26;
   /** Damage per shot. */
-  private static readonly DAMAGE = 8;
+  private static readonly DAMAGE = 5;
+
+  /** Bot's notion of where the player "is" (aim height). Updated by main.ts. */
+  private playerAimHeight = 0.9;
 
   constructor(scene: Scene, opts: BotOptions) {
     this.scene = scene;
@@ -131,6 +134,12 @@ export class StubBot {
   attachWorld(world: BotWorld): void {
     this.world = world;
     this.bounds = world.bounds;
+  }
+
+  /** Update the player's vertical aim height (for hit detection).
+   * Lower when player crouches, higher when jumping. */
+  setPlayerAimHeight(y: number): void {
+    this.playerAimHeight = y;
   }
 
   getHealth(): number {
@@ -194,7 +203,8 @@ export class StubBot {
     if (this.target && this.world?.player.alive()) {
       const dx = this.target.x - this.mesh.position.x;
       const dz = this.target.z - this.mesh.position.z;
-      const dy = (this.target.y + 0.9) - (this.mesh.position.y);
+      // Use the player's actual aim height (e.g., crouched player has lower head)
+      const dy = (this.target.y + this.playerAimHeight) - (this.mesh.position.y);
       playerDist = Math.sqrt(dx * dx + dz * dz);
 
       // Field of view check
@@ -319,7 +329,7 @@ export class StubBot {
   }
 
   private fire(): void {
-    this.fireCooldown = 0.5; // 2 shots/sec
+    this.fireCooldown = 0.7; // ~1.4 shots/sec
     // The bot's shot — we don't have a full weapon (no camera), but we
     // can apply damage based on the player being in front of us and
     // within range, with some accuracy falloff.
@@ -328,8 +338,12 @@ export class StubBot {
     const dz = this.target.z - this.mesh.position.z;
     const dist = Math.sqrt(dx * dx + dz * dz);
 
-    // "Accuracy" — closer is more accurate
-    const accuracy = Math.max(0.3, 1.0 - dist / StubBot.ENGAGE_RANGE);
+    // "Accuracy" — closer is more accurate, crouching player harder to hit
+    let accuracy = Math.max(0.25, 0.95 - dist / StubBot.ENGAGE_RANGE);
+    // Crouching player is harder to hit (their head is below the bot's FOV center)
+    if (this.playerAimHeight < 1.0) {
+      accuracy *= 0.55; // 45% reduction when crouched
+    }
     if (Math.random() < accuracy) {
       this.world.onDealDamage(this, StubBot.DAMAGE);
     }

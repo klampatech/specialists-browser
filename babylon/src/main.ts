@@ -143,8 +143,11 @@ const onMouseDown = (e: MouseEvent) => {
   if (!player.isLocked()) return;
   if (!player.isAlive()) return;
   if (e.button !== 0) return; // only left-click
+  // Track which bots are alive before the shot — only award a kill
+  // if a bot transitions alive → dead from this hit.
+  const wasAlive = new Set(bots.filter((b) => b.isAlive()).map((b) => b));
   const result = pistol.fire(bots);
-  if (result.hit) {
+  if (result.hit && wasAlive.has(result.hit) && !result.hit.isAlive()) {
     player.awardKill(result.hit.name);
   }
 };
@@ -165,6 +168,8 @@ scene.onBeforeRenderObservable.add(() => {
         y: player.entity.pev.origin.y,
         z: player.entity.pev.origin.z,
       });
+      // Tell the bot where the player's head actually is (crouched/jumping)
+      bot.setPlayerAimHeight(player.eyeHeight);
     }
   }
   for (const bot of bots) bot.update(dt);
