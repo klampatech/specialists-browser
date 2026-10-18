@@ -5,7 +5,13 @@
  * Web Audio API. This gives us instant feedback (gunshots, hits, hurt)
  * without needing to ship WAV files.
  *
- * Sounds:
+ * D.5.7 v3: extends GameAudio to optionally accept a SoundBank of
+ * pre-decoded WAV files (from audio-loader.ts). If a sample is
+ * requested by name and present in the bank, it plays the real
+ * sample. Otherwise, falls back to the procedural synth. The two
+ * systems coexist — the bank fills gaps as we wire more sounds.
+ *
+ * Sounds (procedural fallback):
  *   - gunshot: short white-noise burst + low frequency thump
  *   - hit:     short high-frequency tick
  *   - hurt:    low-pitched distorted groan
@@ -14,18 +20,34 @@
  *   - death:   low descending tone
  */
 
+import type { SoundBank } from "./audio-loader";
+
 export class GameAudio {
   private ctx: AudioContext;
   private master: GainNode;
   private muted = false;
   /** Volume 0.0 - 1.0. */
   private volume = 0.5;
+  /** Pre-decoded WAV samples from the TS mod. Keyed by generic name
+   * (e.g. "weapons/tsgun_fire.wav"). Empty until loadGameSounds runs. */
+  private bank: SoundBank = new Map();
 
   constructor(ctx: AudioContext) {
     this.ctx = ctx;
     this.master = ctx.createGain();
     this.master.gain.value = this.volume;
     this.master.connect(ctx.destination);
+  }
+
+  /** Set the pre-decoded sound bank (called by main.ts after
+   * loadGameSounds() resolves). Replaces any previous bank. */
+  setSoundBank(bank: SoundBank): void {
+    this.bank = bank;
+  }
+
+  /** Number of samples currently loaded. */
+  get samplesLoaded(): number {
+    return this.bank.size;
   }
 
   setMuted(muted: boolean): void {
@@ -42,6 +64,32 @@ export class GameAudio {
     if (this.ctx.state === "suspended") {
       this.ctx.resume().catch(() => {});
     }
+  }
+
+  /**
+   * Play a sample by its generic name (the decompiler-named path the
+   * decompiled code passes to pfnEmitSound). If the sample is in the
+   * bank, plays the real WAV. Otherwise returns false so the caller
+   * can fall back to its own procedural sound.
+   *
+   * @param name  Generic sample name, e.g. "weapons/tsgun_fire.wav"
+   * @param volume Volume multiplier 0-1 (default 1.0 = full sample volume)
+   * @param pitch Playback rate (default 1.0 = original pitch; 0.5 = half-speed)
+   */
+  playSample(name: string, volume: number = 1.0, pitch: number = 1.0): boolean {
+    if (this.muted) return false;
+    const buf = this.bank.get(name);
+    if (!buf) return false;
+
+    this.resume();
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = pitch;
+    const gain = this.ctx.createGain();
+    gain.gain.value = this.volume * volume;
+    src.connect(gain).connect(this.master);
+    src.start();
+    return true;
   }
 
   /**

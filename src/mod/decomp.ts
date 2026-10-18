@@ -93,17 +93,46 @@ export function initEngine(handlers: EngineHandlers = {}): (dt: number) => void 
  * Wire the engine simulator's pfnEmitSound to a real audio sink.
  * Call this with your GameAudio instance to make the decompiled
  * code's "pfnEmitSound" calls actually play sounds.
+ *
+ * D.5.7 v3: when the GameAudio has loaded a SoundBank of real TS
+ * mod samples, this routes the decompiler-named sample string
+ * (e.g. "weapons/tsgun_fire.wav") to the real WAV file via
+ * audio.playSample(). Falls back to the procedural gunshot/reload/
+ * pickup routing when the sample isn't in the bank.
  */
-export function wireEngineAudio(audio: { gunshot(): void; reload?(): void; pickup?(): void }): void {
+export function wireEngineAudio(audio: {
+  gunshot(): void;
+  reload?(): void;
+  pickup?(): void;
+  /**
+   * Optional. If the GameAudio has loaded real WAV samples, this
+   * is the entry point that plays them by name. Returns true if
+   * the sample was played, false if not in the bank.
+   */
+  playSample?(name: string, volume?: number, pitch?: number): boolean;
+}): void {
   setEngineHandlers({
-    onEmitSound: (_ent: any, _channel: number, sample: string, _volume: number, _attenuation: number, _flags: number, _pitch: number) => {
-      // Route by sample name to the appropriate sound
+    onEmitSound: (ent: any, _channel: number, sample: string, volume: number, attenuation: number, _flags: number, pitch: number) => {
+      // Real-sample path: try playSample first (returns true if the
+      // bank had the entry). If the bank doesn't have this sample,
+      // fall through to the procedural routing.
+      if (audio.playSample) {
+        // Engine passes attenuation as 0-1 (1=audible everywhere,
+        // 0=local). Use it as a volume multiplier.
+        const played = audio.playSample(sample, Math.max(0.1, attenuation), pitch / 100);
+        if (played) return;
+      }
+      // Procedural fallback: route by sample name to the appropriate
+      // canned sound. Same logic as before, in case the bank has no
+      // match.
       if (sample.includes("reload")) {
         audio.reload?.();
       } else if (sample.includes("fire") || sample.includes("shot") || sample.includes("launcher") || sample.includes("swing") || sample.includes("slash")) {
         audio.gunshot();
       } else if (sample.includes("pickup") || sample.includes("ammo") || sample.includes("health")) {
         audio.pickup?.();
+      } else if (sample.includes("throw") || sample.includes("block")) {
+        audio.gunshot();  // throw/block are short percussive events
       } else {
         // Default: play a soft beep for any other sound
         console.log(`[engine audio] unhandled sound: ${sample}`);

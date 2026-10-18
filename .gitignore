@@ -19,6 +19,11 @@ out/
 .env.*.local
 *.local
 
+# Game asset symlinks (live in _runtime_assets/, not in repo)
+babylon/public/sounds
+babylon/public/models
+babylon/public/maps
+
 # Editor / OS
 .vscode/
 .idea/

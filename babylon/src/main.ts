@@ -56,6 +56,7 @@ import { StubBot, BotWorld } from "./bot";
 import { Pistol, HudOverlay } from "./weapon";
 import { GameAudio } from "./audio";
 import { Pickup } from "./pickup";
+import { loadGameSounds } from "./audio-loader";
 
 const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
 const status = document.getElementById("status") as HTMLDivElement;
@@ -82,6 +83,27 @@ light.diffuse = new Color3(0.95, 0.92, 0.85);
 
 // Audio.
 const audio = new GameAudio(audioCtx);
+
+// D.5.7 v3 — Load real game sounds from the TS mod (symlinked via
+// babylon/public/sounds → _runtime_assets/half-life/ts/sound). When
+// the bank is ready, plug it into GameAudio so wireEngineAudio's
+// onEmitSound can play the real WAVs. Until then, the procedural
+// synth handles every sound.
+loadGameSounds(audioCtx).then((result) => {
+  audio.setSoundBank(result.bank);
+  console.log(`[main] ${result.loaded}/${result.total} game sounds loaded (${result.failed} failed)`);
+  if (status) {
+    const prev = status.textContent;
+    status.textContent = `[audio] ${result.loaded}/${result.total} sounds loaded — ${prev ?? ""}`;
+    setTimeout(() => {
+      if (status.textContent?.startsWith("[audio]")) {
+        status.textContent = status.textContent.replace(/^\[audio\][^—]*— /, "");
+      }
+    }, 2500);
+  }
+}).catch((err) => {
+  console.warn("[main] sound load failed:", err);
+});
 
 // Wire decomp engine simulator to real audio. The decompiled code
 // calls g_engfuncs.pfnEmitSound() — wire those to GameAudio so you

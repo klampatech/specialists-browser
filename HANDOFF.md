@@ -72,6 +72,7 @@ Babylon LMB click
 | D.5.6 | Real entity pool (CTSGunStub → pool-managed entity) | ✅ |
 | **D.5.7 v2** | **Shim layer built + CCombatBlock wired (1/8 Fire* methods)** | **🔄 IN PROGRESS** |
 | D.5.7 v2 cont. | Wire 7 remaining Fire* methods (CCombatAttack, GrenadeFire, KnifeFire, KatanaFire, KatanaThrow, ColdCock, StandardFire, ShotgunFire, AkimboFire) | TODO |
+| **D.5.7 v3** | **Real game sound loading (20/20 samples wired)** | **✅ DONE** |
 | D.5.8 | Real damage / scoring / slowmo | partial via stubs; full via per-class manifests |
 | D.5.9 v1 | Stub bot (IDLE→PATROL→CHASE→ATTACK→DEAD) | ✅ |
 | D.5.10 v1 | HUD (HP, ammo, crosshair, hit marker, kill counter, death banner, slow-mo notification) | ✅ |
@@ -266,6 +267,57 @@ This session shipped the **shim layer** + the **smallest Fire* method
 - **Confirmed via headless smoke** that B press runs the decompiled
   CCombatBlock through guards + engine dispatch + Animate +
   UpdateMeleeBar without crashing
+
+### D.5.7 v3 done — real game sound loading
+
+Honest gap analysis (asked by Kyle mid-session):
+- **Sounds: 1 session.** ✅ Done.
+- **Models (player .mdl): 1-2 sessions.** Need a GoldSrc .mdl parser
+  → glTF. TS ships `ts/models/player.mdl` (the iconic Specialist
+  model). Parser is ~300-500 lines.
+- **Maps (BSP): 3-5 sessions.** TS BSPs use non-standard lump layouts
+  (~98% of faces dropped by `bsp2glb.ts`). Three paths: (a) port
+  Xash3D's BSP loader, (b) author a TrenchBroom map, (c) keep the
+  procedural test level.
+
+**What shipped this session:**
+- `babylon/public/sounds` symlink → `_runtime_assets/half-life/ts/sound`
+  (zero duplication, real-time updates, gitignored via `_runtime_assets/`)
+- `vite.config.ts` updated: `publicDir: "public"` (was `"../public"`
+  pointing to a non-existent dir, so Vite wasn't serving anything
+  from publicDir), `fs.allow` includes `_runtime_assets/` so Vite
+  follows the symlink to the asset tree outside the project root,
+  `port: 5190`, `host: "0.0.0.0"` (was 5175 / 127.0.0.1, leftover from
+  early dev)
+- `babylon/src/audio-loader.ts` (~100 lines): `SAMPLE_MAP` with 20
+  generic-name → real-file mappings (the decompiled code uses
+  generic names like `weapons/tsgun_fire.wav` that don't exist in
+  the TS mod; the mod is organized per-weapon as
+  `weapons/glock22/glock22-fire.wav`, `weapons/katana/miss.wav`,
+  etc.). `loadGameSounds(ctx)` parallel-fetches + decodeAudioData's
+  every entry, returns a `SoundBank` `Map<string, AudioBuffer>`
+- `babylon/src/audio.ts` GameAudio: `setSoundBank()`, `samplesLoaded`
+  getter, `playSample(name, vol, pitch)` that plays a real WAV when
+  the bank has it, else returns false
+- `src/mod/decomp.ts wireEngineAudio`: now calls `audio.playSample`
+  first (returns true if the bank had the entry), falls back to the
+  procedural gunshot/reload/pickup routing when the bank doesn't
+- `babylon/src/main.ts`: `loadGameSounds(audioCtx)` runs at startup,
+  sets the bank when ready, briefly shows `[audio] N/M sounds
+  loaded` in the status bar
+
+**Verified via headless smoke**: `[audio] 20/20 sounds loaded`. Every
+mapped sample was fetched + decoded successfully. The pistol
+(LMB → `weapons/tsgun_fire.wav` → `weapons/glock22/glock22-fire.wav`)
+and katana/knife/throw/block samples all map cleanly. Some mappings
+are guesses (e.g. `weapons/dryfire.wav` → `weapons/knife/knife_miss.wav`)
+since the TS mod doesn't ship a generic dryfire; these are noted
+in the SAMPLE_MAP comments.
+
+**Next session candidates:**
+- Wire the player `.mdl` (1-2 sessions for parser + Babylon loader) — biggest visual payoff
+- Wire `CCombatAttack` (next on the D.5.7 v2 cont. list)
+- TrenchBroom map for BSP testing (independent of the BSP parser)
 
 ### Next task (D.5.7 v2 cont.)
 
