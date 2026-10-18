@@ -501,7 +501,16 @@ class CTSGunStub {
         },
       };
     }
-    CCombatAttackImpl.call(this as any);
+    // Call pattern: .call(this, this) — pass the gun as BOTH the
+    // `this` context AND the first regular argument. The
+    // decompiled CCombatAttack has `function CCombatAttack(this_:
+    // any)`, so its first param is named `this_` (not `this`).
+    // Without the second arg, `this_` stays undefined when called
+    // via .call(). This pattern is universal — also works for
+    // CCombatBlock's `function CCombatBlock(this: any)` (its `this`
+    // param gets the call's first arg via the same `this`-name
+    // special rule). Verified empirically in Node 22.
+    CCombatAttackImpl.call(this as any, this as any);
   }
 
   /**
@@ -522,7 +531,11 @@ class CTSGunStub {
    * The tryDecompBlock() entry point catches + reports the error.
    */
   CCombatBlock(): void {
-    CCombatBlockImpl.call(this as any);
+    // See CCombatAttack() for the call pattern explanation —
+    // .call(this, this) works for both `this` and `this_` named
+    // first parameters (different decomp passes used different
+    // conventions for the same purpose).
+    CCombatBlockImpl.call(this as any, this as any);
   }
 
   GrenadeFire(): void {
