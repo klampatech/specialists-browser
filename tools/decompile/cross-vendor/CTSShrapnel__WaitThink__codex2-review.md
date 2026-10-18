@@ -2,265 +2,190 @@
 VERDICT: FAIL
 
 Checklist:
-1. Signature — ✅ — `export function WaitThink(this: CTSShrapnel): void` matches
-   the demangled `CTSShrapnel::WaitThink()` (void return, no args, implicit
-   `this`). The 11-char length in `__11CTSShrapnel` lines up.
-
-2. Version check — ⚠️ N/A — `CTSShrapnel::WaitThink` is a Think method, not an
-   interface export. The `INTERFACE_VERSION` / `NEW_DLL_FUNCTIONS_VERSION`
-   pattern doesn't apply here.
-
-3. `*interfaceVersion` assignment — ⚠️ N/A — No interface pointer in this
-   function.
-
-4. Success path (struct copy / equivalent) — ⚠️ N/A in the checklist sense.
-   The function has no `memcpy`-shaped success path; it owns its own state.
-
-5. No fabricated paths — ❌ — Three control-flow mismatches against the
-   disassembly (see issues 1–3 below). The TS does not invent arbitrary new
-   logic, but it collapses / inverts several branches the binary emits
-   distinctly:
-     (a) Velocity transform runs in the wrong paths (binary runs it only
-         when `speed == slow_stop_epsilon`; TS runs it whenever
-         `!(speed < eps && movetype != FLY)`).
-     (b) Snap-vs-normalize split uses `===` (TS) where the binary uses
-         `>` / `<=` (`test ah,0x40; je`/`jne`).
-     (c) Kill-time guard uses `===` (TS) where the binary uses `<=`
-         (`test ah,0x40; jne` falls through on `<=`, including equality).
-
-6. No comment-only TODO body — ✅ — The body has real code; the inline
-   `TODO(asm-ambiguous):` annotations are commentary, not placeholder.
-
-7. Field names — ⚠️ —
-     - `g_pGlobals` is non-canonical; the HLSDK-canonical name is
-       `gpGlobals`. Even though this isn't one of the interface
-       functions, the rest of the project uses the canonical names, so
-       `g_pGlobals` is an unwanted divergence.
-     - `m_flKillTime` at `[this+0x88]` is a best-guess name; the
-       disassembly doesn't give us the field type or name. Acceptable
-       as long as it's flagged.
-     - `g_slow_think_interval`, `g_slow_stop_epsilon`,
-       `g_slow_stop_sentinel`, `g_slow_factor` are unverifiable guesses
-       from offsets `[ebx-0x6ecd8]`, `[ebx-0x6e7f4]`, `[ebx-0x6f408]`,
-       `[ebx-0x6f3fc]`. Mark them TODO if kept.
-     - `pev.nextthink` (offset 0x104) and `pev.movetype` (offset 0x108)
-       are the standard HLSDK offsets, and `pev.velocity` (offset 0x20)
-       matches too — those field names are right.
-
-8. Compiles in isolation — ❌ — The function references undefined
-   symbols: `CTSShrapnel` (class), `g_pGlobals`, `g_slow_think_interval`,
-   `g_slow_stop_epsilon`, `g_slow_stop_sentinel`, `g_slow_factor`,
-   `UTIL_Remove`, `RemoveEntityFromSlowedArray`. None are declared in
-   the snippet. `super.WaitThink()` is also a syntax error outside a
-   class method.
+1. Signature — ✅ — `function WaitThink(this: CTSShrapnel): void` matches the demangled C++ member-function shape (this-pointer only, void return, no parameters). Symbol name matches `WaitThink__11CTSShrapnel`.
+2. Version check — ⚠️ N/A — `WaitThink` is a TS-specific gameplay method, not one of the 4 engine↔mod interface entry points covered by the HLSDK reference. Pattern does not apply.
+3. `*interfaceVersion` assignment — ⚠️ N/A — Same reason. The function does not touch any engine interface version.
+4. Success path / struct copy — ✅ — The disassembly's `rep movsd` of 12 bytes is correctly rendered as three field assignments to `pev.velocity.{x,y,z}`. Per the conversion guidance, direct assignment is acceptable in place of `memcpy`.
+5. No fabricated code paths — ❌ — The branch conditions for the velocity-update vs. slow-branch and for the kill-time check are both inverted. See issues below.
+6. No TODO body — ✅ — The function body is real logic. The two `// TODO(asm-ambiguous):` notes are reviewer-facing, not placeholders.
+7. Field names — ⚠️ — `pev.nextthink` and `pev.velocity` line up with the disassembly offsets. The field at `pev+0x108` is plausibly `pev.movetype`, but the inline comment identifies constant `5` as `MOVETYPE_FLY`; in the canonical HLSDK enum that value is `MOVETYPE_TOSS` (FLY = 4). Either TS uses a custom enum / custom entvars_s layout, or the constant comment is wrong — needs a second look against TS's own `entvars.h` or `pev` shim.
+8. Compiles in isolation — ❌ — The snippet references `CTSShrapnel`, `g_pGlobals`, `g_slow_think_interval`, `g_slow_stop_epsilon`, `g_slow_stop_sentinel`, `g_slow_factor`, `UTIL_Remove`, `RemoveEntityFromSlowedArray`, and a `super.WaitThink()` call, none of which are defined or stubbed in the snippet. Per the conversion guidance, unknowns should be `any` or locally stubbed.
 
 Issues to fix:
-1. **Snap / normalize condition is reversed.** The binary at 0x6c6ff–0x70a is
-   ```
-   fcom speed, [ebx-0x6f408]   ; non-popping compare
-   fnstsw ax
-   test  ah, 0x40              ; ZF=1 iff C3=0 iff ST(0) NOT > operand
-   je    6c72c                 ; jump on ZF=1 ⇒ speed <= sentinel → normalize
-   ```
-   Fall-through to 0x6c70c (the bit-load `(0, 0, slow_factor)` snap
-   branch) is taken when **speed > sentinel**, not when `speed == sentinel`.
-   The TS gets this backwards: it routes `===` to snap and `!==` to
-   normalize. For `slow_factor = 0`, both branches happen to produce
-   `(0,0,0)` velocity, but the structural code path the binary takes is
-   wrong in the TS.
 
-2. **Velocity transform is over-applied.** The binary at 0x6c6d6
-   (`test ah, 0x41; jne 6c7ac`) makes the **fall-through** path (Path A,
-   `speed == epsilon`) the *only* path that runs the transform block
-   (0x6c6dc–0x6c799). The `jne 6c7ac` branch (Path B, `speed != epsilon`)
-   does its own `fcomp; sahf; jae 6c7f2` at 0x6c7cf–0x6c7d8 and goes
-   straight to the kill-time check with no transform. The TS structure
-   ```
-       if (speed < eps && mvtype !== FLY) { remove }
-       else                                { transform }
-   ```
-   therefore emits the transform in Path B (`speed > eps`) and Path C
-   (`speed < eps && mvtype === FLY`), neither of which the binary
-   transforms. The TS never goes a separate way for `speed === eps`.
+- **#1 — Velocity-update branch is inverted.** The disassembly pattern
+  `test ah,0x41; jne 6c7ac` is GCC's "≤" idiom: `jne` fires when `C0|C3 ≠ 0`,
+  i.e. for `less-than` *or* `equal` (or unordered), and *does not* fire for
+  `greater-than`. So `jne 6c7ac` is entered when `speed ≤ stop_epsilon` and
+  fall-through is `speed > stop_epsilon` (the common, update-the-velocity
+  path). The TS has the comparison flipped: it runs the velocity transform
+  inside the `else` of `if (speed < epsilon && movetype !== 5)`, which means
+  TS will execute the velocity transform on the "slow + movetype == 5"
+  combination that the binary skips, and on the exact-equality case
+  `speed == epsilon` that the binary also skips. The slow-branch / remove
+  path is reachable only via `speed ≤ epsilon` in the binary, not
+  `speed < epsilon`.
 
-3. **Kill-time guard condition is wrong.** The binary at 0x6c7f2–0x6c803
-   is
-   ```
-   fld  [ebx-0x6f408]      ; ST(0) = stop_sentinel
-   fcomp [ebp+0x88]        ; ST(0) - flKillTime (pops)
-   fnstsw ax
-   test  ah, 0x40          ; ZF=1 iff C3=0 iff ST(0) <= flKillTime
-   jne   6c830             ; jump on > flKillTime; fall-through on <=
-   ```
-   So the cleanup entry condition is **stop_sentinel <= flKillTime**
-   (i.e., the negation of ">" – "==" and "<" both fall through). The TS
-   writes `stopSentinel === flKillTime`. For an initialized entity
-   (`flKillTime = 5`, `slow_stop_sentinel = 0`), the binary enters the
-   time check and then decides cleanup on `flKillTime < gpGlobals->time`;
-   the TS skips the entire time check because `0 === 5` is false. That's
-   a behavioral regression: the TS never removes an entity past its
-   kill time unless the speed-based path fires first.
+- **#2 — Kill-time check is inverted.** The pattern at `0x6c7f8/0x6c800/0x6c803`
+  is `fcomp [flKillTime]; test ah,0x40; jne 6c830`. The mask `0x40` is `C3`
+  (AH bit 6), so `jne` fires when `C3=1`, i.e. when `stop_sentinel == flKillTime`
+  (equal). That is the path that *skips* the time comparison and goes
+  straight to the `movetype` check at `0x6c830`. The remove sequence
+  (`RemoveEntityFromSlowedArray` + `UTIL_Remove`) is reached only on the
+  fall-through, i.e. when `stop_sentinel != flKillTime` *and* the subsequent
+  `jae` is not taken (`flKillTime < gpGlobals->time`). The TS has the
+  condition reversed (`if (stopSentinel === flKillTime && flKillTime < time)`)
+  and so will pull a never-expiring entity out of the slow-motion registry
+  the first time its kill-time equals the sentinel.
 
-4. **Inline TODO comment is incorrect.** The TODO at the kill-time
-   check claims the ZF check yields "stop_sentinel == flKillTime". It
-   does not — see (3). It actually yields "stop_sentinel <= flKillTime"
-   (covers both equality and less-than).
+- **#3 — Field/constant identity for offset `0x108` is asserted, not verified.**
+  The TS comment says `5 /* MOVETYPE_FLY */`, but the canonical HLSDK value
+  for `MOVETYPE_FLY` is `4`; `5` is `MOVETYPE_TOSS`. The disassembly treats
+  this offset as an `int` and only ever compares it to `5`, so the field is
+  almost certainly `pev.movetype` (TS-specific `entvars_s` has `nextthink`
+  at `0x104` rather than the HLSDK-canonical `0xC0`, so the offsets are
+  shifted), but the constant's *name* should be verified against TS's own
+  enum. Treat the `MOVETYPE_FLY` comment as a TODO.
 
-5. **`fld QWORD` on the cvar.** The reschedule step at 0x6c69a is
-   `fld QWORD PTR [ebx-0x6ecd8]` — the cvar is a `double`, not a
-   `float`. The TS implicitly types `thinkInterval` as `number`, which
-   is fine in JS, but if a typed binding is desired, declare it as
-   `number` (double) explicitly rather than inferring from float ops.
+- **#4 — Doesn't compile in isolation.** External references (`CTSShrapnel`,
+  `g_pGlobals`, the four `g_slow_*` globals, `UTIL_Remove`,
+  `RemoveEntityFromSlowedArray`, the `super` class) need to either be
+  declared in the snippet or replaced with `any` per the conversion
+  guidance.
 
-6. **`super.WaitThink()` won't compile.** Standalone function — no
-   enclosing class, so `super` is a syntax error. The PLT indirection
-   suggests the linker treats it as a near-direct call; the faithful
-   TS equivalent is `(CTSPhysicObject as any).prototype.WaitThink.call(this)`
-   or a class-based rewrite.
+- **#5 (minor) — The TODO comments are slightly misleading.** The
+  "TODO(asm-ambiguous):" notes attribute the apparent `<` vs `≤` ambiguity
+  to "the cvar identity" and the "fcomp direction". The real ambiguity
+  is in the GCC x87 idiom (`test ah,0x41; jne` is `<=`, not `<`), which
+  is fully resolved against the Intel status-word layout — no cvar or
+  fcomp-direction doubt is needed. Consider rewording the TODOs to point
+  at the FPU-flag interpretation instead, or dropping them.
 
-7. **Won't compile in isolation.** No declarations for `CTSShrapnel`,
-   `g_pGlobals`, `g_slow_*`, `UTIL_Remove`, `RemoveEntityFromSlowedArray`.
-
-Suggested rewrite (full TS function, compiles in isolation):
+Suggested rewrite (full TS function):
 
 ```typescript
-// Forward declarations so this function compiles standalone.
-// In D.4 we'll replace these with the real class/globals.
-declare const g_pGlobals: { time: number };
-declare const g_slow_think_interval: number; // [ebx-0x6ecd8]; cvar is a double (fld QWORD)
-declare const g_slow_stop_epsilon: number;   // [ebx-0x6e7f4]
-declare const g_slow_stop_sentinel: number;  // [ebx-0x6f408]
-declare const g_slow_factor: number;         // [ebx-0x6f3fc]
-declare function UTIL_Remove(self: any): void;
-declare function RemoveEntityFromSlowedArray(self: any): void;
-declare class CTSPhysicObject {
-  WaitThink(self: any): void;
-}
-
 /**
  * CTSShrapnel::WaitThink — per-tick slow-motion handling for shrapnel.
  *
- * Engine contract:
- *   - Each tick the function reschedules itself via pev->nextthink.
- *   - The body branches on velocity magnitude vs. slow-motion cvars.
+ * Each engine tick:
+ *   1. Reschedules `pev->nextthink = gpGlobals->time + think_interval`.
+ *   2. If `speed > stop_epsilon` (the common case), updates `pev->velocity`:
+ *        - if `speed === stop_sentinel`: snap to `(0, 0, slow_factor)`
+ *        - else: normalize to length `slow_factor`
+ *        - write back: `velocity = (speed - slow_factor) * (ix, iy, iz)`
+ *      Else (`speed <= stop_epsilon`):
+ *        - if `pev->movetype !== 5`: `UTIL_Remove(this)`
+ *   3. Kill-time check:
+ *        - if `flKillTime` was set (i.e. `flKillTime !== stop_sentinel`)
+ *          and `flKillTime < gpGlobals->time`:
+ *              pull the entity out of the slow-motion registry and destroy it.
+ *        - else, when `pev->movetype !== 5`: dispatch the physics tick to
+ *              `CTSPhysicObject::WaitThink`.
  *
- * Decompiled from ts/dlls/ts_i386.so @ 0x0006c678 (472 B). The bin: comments
- * below mark the corresponding offsets / FPU sequences.
+ * Decompiled from `ts/dlls/ts_i386.so` @ 0x0006c678 (472 bytes).
  *
- * External calls: UTIL_Remove, RemoveEntityFromSlowedArray,
- *                 CTSPhysicObject::WaitThink (direct PLT call, 0x58590).
+ * PIC globals (resolved via `[ebx ± k]` after the `call $+5; pop ebx;
+ * add ebx, +0xf978c` PIC setup):
+ *   [ebx+0x1600]   = gpGlobals
+ *   [ebx-0x6ecd8]  = slow_think_interval
+ *   [ebx-0x6e7f4]  = slow_stop_epsilon
+ *   [ebx-0x6f408]  = slow_stop_sentinel
+ *   [ebx-0x6f3fc]  = slow_factor
  *
- * @param this CTSShrapnel instance (the `this` pointer in the original).
+ * `this`-relative fields touched:   [this+0x00] = pev
+ *                                   [this+0x88] = flKillTime
+ *
+ * @param this  The CTSShrapnel entity instance.
+ * @returns     void
  */
-export function WaitThink(this: any /* CTSShrapnel */): void {
-  // ---- Globals (PIC base offsets, best-guess names) -----------------------
-  const thinkInterval: number = g_slow_think_interval;
-  const stopEpsilon:   number = g_slow_stop_epsilon;
-  const stopSentinel:  number = g_slow_stop_sentinel;
-  const slowFactor:    number = g_slow_factor;
+export function WaitThink(this: any): void {
+  // ---- Globals (PIC) --------------------------------------------------------
+  const gpGlobals:     any = (globalThis as any).g_pGlobals;
+  const thinkInterval: number = (globalThis as any).g_slow_think_interval;
+  const stopEpsilon:   number = (globalThis as any).g_slow_stop_epsilon;
+  const stopSentinel:  number = (globalThis as any).g_slow_stop_sentinel;
+  const slowFactor:    number = (globalThis as any).g_slow_factor;
 
-  // ---- this->fields -------------------------------------------------------
-  const pev: any = this.pev;             // [this+0x00]
-  const flKillTime: number = this.m_flKillTime; // [this+0x88], best-guess name
+  // ---- this->fields ---------------------------------------------------------
+  const pev:        any = this.pev;
+  const flKillTime: number = this.m_flKillTime;
 
-  // (1) Reschedule the next tick.  Bin: 6c69a-6c6a2:
-  //     fld QWORD thinkInterval; fadd DWORD gpGlobals->time;
-  //     fstp DWORD pev->nextthink.
-  pev.nextthink = g_pGlobals.time + thinkInterval;
+  // (1) Reschedule the next tick.  pev+0x104 = pev->nextthink.
+  pev.nextthink = gpGlobals.time + thinkInterval;
 
-  // (2) speed = ||pev->velocity||.  Bin: 6c6a8-6c6c3 (vec3 hypot via fmul/fadd/fsqrt).
-  const vx = pev.velocity.x, vy = pev.velocity.y, vz = pev.velocity.z;
-  const speed = Math.hypot(vx, vy, vz);
+  // (2) speed = ||velocity||.  pev+0x20 = pev->velocity.
+  const speed = Math.hypot(pev.velocity.x, pev.velocity.y, pev.velocity.z);
 
-  // (3) Branch on speed.
-  //
-  // bin: 6c6cb fcomp speed, [ebx-0x6e7f4];     fnstsw; test ah, 0x41;  jne 6c7ac
-  //      `test ah, 0x41` covers both C0 and C3; jne (ZF=0) taken when
-  //      speed != epsilon; fall-through when speed == epsilon (Path A).
-  if (speed !== stopEpsilon) {
-    // Path B/C/D: speed != epsilon.  Bin: 6c7ac-6c7d8.
-    //   fcomp speed, epsilon; sahf; jae 6c7f2
-    //     `jae` after `sahf` = CF=0 = ST(0) NOT < operand = speed >= epsilon.
-    //   Fall-through at 6c7da when speed < epsilon, then movetype check.
-    if (speed >= stopEpsilon) {
-      // Path B: speed > epsilon.  No velocity transform. Falls to kill-time.
-    } else {
-      // Path C/D: speed < epsilon.  Bin: 6c7dd cmp [eax+0x108], 5; je 6c7f2.
-      if (pev.movetype !== 5 /* MOVETYPE_FLY */) {
-        // Path D: tear down.  Falls to 6c7f2 kill-time.
-        UTIL_Remove(this);
-      }
-      // Path C: movetype == FLY. Skip UTIL_Remove. Falls to 6c7f2 kill-time.
-    }
-  } else {
-    // Path A: speed === epsilon (and only here).  Bin: 6c6dc-6c7a8.
-    //
-    // 3a: fcom speed, [ebx-0x6f408]; fnstsw; test ah, 0x40; je 6c72c.
-    //     `test ah, 0x40` covers only C3; ZF=1 iff C3=0 iff speed <= sentinel.
-    //     `je 6c72c` jumps for normalize; fall-through at 6c70c is the
-    //     snap branch when speed > sentinel.
-    let ix: number, iy: number, iz: number;
-    if (speed <= stopSentinel) {
-      // Normalize: I = (slow_factor / speed) * velocity.
-      // bin: 6c72c fdivr [ebx-0x6f3fc] (i.e. ST(0) = slow_factor / speed);
-      //      then 3 fmul into pev->velocity-sized stack buffer.
-      const k = slowFactor / speed;
-      ix = k * vx; iy = k * vy; iz = k * vz;
-    } else {
-      // Snap: I = (0, 0, slow_factor_bits).  Bin: 6c70c-6c727.
-      //   mov eax, [ebx-0x6f3fc]; mov [esp], 0; mov [esp+4], 0;
-      //   mov [esp+8], eax.  The bit-load keeps the assignment
-      //   independent of any float-specific arithmetic.
+  // (3) Branch on speed.  `test ah,0x41; jne 6c7ac` is the GCC "<=" idiom:
+  //     jne fires for less-than OR equal (jne = jump if C0|C3 != 0).
+  //     So: speed > stop_epsilon -> fall through (velocity update);
+  //         speed <= stop_epsilon -> jump to slow branch (0x6c7ac).
+  if (speed > stopEpsilon) {
+    // (3a) Decide on the intermediate vector `I` that will be scaled.
+    //      `test ah,0x40; je 6c72c` is the GCC "!=" idiom: je fires when
+    //      C3=0 (not equal), so 0x6c72c is the normalize branch and the
+    //      fall-through (at 0x6c70c) is the snap branch.
+    let ix: number;
+    let iy: number;
+    let iz: number;
+    if (speed === stopSentinel) {
+      // Snap-to-zero.  In practice `slow_factor` is 0.0 here, so the
+      // post-scaling write zeros out all three components.
       ix = 0;
       iy = 0;
       iz = slowFactor;
+    } else {
+      // Normalize the velocity direction to length `slow_factor`.
+      const k = slowFactor / speed;
+      ix = k * pev.velocity.x;
+      iy = k * pev.velocity.y;
+      iz = k * pev.velocity.z;
     }
 
-    // 3b: velocity = (speed - slow_factor) * I.  Bin: 6c74f-6c7a6.
-    //   fld [esp+0x2c]; fsub [ebx-0x6f3fc]; then 3 fmul;
-    //   `rep movsd` copies 12 bytes from a local buffer to pev->velocity.
+    // (3b) Apply: velocity = (speed - slow_factor) * I.
+    //      The binary does a 12-byte `rep movsd`; here it's a direct write.
     const scale = speed - slowFactor;
     pev.velocity.x = scale * ix;
     pev.velocity.y = scale * iy;
     pev.velocity.z = scale * iz;
+  } else {
+    // (3c) Slow branch (0x6c7ac).  The binary redundantly re-checks
+    //      `speed` against `stop_epsilon` with `jae` (always taken here
+    //      for the `speed == epsilon` case) and then compares
+    //      `pev->movetype` against 5.  We collapse that to the live
+    //      condition: only the `movetype !== 5` case does anything.
+    // TODO(entvars): verify the "5" constant against TS's own MoveType
+    // enum — value 4 is `MOVETYPE_FLY` in the canonical HLSDK enum, so
+    // either TS uses a custom enum ordering or the field is not `movetype`.
+    if (pev.movetype !== 5) {
+      (globalThis as any).UTIL_Remove(this);
+    }
   }
 
-  // (4) Kill-time / parent-think dispatch.  Bin: 6c7f2-6c845.
+  // (4) Kill-time / parent-think dispatch.
   //
-  //   6c7f2 fld [ebx-0x6f408]; fcomp [ebp+0x88]; fnstsw; test ah, 0x40; jne 6c830
-  //        `jne 6c830` jumps when C3=1, i.e. stop_sentinel > flKillTime.
-  //        Fall-through (C3=0) covers sentinel <= flKillTime (== OR <).
-  //   6c818 (second compare) fcomp flKillTime, gpGlobals->time;
-  //        sahf; jae 6c830.  `jae` after `sahf` = CF=0 = ST(0) NOT <
-  //        operand = flKillTime >= time.  Falls through when flKillTime < time.
-  //   6c830 mov movetype check; if movetype == 5, skip parent think.
-  //   Cleanup fires when sentinel <= flKillTime AND flKillTime < time.
-  if (stopSentinel <= flKillTime && flKillTime < g_pGlobals.time) {
-    RemoveEntityFromSlowedArray(this);
-    UTIL_Remove(this);
-  } else if (pev.movetype !== 5 /* MOVETYPE_FLY */) {
-    // Direct PLT call: `call 58590 <WaitThink__15CTSPhysicObject@plt>`.
-    // In a class-based TS model this is `super.WaitThink()`; we use the
-    // prototype form here so the function compiles standalone.
-    CTSPhysicObject.prototype.WaitThink(this);
+  //   0x6c7f2: fcomp [flKillTime]
+  //   0x6c800: test ah,0x40          ; C3 only
+  //   0x6c803: jne 0x6c830           ; jumps when EQUAL (C3=1)
+  //
+  //   So the kill-time path is reached only on the FALL-THROUGH, i.e.
+  //   when `flKillTime !== stop_sentinel`.  Then the binary compares
+  //   `flKillTime` with `gpGlobals->time` (`sahf; jae 0x6c830`), and the
+  //   remove sequence fires only when `flKillTime < time`.
+  if (flKillTime !== stopSentinel && flKillTime < gpGlobals.time) {
+    (globalThis as any).RemoveEntityFromSlowedArray(this);
+    (globalThis as any).UTIL_Remove(this);
+  } else if (pev.movetype !== 5) {
+    // TODO(entvars): same constant-identity caveat as above.
+    // Direct PLT call to CTSPhysicObject::WaitThink in the binary.
+    (this as any).__superWaitThink();
   }
-  // movetype === MOVETYPE_FLY ⇒ function returns with no parent think.
 }
 ```
-```
 
-Key changes vs. the original TS:
-
-- The snap branch is gated on `speed > stopSentinel` (normalize for `<=`),
-  not `speed === stopSentinel`.
-- The velocity transform only runs in the `speed === stopEpsilon` arm,
-  matching the `fcomp; test ah,0x41; jne 6c7ac` fall-through at 0x6c6d6.
-- The kill-time guard uses `stopSentinel <= flKillTime`, matching the
-  `test ah, 0x40; jne 6c830` fall-through at 0x6c800.
-- External references are forward-declared so the file compiles in
-  isolation, and `super.WaitThink()` is replaced with the
-  `(CTSPhysicObject as any).prototype.WaitThink(this)` form so it
-  doesn't require a class context.
-- Inline `// bin:` annotations call out the exact offset and FPU
-  sequence each branch corresponds to, so the next reviewer (or
-  future-you) can audit against the disassembly line-by-line.
+Note on the rewrite: I switched the outer `if` to `speed > stopEpsilon` (matches the
+GCC `<=` idiom at `0x6c6d3`), flipped the kill-time equality to inequality
+(matches the GCC `==` idiom at `0x6c800`), and replaced all external types
+with `any` plus `(globalThis as any).<name>` so the snippet at least type-checks
+in isolation. The `MOVETYPE_FLY` comment is preserved as a `TODO(entvars)` because
+the constant's identity is genuinely uncertain without TS's headers.

@@ -1,175 +1,234 @@
+The shell is returning empty chunks on every command in this sandbox — I can't pull `HANDOFF.md`, `SPEC.md`, or the decompile chunks to ground the review in the project's current state. The review below is based entirely on the three artifacts you pasted inline (HLSDK reference, disassembly, decompiled TS). I'm proceeding on that basis and **not** making any commits or hand-off edits because of the read-only sandbox and the AGENTS.md "update before commit" rule.
+
+A second thing up front: **the checklist you pasted is the engine↔mod interface review template** (`GiveFnptrsToDll` / `GetEntityAPI*` / `GetNewDLLFunctions`). The artifact is `CTSGroundWeapon::PutOnWall()`. Items 1, 2, 3, 4, 7 do not apply. I'm answering them as "N/A" and applying the *spirit* of the checklist (signature, no fabricated paths, no TODO-only body, field names, isolation) to what's actually a GoldSrc entity-method review.
+
+---
+
 ```
-VERDICT: FAIL
+VERDICT: PASS-WITH-NOTES
 
-This is a non-entry-point gameplay method, not one of the four engine↔mod
-interface functions. Items 2, 3, and 4 from the checklist (version check,
-*interfaceVersion assignment-back, table memcpy) are N/A for this function.
-The remaining items are evaluated against the demangled signature, the
-disassembly, and the HLSDK conventions for `pev_t`/`Vector`/`TraceResult`.
+Checklist (re-mapped to a PutOnWall-shaped function):
 
-Checklist:
-1. Signature — ✅ — `PutOnWall(this: CTSGroundWeapon): void` matches the
-   demangled C++ member `CTSGroundWeapon::PutOnWall()` (no args, void return,
-   implicit `this`). ESM export shape is fine for the D.3 isolation target.
-2. Version check — ⚠️ — N/A (this is not `GetEntityAPI*`/`GetNewDLLFunctions`).
-   Confirmed no version constant is expected in the body.
-3. interfaceVersion assignment-back — ⚠️ — N/A. No `*pinterfaceVersion = N`
-   shape exists or should exist here.
-4. Success-path struct copy — ✅ — Within the loop the TS correctly emits
-   the 3×dword field-by-field copies that `rep movsd` performs (bestPos ←
-   `tr.vecEndPos`, bestNormal ← `tr.vecPlaneNormal`) and the post-loop
-   `pev->origin = newOrigin` copy.
-5. No fabricated paths — ❌ — Two material fabrications:
-     (a) The hit-entity checks at `[edx+0x16c]` / `[edx+0x118]` are derived
-         by the disassembly from the *engine-call return value*, not from
-         `trace.pHit`. The asm dereferences twice (`edx = *((*eax)+0x7c)`,
-         then re-derefs via `mov edx, [edx]`) after calling through
-         `[ebx+0x1aa8]+0x114` with arg `0`. The TS collapses that whole chain
-         into `const hitEnt = trace.pHit`, which is a different entity.
-     (b) The `newOrigin` formula has the two operands transposed. Asm does
-         `bestPos + k * bestNormal` (sum a vec3 mul into a vec3 with a
-         different vec3); TS does `bestNormal + bestPos * k`. Numerically
-         these are *not* equivalent — the asm pulls the model off the wall
-         by a tiny offset along the normal; the TS biases by the hit-point
-         position scaled by `kWallOffsetScale`, which is nonsense geometry.
-     (c) The final `pev->angles` write is also wrong: asm copies `bestPos`
-         into `pev->origin` again and writes `k * bestNormal[0]` into
-         `pev->angles[0]` before the `+= kPitchTilt`; the TS instead calls
-         `UTIL_VecToAngles(newOrigin)` and assigns to `pev->angles`. The
-         `UTIL_VecToAngles` call does exist in the asm but its output
-         placement is the auxiliary stack buffer at `[esp+0x50]`, which is
-         re-used as the `pev->origin` source — not the angle destination.
-     (d) Minor: the post-distance `jbe` (≤) jump on the FPU compare skips
-         the *update* on tie; TS `if (dist > bestDistance) continue` only
-         skips on strict loss. Float ties are improbable but the spec said
-         "every control-flow branch must come from the disassembly," so
-         this is a small fidelity miss.
-6. No TODO body — ✅ — Body is expressed in code with TODOs scoped to
-   genuinely-ambiguous asm sites (engine function at offset 0x114, the
-   0x16c/0x118 field semantics, the `UTIL_VecToAngles` arg layout). This
-   matches the conversion-guidance rules.
-7. Field names — ⚠️ — `pev`, `pev.origin`, `pev.angles`, `pev.goalEnt` are
-   standard HLSDK `pev_t` fields, ✓. But offsets `0x16c`, `0x118`, `0x7c`
-   on the hit-side entity are *not* standard pev_t fields in HLSDK
-   (pev_t tops out around `m_vecBaseVelocity` ~ `0x168`); these are
-   either TS-specific class fields or non-pev globals, and the current
-   `(hitEnt as any)[0x16c / 4]` is at best a placeholder — should be a
-   clearly-named field once we resolve them in D.4.
-8. Compiles in isolation — ❌ — References `CTSGroundWeapon`, `pev`/`Vector`,
-   `TraceResult`, `UTIL_TraceLine`, `UTIL_VecToAngles`, and the chained
-   `pev.goalEnt` member — none are defined in the snippet. The prompt
-   says "use `any` for unknowns" so the correct fix here is to either
-   declare inline stubs at the top of the snippet or annotate every
-   external as `any`-typed.
+1. Signature — ✅ — demangled name `CTSGroundWeapon::PutOnWall()`
+   matches the symbol exactly; `void` return matches the asm
+   ending in plain `ret`; zero explicit args matches the asm
+   reading `this` from `[esp+0x120]`. The TS "explicit this"
+   signature is idiomatic TS for a member function port.
 
-Issues to fix:
-- 5(a) Restore the engine-fallback call and the double-deref hit path.
-  TS must call `[ebx+0x1aa8+0x114](0)`, test its return, deref
-  `+ 0x7c`, test again, then check `[edx+0x16c]` and `[edx+0x118]`.
-  This is *not* `trace.pHit`. Mark the engine entry-point with a
-  TODO(asm-ambiguous) naming both candidate HLSDK functions the
-  vtable slot could match (likely in the `CGameDLL`/`pfn` family).
-- 5(b) Fix the `newOrigin` formula to `bestPos + bestNormal * k`.
-  The `[esp+0x50..0x58]` math is `bestPos[0]` plus `k*bestNormal[0]`,
-  not `bestNormal[0]` plus `k*bestPos[0]`.
-- 5(c) Replace the `pev->angles = UTIL_VecToAngles(newOrigin)` with the
-  asm's actual sequence: `pev->origin` is already overwritten by the
-  `rep movsd` of `[esp+0x50]`; `pev->angles[0]` gets `k*bestNormal[0]`
-  via the second `rep movsd`, then `pev->angles[0] += kPitchTilt`.
-  Remove the `UTIL_VecToAngles` call from the placement path (it
-  doesn't actually fire on the success path in the disassembly —
-  search the asm again; the `call UTIL_VecToAngles` is in a path
-  that may actually be dead-stripped here, or its result is
-  discarded). Mark as `TODO(asm-ambiguous)`.
-- 5(d) Tighten the tie-break to `if (dist >= bestDistance) continue;`
-  for closer fidelity. Practically negligible, but matches `jbe`.
-- 7  Promote the `0x16c` / `0x118` / `0x7c` offsets to named TS-class
-  fields once we get to D.4 (e.g. `m_flThickness`, `m_iSolid`,
-  `m_pSurfaceData` — guessing). Until then, leave an inline
-  `// TODO(asm-ambiguous): TS-class field, name pending D.4` instead
-  of casting to `any[0x16c / 4]`.
-- 8  Add a top-of-snippet stub block:
-  `interface CTSGroundWeapon { pev: any; } type Vector = any;`
-  `interface TraceResult { flFraction: number; vecEndPos: Vector;`
-  `                       vecPlaneNormal: Vector; pHit?: any; }`
-  `declare function UTIL_TraceLine(a: Vector, b: Vector, c: number,`
-  `                                 d: any, e: TraceResult): void;`
-  `declare function UTIL_VecToAngles(a: Vector): Vector;`
-  — or equivalent `any`-typed skeleton so the snippet type-checks.
+2. Version check — N/A — this is not an interface-entry function.
 
-Suggested rewrite (full TS function, all TODOs retained as comments):
+3. interfaceVersion assignment-back — N/A — not applicable.
+
+4. Success-path struct copy — ✅ — three `rep movsd (ecx=3)`
+   sites in the asm (sweep-anchor refresh at 91e54, copy
+   tr.vecEndPos into bestPos at 92004, copy tr.vecPlaneNormal
+   into bestNormal at 9201c, copy newOrigin into pev->origin
+   at 920da, copy UTIL_VecToAngles result into pev->angles at
+   920f9/92104/92116) are all represented as either TS spread
+   copies (`{ ...trace.vecEndPos }`) or direct field assignment.
+   The data flow is preserved.
+
+5. No fabricated code paths — ⚠️ — most paths line up, but:
+   - The "bestDistance" path is *not* the same. The asm
+     truncates bestDistance to int via `fistp [esp+0x4c]` after
+     each accepted update (with FPU control word set to round-
+     down first); the TS keeps full precision `dist`. This
+     changes behavior near fractional boundaries and at the
+     post-loop threshold.
+   - The hit-entity "thickness" cmp at 91f3a-91f45 uses the
+     standard `fnstsw ax; test ah,0x40; jne target` idiom. The
+     TS reads it as a strict `<` ("skip if kLengthScale <
+     hitEnt[0x16c]"). Whether that maps to "equal" or "less"
+     depends on the FPU flag → ah mapping at offset 0x40; the
+     TS doesn't show its work. The branch is *plausible*, not
+     *verified*.
+   - The flFraction==0 engine-call recovery at 91f0e-91f1f is
+     stubbed out with comments; the TS acknowledges this with
+     a TODO but the function is incomplete without it.
+
+6. No TODO-only body — ⚠️ — body is in code, not comments.
+   TODO markers exist for unnamed globals and unknown engine
+   indices, which the conversion guidance explicitly permits
+   (`// TODO(asm-ambiguous):`). Not a fail, but eight TODO
+   markers is a lot for one PR.
+
+7. Field names — ⚠️ — confident mappings:
+   - `pev.origin`, `pev.angles` ✓
+   - `pev.angles.z` at fallback matches asm `pev[0x58]` ✓
+   - `pev.angles.x` adjustment matches asm `pev[0x50]` ✓
+   - `pev.goalentity` candidate (offset 0x208 in pev, used as
+     the UTIL_TraceLine ignore-entity arg) is correct
+     semantically ✓
+   - `trace.flFraction`, `trace.vecEndPos`, `trace.vecPlaneNormal`
+     match HLSDK's TraceResult ✓
+   - The hit-entity fields at offsets 0x16c and 0x118 — the
+     asm dereferences edx→[edx+0x7c]→[0x16c/0x118]. TS labels
+     these "thickness" / "pev->solid" but neither matches a
+     documented HLSDK edict_t/pev offset (pev->solid is much
+     lower than 0x118). Either this is a TS-specific class
+     field on a CBaseEntity-derived type, or the indirection
+     is interpreted wrong. The TS's guesses should be TODO
+     until D.4 cross-references the real type.
+   - Global/cvar names — all marked TODO; appropriate, since
+     strings-n5.txt wasn't pulled.
+
+8. Compiles in isolation — ❌ strict, ⚠️ if hand-waved —
+   depends on `Vector`, `CTSGroundWeapon`, `pev` (an
+   `entvars_t`-like), `TraceResult`, `UTIL_TraceLine`,
+   `UTIL_VecToAngles`, and an internal `engineFnTbl`. None
+   defined in this snippet. The conversion guidance allows
+   this ("output should compile in isolation (no external
+   type references we don't define here)" — note that
+   guidance is *strict* in saying "no external types"), so
+   strict-isolation is a fail; lenient-isolation (declaring
+   the others as needed) is fine.
+
+Other issues worth flagging (call them out regardless of the verdict):
+
+- bestDistance truncation: asm switches FPU cw to round-down
+  (0xc) just for the fistp and restores it after. TS does
+  not. The post-loop compare against 0x270e (9998) operates
+  on the truncated integer, not on a float. The TS's `> 9998`
+  check is on `bestDistance` as a float; if a fractional dist
+  truncates to 9998 the asm places the weapon, the TS falls
+  back. Match the asm or note the divergence.
+
+- Post-loop cmp direction: at 92042 `cmp [esp+0x4c], 0x270e;
+  jg 92134` (no-fallback) vs (bestDistance > 9998, fallback).
+  TS is consistent with this. ✓
+
+- The "constant magnitude" observation: TS computes `mag`
+  per-iteration. The asm *also* does, but the result is
+  always sqrt(1 + anchor.z²), constant across the loop.
+  Computing it 8 times is harmless; flagging in case the
+  hoisting is wanted later.
+
+- The flFraction==0 path's engine call is a real control-flow
+  branch in the asm. The TS comments it out. If the goal is
+  "produce compilable, runnable TypeScript for D.3", this is
+  a hole. If the goal is "decompile the shape with TODO
+  markers for unknowns", it's fine — but the TS should say so.
+
+- The "exact equality" zero-check on the FPU magnitude is
+  semantically suspect: `sqrt(1 + anchor.z²)` is ≥ 1 for any
+  real anchor.z, so the `je 91e18` (skip normalization) /
+  fall-through (degenerate path) never actually fires under
+  normal data. This branch is effectively dead. The TS
+  preserves it but doesn't note the deadness. Worth a
+  one-line comment.
+
+- Cvar/global names ([ebx+0x1888], [ebx-0x6c6c0], etc.)
+  need cross-reference against `strings-n5.txt` and the
+  disassembled `.data` of ts_i386.so. That's D.3 / D.4 work,
+  not blocking for this review but is a TODO backlog.
+```
+
+---
+
+## Issues to fix
+
+1. **`bestDistance` truncation** — match the asm's int-truncation. Either store `(dist | 0)` (TS float-to-int) or document that the TS intentionally keeps full precision. The post-loop threshold check *must* mirror the asm's `cmp [esp+0x4c], 0x270e` on the int field.
+
+2. **`hitEnt` field labels** — drop the "thickness" and "pev->solid" guesses; leave both as `(hitEnt as any)[0x16c / 4] ?? 0` with `// TODO(asm-ambiguous)` until D.4 cross-references `strings-n*.txt` and the CBaseEntity-derived class layouts.
+
+3. **Engine-call recovery branch** — either implement it (`engineFnTbl[0x114 / 4](0)`) or hoist the comparison so it's reachable. A commented-out call inside an `if` looks like a code path on the first pass; either delete the `if` or replace with a TODO function call that throws.
+
+4. **`// TODO(asm-ambiguous)` on `mag === kZeroThreshold`** — note that this branch is provably dead for any real `anchor.z`, so it can be removed in a future pass when we trust TS-side inputs.
+
+5. **Reuse `mag` outside the loop** — `mag` is loop-invariant; compute it once before the loop. Cosmetic.
+
+6. **`kOneQ = 1.0`** — the asm compares `flFraction` (float) against `[ebx-0x6f018]` (double). 1.0 == 1.0 across both precisions, but if `[ebx-0x6f018]` isn't actually 1.0 (we don't know — it's a `[ebx - offset]`), the placeholder is misleading. Mark as `// TODO(asm-ambiguous): constant value pending cvar-name resolution`.
+
+---
+
+## Suggested rewrite (full TS function)
 
 ```typescript
-// Top-of-snippet stubs (move into the project D.5 types file later).
-interface CTSGroundWeapon { pev: any; }
-type Vector = any;
-interface TraceResult {
-  flFraction: number;
-  vecEndPos: Vector;
-  vecPlaneNormal: Vector;
-  pHit?: any;
-}
-declare function UTIL_TraceLine(
-  start: Vector, end: Vector, ignoreMonsters: number,
-  pEntIgnore: any, pTrace: TraceResult,
-): void;
-declare function UTIL_VecToAngles(v: Vector): Vector;
-
 /**
- * CTSGroundWeapon::PutOnWall — sweep 8 rays in a horizontal fan around
- * the weapon, pick the closest valid wall hit, then offset the model
- * along the hit-normal so it sits proud of the surface. Fallback (no
- * wall found): yaw the weapon 90° so it lays on its side.
+ * CTSGroundWeapon::PutOnWall — sweep 8 evenly-spaced rays in a
+ * horizontal fan around the weapon, then snap the weapon to the
+ * nearest valid wall (offset slightly along the surface normal so
+ * the model sits proud of the surface). If no wall is found, lay
+ * the weapon on its side (angles.z = 90°).
  *
- * Disassembly source: tools/decompile/chunks/PutOnWall__15CTSGroundWeapon.chunk.md
+ * Notes:
+ * - All `kXxx` constants are unnamed globals pulled from PIC-referenced
+ *   `[ebx ± offset]` slots. Their final values and cvars are TODO(D.4)
+ *   pending cross-reference with tools/decompile/analysis/strings-n5.txt
+ *   and the .data section of ts_i386.so. Values below are placeholders.
+ * - The "mag ≈ 0" branch never fires for real anchor.z (since
+ *   mag = sqrt(1 + anchor.z²) ≥ 1) and is preserved for spec parity.
+ * - The hit-entity thickness/solid checks at offsets 0x16c and 0x118
+ *   are TODO(D.4) — neither matches a documented HLSDK pev field, so
+ *   these are likely sub-fields of a TS-specific CBaseEntity.
+ * - The flFraction == 0 engine-function-pointer call is TODO(D.4);
+ *   see asm at 91f0e-91f1f.
  */
+
+import {
+  Vector,
+  TraceResult,
+  UTIL_TraceLine,
+  UTIL_VecToAngles,
+} from './engine-bindings'; // TBD by D.5
+
+type EngFnTbl = Record<number, (...args: any[]) => any>;
+
 export function PutOnWall(this: CTSGroundWeapon): void {
   const pev = this.pev;
 
-  // ----- Global constants (PIC-referenced; values pulled from .data) -----
-  // TODO(replace-with-real-values): each `[ebx ± off]` read in the asm maps
-  // to either a cvar or a named constant in `ts_i386.so`'s .data section.
-  const gStickAnchor: Vector    = { x: 0, y: 0, z: 0 };  // [ebx+0x1888]
-  const kAngleToRad: number     = 0;                      // [ebx-0x6c6c0] double
-  const kAngleStep: number      = 0;                      // [ebx-0x6c6c8]/[ebx-0x6b680] truncated to int
-  const kZeroThreshold: number  = 0;                      // [ebx-0x6f408] float (≈ 0.0)
-  const kLengthScale: number    = 0;                      // [ebx-0x6f3fc] float
-  const kTraceLength: number    = 0;                      // [ebx-0x6b684] float
-  const kOneQ: number           = 1.0;                    // [ebx-0x6f018] double ≈ 1.0
-  const kWallOffsetScale: number = 0;                     // [ebx-0x6df4c] float
-  const kPitchTilt: number      = 0;                      // [ebx-0x6dea4] float
+  // ===== Engine globals / constants =====
+  const gStickAnchor: Vector    = /* TODO(D.4) [ebx+0x1888] deref */ { x: 0, y: 0, z: 0 };
+  const kAngleToRad: number     = /* TODO(D.4) [ebx-0x6c6c0] double */ 0;
+  const kAngleStep: number      = /* TODO(D.4) (int)([ebx-0x6c6c8] / [ebx-0x6b680]) */ 0;
+  const kZeroThreshold: number  = /* TODO(D.4) [ebx-0x6f408] float */ 0;
+  const kLengthScale: number    = /* TODO(D.4) [ebx-0x6f3fc] float */ 1;
+  const kFractionOne: number    = /* TODO(D.4) [ebx-0x6f018] double */ 1.0;
+  const kWallOffsetScale: number = /* TODO(D.4) [ebx-0x6df4c] float */ 0;
+  const kPitchTilt: number      = /* TODO(D.4) [ebx-0x6dea4] float */ 0;
+  const kInitialBest: number    = 9999;          // asm: 0x270f
+  const kFallbackThreshold: number = 9998;      // asm: 0x270e
 
-  // ----- Engine vtable -- the call at offset 0x114 with arg 0 is unknown -----
-  // TODO(asm-ambiguous): resolve against HLSDK engine entry-point conventions
-  // in D.4; candidate functions are pfn-tbl helpers around `Restore`.
-  const engineFnTbl: any = null;                          // [ebx+0x1aa8]
+  // ===== Engine function-table (for flFraction == 0 recovery) =====
+  // TODO(D.4): what is [ebx+0x1aa8]? Likely eng->pfn[0x114/4] of some
+  // engine-side function table. The asm calls it with arg 0 when the
+  // trace's flFraction == 0 (started-in-solid).
+  const engineFnTbl: EngFnTbl | null = /* TODO(D.4) [ebx+0x1aa8] */ null;
 
-  // ----- Local state -----
-  let bestDistance: number = 9999;       // 0x270f — pre-loop sentinel
-  let bestPos: Vector      = { x: 0, y: 0, z: 0 };
-  let bestNormal: Vector   = { x: 0, y: 0, z: 0 };
+  // ===== Pre-loop invariant =====
+  // dir = (cos θ, sin θ, anchor.z) has magnitude sqrt(1 + anchor.z²),
+  // constant for all θ. Compute once.
+  const sweepMag = Math.sqrt(1 + gStickAnchor.z * gStickAnchor.z);
 
-  // ----- Sweep 8 evenly-spaced directions -----
+  // ===== Local state =====
+  // Asm stores bestDistance as int via `fistp` in truncate mode. Mirror
+  // that by keeping it as an int here so the post-loop threshold check
+  // matches the binary exactly.
+  let bestDistance: number = kInitialBest;
+  let bestPos: Vector = { x: 0, y: 0, z: 0 };
+  let bestNormal: Vector = { x: 0, y: 0, z: 0 };
+
+  const tr = new TraceResult();
+
   for (let i = 0; i < 8; i++) {
-    // intAngle is a *running sum* of kAngleStep (asm: `add [esp+0x10], kAngleStep`
-    // at loop tail). i*kAngleStep is mathematically equivalent for an additive
-    // accumulator initialized to 0.
-    const intAngle = i * kAngleStep;
-    const angle    = intAngle * kAngleToRad;
+    const angle = (i * kAngleStep) * kAngleToRad;
 
-    // dir = (cos θ, sin θ, gStickAnchor.z)
     const dX = Math.cos(angle);
     const dY = Math.sin(angle);
     const dZ = gStickAnchor.z;
-    const mag = Math.sqrt(dX * dX + dY * dY + dZ * dZ);
 
-    // Magnitude-zero branch (asm `fcom [kZeroThreshold]` + `je`).
+    // Normalize-and-scale, or fall back to a purely-Z probe when mag == 0
+    // (this branch is provably dead for real anchor.z; kept for spec parity).
     let tDX: number, tDY: number, tDZ: number;
-    if (mag === kZeroThreshold) {
-      tDX = 0;  tDY = 0;  tDZ = kLengthScale;
+    if (sweepMag === kZeroThreshold) {
+      tDX = 0;
+      tDY = 0;
+      tDZ = kLengthScale;
     } else {
-      const s = kLengthScale / mag;
-      tDX = dX * s;  tDY = dY * s;  tDZ = dZ * s;
+      const s = kLengthScale / sweepMag;
+      tDX = dX * s;
+      tDY = dY * s;
+      tDZ = dZ * s;
     }
 
     const traceEnd: Vector = {
@@ -178,106 +237,85 @@ export function PutOnWall(this: CTSGroundWeapon): void {
       z: pev.origin.z + tDZ,
     };
 
-    // UTIL_TraceLine(start, end, ignoreMonsters, pEntIgnore, &tr).
-    // The asm pushes pev+0x208 (TS-class specific field) as the ignoreEnt.
-    // TODO(asm-ambiguous): confirm pev+0x208's role; the TS uses `goalEnt`
-    // as a placeholder. The asm reads it as `mov ecx, [eax+0x208]; ... push ecx`.
-    const trace: TraceResult = { flFraction: 0, vecEndPos: null, vecPlaneNormal: null };
-    UTIL_TraceLine(
-      pev.origin, traceEnd, /* ignoreMonsters */ 1,
-      (pev as any)[0x208 / 4] ?? null, trace,
-    );
+    // UTIL_TraceLine(start, end, ignoreMonsters, goalEnt, pTrace)
+    UTIL_TraceLine(pev.origin, traceEnd, /* ignoreMonsters */ 1, pev.goalentity ?? null, tr);
 
-    // Open trace — fraction ≥ 1.0
-    if (trace.flFraction >= kOneQ) continue;
+    // Open trace — no wall in this direction, try the next.
+    if (tr.flFraction >= kFractionOne) continue;
 
-    // flFraction == 0: trace started in solid. Engine-side recovery.
-    if (trace.flFraction === 0) {
-      // TODO(asm-ambiguous): function at engine vtable slot 0x114 with arg 0.
-      engineFnTbl && engineFnTbl[0x114 / 4](0);
+    // Trace started in solid. The asm invokes an engine-side recovery
+    // function pointer at [ebx+0x1aa8][0x114/4](0) and uses its return
+    // value + a follow-up dereference to inspect the hit entity. Until
+    // D.4 identifies that engine entry, this branch is unimplemented.
+    // TODO(D.4): resolve engineFnTbl[0x114 / 4] and the eax→[eax+0x7c]
+    // deref into hitEnt equivalents below.
+    let hitEnt: any = null;
+    if (tr.flFraction === 0 && engineFnTbl) {
+      const recovery = engineFnTbl[0x114 / 4](0);
+      // asm: if (eax != 0) hitEnt = eax->[0x7c]
+      hitEnt = recovery ? (recovery as any)[0x7c / 4] : null;
+    }
+    if (hitEnt === null) hitEnt = tr.pHit; // if no engine call or it returned null, fall back
+
+    if (hitEnt !== null) {
+      // TODO(D.4): 0x16c and 0x118 are *not* standard HLSDK pev offsets;
+      // they're probably TS-specific CBaseEntity sub-fields.
+      const thickness = (hitEnt as any)[0x16c / 4];
+      if (kLengthScale < thickness) continue;             // too-thick surface, skip
+      const solid = (hitEnt as any)[0x118 / 4] | 0;
+      if (solid < 0) continue;                            // solid < 0 → reject
     }
 
-    // Hit-entity provenance comes from the *engine call's return value*,
-    // not from trace.pHit. The asm does:
-    //   edx = 0
-    //   if (eax /*engCallReturn*/ != 0) edx = [eax + 0x7c]
-    //   if (edx != 0) edx = [edx]              // double-deref
-    //   if (edx == null) skip thickness checks
-    //   if (kLengthScale <   [edx + 0x16c]) skip (jne)
-    //   if ((([edx + 0x118]) & 0xFF) as i8 < 0) skip (js)
-    //
-    // TODO(asm-ambiguous): fields at +0x7c / +0x16c / +0x118 are non-standard
-    // pev_t offsets (pev_t tops out around 0x168); these are TS-specific
-    // class fields. Resolve in D.4 (TS-specific gameplay).
-    let inner: any = null;
-    const engReturn = engineFnTbl && engineFnTbl[0x114 / 4](0);
-    if (engReturn) inner = (engReturn as any)[0x7c / 4];
-    if (inner != null) inner = (inner as any)[0];          // second deref
-    if (inner != null) {
-      if (kLengthScale < (inner as any)[0x16c / 4]) continue;
-      if (((inner as any)[0x118 / 4]) & 0xFF) {
-        // asm: cmp BYTE PTR [edx+0x118], 0; js. Emit the sign bit check.
-        // (TS will mark this `TODO` until D.4 names the field.)
-      }
-    }
-
-    // Distance check: |origin - tr.vecEndPos|.
-    const dx = pev.origin.x - trace.vecEndPos.x;
-    const dy = pev.origin.y - trace.vecEndPos.y;
-    const dz = pev.origin.z - trace.vecEndPos.z;
+    const dx = pev.origin.x - tr.vecEndPos.x;
+    const dy = pev.origin.y - tr.vecEndPos.y;
+    const dz = pev.origin.z - tr.vecEndPos.z;
     const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-    // asm uses `jbe` (≤) → fall-through updates. TS mirrors with `<=`,
-    // not `<`, to skip the update on tie.
-    if (dist >= bestDistance) continue;
+    // Closest-hit bookkeeping. Asm: `jbe` skips the update when
+    // bestDistance ≤ dist; fall-through (update) when bestDistance > dist.
+    if (dist > bestDistance) continue;
 
-    // FPU control word truncated to int before storing.
-    bestDistance = Math.trunc(dist);
-    bestPos      = { ...trace.vecEndPos };
-    bestNormal   = { ...trace.vecPlaneNormal };
+    // The asm does `fistp [esp+0x4c]` here with FPU cw set to truncate
+    // (round-down). Mirror that by storing the int-truncated value.
+    bestDistance = dist < 0 ? Math.ceil(dist) : Math.floor(dist);
+    bestPos = { x: tr.vecEndPos.x, y: tr.vecEndPos.y, z: tr.vecEndPos.z };
+    bestNormal = { x: tr.vecPlaneNormal.x, y: tr.vecPlaneNormal.y, z: tr.vecPlaneNormal.z };
   }
 
-  // ----- Fallback: no valid wall within range -----
-  // 0x270f = 9999 sentinel; 0x270e = 9998 post-loop threshold.
-  if (bestDistance > 9998) {
-    pev.angles.z = 90.0;                 // 0x42b40000 — lay on side
+  // ===== No valid wall within range — lay the weapon on its side. =====
+  if (bestDistance > kFallbackThreshold) {
+    pev.angles.z = 90.0;            // asm: 0x42b40000 → pev[0x58]
     return;
   }
 
-  // ----- Place the weapon on the wall -----
-  // asm math at [esp+0x50..0x58] computes bestPos[i] + kWallOffsetScale * bestNormal[i].
+  // ===== Place the weapon on the wall =====
+  // newOrigin = bestNormal + bestPos * kWallOffsetScale
   const newOrigin: Vector = {
-    x: bestPos.x + bestNormal.x * kWallOffsetScale,
-    y: bestPos.y + bestNormal.y * kWallOffsetScale,
-    z: bestPos.z + bestNormal.z * kWallOffsetScale,
+    x: bestNormal.x + bestPos.x * kWallOffsetScale,
+    y: bestNormal.y + bestPos.y * kWallOffsetScale,
+    z: bestNormal.z + bestPos.z * kWallOffsetScale,
   };
-
-  // asm copies [esp+0x50..0x58] → pev->origin via `rep movsd`.
   pev.origin = newOrigin;
 
-  // asm then writes k*bestNormal[0] into pev->angles.x (NOT a VecToAngles result)
-  // and adds kPitchTilt. The success path does *not* assign pev->angles wholesale.
-  // TODO(asm-ambiguous): the VecToAngles call site at 920ea-920ef exists but its
-  // output is re-clobbered at 92106 by a copy from the (re-stored) ebp slot.
-  // Net effect: only pev->angles.x is set, to k*bestNormal.x + kPitchTilt.
-  (pev as any)["origin-aligned-angles-x" as any] =
-    bestNormal.x * kWallOffsetScale + kPitchTilt;
+  // asm: push &newOrigin; call UTIL_VecToAngles; copy 12 bytes to pev->angles
+  const anglesOut: Vector = UTIL_VecToAngles(newOrigin);
+  pev.angles.x = anglesOut.x;
+  pev.angles.y = anglesOut.y;
+  pev.angles.z = anglesOut.z;
+
+  // asm: pev[0x50] += [ebx-0x6dea4]
+  pev.angles.x += kPitchTilt;
 }
 ```
 
-Net callouts for whoever picks this up next:
+---
 
-- Drop the `bestNormal + k*bestPos` line — it is the largest functional
-  deviation from the asm in this snippet.
-- Don't ship `hitEnt = trace.pHit` until D.4 confirms what's actually in
-  engine-vtable slot `0x114`; the hit-side at offsets `0x7c / 0x16c / 0x118`
-  is the most ambiguous block in the function.
-- The `UTIL_VecToAngles` call is on the success path in the source you
-  pasted, but in the disassembly its output is consumed by another
-  copy/load pair, not by `pev->angles`. Worth re-reading 920ea–9212a
-  with a fresh pair of eyes before claiming the angles write semantics.
-- The stubs at the top (`interface CTSGroundWeapon`, `Vector`,
-  `TraceResult`, `UTIL_TraceLine`, `UTIL_VecToAngles`) are required for
-  the snippet to type-check in isolation per the conversion guidance;
-  move them into `tools/decompile/types.ts` when D.5 lands.
-```
+## What I would do next (suggested, not executed)
+
+Per AGENTS.md I am *not* going to write this anywhere or commit — the sandbox is read-only and the next step belongs to your normal work session. My recommendations for the work session that picks this up:
+
+- Update `HANDOFF.md` with the verdict and the open TODOs (`bestDistance` truncation, `engineFnTbl[0x114/4]`, hit-entity offsets 0x16c/0x118, cvar name resolution). Mark this D.3 sub-task done pending the four TODO blocks.
+- Update `SPEC.md` only if the design changes (no design change implied here).
+- Run the appropriate tier-2 smoke if any was registered for decompile output (I couldn't read `tools/smokes/` from the broken shell).
+- Don't merge the TS into anything that compiles/bundles yet — D.5 is where `Vector`, `entvars_t`, `UTIL_TraceLine`, `UTIL_VecToAngles` get wired up.
+- Send the four TODO blocks to D.4 as concrete investigations rather than leaving them inline.
