@@ -24,6 +24,7 @@
 
 import { Vector3 } from "./types";
 import { g_engfuncs, gpGlobals, MAKE_STRING } from "./engine";
+import { getGlobalPool, EntityPool } from "./entity-pool";
 import {
   CTSGun__PrimaryAttack as PrimaryAttack,
   CTSGun__Reload as Reload,
@@ -129,14 +130,16 @@ function installRuntimeShims(): void {
     // "bot_<id>_body" so we can find the bot via the entity pool.
     const mesh = victim?.mesh;
     if (mesh) {
-      // Find the StubBot whose mesh matches
-      const botRegistry = (globalThis as any).__botRegistry as Map<any, any> | undefined;
-      if (botRegistry) {
-        for (const bot of botRegistry.values()) {
-          if (bot.mesh === mesh || bot.mesh?.body === mesh) {
-            bot.damage(damage);
-            return;
+      // D.5.6: walk the global entity pool to find the bot whose
+      // mesh matches. This replaces the old __botRegistry global.
+      const pool = getGlobalPool();
+      for (const ent of pool.entities.values()) {
+        const entAny = ent as any;
+        if (entAny.mesh === mesh || entAny.mesh?.body === mesh) {
+          if (typeof entAny.damage === "function") {
+            entAny.damage(damage);
           }
+          return;
         }
       }
     }
@@ -156,6 +159,12 @@ installRuntimeShims();
 // CTSGun stub — a class with all the methods referenced by the
 // decompiled PrimaryAttack / Reload / WeaponIdle / Spawn.
 // Methods are stubs that route through the engine simulator.
+//
+// D.5.6: This is now allocated ONCE in the entity pool (via
+// `getOrCreatePlayerWeapon`), not a fresh `new CTSGunStub()` per
+// call. The decompiled methods receive the same entity on every
+// invocation, so its `pev.index` + `classname` are stable and
+// resolvable by other systems via the pool.
 // ───────────────────────────────────────────────────────────────
 
 /** Minimal stub for the "weapon info" struct the decomp reads. */
@@ -184,6 +193,11 @@ interface OwnerStub {
  * fields. This stub provides the methods the decomp calls (Fire,
  * GrenadeFire, KnifeFire, etc.) and routes everything through the
  * engine simulator.
+ *
+ * When constructed via `getOrCreatePlayerWeapon`, the instance is
+ * also registered in the global entity pool as `weapon_tsgun` with
+ * a stable `pev.index`. Subsequent `tryDecompFire` calls reuse the
+ * same entity (just update its pev.origin/angles before the call).
  */
 class CTSGunStub {
   // Fields the decompiled methods read
@@ -204,13 +218,11 @@ class CTSGunStub {
   [0xc8]: number = 0;
   [0x9e4]: number = 0;
   [0x9e8]: number = 0;
-  pev: any = {
-    classname: "weapon_tsgun",
-    index: 0,
-    origin: { x: 0, y: 0, z: 0 },
-    angles: { x: 0, y: 0, z: 0 },
-    velocity: { x: 0, y: 0, z: 0 },
-  };
+  pev: any;
+
+  constructor(pev: any) {
+    this.pev = pev;
+  }
 
   // Stub methods called by PrimaryAttack
   CCombatAttack(): void {
@@ -311,9 +323,58 @@ class CTSGunStub {
 // ───────────────────────────────────────────────────────────────
 
 /**
- * Demo: call the decompiled PrimaryAttack() function with a stub.
- * The decompiled method will call g_engfuncs.pfnEmitSound, etc.,
- * which the engine simulator logs.
+ * D.5.6: Allocate (or look up) the player's CTSGun entity in the
+ * global entity pool. Subsequent calls return the same entity.
+ *
+ * The entity is registered as `weapon_tsgun` with classname +
+ * pev.index visible to other systems (engine simulator's pfnEmitSound
+ * log line, pfnTraceLine hit lookup, etc.).
+ *
+ * `tryDecompFire/WeaponIdle/Reload/Spawn` all reuse this same
+ * entity — it stays in the pool for the lifetime of the game.
+ */
+let _playerWeapon: CTSGunStub | null = null;
+
+function getOrCreatePlayerWeapon(): CTSGunStub {
+  if (_playerWeapon) return _playerWeapon;
+  const pool = getGlobalPool();
+  // Allocate a new entity in the pool — auto-assigned slot. The pool
+  // returns a CBaseEntity POJO with pev + classname initialized.
+  const ent = pool.create({
+    classname: "weapon_tsgun",
+    origin: { x: 0, y: 0, z: 0 },
+    angles: { x: 0, y: 0, z: 0 },
+    health: 0,
+    model: "models/w_tsgun.mdl",
+    netname: "tsgun",
+  });
+  _playerWeapon = new CTSGunStub(ent.pev);
+  // Stash the entity itself on the gun instance so future lookups
+  // (and the `this` passed to decompiled methods) carry the full
+  // CBaseEntity POJO, not just pev. The decompiled code reads fields
+  // via `this: CTSGun`, but other systems (TraceAttack, etc.) need
+  // the full entity for classname/index lookup.
+  (_playerWeapon as any)._entity = ent;
+  return _playerWeapon;
+}
+
+/** Reset the player's weapon state — used by test code or scene reset. */
+export function resetPlayerWeapon(): void {
+  if (_playerWeapon) {
+    _playerWeapon.m_pWeaponInfo = null;
+    _playerWeapon.m_pPlayer = { weaponCategory: 0 };
+    _playerWeapon.m_pOwner = { flag0x814: 0, innerPointer: { flag0x180: 0 } };
+    _playerWeapon.m_iSomeInt = 0;
+    _playerWeapon.m_pActiveItem = null;
+    _playerWeapon.pev.origin = { x: 0, y: 0, z: 0 };
+    _playerWeapon.pev.angles = { x: 0, y: 0, z: 0 };
+  }
+}
+
+/**
+ * Demo: call the decompiled PrimaryAttack() function with the player's
+ * weapon entity from the pool. The decompiled method will call
+ * g_engfuncs.pfnEmitSound, etc., which the engine simulator logs.
  *
  * This is the first end-to-end test that real decompiled code
  * is being executed by the game loop.
@@ -324,7 +385,7 @@ export function tryDecompFire(
   weaponCategory: number = 0,
   fireMode: number = 1,
 ): { ok: boolean; error?: string } {
-  const gun = new CTSGunStub();
+  const gun = getOrCreatePlayerWeapon();
   gun.m_pPlayer = { weaponCategory };
   gun.m_pWeaponInfo = {
     fireMode,
@@ -352,7 +413,7 @@ export function tryDecompFire(
  * Demo: call the decompiled Reload() function.
  */
 export function tryDecompReload(): { ok: boolean; error?: string } {
-  const gun = new CTSGunStub();
+  const gun = getOrCreatePlayerWeapon();
   try {
     Reload.call(gun);
     return { ok: true };
@@ -365,7 +426,7 @@ export function tryDecompReload(): { ok: boolean; error?: string } {
  * Demo: call the decompiled WeaponIdle() function.
  */
 export function tryDecompWeaponIdle(): { ok: boolean; error?: string } {
-  const gun = new CTSGunStub();
+  const gun = getOrCreatePlayerWeapon();
   try {
     WeaponIdle.call(gun);
     return { ok: true };
@@ -378,7 +439,7 @@ export function tryDecompWeaponIdle(): { ok: boolean; error?: string } {
  * Demo: call the decompiled Spawn() function.
  */
 export function tryDecompSpawn(): { ok: boolean; error?: string } {
-  const gun = new CTSGunStub();
+  const gun = getOrCreatePlayerWeapon();
   try {
     Spawn.call(gun);
     return { ok: true };

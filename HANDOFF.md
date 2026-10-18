@@ -14,15 +14,18 @@
 
 ## ⚡ CHECKPOINT SUMMARY (read this first in next session) — UPDATED 2026-10-16 (D.5.5 COMPLETE)
 
-> ⚠️ Previous banner is STALE. **We are past D.5.5.** The full
-> engine simulator + decomp wrapper + class shims + runtime shims
-> are installed. The decompiled `CTSGun::PrimaryAttack` actually
-> does work: real Babylon raycast → real damage → real sound.
+| ⚠️ Previous banner is STALE. **We are past D.5.6.** The full
+| engine simulator + decomp wrapper + class shims + runtime shims +
+| **entity pool** are installed. The decompiled `CTSGun::PrimaryAttack`
+| runs against a real `weapon_tsgun` entity from the pool (stable
+| `pev.index` + `classname`), and the trace handler resolves hits to
+| real bot entities via mesh identity. `__botRegistry` global is gone.
 
-**Status as of 2026-10-16 (end of session):** D.4 (decomp) and
-D.5.1 → D.5.5 are DONE. The next phase is **D.5.6: real entity pool**,
-which lets the decompiled code hold its own entity objects (instead
-of stubs) and unlocks D.5.7 / D.5.8 / D.5.11.
+**Status as of 2026-10-18 (end of session):** D.4 (decomp) and
+D.5.1 → D.5.6 are DONE. The next phase is **D.5.7 v2: real class
+methods on pool-managed entities**, which plugs the per-class
+manifest modules (D.4.9) into entity instances so the bridge stub
+can shrink.
 
 ### D.5.5 done — decompiled code runs end-to-end
 
@@ -62,10 +65,10 @@ Babylon LMB click
 | D.5.2 | BSP→glTF tool | ⏸ DEFERRED (TS BSPs non-standard; tool written, deferred) |
 | D.5.3 | MDL→glTF | TODO |
 | D.5.4 | Player controller (move, look, jump, sprint, crouch, wall collision, pitch fix) | ✅ |
-| **D.5.5** | **Engine simulator + decomp wiring** | **✅ DONE** |
-| D.5.6 | Real entity pool (replace CTSGunStub with real entities) | ← NEXT |
-| D.5.7 v2 | Real CTSGun::PrimaryAttack | partial via decomp-bridge; full via entity pool |
-| D.5.8 | Real damage / scoring / slowmo | partial via stubs; full via entity pool |
+| D.5.5 | Engine simulator + decomp wiring | ✅ |
+| **D.5.6** | **Real entity pool (CTSGunStub → pool-managed entity)** | **✅ DONE** |
+| D.5.7 v2 | Real CTSGun::PrimaryAttack (pool-backed) | partial via decomp-bridge; class methods next |
+| D.5.8 | Real damage / scoring / slowmo | partial via stubs; full via per-class manifests |
 | D.5.9 v1 | Stub bot (IDLE→PATROL→CHASE→ATTACK→DEAD) | ✅ |
 | D.5.10 v1 | HUD (HP, ammo, crosshair, hit marker, kill counter, death banner, slow-mo notification) | ✅ |
 | D.5.11 | Smoke test: game loop runs through decompiled code | not done |
@@ -134,39 +137,112 @@ Babylon LMB click
   methods were wired on 2026-10-15, now 9 are wired and running
   through real Babylon. Two commits.
 
-### Next task (D.5.6)
+### D.5.6 done — real entity pool
 
-**D.5.6 — Real entity pool.** Replace `CTSGunStub` with a real
-entity pool. The decompiled code currently gets a stub for `this`;
-with an entity pool, the decompiled code can hold real `CBaseEntity`
-instances with proper state, and we can wire more decompiled methods.
+Replaced `CTSGunStub` (a fresh instance per `tryDecompFire`) with a
+real entity pool. The decompiled code's `this` is now a stable
+`weapon_tsgun` entity in the pool, with a real `pev.index` and
+`classname` resolvable by other systems.
+
+```
+Babylon LMB click
+  → tryDecompFire(camera, angles)        (babylon/src/main.ts)
+  → getOrCreatePlayerWeapon()             (decomp-bridge.ts)
+  → pool.create({ classname: "weapon_tsgun" })
+  → PrimaryAttack.call(gun)               (decompiled)
+  → this.Fire()                           (CTSGunStub method, real pev)
+  → g_engfuncs.pfnEmitSound(ent)          (ent.classname === "weapon_tsgun")
+  → wireEngineAudio() → GameAudio.gunshot (real sound)
+  → g_engfuncs.pfnTraceLine(...)
+  → onTraceLine handler                   (main.ts)
+  → resolveEntityByMesh(mesh)             (main.ts)
+  → pool.entities → CBaseEntity           (full entity, not just mesh)
+  → ClearMultiDamage → TraceAttack(victim)
+  → pool.entities.find(e.mesh === mesh)   (decomp-bridge)
+  → bot.damage(25)
+```
+
+### D.5.6 deliverables (in repo)
+
+- `src/mod/entity-pool.ts` (~330 lines) — `EntityPool` class with
+  2048 slots (GoldSrc's `edict_t[]` size), `Map<EntityPtr, CBaseEntity>`
+  storage, `create()` / `register()` / `remove()` / `findByClassname()`
+  / `forEach()`. Auto-assigns indices starting at slot 2 (slot 0 is
+  worldspawn, slot 1 reserved for local player). Module-level
+  `getGlobalPool()` / `setGlobalPool()` singleton for code that
+  doesn't want to thread the pool through every function.
+
+- `src/mod/decomp-bridge.ts` updates:
+  - `CTSGunStub` constructor now takes a `pev` argument; the
+    instance is created ONCE via `getOrCreatePlayerWeapon()` and
+    stored on a module-level variable.
+  - `getOrCreatePlayerWeapon()` calls `pool.create({ classname:
+    "weapon_tsgun", ... })` on first invocation, then reuses the
+    same entity for every subsequent `tryDecomp*` call.
+  - The runtime shim's `TraceAttack` walks `pool.entities` (instead
+    of the old `__botRegistry` global) to find the bot whose mesh
+    was hit.
+  - New `resetPlayerWeapon()` export for test/scene-reset code.
+
+- `babylon/src/main.ts` updates:
+  - Builds one `EntityPool` instance, registers the player + 3 bots.
+  - Sets the pool as the global pool via `setGlobalPool()`.
+  - Removes the old `(globalThis as any).__botRegistry` global.
+  - The Babylon scene driver's `entities` map mirrors the pool
+    (same `Map<EntityPtr, CBaseEntity>`).
+  - `pfnTraceLine` handler now calls `resolveEntityByMesh()` to
+    translate a Babylon hit into a CBaseEntity for the decompiled
+    `TraceAttack` path. The hit object now includes `entity`,
+    `classname`, and `index` fields.
+
+### Why "D.5.6 done" is the milestone
+
+- The decompiled code's `this` is now a real entity from a shared
+  pool — same `pev.index` across calls, queryable by classname,
+  resolvable by mesh. This is the substrate the rest of D.5.7+ will
+  build on.
+- The old `__botRegistry` global is gone; the pool is the single
+  source of truth for entity identity.
+- `pfnTraceLine` returns the full entity, not just a `{mesh}` stub,
+  so `TraceAttack` can look up `pev.health`, `classname`, `team`,
+  etc. — opening the door to decompiled methods that read those
+  fields.
+
+### Next task (D.5.7 v2)
+
+**D.5.7 v2 — Real CTSGun methods on pool-managed entities.**
+Shrink the bridge stub by replacing its in-line `Fire`,
+`CCombatAttack`, `GrenadeFire`, `KnifeFire`, `KatanaFire`, `Reset`,
+`Precache`, `FallInit` methods with calls to the decompiled
+versions from `tools/decompile/output/`. The pool is the
+substrate: each entity knows its `pev`, and the decompiled
+methods can read state from it.
 
 Plan:
-1. Create `src/mod/entity-pool.ts` — `EntityPool` class that holds
-   2048 `Entity` slots (like GoldSrc's `edict_t[]` array). Each entity
-   has `pev` (entvars_t), `pvPrivateData` (the C++ class instance),
-   `classname`, etc.
-2. Replace `CTSGunStub` with a real `CBaseEntity` subclass that has
-   the `Fire()`, `CCombatAttack()`, etc. methods. The decompiled
-   PrimaryAttack calls these via `this.Fire()` — and the entity pool
-   looks up the method from the class.
-3. Have the player + bots in Babylon each have an entry in the entity
-   pool. `__botRegistry` becomes `pool.entities`.
-4. Wire `g_engfuncs.pfnTraceLine` to look up the entity in the pool
-   and return its class.
-5. With the pool, wire the decompiled `CBasePlayer::SlowMotionFlow`
-   to actually do the per-player slow-mo, not just a Babylon dt scale.
-6. Wire `pfnEmitSound` to call into GameAudio (already done in
-   wireEngineAudio — the entity pool just makes the ent parameter
-   have a real `classname`).
+1. Wire the decompiled `CTSGun__StandardFire`,
+   `CTSGun__ShotgunFire`, `CTSGun__AkimboFire` (decompiled in
+   D.4.7) as the `Fire()` implementation, replacing the in-line
+   stub that just emits a sound.
+2. Wire the decompiled `CTSGun::CCombatAttack`,
+   `CTSGun::CCombatBlock` (D.4.6) — same pattern, replace
+   bridge stubs with decompiled calls.
+3. Wire the decompiled `CTSGun::GrenadeFire`, `KnifeFire`,
+   `KatanaFire` (D.4.7) — replace the in-line stubs.
+4. Add the player's weapon entity to the pool via a `CTSGun`
+   subclass (not the `CTSGunStub` POJO with methods), so the
+   pool entity carries real class methods. The bridge stub
+   shrinks to just the vtable offset shims.
+5. With class methods on the entity, the per-class manifest
+   modules from D.4.9 (62 of them, one per CTS class) can plug
+   in here — `src/mod/CTSGun.ts` provides the class, the entity
+   instance uses it.
 
-After D.5.6:
-- **D.5.7 v2**: more CTSGun methods — AddAmmo, Holster, Deploy,
-  ItemPostFrame, ItemPreFrame, etc.
-- **D.5.8**: decompiled TakeDamage, Killed, scoring.
+After D.5.7 v2:
+- **D.5.8**: decompiled `CBasePlayer::TakeDamage`, `Killed`,
+  scoring (per-class manifests for `CBasePlayer`,
+  `CHalfLifeMultiplay`, `CTSGameRules`).
 - **D.5.11**: smoke test where every game loop action calls into
-  decompiled code, with engine simulator providing the Babylon
-  side effects.
+  decompiled code.
 
 ### Key files (current state)
 
@@ -186,9 +262,12 @@ After D.5.6:
 - `babylon/src/world.ts` — 36×6×36 arena with cover, maze walls,
   pillar, ramp, 4 pickups.
 - `src/mod/engine.ts` — g_engfuncs + gpGlobals + handlers.
+- `src/mod/entity-pool.ts` — `EntityPool` (2048 slots, single source
+  of truth for player / bots / weapon entities).
 - `src/mod/decomp.ts` — wrapper + re-exports.
 - `src/mod/decomp-shims.ts` — ambient type declarations.
-- `src/mod/decomp-bridge.ts` — CTSGunStub + runtime shims + tryDecomp*.
+- `src/mod/decomp-bridge.ts` — `CTSGunStub` + runtime shims +
+  `getOrCreatePlayerWeapon` (pool-backed) + tryDecomp*.
 - `src/mod/types.ts` — type contracts (Entvars, CBaseEntity POJOs).
 - `src/mod/globals.d.ts` — ambient: gpGlobals, g_engfuncs, vec3_*,
   sprintf, helpers.
@@ -242,7 +321,8 @@ session what to do without needing to re-derive the state.
 ```
 Continue Option D Phase 2 (D.5 — Babylon.js integration of the
 decompiled TS code). D.4 decomp is DONE (365/365 = 100%), and
-D.5.1 → D.5.5 are DONE. Next: D.5.6 (real entity pool).
+D.5.1 → D.5.6 are DONE. Next: D.5.7 v2 (real CTSGun methods on
+pool-managed entities).
 
 Repo: /home/kyle/Development/specialists-browser
 Branch: main
@@ -253,7 +333,7 @@ FIRST: Read HANDOFF.md CHECKPOINT SUMMARY (it has the full state
 map, call chain diagram, deliverable list, and next-task plan).
 Then read `docs/option-d-scope-d5-ready.md` for the D.5 plan.
 
-CURRENT STATE (2026-10-16 end-of-session):
+CURRENT STATE (2026-10-18 end-of-session):
 - D.4 decomp: 100% (365/365 unique methods in
   tools/decompile/output/*.ts, 374 files total)
 - D.5.1 (Babylon dev server boots): DONE
@@ -269,25 +349,35 @@ CURRENT STATE (2026-10-16 end-of-session):
   - pfnTraceLine routed to Babylon raycast (real damage)
   - pfnPlaybackEvent routed to engine log
   - Y key triggers GlobalSlowMotion2 + Babylon dt *= 0.25 (slow-mo)
+- D.5.6 (real entity pool): DONE
+  - `src/mod/entity-pool.ts` — `EntityPool` (2048 slots, single
+    source of truth for player / bots / weapon entities)
+  - `CTSGunStub` constructor takes pev; the instance is created
+    ONCE via `getOrCreatePlayerWeapon()` and reused across calls
+  - `__botRegistry` global REMOVED; pool is the only entity store
+  - `pfnTraceLine` returns the full CBaseEntity (classname + index
+    + mesh), not just a `{mesh}` stub
+  - `TraceAttack` runtime shim walks pool.entities (mesh match)
+  - `resetPlayerWeapon()` exported for test/scene-reset
 
-NEXT TASK — D.5.6: Real entity pool
-Replace `CTSGunStub` (in src/mod/decomp-bridge.ts) with a real
-entity pool that holds 2048 entities (like GoldSrc's edict_t[]).
-Each entity has pev (entvars_t) + pvPrivateData (the C++ class
-instance). The decompiled code's `this` should be a real entity
-from the pool, not a stub. Steps:
-  1. Create `src/mod/entity-pool.ts` with `EntityPool` class
-  2. Real `CBaseEntity` subclass with the methods the decompiled
-     code calls (Fire, CCombatAttack, CCombatBlock, GrenadeFire,
-     KnifeFire, KatanaFire, Reset, Precache, FallInit)
-  3. Have the player + bots in Babylon each have an entity-pool
-     entry. `__botRegistry` becomes `pool.entities`
-  4. Wire pfnTraceLine to look up entities from the pool
-  5. Wire pfnEmitSound to use the entity's classname
-  6. With the pool, wire CBasePlayer::SlowMotionFlow per-player
+NEXT TASK — D.5.7 v2: Real CTSGun methods on pool-managed entities
+Shrink the bridge stub by replacing its in-line Fire / CCombatAttack
+/ GrenadeFire / KnifeFire / KatanaFire / Reset / Precache / FallInit
+methods with calls to the decompiled versions from
+tools/decompile/output/. Steps:
+  1. Wire the decompiled CTSGun__StandardFire, CTSGun__ShotgunFire,
+     CTSGun__AkimboFire (D.4.7) as the Fire() implementation
+  2. Wire the decompiled CTSGun::CCombatAttack, CCombatBlock (D.4.6)
+  3. Wire the decompiled CTSGun::GrenadeFire, KnifeFire, KatanaFire
+     (D.4.7)
+  4. Add the player's weapon entity to the pool via a CTSGun
+     subclass (not the CTSGunStub POJO) so the pool entity carries
+     real class methods
+  5. With class methods on the entity, plug in the per-class
+     manifest modules (D.4.9) — 62 of them, one per CTS class
 
-After D.5.6: D.5.7 v2 (more CTSGun methods), D.5.8 (decompiled
-TakeDamage / Killed / scoring), D.5.11 (smoke test where every
+After D.5.7 v2: D.5.8 (decompiled CBasePlayer::TakeDamage, Killed,
+scoring via per-class manifests), D.5.11 (smoke test where every
 game loop action goes through decompiled code).
 
 VERIFICATION (run on m5 to confirm health):
@@ -302,7 +392,7 @@ VERIFICATION (run on m5 to confirm health):
 USER GOAL (Kyle, 2026-10-16): "The whole point of this project was
 to decomp halflife and TS into a multiplayer browser version." →
 drive toward real wiring of the decompiled code, not endless stub
-features. D.5.5 → D.5.6 is the path.
+features. D.5.5 → D.5.6 → D.5.7 v2 is the path.
 
 CONSTRAINTS:
 - Single-vendor codex pipeline (no claude CLI on m5)

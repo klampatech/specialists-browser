@@ -48,6 +48,7 @@ import { Ray } from "@babylonjs/core/Culling/ray";
 import { createBabylonSceneDriver } from "../../src/bridge/engine";
 import { initEngine, engineLog, setEngineLogging, wireEngineAudio, setEngineHandlers } from "../../src/mod/decomp";
 import { tryDecompFire, tryDecompReload, tryDecompSpawn, tryDecompSlowMotion } from "../../src/mod/decomp-bridge";
+import { EntityPool, getGlobalPool, setGlobalPool } from "../../src/mod/entity-pool";
 
 import { PlayerController } from "./player";
 import { buildTestLevel } from "./world";
@@ -90,6 +91,10 @@ wireEngineAudio(audio);
 // Wire the decomp engine simulator's pfnTraceLine to actual Babylon
 // raycasting. The decompiled CTSGun::Fire() should call this and
 // the result tells it whether a bot was hit.
+//
+// D.5.6: the trace handler now resolves the hit entity from the
+// global entity pool (via mesh identity) so downstream code
+// (TraceAttack in decomp-bridge) can call its .damage() method.
 setEngineHandlers({
   onTraceLine: (start: any, end: any, _flags: number, _ignoreEnt: any) => {
     // Cast a Babylon ray from start to end; return the closest hit
@@ -105,10 +110,15 @@ setEngineHandlers({
     if (pick && pick.hit && pick.pickedMesh) {
       const dist = Vector3.Distance(ray.origin, pick.pickedPoint || ray.origin);
       const total = Vector3.Distance(ray.origin, new Vector3(end.x, end.y, end.z));
+      // D.5.6: resolve the hit entity from the global pool. The
+      // pool maps each bot's mesh to its CBaseEntity POJO, so
+      // TraceAttack can find the bot whose mesh was hit and call
+      // .damage() on it.
+      const hitEnt = resolveEntityByMesh(pick.pickedMesh);
       return {
         fraction: dist / total,
         endPos: { x: pick.pickedPoint.x, y: pick.pickedPoint.y, z: pick.pickedPoint.z },
-        hit: { mesh: pick.pickedMesh },
+        hit: hitEnt ? { mesh: pick.pickedMesh, entity: hitEnt, classname: hitEnt.classname, index: hitEnt.pev.index } : { mesh: pick.pickedMesh },
         planeNormal: { x: 0, y: 0, z: 1 },
         planeDist: 0,
         hitGroup: 0,
@@ -124,6 +134,24 @@ setEngineHandlers({
     };
   },
 });
+
+/**
+ * D.5.6: Find a registered entity by Babylon mesh identity. Walks
+ * the global entity pool looking for an entity whose `mesh` (or
+ * `mesh.body`) field matches. Used by the trace handler to
+ * translate a Babylon hit into a CBaseEntity for the decompiled
+ * code's TraceAttack path.
+ */
+function resolveEntityByMesh(mesh: any): any {
+  const pool = getGlobalPool();
+  for (const ent of pool.entities.values()) {
+    const entAny = ent as any;
+    if (entAny.mesh === mesh || entAny.mesh?.body === mesh) {
+      return ent;
+    }
+  }
+  return null;
+}
 
 // World.
 const { spawn, bounds, obstacles } = buildTestLevel(scene);
@@ -208,14 +236,22 @@ for (const bot of bots) {
 
 // Register bots so the decompiled code can damage them when a raycast
 // from pfnTraceLine hits a bot mesh. (decomp-bridge's TraceAttack
-// walks this registry to find the bot whose mesh was hit.)
-(globalThis as any).__botRegistry = new Map(bots.map((b) => [b.entity.pev.index, b]));
+// walks the global entity pool to find the bot whose mesh was hit.)
+//
+// D.5.6: replaced the old __botRegistry global with a single
+// shared EntityPool. The pool also holds the player's weapon entity
+// (created lazily by getOrCreatePlayerWeapon() in decomp-bridge.ts).
+const entityPool = new EntityPool("main");
+setGlobalPool(entityPool);
+entityPool.register(player.entity);
+for (const bot of bots) entityPool.register(bot.entity);
 
 // Wire the decompiled TS engine.
 const driver = createBabylonSceneDriver({ canvas, audioCtx });
-driver.entities.set(player.entity.pev.index, player.entity);
-for (const bot of bots) {
-  driver.entities.set(bot.entity.pev.index, bot.entity);
+// D.5.6: the Babylon scene driver's entity pool IS the same as our
+// global entity pool — same Map<EntityPtr, CBaseEntity>.
+for (const [idx, ent] of entityPool.entities) {
+  driver.entities.set(idx, ent);
 }
 
 // Input handlers.
