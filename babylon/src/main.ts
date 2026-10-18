@@ -81,6 +81,10 @@ const player = new PlayerController({
   camera,
   spawn: { x: spawn.x, y: spawn.y, z: spawn.z },
 });
+// Wall collision: room is 24×24 centered at origin, height 6
+// (player radius 0.4 leaves a small buffer so you don't see
+// the wall clipping through the camera).
+player.setBounds({ minX: -12, maxX: 12, minZ: -12, maxZ: 12 });
 
 // Bots (3 bots patrolling).
 const bots: StubBot[] = [

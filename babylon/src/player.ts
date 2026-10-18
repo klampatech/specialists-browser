@@ -84,6 +84,8 @@ export class PlayerController {
   private pitch = 0; // rotation around X (radians)
   private velY = 0; // vertical velocity (for gravity/jump)
   private listeners: Array<() => void> = [];
+  /** World bounds (XZ) for wall collision. null = no bounds. */
+  private bounds: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
 
   constructor(opts: PlayerControllerOptions) {
     this.opts = { ...DEFAULT_OPTS, ...opts };
@@ -116,6 +118,11 @@ export class PlayerController {
     return this.locked;
   }
 
+  /** Set AABB world bounds (player can't leave this box on XZ). */
+  setBounds(b: { minX: number; maxX: number; minZ: number; maxZ: number } | null): void {
+    this.bounds = b;
+  }
+
   /** Manually request pointer lock. */
   requestPointerLock(): void {
     const canvas = this.camera.getEngine().getRenderingCanvas();
@@ -132,11 +139,11 @@ export class PlayerController {
 
     // Look (only when locked)
     if (this.locked) {
-      // mouseX/Y updated by listener — we apply rotation here.
       // Yaw rotates around Y, pitch around X.
-      const rot = this.camera.rotation;
-      this.camera.rotation.set(this.pitch, this.yaw, 0);
-      void rot;
+      // Babylon's UniversalCamera uses left-handed coords where
+      // positive rotation.x tilts the camera DOWN. Our `pitch`
+      // convention is "positive = look up", so we negate.
+      this.camera.rotation.set(-this.pitch, this.yaw, 0);
     }
 
     // Movement
@@ -164,6 +171,15 @@ export class PlayerController {
     const pos = this.camera.position;
     pos.x += moveX;
     pos.z += moveZ;
+
+    // Clamp to world bounds (wall collision).
+    if (this.bounds) {
+      const r = 0.4; // player radius
+      if (pos.x < this.bounds.minX + r) pos.x = this.bounds.minX + r;
+      if (pos.x > this.bounds.maxX - r) pos.x = this.bounds.maxX - r;
+      if (pos.z < this.bounds.minZ + r) pos.z = this.bounds.minZ + r;
+      if (pos.z > this.bounds.maxZ - r) pos.z = this.bounds.maxZ - r;
+    }
 
     // Gravity / jump.
     const onGround = pos.y <= this.spawn.y + this.eyeHeight + 0.001;
