@@ -405,6 +405,33 @@ interface PlayerStub {
   [k: string]: any;
 }
 
+/**
+ * Factory for the minimal pev stub used when self-healing the
+ * player's m_pPlayer.pev before delegating to decompiled bodies
+ * like CCombatAttack. The decompiled methods read:
+ *   - velocity (pev.velocity.{x,y,z})
+ *   - origin (pev.origin.{x,y,z})
+ *   - flags (pev.flags)
+ *   - readU8(offset) — packed bit flags at specific memory offsets
+ *     (the decompiler extracts these from the original C++ player
+ *     struct's flat memory layout). For v1, readU8 returns 0 (no
+ *     flags set), so all bit-flag reads are false.
+ */
+function makeEmptyPev(): any {
+  return {
+    velocity: { x: 0, y: 0, z: 0 },
+    origin: { x: 0, y: 0, z: 0 },
+    flags: 0,
+    // Stub for the decompiler's readU8(offset) reads. The real
+    // implementation would back this with a flat memory buffer
+    // matching the original C++ player struct layout. For now, all
+    // reads return 0 (no flags set).
+    readU8(_offset: number): number {
+      return 0;
+    },
+  };
+}
+
 /** Minimal stub for the "owner" object the decomp reads. */
 interface OwnerStub {
   flag0x814: number;
@@ -485,20 +512,26 @@ class CTSGunStub {
   CCombatAttack(): void {
     // Defensive: ensure the gun has a valid m_pPlayer.pev before
     // delegating to the decompiled body. The decompiled
-    // CCombatAttack reads `this_.m_pPlayer.pev` on the second line
+    // CCombatAttack reads `this_.m_pPlayer.pev` on its second line
     // (pev.velocity, pev.flags); without a valid pev object it
     // throws. Self-heal here so callers don't have to remember
     // the prerequisite.
+    //
+    // The pev stub also needs a `readU8(offset)` method because
+    // the decompiled CCombatAttack reads packed bit flags at
+    // specific memory offsets (0x180, 0x1a5) on the player entity.
+    // In the original C++ code, the player has a flat packed
+    // structure; the decompiler extracts these as readU8 calls.
+    // For v1, we just return 0 (no flags set) — the decompiled
+    // body falls into the processCloseCombatPath TODO branch
+    // (isCloseCombat = true, isDoingAction = false, hasD = false)
+    // and exits cleanly.
     const player: any = this.m_pPlayer;
-    if (!player || !player.pev) {
+    if (!player || !player.pev || typeof player.pev.readU8 !== "function") {
       this.m_pPlayer = {
         weaponCategory: 0,
         m_flNextAttack: 0,
-        pev: {
-          velocity: { x: 0, y: 0, z: 0 },
-          origin: { x: 0, y: 0, z: 0 },
-          flags: 0,
-        },
+        pev: makeEmptyPev(),
       };
     }
     // Call pattern: .call(this, this) — pass the gun as BOTH the
@@ -815,16 +848,13 @@ export function tryDecompCCombatAttack(): { ok: boolean; error?: string } {
   // to this.CCombatAttack() (the bare-hands branch).
   gun.m_pWeaponInfo = null;
   // Ensure m_pPlayer has a valid pev (the decompiled CCombatAttack
-  // reads this_.m_pPlayer.pev on its second line). The bridge stub's
+  // reads this_.m_pPlayer.pev on its second line, then calls
+  // pev.readU8(offset) for the packed bit flags). The bridge stub's
   // CCombatAttack method also self-heals this, but belt-and-suspenders.
   gun.m_pPlayer = {
     weaponCategory: 0,
     m_flNextAttack: 0,
-    pev: {
-      velocity: { x: 0, y: 0, z: 0 },
-      origin: { x: 0, y: 0, z: 0 },
-      flags: 0,
-    },
+    pev: makeEmptyPev(),
   };
   // m_flNextPrimaryAttack / m_flTimeWeaponIdle need to be in the
   // past so the guards don't return early.
