@@ -616,6 +616,16 @@ function getOrCreatePlayerWeapon(): CTSGunStub {
   // via `this: CTSGun`, but other systems (TraceAttack, etc.) need
   // the full entity for classname/index lookup.
   (_playerWeapon as any)._entity = ent;
+  // Wire the player entity into field_0x80 (m_pPlayer pointer at
+  // offset 0x80 in the CTSGun layout) ONCE here. The decompiled
+  // CCombatBlock (and Reload's fallthrough to CCombatBlock when
+  // m_pCombat is null) reads `this.field_0x80.field_0x12c` etc. —
+  // without this, every Fire* method that delegates to CCombatBlock
+  // throws "Cannot read properties of null (reading 'field_0x12c')".
+  const player = pool.findByClassname("player");
+  if (player) {
+    _playerWeapon.field_0x80 = player;
+  }
   return _playerWeapon;
 }
 

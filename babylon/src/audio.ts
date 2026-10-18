@@ -182,7 +182,9 @@ export class GameAudio {
     const t = this.ctx.currentTime;
     this.resume();
 
-    // Two clicks (mag out, mag in)
+    // Two clicks (mag out, mag in) — bumped gain from 0.2 to 0.5 so
+    // it's audible over the master volume. The 0.2 was too quiet
+    // when overlaying with the gun fire SFX.
     for (let i = 0; i < 2; i++) {
       const osc = this.ctx.createOscillator();
       osc.type = "square";
@@ -190,7 +192,7 @@ export class GameAudio {
       const gain = this.ctx.createGain();
       const start = t + i * 0.04;
       gain.gain.setValueAtTime(0, start);
-      gain.gain.linearRampToValueAtTime(0.2, start + 0.005);
+      gain.gain.linearRampToValueAtTime(0.5, start + 0.005);
       gain.gain.exponentialRampToValueAtTime(0.01, start + 0.03);
       osc.connect(gain).connect(this.master);
       osc.start(start);

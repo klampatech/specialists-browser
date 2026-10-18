@@ -138,5 +138,22 @@ export function wireEngineAudio(audio: {
         console.log(`[engine audio] unhandled sound: ${sample}`);
       }
     },
+    // pfnPlaybackEvent fires from decompiled Reload, CCombatBlock,
+    // and the bridge stub's in-line Fire. The decompiled callers
+    // pass the player as the `ent` arg (not the gun), so we check
+    // for that. flags & 0x1 distinguishes "weapon event from the
+    // player's gun" (reload, block, cock) from the gun's own
+    // fire event (which is handled by pfnEmitSound, not here).
+    onPlaybackEvent: (flags: number, _eventIndex: number, _delay: number, _origin: any, _angles: any, _fp1: number, _fp2: number, _ip1: number, _ip2: number, _bp1: number, _bp2: number, ent: any) => {
+      const classname = ent?.classname ?? "";
+      const isPlayerEvent = (flags & 0x1) !== 0 && classname === "player";
+      if (isPlayerEvent) {
+        // The decompiled Reload fires pfnPlaybackEvent(0x1, ..., player)
+        // after a successful reload. Route to the reload sound.
+        // Try the bank first, fall back to procedural.
+        if (audio.playSample?.("weapons/reload.wav", 1.0, 1.0)) return;
+        audio.reload?.();
+      }
+    },
   });
 }
