@@ -123,7 +123,24 @@ function installRuntimeShims(): void {
   g.SET_MODEL = (ent: any, model: string) => { /* noop */ };
   g.ALERT = (level: number, msg: string) => { console.log(`[ALERT ${level}] ${msg}`); };
   g.SUB_UseTargets = (pEntity: any, pActivator: any, useType: number, value: number) => { /* noop */ };
-  g.TraceAttack = (victim: any, attacker: any, damage: number, dir: any, trace: any, dmgBits: number) => { /* noop */ };
+  g.TraceAttack = (victim: any, attacker: any, damage: number, dir: any, trace: any, dmgBits: number) => {
+    // Look for a bot on the hit target — the decomp's "hit" is the
+    // { mesh } object we set in main.ts. The bot meshes are named
+    // "bot_<id>_body" so we can find the bot via the entity pool.
+    const mesh = victim?.mesh;
+    if (mesh) {
+      // Find the StubBot whose mesh matches
+      const botRegistry = (globalThis as any).__botRegistry as Map<any, any> | undefined;
+      if (botRegistry) {
+        for (const bot of botRegistry.values()) {
+          if (bot.mesh === mesh || bot.mesh?.body === mesh) {
+            bot.damage(damage);
+            return;
+          }
+        }
+      }
+    }
+  };
   g.ClearMultiDamage = () => { /* noop */ };
   g.ApplyMultiDamage = (inflictor: any, attacker: any) => { /* noop */ };
   g.FireTargets = (target: string, activator: any, caller: any, useType: number, value: number) => { /* noop */ };
@@ -240,6 +257,28 @@ class CTSGunStub {
       0, 0,                              // bparam1, bparam2
       this.pev,                          // ent
     );
+
+    // Now do a real trace from the gun's origin in its forward direction
+    // and if we hit something, apply damage via the decompiled's
+    // TraceAttack path. The engine simulator's onTraceLine handler
+    // (installed in main.ts) does the Babylon raycast.
+    const start = this.pev.origin;
+    const forward = { x: Math.sin(this.pev.angles.y * Math.PI / 180), y: 0, z: Math.cos(this.pev.angles.y * Math.PI / 180) };
+    const end = {
+      x: start.x + forward.x * 100,
+      y: start.y + forward.y * 100,
+      z: start.z + forward.z * 100,
+    };
+    const trace = g_engfuncs.pfnTraceLine(start, end, 0, this.pev);
+    if (trace.fraction < 1.0 && trace.hit) {
+      // We hit something — call the decompiled's damage path
+      // (ClearMultiDamage → TraceAttack → ApplyMultiDamage)
+      ClearMultiDamage();
+      const dmgDir = { x: forward.x, y: forward.y, z: forward.z };
+      const dmgBits = 0x1080; // DMG_CLUB (0x80) | DMG_NEVERGIB (0x1000)
+      TraceAttack(trace.hit, this.pev, 25, dmgDir, trace, dmgBits);
+      ApplyMultiDamage(this.pev, this.pev);
+    }
   }
 
   // Methods called by Reload
@@ -280,6 +319,8 @@ class CTSGunStub {
  * is being executed by the game loop.
  */
 export function tryDecompFire(
+  origin?: { x: number; y: number; z: number },
+  angles?: { x: number; y: number; z: number },
   weaponCategory: number = 0,
   fireMode: number = 1,
 ): { ok: boolean; error?: string } {
@@ -291,6 +332,12 @@ export function tryDecompFire(
     accumulator: 0,
   };
   gun.m_pOwner = { flag0x814: 1, innerPointer: { flag0x180: 1 } };
+  if (origin) {
+    gun.pev.origin = { ...origin };
+  }
+  if (angles) {
+    gun.pev.angles = { ...angles };
+  }
 
   try {
     // Call the DECOMPILED function

@@ -43,9 +43,10 @@ import { Color3, Color4 } from "@babylonjs/core/Maths/math.color";
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
+import { Ray } from "@babylonjs/core/Culling/ray";
 
 import { createBabylonSceneDriver } from "../../src/bridge/engine";
-import { initEngine, engineLog, setEngineLogging } from "../../src/mod/decomp";
+import { initEngine, engineLog, setEngineLogging, wireEngineAudio, setEngineHandlers } from "../../src/mod/decomp";
 import { tryDecompFire, tryDecompReload, tryDecompSpawn, tryDecompSlowMotion } from "../../src/mod/decomp-bridge";
 
 import { PlayerController } from "./player";
@@ -80,6 +81,49 @@ light.diffuse = new Color3(0.95, 0.92, 0.85);
 
 // Audio.
 const audio = new GameAudio(audioCtx);
+
+// Wire decomp engine simulator to real audio. The decompiled code
+// calls g_engfuncs.pfnEmitSound() — wire those to GameAudio so you
+// HEAR the decompiled weapon fire.
+wireEngineAudio(audio);
+
+// Wire the decomp engine simulator's pfnTraceLine to actual Babylon
+// raycasting. The decompiled CTSGun::Fire() should call this and
+// the result tells it whether a bot was hit.
+setEngineHandlers({
+  onTraceLine: (start: any, end: any, _flags: number, _ignoreEnt: any) => {
+    // Cast a Babylon ray from start to end; return the closest hit
+    const ray = new Ray(
+      new Vector3(start.x, start.y, start.z),
+      new Vector3(end.x - start.x, end.y - start.y, end.z - start.z).normalize(),
+      Vector3.Distance(new Vector3(start.x, start.y, start.z), new Vector3(end.x, end.y, end.z)),
+    );
+    const pick = scene.pickWithRay(ray, (mesh) => {
+      // Don't hit the floor or walls — only hit bot meshes
+      return mesh.name.startsWith("bot_") && mesh.isVisible !== false;
+    });
+    if (pick && pick.hit && pick.pickedMesh) {
+      const dist = Vector3.Distance(ray.origin, pick.pickedPoint || ray.origin);
+      const total = Vector3.Distance(ray.origin, new Vector3(end.x, end.y, end.z));
+      return {
+        fraction: dist / total,
+        endPos: { x: pick.pickedPoint.x, y: pick.pickedPoint.y, z: pick.pickedPoint.z },
+        hit: { mesh: pick.pickedMesh },
+        planeNormal: { x: 0, y: 0, z: 1 },
+        planeDist: 0,
+        hitGroup: 0,
+      };
+    }
+    return {
+      fraction: 1.0,
+      endPos: { x: end.x, y: end.y, z: end.z },
+      hit: null,
+      planeNormal: { x: 0, y: 0, z: 1 },
+      planeDist: 0,
+      hitGroup: 0,
+    };
+  },
+});
 
 // World.
 const { spawn, bounds, obstacles } = buildTestLevel(scene);
@@ -162,6 +206,11 @@ for (const bot of bots) {
   });
 }
 
+// Register bots so the decompiled code can damage them when a raycast
+// from pfnTraceLine hits a bot mesh. (decomp-bridge's TraceAttack
+// walks this registry to find the bot whose mesh was hit.)
+(globalThis as any).__botRegistry = new Map(bots.map((b) => [b.entity.pev.index, b]));
+
 // Wire the decompiled TS engine.
 const driver = createBabylonSceneDriver({ canvas, audioCtx });
 driver.entities.set(player.entity.pev.index, player.entity);
@@ -185,8 +234,17 @@ const onMouseDown = (e: MouseEvent) => {
 
   // ALSO call the decompiled CTSGun::PrimaryAttack() — this routes
   // through the engine simulator which logs every engine call.
-  // (Not yet wired to game state — just proving the decomp runs.)
-  const decompResult = tryDecompFire(0, 1); // category=0 (unknown), fireMode=1
+  // Position the decomp gun at the camera so the raycast aims
+  // where the player is looking.
+  const decompResult = tryDecompFire({
+    x: camera.position.x,
+    y: camera.position.y,
+    z: camera.position.z,
+  }, {
+    x: 0, // pitch
+    y: camera.rotation.y * (180 / Math.PI), // yaw
+    z: 0,
+  }, 0, 1); // category=0 (unknown), fireMode=1
   if (!decompResult.ok) {
     console.warn("[decomp] PrimaryAttack error:", decompResult.error);
   }

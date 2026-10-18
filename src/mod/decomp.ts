@@ -54,6 +54,23 @@ export {
   setEngineLogging,
   getCallStats,
   enableCallStats,
+  g_engfuncs,
+  gpGlobals,
+  registerUserMsg,
+  lookupUserMsg,
+  registerCvar,
+  getCvarFloat,
+  setCvarFloat,
+  setCvarString,
+  MAKE_STRING,
+  STRING,
+  vec3_add,
+  vec3_sub,
+  vec3_scale,
+  vec3_length,
+  vec3_normalize,
+  sprintf,
+  MSG_TYPES,
 } from "./engine";
 export type { EngineHandlers, TraceResult } from "./engine";
 
@@ -64,4 +81,27 @@ export type { EngineHandlers, TraceResult } from "./engine";
 export function initEngine(handlers: EngineHandlers = {}): (dt: number) => void {
   setEngineHandlers(handlers);
   return (dt: number) => tickGpGlobals(dt);
+}
+
+/**
+ * Wire the engine simulator's pfnEmitSound to a real audio sink.
+ * Call this with your GameAudio instance to make the decompiled
+ * code's "pfnEmitSound" calls actually play sounds.
+ */
+export function wireEngineAudio(audio: { gunshot(): void; reload?(): void; pickup?(): void }): void {
+  setEngineHandlers({
+    onEmitSound: (_ent: any, _channel: number, sample: string, _volume: number, _attenuation: number, _flags: number, _pitch: number) => {
+      // Route by sample name to the appropriate sound
+      if (sample.includes("reload")) {
+        audio.reload?.();
+      } else if (sample.includes("fire") || sample.includes("shot") || sample.includes("launcher") || sample.includes("swing") || sample.includes("slash")) {
+        audio.gunshot();
+      } else if (sample.includes("pickup") || sample.includes("ammo") || sample.includes("health")) {
+        audio.pickup?.();
+      } else {
+        // Default: play a soft beep for any other sound
+        console.log(`[engine audio] unhandled sound: ${sample}`);
+      }
+    },
+  });
 }
