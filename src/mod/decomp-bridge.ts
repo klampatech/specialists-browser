@@ -98,6 +98,7 @@ function installRuntimeShims(): void {
 
   // Common engine utility stubs (already declared in decomp-shims.ts)
   g.UTIL_PlayerByIndex = (i: number) => null;
+  g.UTIL_FindEntityByClassname = (prev: any, className: string) => null;
   g.UTIL_Remove = (ent: any) => { /* noop */ };
   g.UTIL_TraceLine = (start: any, end: any, flags: number, ignore: any) => ({
     flFraction: 1.0,
@@ -174,6 +175,18 @@ class CTSGunStub {
   m_pOwner: OwnerStub = { flag0x814: 0, innerPointer: { flag0x180: 0 } };
   m_iSomeInt: number = 0;
   m_pActiveItem: any = null;
+  /** Dispatch table for virtual calls — populated with no-ops so the
+   *  decompiled Spawn() can call methods via table[0x28 / 4](this). */
+  [0x60]: { [k: number]: (self: any) => void } = {
+    10: (_self: any) => { /* would be Precache() */ },
+  };
+  /** Numeric offset fields the decompiled Spawn() sets. */
+  [0x88]: number = 0;
+  [0xb4]: number = 0;
+  [0xc4]: number = 0;
+  [0xc8]: number = 0;
+  [0x9e4]: number = 0;
+  [0x9e8]: number = 0;
   pev: any = {
     classname: "weapon_tsgun",
     index: 0,
@@ -185,6 +198,10 @@ class CTSGunStub {
   // Stub methods called by PrimaryAttack
   CCombatAttack(): void {
     g_engfuncs.pfnEmitSound(this.pev, 1, "weapons/melee_swing.wav", 1.0, 1.0, 0, 100);
+  }
+
+  CCombatBlock(): void {
+    g_engfuncs.pfnEmitSound(this.pev, 1, "weapons/melee_block.wav", 1.0, 1.0, 0, 100);
   }
 
   GrenadeFire(): void {
