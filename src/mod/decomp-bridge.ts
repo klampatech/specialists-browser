@@ -483,6 +483,24 @@ class CTSGunStub {
 
   // Stub methods called by PrimaryAttack
   CCombatAttack(): void {
+    // Defensive: ensure the gun has a valid m_pPlayer.pev before
+    // delegating to the decompiled body. The decompiled
+    // CCombatAttack reads `this_.m_pPlayer.pev` on the second line
+    // (pev.velocity, pev.flags); without a valid pev object it
+    // throws. Self-heal here so callers don't have to remember
+    // the prerequisite.
+    const player: any = this.m_pPlayer;
+    if (!player || !player.pev) {
+      this.m_pPlayer = {
+        weaponCategory: 0,
+        m_flNextAttack: 0,
+        pev: {
+          velocity: { x: 0, y: 0, z: 0 },
+          origin: { x: 0, y: 0, z: 0 },
+          flags: 0,
+        },
+      };
+    }
     CCombatAttackImpl.call(this as any);
   }
 
@@ -783,7 +801,18 @@ export function tryDecompCCombatAttack(): { ok: boolean; error?: string } {
   // Clear m_pWeaponInfo so the decompiled PrimaryAttack dispatches
   // to this.CCombatAttack() (the bare-hands branch).
   gun.m_pWeaponInfo = null;
-  gun.m_pPlayer = { weaponCategory: 0 };
+  // Ensure m_pPlayer has a valid pev (the decompiled CCombatAttack
+  // reads this_.m_pPlayer.pev on its second line). The bridge stub's
+  // CCombatAttack method also self-heals this, but belt-and-suspenders.
+  gun.m_pPlayer = {
+    weaponCategory: 0,
+    m_flNextAttack: 0,
+    pev: {
+      velocity: { x: 0, y: 0, z: 0 },
+      origin: { x: 0, y: 0, z: 0 },
+      flags: 0,
+    },
+  };
   // m_flNextPrimaryAttack / m_flTimeWeaponIdle need to be in the
   // past so the guards don't return early.
   gun.m_flNextPrimaryAttack = 0;
