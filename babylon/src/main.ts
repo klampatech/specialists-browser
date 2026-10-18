@@ -47,7 +47,7 @@ import { Ray } from "@babylonjs/core/Culling/ray";
 
 import { createBabylonSceneDriver } from "../../src/bridge/engine";
 import { initEngine, engineLog, setEngineLogging, wireEngineAudio, setEngineHandlers } from "../../src/mod/decomp";
-import { tryDecompFire, tryDecompReload, tryDecompSpawn, tryDecompSlowMotion } from "../../src/mod/decomp-bridge";
+import { tryDecompFire, tryDecompReload, tryDecompSpawn, tryDecompSlowMotion, tryDecompBlock } from "../../src/mod/decomp-bridge";
 import { EntityPool, getGlobalPool, setGlobalPool } from "../../src/mod/entity-pool";
 
 import { PlayerController } from "./player";
@@ -323,6 +323,16 @@ const onKeyDown = (e: KeyboardEvent) => {
   if (e.code === "KeyL") {
     setEngineLogging(true);
     engineLog("logging toggled ON");
+  }
+  // B to trigger decomp CCombatBlock (defensive block). Not on the
+  // PrimaryAttack hot path, so exposed as a dedicated key for testing.
+  if (e.code === "KeyB") {
+    const r = tryDecompBlock();
+    if (r.ok) {
+      console.log("[decomp] CCombatBlock OK");
+    } else {
+      console.warn("[decomp] CCombatBlock error:", r.error);
+    }
   }
 };
 canvas.addEventListener("mousedown", onMouseDown);

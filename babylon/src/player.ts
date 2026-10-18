@@ -422,5 +422,29 @@ function makePlayerEntity(_controller: PlayerController): CBaseEntity {
     delay: 0,
     killtarget: "",
     netname: "",
+    // D.5.7 v2 — Numeric-keyed alias to pev. The decompiled CCombatBlock
+    // does `(player as any)[0]` (decompiler notes "first field of
+    // player; plausibly pev" — matches C++ memory layout where pev is
+    // the first member at offset 0). Without this, line 34 and 75 of
+    // CTSGun__CCombatBlock.ts throw "Cannot read properties of
+    // undefined (reading 'field_0x250')".
+    ...({ [0]: pev } as any),
+    // ───────────────────────────────────────────────────────────
+    // D.5.7 v2 — decompiler-named fields read by CCombatBlock
+    // (and the broader CTSGun decompiled methods). Initialized to
+    // 0 so guard checks pass; values get written by the decomp
+    // body during play. Cast through `any` because the CBaseEntity
+    // interface doesn't model these (they're TS-extension offsets).
+    // ───────────────────────────────────────────────────────────
+    ...({
+      field_0x12c: 0,    // m_flNextAttack (cooldown guard)
+      field_0x250: 0,    // state bitmask guard (peeked via player[0])
+      field_0x774: 100,  // stamina/charge — exceeds block threshold cvar (default 0)
+      field_0x7a8: 0,    // blockDuration write target (branch A)
+      field_0x7ac: 0,    // blockDuration write target (branch C, byte=0x03)
+      field_0x7b0: 0,    // blockDuration write target (branch C, byte=0x0a)
+      field_0x28c: 0,    // animation thisPtr (Animate arg 1)
+      field_0x208: 0,    // engine dispatch arg 2 (used via player[0].field_0x208)
+    } as any),
   };
 }

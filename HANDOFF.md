@@ -22,10 +22,13 @@
 | real bot entities via mesh identity. `__botRegistry` global is gone.
 
 **Status as of 2026-10-18 (end of session):** D.4 (decomp) and
-D.5.1 → D.5.6 are DONE. The next phase is **D.5.7 v2: real class
-methods on pool-managed entities**, which plugs the per-class
-manifest modules (D.4.9) into entity instances so the bridge stub
-can shrink.
+D.5.1 → D.5.6 are DONE. D.5.7 v2 is in progress: the **shim layer
+that all 8 Fire* methods need is built** (CVars module + bare top-level
+cvar identifiers + helper functions + class method stubs + engine
+singleton vfunc), and **CCombatBlock (the smallest method) is wired
+end-to-end** — confirmed via headless smoke that pressing B runs the
+decompiled body through guards + engine dispatch + Animate + UpdateMeleeBar
+without crashing.
 
 ### D.5.5 done — decompiled code runs end-to-end
 
@@ -66,8 +69,9 @@ Babylon LMB click
 | D.5.3 | MDL→glTF | TODO |
 | D.5.4 | Player controller (move, look, jump, sprint, crouch, wall collision, pitch fix) | ✅ |
 | D.5.5 | Engine simulator + decomp wiring | ✅ |
-| **D.5.6** | **Real entity pool (CTSGunStub → pool-managed entity)** | **✅ DONE** |
-| D.5.7 v2 | Real CTSGun::PrimaryAttack (pool-backed) | partial via decomp-bridge; class methods next |
+| D.5.6 | Real entity pool (CTSGunStub → pool-managed entity) | ✅ |
+| **D.5.7 v2** | **Shim layer built + CCombatBlock wired (1/8 Fire* methods)** | **🔄 IN PROGRESS** |
+| D.5.7 v2 cont. | Wire 7 remaining Fire* methods (CCombatAttack, GrenadeFire, KnifeFire, KatanaFire, KatanaThrow, ColdCock, StandardFire, ShotgunFire, AkimboFire) | TODO |
 | D.5.8 | Real damage / scoring / slowmo | partial via stubs; full via per-class manifests |
 | D.5.9 v1 | Stub bot (IDLE→PATROL→CHASE→ATTACK→DEAD) | ✅ |
 | D.5.10 v1 | HUD (HP, ammo, crosshair, hit marker, kill counter, death banner, slow-mo notification) | ✅ |
@@ -208,41 +212,89 @@ Babylon LMB click
   etc. — opening the door to decompiled methods that read those
   fields.
 
-### Next task (D.5.7 v2)
+### D.5.7 v2 in progress — shim layer + first Fire* method wired
 
-**D.5.7 v2 — Real CTSGun methods on pool-managed entities.**
-Shrink the bridge stub by replacing its in-line `Fire`,
-`CCombatAttack`, `GrenadeFire`, `KnifeFire`, `KatanaFire`, `Reset`,
-`Precache`, `FallInit` methods with calls to the decompiled
-versions from `tools/decompile/output/`. The pool is the
-substrate: each entity knows its `pev`, and the decompiled
-methods can read state from it.
+Honest read on the scope: each decompiled Fire* method is 100-234 lines
+with 10-20 unknown dependencies. Wiring 1 end-to-end needs the full shim
+layer built first, so realistic tempo is **~1 method per session**.
 
-Plan:
-1. Wire the decompiled `CTSGun__StandardFire`,
-   `CTSGun__ShotgunFire`, `CTSGun__AkimboFire` (decompiled in
-   D.4.7) as the `Fire()` implementation, replacing the in-line
-   stub that just emits a sound.
-2. Wire the decompiled `CTSGun::CCombatAttack`,
-   `CTSGun::CCombatBlock` (D.4.6) — same pattern, replace
-   bridge stubs with decompiled calls.
-3. Wire the decompiled `CTSGun::GrenadeFire`, `KnifeFire`,
-   `KatanaFire` (D.4.7) — replace the in-line stubs.
-4. Add the player's weapon entity to the pool via a `CTSGun`
-   subclass (not the `CTSGunStub` POJO with methods), so the
-   pool entity carries real class methods. The bridge stub
-   shrinks to just the vtable offset shims.
-5. With class methods on the entity, the per-class manifest
-   modules from D.4.9 (62 of them, one per CTS class) can plug
-   in here — `src/mod/CTSGun.ts` provides the class, the entity
-   instance uses it.
+This session shipped the **shim layer** + the **smallest Fire* method
+(CCombatBlock)**:
 
-After D.5.7 v2:
-- **D.5.8**: decompiled `CBasePlayer::TakeDamage`, `Killed`,
-  scoring (per-class manifests for `CBasePlayer`,
-  `CHalfLifeMultiplay`, `CTSGameRules`).
-- **D.5.11**: smoke test where every game loop action calls into
-  decompiled code.
+**Shim layer** (`src/mod/decomp-bridge.ts installRuntimeShims`):
+- `UTIL_WeaponTimeBase`, `UTIL_MakeVectors`, `UTIL_VecToAngles`,
+  `UTIL_TraceHull`, `UTIL_FindEntityByClassname`, `UTIL_FindEntityInSphere`,
+  `UTIL_FindEntityByString`, `UTIL_GetAimVectors`
+- `RANDOM_LONG`, `RANDOM_FLOAT`
+- `MESSAGE_WRITE_BYTE/SHORT/LONG/STRING`
+- `engineSingleton.vfunc_0x1ec` (12-arg TS engine dispatch)
+- `global_eventIndex`
+- `Animate`, `UpdateMeleeBar`, `GetMeleeMultiplier`, `SetPlayerSpeed`,
+  `GetSpeedBySlots`, `KungFu`, `CloseCombatAttack`, `BlockPlayer`,
+  `W_FireBullets`, `player_GetAutoaimVector`, `ColdCockAttack`,
+  `FindUseTarget`, `ApplyTraceBleed`, `VictimKnifeHold`,
+  `VictimKatanaHold`, `DropWeapon`, `Recoil`, `StopReload`, `Unzoom`,
+  `GrenadeIdle`, `ScaleSpread`, `VKickback`, `IndexEnt`, `SUB_Remove`,
+  `CTSKnife_CreateKnife`, `CTSAnimation_Animate`, `get_weapon_info`
+- `CVars` module with 30+ named statics (blockDuration, m_vecRecoil,
+  m_vecSpreadBase, m_flBulletDamage, etc.)
+- **Bare top-level cvars** — the decompiled CCombatBlock reads
+  `cvar_blockDuration`, `cvar_blockStaminaThreshold`,
+  `cvar_blockIdleDelay` as free identifiers (not as `CVars.X`), so
+  both forms are installed. Same for `cvar_closeCombat_*` (28 of them
+  for CCombatAttack). 28 cvars are namespaced AND bare-installed to
+  cover both reading styles.
+
+**Bridge stub fields** (`CTSGunStub class`):
+- `field_0x80` (m_pPlayer pointer), `field_0x9c` (m_flNextPrimaryAttack),
+  `field_0xa0` (m_flTimeWeaponIdle), `field_0xa4` (m_flNextSecondaryAttack),
+  `field_0xa8` (m_flReloadTime), `field_0xcc` (weapon state),
+  `field_0xd0` (m_pAmmoTracker pointer), `field_0x96c` (m_usEvent),
+  `field_0xc8` (m_iId)
+- The existing `[0x60]`, `[0x88]`, etc. numeric offsets stay for Spawn-style
+  reads
+
+**Player entity** (`babylon/src/player.ts makePlayerEntity`):
+- `[0]: pev` — numeric-keyed alias so the decompiled `player[0].field_0x250`
+  reads resolve (C++ memory-layout compat — pev is the first member)
+- `field_0x12c`, `field_0x250`, `field_0x774`, `field_0x7a8`, `field_0x7ac`,
+  `field_0x7b0`, `field_0x28c`, `field_0x208`
+
+**CCombatBlock wired** (`CTSGunStub.CCombatBlock()` → `CCombatBlockImpl.call(this)`):
+- B key in main.ts calls `tryDecompBlock()` which wires the player
+  entity into `gun.field_0x80`, then invokes the decompiled body
+- **Confirmed via headless smoke** that B press runs the decompiled
+  CCombatBlock through guards + engine dispatch + Animate +
+  UpdateMeleeBar without crashing
+
+### Next task (D.5.7 v2 cont.)
+
+Wire 7 more decompiled Fire* methods, one per session, against the
+now-scaffolded substrate:
+
+1. **CCombatAttack** — second-smallest; bare `m_pPlayer`/`m_flNextPrimaryAttack`
+   style + ~28 cvar_closeCombat_* reads + CloseCombatAttack/W_FireBullets/
+   GetMeleeMultiplier/KungFu helpers (also need PLAYBACK_EVENT_FULL shim)
+2. **GrenadeFire** — grenade throw path; needs m_pWeaponState, vtable_0x174
+   (helper), engineMessages/messageBuffer triple-deref, globalGOT accessors
+3. **KatanaFire** — swing path; needs CTSAnimation.Animate, m_iCombo state,
+   PlayerKick, pev.flags bits, m_flMissDamage/Time/swingMode writes
+4. **KnifeFire** — melee vs throw dual-mode; needs CTSKnife.CreateKnife,
+   KNIFE_SPEED, FindUseTarget, VictimKnifeHold, ApplyTraceBleed, ENGINE.MESSAGE_*
+   full network message dispatch
+5. **KatanaThrow** — throws a CTSKnife projectile; needs projectile system
+   (currently null returns from CTSKnife_CreateKnife)
+6. **ColdCock** — pump action; needs GrenadeIdle, StopReload, Unzoom,
+   ColdCockAttack (player method), CVars spread statics
+7. **StandardFire / ShotgunFire / AkimboFire** — the big three; each
+   requires ScaleSpread, ShootBulletsPlayer, VKickback, full CVars module,
+   m_pAmmoTracker + m_pWeaponInfo struct + m_rgAmmo[] state. These are
+   the big ones — realistically 1-2 sessions each.
+
+After all 8 are wired, **D.5.7 v2 → D.5.8** (per-class manifests plug
+into pool entities so the bridge stub can shrink to a real `class CTSGun`).
+After that, **D.5.11** smoke test (every game-loop action calls into
+decompiled code).
 
 ### Key files (current state)
 

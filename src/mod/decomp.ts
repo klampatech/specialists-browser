@@ -32,6 +32,12 @@ export { PrimaryAttack as CTSGun__PrimaryAttack } from "../../tools/decompile/ou
 export { Reload as CTSGun__Reload } from "../../tools/decompile/output/CTSGun__Reload";
 export { WeaponIdle as CTSGun__WeaponIdle } from "../../tools/decompile/output/CTSGun__WeaponIdle";
 export { Spawn as CTSGun__Spawn } from "../../tools/decompile/output/CTSGun__Spawn";
+// D.5.7 v2: CCombatBlock is the first decompiled Fire* method wired
+// through the pool-managed CTSGunStub. Needs the runtime shims in
+// installRuntimeShims (UTIL_WeaponTimeBase, engineSingleton.vfunc_0x1ec,
+// Animate, UpdateMeleeBar, 3 cvars) and the field_0xNNN properties
+// on the bridge stub.
+export { CCombatBlock as CTSGun__CCombatBlock } from "../../tools/decompile/output/CTSGun__CCombatBlock";
 export { WaitThink as CTSAmmoPack__WaitThink } from "../../tools/decompile/output/CTSAmmoPack__WaitThink";
 // CHalfLifeMultiplay__PlayerKilled has known C++ scope issues in decomp output — skip
 // CTSGroundAmmo__Spawn skipped
