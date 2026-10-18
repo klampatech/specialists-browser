@@ -23,7 +23,7 @@
  */
 
 import { Vector3 } from "./types";
-import { g_engfuncs } from "./engine";
+import { g_engfuncs, gpGlobals, MAKE_STRING } from "./engine";
 import {
   CTSGun__PrimaryAttack as PrimaryAttack,
   CTSGun__Reload as Reload,
@@ -33,6 +33,106 @@ import {
   CTSAmmoPack__WaitThink as CTSAmmoPackWaitThink,
   CBasePlayer__SlowMotionFlow as SlowMotionFlow,
 } from "./decomp";
+
+// ───────────────────────────────────────────────────────────────
+// Runtime shims for `declare const X` / `declare function X` that
+// the decompiled files reference. These are visible to TypeScript
+// (via decomp-shims.ts) but are not in JS runtime scope. Install
+// the runtime versions on globalThis so the decompiled code can
+// call them.
+// ───────────────────────────────────────────────────────────────
+
+interface RuntimeShims {
+  // CTSGun::Spawn declared locals
+  MAKE_STRING_FROM_PTR: (s: string) => number;
+
+  // CTSGameRules::GlobalSlowMotion2 declared locals
+  engineTime: number;
+  maxPlayers: number;
+  slowAmtThreshold: number;
+  cvarDelta: number;
+  className_0x696dc: string;
+  className_0x6e62b: string;
+  className_0x6b6c5: string;
+
+  // CTSGun::WeaponIdle / Reload declared locals
+  TS_IDLE_RANDOM_INTERVAL: number;
+  InfiniteClips: (pPlayer: any) => number;
+  DoubleFireRate: (pPlayer: any) => number;
+
+  // TS-specific helpers
+  GiveCash: (player: any, amount: number) => void;
+  UpdateTeamScores: (player: any) => void;
+  TSGetPointsForFrag: (attacker: any, victim: any) => number;
+
+  // TraceResult class for `new TraceResult()`
+  TraceResult: new () => any;
+}
+
+let _shimsInstalled = false;
+
+function installRuntimeShims(): void {
+  if (_shimsInstalled) return;
+  const g = globalThis as any;
+
+  g.MAKE_STRING_FROM_PTR = (s: string) => MAKE_STRING(s);
+  g.engineTime = () => gpGlobals.time;
+  // Make engineTime callable both as fn and as value (some decomp code does `engineTime + x`)
+  // Actually for simplicity, store as number; the decomp code uses it as a value
+  g.engineTime = gpGlobals.time;
+  g.maxPlayers = gpGlobals.maxClients;
+  g.slowAmtThreshold = 1.0; // cvar at [ebx-0x6f408]
+  g.cvarDelta = 0.5;        // cvar at [ebx-0x6f010]
+  g.className_0x696dc = "func_slowmo";
+  g.className_0x6e62b = "func_slowmo_point";
+  g.className_0x6b6c5 = "info_target";
+  g.TS_IDLE_RANDOM_INTERVAL = 5;
+  g.InfiniteClips = (pPlayer: any) => 0;       // off → no infinite clips
+  g.DoubleFireRate = (pPlayer: any) => 0;       // off → normal fire rate
+
+  g.GiveCash = (player: any, amount: number) => { /* noop */ };
+  g.UpdateTeamScores = (player: any) => { /* noop */ };
+  g.TSGetPointsForFrag = (attacker: any, victim: any) => 1;
+
+  g.TraceResult = class { /* stub class for `new TraceResult()` */ };
+
+  // Common engine utility stubs (already declared in decomp-shims.ts)
+  g.UTIL_PlayerByIndex = (i: number) => null;
+  g.UTIL_Remove = (ent: any) => { /* noop */ };
+  g.UTIL_TraceLine = (start: any, end: any, flags: number, ignore: any) => ({
+    flFraction: 1.0,
+    ent: null,
+    pHit: null,
+    vecEndPos: end,
+    vecPlaneNormal: { x: 0, y: 0, z: 0 },
+  });
+  g.UTIL_VecToAngles = (v: any) => ({ pitch: 0, yaw: 0, roll: 0 });
+  g.MESSAGE_BEGIN = (msgType: number, msgId: number, origin?: any, client?: any) => { /* noop */ };
+  g.MESSAGE_END = () => { /* noop */ };
+  g.WRITE_BYTE = (b: number) => { /* noop */ };
+  g.WRITE_SHORT = (s: number) => { /* noop */ };
+  g.WRITE_LONG = (l: number) => { /* noop */ };
+  g.WRITE_STRING = (s: string) => { /* noop */ };
+  g.WRITE_FLOAT = (f: number) => { /* noop */ };
+  g.WRITE_ANGLE = (f: number) => { /* noop */ };
+  g.WRITE_COORD = (f: number) => { /* noop */ };
+  g.EMIT_SOUND = (ent: any, channel: number, sample: string, vol: number, attn: number) => { /* noop */ };
+  g.EMIT_SOUND_DYN = (ent: any, channel: number, sample: string, vol: number, attn: number, flags: number, pitch: number) => { /* noop */ };
+  g.PLAYBACK_EVENT = (...args: any[]) => { /* noop */ };
+  g.SET_MODEL = (ent: any, model: string) => { /* noop */ };
+  g.ALERT = (level: number, msg: string) => { console.log(`[ALERT ${level}] ${msg}`); };
+  g.SUB_UseTargets = (pEntity: any, pActivator: any, useType: number, value: number) => { /* noop */ };
+  g.TraceAttack = (victim: any, attacker: any, damage: number, dir: any, trace: any, dmgBits: number) => { /* noop */ };
+  g.ClearMultiDamage = () => { /* noop */ };
+  g.ApplyMultiDamage = (inflictor: any, attacker: any) => { /* noop */ };
+  g.FireTargets = (target: string, activator: any, caller: any, useType: number, value: number) => { /* noop */ };
+  g.CREATE_NAMED_ENTITY = (classname: string) => null;
+  g.GetClassPtr = (classname: string) => null;
+
+  _shimsInstalled = true;
+}
+
+installRuntimeShims();
 
 // ───────────────────────────────────────────────────────────────
 // CTSGun stub — a class with all the methods referenced by the
