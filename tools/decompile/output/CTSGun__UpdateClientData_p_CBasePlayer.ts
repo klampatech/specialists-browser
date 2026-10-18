@@ -5,7 +5,7 @@ type CTSGun = any;
 type CBasePlayer = any;
 const gpGlobals: { time: number } = { time: 0 } as any;
 const gMsgServer: { [k: string]: (...args: any[]) => void } = {} as any;
-function get_weapon_info(_id: number): any { return null; }
+export function get_weapon_info(_id: number): any { return null; }
 
 // PIC-relative globals. These live at GOT offsets pulled out of the
 // disassembly and are not `this`-fields. The engine function table is
@@ -207,7 +207,7 @@ export function UpdateClientData(this: CTSGun, p: CBasePlayer): 0 | 1 {
 
 // 14-dword rep movs lifted to a helper so the two call sites stay in
 // sync. Disasm sites: 75b62-75b68, 75bb6-75bbc.
-function _copyDwords(src: any, nDwords: number): any {
+export function _copyDwords(src: any, nDwords: number): any {
   // Reads nDwords consecutive dwords from src. In a real port this is
   // a memcpy; in the TypeScript view we return a frozen array.
   // TODO: replace with the real CBasePlayer slot/accessor.
@@ -216,9 +216,9 @@ function _copyDwords(src: any, nDwords: number): any {
 
 // Disasm arithmetic at 75ca6 + 75cb1 / 75cfb = `info[idx].rgpPlayerData[?]+4`.
 // Treat as `info[idx].perPlayer[entindex(p)].byte_at_4`; TODO verify.
-function _perPlayerByte(info: any, idx: number, p: any): number {
+export function _perPlayerByte(info: any, idx: number, p: any): number {
   return 0;
 }
-function _perPlayerLong(info: any, idx: number, p: any): number {
+export function _perPlayerLong(info: any, idx: number, p: any): number {
   return 0;
 }

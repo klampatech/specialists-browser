@@ -30,7 +30,7 @@ declare function strcmp(a: string, b: string): number;
 // HLSDK eiface.h (~11). Verify against the enginefuncs_t table layout in
 // tools/decompile/references/hlsdk-goldsrc-interface.md before locking
 // the name.
-function allocString(value: string): any {
+export function allocString(value: string): any {
   const table: any = (globalThis as any).g_engfuncs;
   return table.pfnAllocString(value);
 }

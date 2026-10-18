@@ -8,8 +8,8 @@ type CVar    = { value: number };
 const gpGlobals: { time: number }            = { time: 0 } as any;
 const cvar_slow_amount: CVar                  = { value: 0 } as any;
 const NEXT_THINK_DELAY = 0.1; // TODO(asm-ambiguous): QWORD at [ebx-0x6ecd8]
-function UTIL_SetSize(_pev: Entvars, _mins: Vector, _maxs: Vector): void {}
-function UTIL_SetOrigin(_pev: Entvars, _origin: Vector): void {}
+export function UTIL_SetSize(_pev: Entvars, _mins: Vector, _maxs: Vector): void {}
+export function UTIL_SetOrigin(_pev: Entvars, _origin: Vector): void {}
 
 // --- Class stub. Custom fields are inferred from offsets. ---
 class CTSSlowMotionPoint {

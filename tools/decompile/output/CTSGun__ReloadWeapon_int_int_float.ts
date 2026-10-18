@@ -74,7 +74,7 @@ export function ReloadWeapon(
 
 /** Engine utility: returns the server's weapon-time base (FPU-return float).
  *  D.5 will wire this to the actual engine call. */
-function UTIL_WeaponTimeBase(): number {
+export function UTIL_WeaponTimeBase(): number {
   // TODO(d5): replace with real implementation; return value is float.
   return 0;
 }

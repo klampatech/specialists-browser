@@ -184,7 +184,7 @@ export function BounceTouch(this: CTSKnife, other: CBaseEntity): void {
  * falls through from the 8a "not alive" path into the same
  * classname check sequence.
  */
-function handleNonDamageableBounce(this: CTSKnife, other: CBaseEntity): void {
+export function handleNonDamageableBounce(this: CTSKnife, other: CBaseEntity): void {
   const v = this.pev.velocity;
   const otherClassname = STRING(other.pev.classname);
 

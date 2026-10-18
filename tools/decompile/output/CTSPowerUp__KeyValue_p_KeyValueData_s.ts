@@ -79,7 +79,7 @@ export function KeyValue(this: any, pkvd: any): void {
 // review time. Do NOT ship with empty-string compares — that's silently
 // wrong, not a TODO.
 // ---------------------------------------------------------------------------
-function _unresolvedKeyLiteral(gotOffset: string): string {
+export function _unresolvedKeyLiteral(gotOffset: string): string {
   throw new Error(
     `TODO(decompile-D.3): unresolved key literal at ${gotOffset}. ` +
     `Resolve from tools/decompile/analysis/strings-n5.txt.`

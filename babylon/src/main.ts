@@ -45,6 +45,8 @@ import { UniversalCamera } from "@babylonjs/core/Cameras/universalCamera";
 import { HemisphericLight } from "@babylonjs/core/Lights/hemisphericLight";
 
 import { createBabylonSceneDriver } from "../../src/bridge/engine";
+import { initEngine, engineLog, setEngineLogging } from "../../src/mod/decomp";
+import { tryDecompFire, tryDecompReload, tryDecompSpawn, tryDecompSlowMotion } from "../../src/mod/decomp-bridge";
 
 import { PlayerController } from "./player";
 import { buildTestLevel } from "./world";
@@ -180,17 +182,43 @@ const onMouseDown = (e: MouseEvent) => {
   if (result.hit && wasAlive.has(result.hit) && !result.hit.isAlive()) {
     player.awardKill(result.hit.name);
   }
+
+  // ALSO call the decompiled CTSGun::PrimaryAttack() — this routes
+  // through the engine simulator which logs every engine call.
+  // (Not yet wired to game state — just proving the decomp runs.)
+  const decompResult = tryDecompFire(0, 1); // category=0 (unknown), fireMode=1
+  if (!decompResult.ok) {
+    console.warn("[decomp] PrimaryAttack error:", decompResult.error);
+  }
 };
 let audioMuted = false;
 const onKeyDown = (e: KeyboardEvent) => {
   if (e.code === "KeyR") {
     pistol.reload();
     audio.reload();
+    // Also call the decompiled Reload()
+    const r = tryDecompReload();
+    if (!r.ok) console.warn("[decomp] Reload error:", r.error);
   }
   // M to toggle audio mute
   if (e.code === "KeyM") {
     audioMuted = !audioMuted;
     audio.setMuted(audioMuted);
+  }
+  // T to test decomp Spawn (logs engine simulator calls)
+  if (e.code === "KeyT") {
+    const r = tryDecompSpawn();
+    if (!r.ok) console.warn("[decomp] Spawn error:", r.error);
+  }
+  // Y to test decomp slow-mo
+  if (e.code === "KeyY") {
+    const r = tryDecompSlowMotion(0.5, true);
+    if (!r.ok) console.warn("[decomp] SlowMotion error:", r.error);
+  }
+  // L to toggle engine log
+  if (e.code === "KeyL") {
+    setEngineLogging(true);
+    engineLog("logging toggled ON");
   }
 };
 canvas.addEventListener("mousedown", onMouseDown);

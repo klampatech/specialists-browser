@@ -91,7 +91,7 @@ export function Spawn(this: CTSWinGiver): void {
 
 // Local helper so the file parses in isolation.
 // In a real build this would be a generated PIC stub.
-function readDword(addr: number): number {
+export function readDword(addr: number): number {
   // Placeholder for the decompiler — real implementation reads from
   // the loaded module's data segment.
   return 0 as any;

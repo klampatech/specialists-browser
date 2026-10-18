@@ -18,10 +18,10 @@ const ts: any = {};
 
 const MSG_ONE = 4;
 
-function UTIL_MakeVectors(_angles: any): void { /* engine */ }
-function GetDirection(_a: any, _b: any, _c: number, _d: number): number { return 0; }
-function EMIT_SOUND_DYN(..._args: any[]): void { /* engine */ }
-function Animate(_self: any, _player: any, _seq: number): void { /* engine */ }
+export function UTIL_MakeVectors(_angles: any): void { /* engine */ }
+export function GetDirection(_a: any, _b: any, _c: number, _d: number): number { return 0; }
+export function EMIT_SOUND_DYN(..._args: any[]): void { /* engine */ }
+export function Animate(_self: any, _player: any, _seq: number): void { /* engine */ }
 
 // ---- Decompiled function ---------------------------------------------------
 export function GoWheel(this: CTSStunt): number {

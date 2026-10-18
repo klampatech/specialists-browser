@@ -5,7 +5,7 @@ const NEW_DLL_FUNCTIONS_VERSION = 1;
 declare const gNewDLLFunctions: NewDLLFunctions;
 
 /** Memcpy a fixed dword count. The binary does `rep movs` of ecx dwords. */
-function memcpy32(dst: NewDLLFunctions, src: NewDLLFunctions, dwords: number): void {
+export function memcpy32(dst: NewDLLFunctions, src: NewDLLFunctions, dwords: number): void {
   // D.3 stub — assumes identical layout, real impl lands in D.5
   // alongside the typed NewDLLFunctions struct.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

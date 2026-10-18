@@ -14,7 +14,7 @@ declare const GOT_CTSPowerUp_TYPEDESCRIPTION: TYPEDESCRIPTION;
 // Base-class restore (CBaseAnimating::Restore). In C++ this is
 // `int CBaseAnimating::Restore(CRestore&)`, called as
 // `Restore(this, &restore)` on i386. Stubbed here.
-function CBaseAnimating_Restore(this: any, restore: any): number {
+export function CBaseAnimating_Restore(this: any, restore: any): number {
   return 0; // placeholder; real body lives in the CBaseAnimating module.
 }
 

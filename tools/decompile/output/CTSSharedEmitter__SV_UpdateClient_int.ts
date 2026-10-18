@@ -62,7 +62,7 @@ export function SV_UpdateClient(this: CTSSharedEmitter, arg: number): void {
 // this helper, mirroring the redundant `mov eax,[ebx+0x1cf8]; mov
 // esi,[eax]` pair the compiler emits at each if-block site in the
 // original disassembly.
-function broadcastSlotUpdate(engine: any, arg: number): void {
+export function broadcastSlotUpdate(engine: any, arg: number): void {
   // Two-step pointer-to-pointer load:
   //   eax = [GOT + 0x1cf8]    ; pointer to singleton
   //   esi = [eax]             ; singleton value (msg-type id)
