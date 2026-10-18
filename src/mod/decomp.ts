@@ -38,6 +38,13 @@ export { Spawn as CTSGun__Spawn } from "../../tools/decompile/output/CTSGun__Spa
 // Animate, UpdateMeleeBar, 3 cvars) and the field_0xNNN properties
 // on the bridge stub.
 export { CCombatBlock as CTSGun__CCombatBlock } from "../../tools/decompile/output/CTSGun__CCombatBlock";
+// D.5.7 v2 cont.: CCombatAttack — second Fire* method. Uses named
+// fields (m_pPlayer/m_flNextPrimaryAttack/m_flTimeWeaponIdle) plus
+// 28 cvar_closeCombat_* (already bare-installed). Calls CloseCombatAttack,
+// W_FireBullets, GetMeleeMultiplier, KungFu (all shimmed). The
+// decomp has TODO stubs for processRanged/CloseCombatPath/InWater
+// but the guards + setup execute before they hit the stubs.
+export { CCombatAttack as CTSGun__CCombatAttack } from "../../tools/decompile/output/CTSGun__CCombatAttack";
 export { WaitThink as CTSAmmoPack__WaitThink } from "../../tools/decompile/output/CTSAmmoPack__WaitThink";
 // CHalfLifeMultiplay__PlayerKilled has known C++ scope issues in decomp output — skip
 // CTSGroundAmmo__Spawn skipped

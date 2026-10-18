@@ -47,7 +47,7 @@ import { Ray } from "@babylonjs/core/Culling/ray";
 
 import { createBabylonSceneDriver } from "../../src/bridge/engine";
 import { initEngine, engineLog, setEngineLogging, wireEngineAudio, setEngineHandlers } from "../../src/mod/decomp";
-import { tryDecompFire, tryDecompReload, tryDecompSpawn, tryDecompSlowMotion, tryDecompBlock } from "../../src/mod/decomp-bridge";
+import { tryDecompFire, tryDecompReload, tryDecompSpawn, tryDecompSlowMotion, tryDecompBlock, tryDecompCCombatAttack } from "../../src/mod/decomp-bridge";
 import { EntityPool, getGlobalPool, setGlobalPool } from "../../src/mod/entity-pool";
 
 import { PlayerController } from "./player";
@@ -354,6 +354,17 @@ const onKeyDown = (e: KeyboardEvent) => {
       console.log("[decomp] CCombatBlock OK");
     } else {
       console.warn("[decomp] CCombatBlock error:", r.error);
+    }
+  }
+  // V to trigger decomp CCombatAttack (bare-hands punch). Same — not
+  // on the PrimaryAttack hot path in v1 (player always has a weapon),
+  // so exposed as a dedicated key for testing.
+  if (e.code === "KeyV") {
+    const r = tryDecompCCombatAttack();
+    if (r.ok) {
+      console.log("[decomp] CCombatAttack OK");
+    } else {
+      console.warn("[decomp] CCombatAttack error:", r.error);
     }
   }
 };

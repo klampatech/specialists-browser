@@ -70,8 +70,8 @@ Babylon LMB click
 | D.5.4 | Player controller (move, look, jump, sprint, crouch, wall collision, pitch fix) | ✅ |
 | D.5.5 | Engine simulator + decomp wiring | ✅ |
 | D.5.6 | Real entity pool (CTSGunStub → pool-managed entity) | ✅ |
-| **D.5.7 v2** | **Shim layer built + CCombatBlock wired (1/8 Fire* methods)** | **🔄 IN PROGRESS** |
-| D.5.7 v2 cont. | Wire 7 remaining Fire* methods (CCombatAttack, GrenadeFire, KnifeFire, KatanaFire, KatanaThrow, ColdCock, StandardFire, ShotgunFire, AkimboFire) | TODO |
+| **D.5.7 v2** | **Shim layer built + CCombatBlock + CCombatAttack wired (2/8 Fire* methods)** | **🔄 IN PROGRESS** |
+| D.5.7 v2 cont. | Wire 6 remaining Fire* methods (GrenadeFire, KnifeFire, KatanaFire, KatanaThrow, ColdCock, StandardFire, ShotgunFire, AkimboFire) | TODO |
 | **D.5.7 v3** | **Real game sound loading (20/20 samples wired)** | **✅ DONE** |
 | D.5.8 | Real damage / scoring / slowmo | partial via stubs; full via per-class manifests |
 | D.5.9 v1 | Stub bot (IDLE→PATROL→CHASE→ATTACK→DEAD) | ✅ |

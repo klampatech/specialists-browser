@@ -31,6 +31,7 @@ import {
   CTSGun__WeaponIdle as WeaponIdle,
   CTSGun__Spawn as Spawn,
   CTSGun__CCombatBlock as CCombatBlockImpl,
+  CTSGun__CCombatAttack as CCombatAttackImpl,
   CTSGameRules__GlobalSlowMotion2 as GlobalSlowMotion2,
   CTSAmmoPack__WaitThink as CTSAmmoPackWaitThink,
   CBasePlayer__SlowMotionFlow as SlowMotionFlow,
@@ -396,6 +397,11 @@ interface WeaponInfo {
 /** Minimal stub for the player object the decomp reads. */
 interface PlayerStub {
   weaponCategory: number;
+  /** m_flNextAttack — primary attack cooldown (offset 0x12c in CBasePlayer) */
+  m_flNextAttack?: number;
+  /** Eye position (offset 0x178 for CBasePlayer::EyePosition()) */
+  pev?: any;
+  /** Other fields the decomp reads but don't type-check */
   [k: string]: any;
 }
 
@@ -424,6 +430,13 @@ class CTSGunStub {
   m_pOwner: OwnerStub = { flag0x814: 0, innerPointer: { flag0x180: 0 } };
   m_iSomeInt: number = 0;
   m_pActiveItem: any = null;
+  // Named cooldown timer fields used by the decompiled CCombatAttack
+  // (and other Fire* methods that check primary-attack timing). The
+  // numeric-keyed `field_0x9c` / `field_0xa0` siblings are kept in
+  // sync (different decomp passes used different naming conventions).
+  m_flNextPrimaryAttack: number = 0;
+  m_flTimeWeaponIdle: number = 0;
+  m_flNextSecondaryAttack: number = 0;
 
   // ───────────────────────────────────────────────────────────────
   // CCombatBlock-style fields (decompiler names unknown byte offsets
@@ -470,7 +483,7 @@ class CTSGunStub {
 
   // Stub methods called by PrimaryAttack
   CCombatAttack(): void {
-    g_engfuncs.pfnEmitSound(this.pev, 1, "weapons/melee_swing.wav", 1.0, 1.0, 0, 100);
+    CCombatAttackImpl.call(this as any);
   }
 
   /**
@@ -749,6 +762,41 @@ export function tryDecompBlock(): { ok: boolean; error?: string } {
 
   try {
     CCombatBlockImpl.call(gun as any);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: String(err) };
+  }
+}
+
+/**
+ * D.5.7 v2 cont.: Call the decompiled CTSGun::CCombatAttack. Sets
+ * m_pWeaponInfo to null first so the decompiled PrimaryAttack's
+ * "weaponInfo === null" branch dispatches to CCombatAttack instead
+ * of Fire()/GrenadeFire()/etc. — matches the bare-handed punch
+ * path in the original game.
+ *
+ * Not on a hot path in v1 (player always has a weapon), so exposed
+ * via a dedicated key (V in main.ts) for testing.
+ */
+export function tryDecompCCombatAttack(): { ok: boolean; error?: string } {
+  const gun = getOrCreatePlayerWeapon();
+  // Clear m_pWeaponInfo so the decompiled PrimaryAttack dispatches
+  // to this.CCombatAttack() (the bare-hands branch).
+  gun.m_pWeaponInfo = null;
+  gun.m_pPlayer = { weaponCategory: 0 };
+  // m_flNextPrimaryAttack / m_flTimeWeaponIdle need to be in the
+  // past so the guards don't return early.
+  gun.m_flNextPrimaryAttack = 0;
+  gun.m_flTimeWeaponIdle = 0;
+  gun.field_0xc8 = 0;
+  gun.field_0x96c = 0;
+  gun.field_0xd0 = null;
+
+  try {
+    // Call PrimaryAttack.call — its weaponInfo === null branch
+    // routes to this.CCombatAttack() (now delegated to the
+    // decompiled CCombatAttackImpl via the bridge stub).
+    PrimaryAttack.call(gun as any);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: String(err) };
