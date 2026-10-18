@@ -115,6 +115,14 @@ function findEntitiesText(buffer: Buffer, lumps: Lump[]): { offset: number; leng
   return null;
 }
 
+/**
+ * Identify lumps using the standard GoldSrc BSP v30 lump order.
+ *
+ * Some TS BSPs have non-standard lump ORDER (data stored in unexpected
+ * positions) but most still follow the standard. We use the standard
+ * GoldSrc v30 indices and sanity-check the data. This is more reliable
+ * than signature detection for non-standard BSPs.
+ */
 function identifyLumps(buffer: Buffer, lumps: Lump[]): DetectedLumps {
   const detected: DetectedLumps = {
     entities: findEntitiesText(buffer, lumps),
@@ -127,44 +135,41 @@ function identifyLumps(buffer: Buffer, lumps: Lump[]): DetectedLumps {
     models: null,
   };
 
-  for (const lump of lumps) {
+  // Standard GoldSrc BSP v30 lump order
+  const STANDARD = {
+    0: "entities",
+    1: "planes",
+    3: "vertices",
+    5: "nodes",       // not used by us but skip past
+    6: "texinfo",
+    7: "faces",
+    9: "clipnodes",   // skip
+    10: "leaves",     // skip
+    11: "marksurfaces", // skip
+    12: "edges",
+    13: "surfedges",
+    14: "models",
+  };
+
+  // Assign by standard index first
+  for (const [idxStr, name] of Object.entries(STANDARD)) {
+    const idx = parseInt(idxStr);
+    const lump = lumps[idx];
     if (lump.length === 0 || lump.offset === 0 || lump.offset >= buffer.length) continue;
     if (lump.length > buffer.length) continue;
-    if (lump.length < 12) continue;
-    if (lump.length % 12 !== 0 && lump.length % 20 !== 0 && lump.length % 4 !== 0) continue;
-
-    // Skip if this is the entities text (already handled)
-    if (detected.entities && lump.offset === detected.entities.offset) continue;
-
-    // Skip if the chunk looks like text
-    const sample = buffer.slice(lump.offset, lump.offset + Math.min(40, lump.length));
-    const printable = sample.filter((b) => (b >= 32 && b <= 126) || b === 9 || b === 10 || b === 13).length;
-    if (printable > 30) continue; // text lump (miptex or wad)
-
-    // Try to identify by size alignment
-    if (lump.length % 12 === 0 && !detected.vertices && lump.length > 100000) {
-      // 12-byte vec3: 100K+ → likely vertices
-      detected.vertices = { offset: lump.offset, length: lump.length, count: lump.length / 12 };
-    } else if (lump.length % 20 === 0 && !detected.planes && lump.length > 100000) {
-      // 20-byte planes: 100K+ → likely planes
-      detected.planes = { offset: lump.offset, length: lump.length, count: lump.length / 20 };
-    } else if (lump.length % 12 === 0 && !detected.planes && lump.length > 100000) {
-      // 12-byte "planes" (just normals, no dist/type) — fallback
-      detected.planes = { offset: lump.offset, length: lump.length, count: lump.length / 12 };
-    } else if (lump.length % 4 === 0 && !detected.edges && lump.length > 100000) {
-      // 4-byte: could be edges (uint16×2), surfedges (int32), clipnodes, leaves
-      // Pick the largest remaining 4-byte lump for edges
-      detected.edges = { offset: lump.offset, length: lump.length, count: lump.length / 4 };
-    } else if (lump.length % 4 === 0 && !detected.surfedges && lump.length > 100000) {
-      detected.surfedges = { offset: lump.offset, length: lump.length, count: lump.length / 4 };
-    } else if (lump.length % 20 === 0 && !detected.faces && lump.length > 100000) {
-      detected.faces = { offset: lump.offset, length: lump.length, count: lump.length / 20 };
-    } else if (lump.length % 40 === 0 && !detected.texinfo && lump.length > 100000) {
-      detected.texinfo = { offset: lump.offset, length: lump.length, count: lump.length / 40 };
-    } else if (lump.length % 64 === 0 && !detected.models && lump.length >= 64) {
-      detected.models = { offset: lump.offset, length: lump.length, count: lump.length / 64 };
+    if (name === "entities") {
+      // Already detected via text search; skip
+      continue;
     }
+    if (name === "planes") detected.planes = { offset: lump.offset, length: lump.length, count: lump.length / 20 };
+    if (name === "vertices") detected.vertices = { offset: lump.offset, length: lump.length, count: lump.length / 12 };
+    if (name === "texinfo") detected.texinfo = { offset: lump.offset, length: lump.length, count: lump.length / 76 };
+    if (name === "faces") detected.faces = { offset: lump.offset, length: lump.length, count: lump.length / 20 };
+    if (name === "edges") detected.edges = { offset: lump.offset, length: lump.length, count: lump.length / 4 };
+    if (name === "surfedges") detected.surfedges = { offset: lump.offset, length: lump.length, count: lump.length / 4 };
+    if (name === "models") detected.models = { offset: lump.offset, length: lump.length, count: lump.length / 64 };
   }
+
   return detected;
 }
 
@@ -285,9 +290,18 @@ function buildWorldspawnMesh(
   let totalTris = 0;
   let kept = 0;
   let skipped = 0;
+  let bogusNumEdges = 0;
 
   for (let i = 0; i < faceCount; i++) {
     const face = faces[i];
+
+    // Sanity check: a real face has between 3 and ~64 edges.
+    // Bogus values like numedges=5505259 (from corrupt models) mean
+    // the wrong lump was identified — skip rather than hang.
+    if (face.numedges < 3 || face.numedges > 64) {
+      bogusNumEdges++;
+      continue;
+    }
 
     // Walk the surface edge list to get a polygon ring
     const ring: number[] = [];
@@ -342,7 +356,7 @@ function buildWorldspawnMesh(
   }
 
   console.error(
-    `[bsp2glb] kept=${kept} skipped=${skipped} triangles=${totalTris} vertices=${positions.length / 3}`,
+    `[bsp2glb] kept=${kept} skipped=${skipped} bogus=${bogusNumEdges} triangles=${totalTris} vertices=${positions.length / 3}`,
   );
 
   return {
@@ -470,6 +484,7 @@ function main() {
   }
   const [inputPath, outputPath] = args;
   console.error(`[bsp2glb] reading ${inputPath}...`);
+  const t0 = Date.now();
   const buffer = readFileSync(resolve(inputPath));
   console.error(`[bsp2glb] ${buffer.length} bytes`);
 
@@ -492,10 +507,15 @@ function main() {
   }
 
   const planes = readPlanes(buffer, detected.planes.offset, detected.planes.length);
+  console.error(`[bsp2glb] readPlanes done in ${(Date.now() - t0) / 1000}s`);
   const vertices = readVertices(buffer, detected.vertices.offset, detected.vertices.length);
+  console.error(`[bsp2glb] readVertices done (${vertices.length} verts) in ${(Date.now() - t0) / 1000}s`);
   const edges = readEdges(buffer, detected.edges.offset, detected.edges.length);
+  console.error(`[bsp2glb] readEdges done in ${(Date.now() - t0) / 1000}s`);
   const surfEdges = readSurfEdges(buffer, detected.surfedges.offset, detected.surfedges.length);
+  console.error(`[bsp2glb] readSurfEdges done in ${(Date.now() - t0) / 1000}s`);
   const faces = readFaces(buffer, detected.faces.offset, detected.faces.length);
+  console.error(`[bsp2glb] readFaces done (${faces.length} faces) in ${(Date.now() - t0) / 1000}s`);
 
   // Determine worldspawn face range. If models exist, use model 0.
   // Otherwise, use ALL faces (assumes BSP is worldspawn-only).

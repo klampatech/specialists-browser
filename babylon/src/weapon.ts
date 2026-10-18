@@ -141,6 +141,11 @@ export class Pistol {
     this.ammo = this.maxAmmo;
   }
 
+  /** Add ammo (from a pickup). */
+  giveAmmo(amount: number): void {
+    this.ammo = Math.min(this.maxAmmo, this.ammo + amount);
+  }
+
   private spawnMuzzleFlash(): void {
     if (this.flashMesh) {
       this.flashMesh.dispose();
