@@ -91,11 +91,27 @@ export class PlayerController {
   private yaw = 0; // rotation around Y (radians)
   private pitch = 0; // rotation around X (radians)
   private velY = 0; // vertical velocity (for gravity/jump)
+  /**
+   * Logical player position — kept in sync with camera.position
+   * in FPS mode, but tracked separately in external-camera mode
+   * (so outer code can position the camera without it feeding
+   * back into the controller and drifting away from the spawn).
+   */
+  private logicalPos = { x: 0, y: 0, z: 0 };
   private listeners: Array<() => void> = [];
   /** World bounds (XZ) for wall collision. null = no bounds. */
   private bounds: { minX: number; maxX: number; minZ: number; maxZ: number } | null = null;
   /** Player is alive (HP > 0). Controls input / camera. */
   private alive = true;
+  /**
+   * When true, the camera is positioned externally (e.g. by a
+   * third-person follow camera). The controller still updates
+   * its internal pose state from input, but skips the
+   * camera.position writes that drive the FPS view. Prevents
+   * positive-feedback loops when an outer system and the
+   * controller both write camera.position based on each other.
+   */
+  private externalCamera = false;
   /** Respawn timer (seconds remaining). */
   private respawnTimer = 0;
   /** Invulnerability after respawn (seconds). */
@@ -131,7 +147,11 @@ export class PlayerController {
     this.eyeHeightCrouch = this.opts.eyeHeight * 0.45; // ~0.77 if standing is 1.7
     this.eyeHeight = this.eyeHeightStanding;
 
-    // Position camera at spawn + eye height.
+    // Position camera at spawn + eye height. Initialize logicalPos
+    // to the same value so the FPS-mode writeback (at the end of
+    // update()) doesn't immediately overwrite an uninitialized
+    // logical position.
+    this.logicalPos = { x: opts.spawn.x, y: opts.spawn.y + this.eyeHeight, z: opts.spawn.z };
     this.camera.position.set(opts.spawn.x, opts.spawn.y + this.eyeHeight, opts.spawn.z);
     this.camera.rotation.set(0, 0, 0);
     this.camera.minZ = 0.1;
@@ -159,6 +179,17 @@ export class PlayerController {
   /** Set AABB world bounds (player can't leave this box on XZ). */
   setBounds(b: { minX: number; maxX: number; minZ: number; maxZ: number } | null): void {
     this.bounds = b;
+  }
+
+  /**
+   * Toggle external-camera mode. When true, the controller
+   * stops writing camera.position; outer code is expected to
+   * drive the camera. Input handling (WASD, look, jump) still
+   * runs — it just updates this.yaw / this.pitch / horizontal
+   * position state.
+   */
+  setExternalCamera(on: boolean): void {
+    this.externalCamera = on;
   }
 
   /** Is the player alive? */
@@ -198,6 +229,7 @@ export class PlayerController {
     this.entity.pev.health = 100;
     this.invulnTimer = 1.5; // 1.5s of invuln
     this.velY = 0;
+    this.logicalPos = { x: this.spawn.x, y: this.spawn.y + this.eyeHeight, z: this.spawn.z };
     this.camera.position.set(this.spawn.x, this.spawn.y + this.eyeHeight, this.spawn.z);
     this.yaw = 0;
     this.pitch = 0;
@@ -274,8 +306,10 @@ export class PlayerController {
     const moveX = (sinY * forward + cosY * right) * speed * dt;
     const moveZ = (cosY * forward - sinY * right) * speed * dt;
 
-    // Apply horizontal movement.
-    const pos = this.camera.position;
+    // Apply horizontal movement to the logical position (NOT
+    // the camera — in externalCamera mode the camera is driven
+    // from outside, and we don't want a feedback loop).
+    const pos = this.logicalPos;
     pos.x += moveX;
     pos.z += moveZ;
 
@@ -288,7 +322,7 @@ export class PlayerController {
       if (pos.z > this.bounds.maxZ - r) pos.z = this.bounds.maxZ - r;
     }
 
-    // Gravity / jump.
+    // Gravity / jump (on the logical position, not the camera).
     const onGround = pos.y <= this.spawn.y + this.eyeHeight + 0.001;
     if (onGround) {
       this.velY = 0;
@@ -303,6 +337,14 @@ export class PlayerController {
     if (pos.y < this.spawn.y + this.eyeHeight) {
       pos.y = this.spawn.y + this.eyeHeight;
       this.velY = 0;
+    }
+
+    // FPS mode: push logical pos back to the camera. External
+    // mode: leave the camera alone (outer code positions it).
+    if (!this.externalCamera) {
+      this.camera.position.x = pos.x;
+      this.camera.position.y = pos.y;
+      this.camera.position.z = pos.z;
     }
 
     // Sync the entity POJO so decompiled TS can read pos/origin/angles.

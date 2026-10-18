@@ -57,6 +57,9 @@ import { Pistol, HudOverlay } from "./weapon";
 import { GameAudio } from "./audio";
 import { Pickup } from "./pickup";
 import { loadGameSounds } from "./audio-loader";
+import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
+import { parseMdl } from "../../src/mod/mdl-parser";
+import { buildMdlMeshes, type BuiltMdl } from "./mdl-loader";
 
 const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
 const status = document.getElementById("status") as HTMLDivElement;
@@ -192,6 +195,70 @@ const player = new PlayerController({
 });
 player.setBounds(bounds);
 
+// ─── D.6 v0.1 — load the real player .mdl and build Babylon meshes ───
+//
+// Fetches the seal.mdl from the symlinked `public/models` (which
+// points at `_runtime_assets/half-life/ts/models`). Parses it with
+// the GoldSrc .mdl v10 parser, then builds Babylon meshes. The
+// player instance is attached to the player controller — follows
+// its position + yaw. KeyP toggles third-person view so you can
+// actually see your own model.
+let playerModel: BuiltMdl | null = null;
+let playerModelInstance: TransformNode | null = null;
+let thirdPerson = false;
+
+fetch("/models/player/seal/seal.mdl")
+  .then((r) => r.arrayBuffer())
+  .then((buf) => {
+    const mdl = parseMdl(buf);
+    // Scale factor for the .mdl → Babylon world. Cross-checked
+    // against gordon/jesus/hitman/Bodysaver .mdl files: all
+    // player models have Y bounds ~14-17 in their native units.
+    // 1 unit = 4 inches in this mod (the TS mod scales vertices
+    // by 4 for some reason — perhaps a legacy from Quake import
+    // or a modder's convention). scale 0.1 → 1.6m humanoid.
+    const built = buildMdlMeshes(scene, mdl, { scale: 0.1 });
+    // Hide the original meshes — clone() makes instances that share
+    // geometry. The original set stays in the scene but invisible
+    // (no parent, so nothing renders).
+    for (const bp of built.bodyParts) {
+      for (const m of bp.meshes) {
+        m.isVisible = false;
+      }
+    }
+    playerModel = built;
+
+    // Build the player instance — clone the body meshes so the
+    // player has its own world transform (and rotation) but shares
+    // geometry/material/textures.
+    const inst = new TransformNode("player_model", scene);
+    for (const bp of built.bodyParts) {
+      const bpNode = new TransformNode(`player_${bp.name}`, scene);
+      bpNode.parent = inst;
+      for (const srcMesh of bp.meshes) {
+        const m = srcMesh.clone(`player_${srcMesh.name}`, bpNode);
+        m.isVisible = true;
+        m.isPickable = true;
+      }
+    }
+    // In GoldSrc, the player's forward axis is +Y (Y-up/right-handed
+    // → +Y forward). After the loader's Y↔Z swap, the player's
+    // forward in Babylon is -Z (into the screen). The mesh was
+    // authored facing +Y in GoldSrc, which the swap converts to
+    // +Z in Babylon — i.e. facing OUT of the screen. Rotate 180°
+    // around Y so it faces the same way as the player's camera.
+    // Authored in GoldSrc as forward=+Y; after the loader's Y↔Z swap
+    // that's +Z in Babylon (out of the screen). Rotate 180° so
+    // the model faces the same direction as the player's camera.
+    inst.rotation.y = Math.PI;
+    inst.position.copyFrom(spawn);
+    playerModelInstance = inst;
+    console.log("[mdl] player model loaded: seal.mdl, bodyParts=", built.bodyParts.length, "meshes=", built.bodyParts.flatMap(bp => bp.meshes).length);
+  })
+  .catch((err) => {
+    console.warn("[mdl] failed to load player model:", err);
+  });
+
 // Bots.
 const bots: StubBot[] = [
   new StubBot(scene, { id: 100, name: "bot_red",   spawn: { x: 8,  y: 0, z: 8 },  color: new Color3(0.9, 0.3, 0.3) }),
@@ -325,6 +392,20 @@ const onKeyDown = (e: KeyboardEvent) => {
     audioMuted = !audioMuted;
     audio.setMuted(audioMuted);
   }
+  // P to toggle third-person view (lets you actually see the
+  // player model you just loaded — in FPS view it's mostly
+  // off-screen below the camera).
+  if (e.code === "KeyP") {
+    thirdPerson = !thirdPerson;
+    if (thirdPerson) {
+      // Move camera back and up so it looks at the player from
+      // behind. Babylon UniversalCamera supports `position` +
+      // `setTarget` — we re-anchor on every frame below.
+      hud.addNotification("3RD-PERSON");
+    } else {
+      hud.addNotification("1ST-PERSON");
+    }
+  }
   // T to test decomp Spawn (logs engine simulator calls)
   if (e.code === "KeyT") {
     const r = tryDecompSpawn();
@@ -448,14 +529,60 @@ let frameCount = 0;
 engine.runRenderLoop(() => {
   scene.render();
   frameCount++;
+
+  // D.6 v0.1: keep the player model anchored to the player controller.
+  if (playerModelInstance) {
+    playerModelInstance.position.x = player.entity.pev.origin.x;
+    playerModelInstance.position.y = player.entity.pev.origin.y;
+    playerModelInstance.position.z = player.entity.pev.origin.z;
+    // Yaw follows the camera (player faces the same direction they're
+    // looking). Add the 180° base rotation that gets the .mdl's
+    // authored forward axis to match the camera.
+    playerModelInstance.rotation.y = Math.PI + camera.rotation.y;
+  }
+
+  // Third-person view: pull camera back and up, looking at the
+  // player model. Re-applied every frame because the player is
+  // moving (and the camera was originally a FPS controller).
+  if (thirdPerson) {
+    // Tell the player controller to stop driving the camera
+    // (in third-person, we position the camera manually from the
+    // player's origin). Without this, the controller writes
+    // camera.position based on its own smoothed position, which
+    // then feeds back into player.entity.pev.origin.y → py → camera.y
+    // each frame (positive feedback loop until y = 37+).
+    player.setExternalCamera(true);
+    // The model is rendered at the player's FEET (entity.pev.origin
+    // is the feet position). With scale 0.1, the model is 1.6m
+    // tall (from y=0 to y=1.6). The FPS controller's eyeHeight
+    // (1.7m) is at the top of the model — aim the camera at the
+    // model's chest, not the controller's eye height.
+    const px = player.entity.pev.origin.x;
+    const pz = player.entity.pev.origin.z;
+    const yaw = camera.rotation.y;
+    // Behind the player, eye-level with the model's head.
+    const back = 2.5;
+    const up = 0.7;
+    camera.position.x = px + Math.sin(yaw) * back;
+    camera.position.y = player.entity.pev.origin.y + up;
+    camera.position.z = pz + Math.cos(yaw) * back;
+    // Target the model's chest (about 60% up the model — the
+    // .mdl is 1.6m tall in world units after scaling).
+    camera.setTarget(new Vector3(px, player.entity.pev.origin.y + 1.0, pz));
+  } else {
+    // First-person: let the player controller drive the camera.
+    player.setExternalCamera(false);
+  }
+
   if (status && frameCount % 30 === 0) {
     const pos = camera.position;
     const lockStatus = player.isLocked() ? "LOCKED" : "click to lock";
     const fps = engine.getFps().toFixed(0);
     const aliveBots = bots.filter((b) => b.isAlive()).length;
     const statusPrefix = player.isAlive() ? "" : "[DEAD] ";
+    const mdlStatus = playerModel ? "[mdl] " : "";
     status.textContent =
-      `D.5 MVP — ${statusPrefix}${lockStatus}  pos: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})  ` +
+      `${mdlStatus}D.5 MVP — ${statusPrefix}${lockStatus}  pos: (${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})  ` +
       `bots: ${aliveBots}/${bots.length}  kills: ${player.getKills()}  ${fps} fps`;
   }
 });

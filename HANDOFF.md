@@ -70,9 +70,10 @@ Babylon LMB click
 | D.5.4 | Player controller (move, look, jump, sprint, crouch, wall collision, pitch fix) | ✅ |
 | D.5.5 | Engine simulator + decomp wiring | ✅ |
 | D.5.6 | Real entity pool (CTSGunStub → pool-managed entity) | ✅ |
-| **D.5.7 v2** | **Shim layer built + CCombatBlock + CCombatAttack wired (2/8 Fire* methods)** | **🔄 IN PROGRESS** |
+| **D.5.7 v2 cont.** | **Shim layer built + CCombatBlock + CCombatAttack wired (2/8 Fire* methods)** | **🔄 IN PROGRESS** |
 | D.5.7 v2 cont. | Wire 6 remaining Fire* methods (GrenadeFire, KnifeFire, KatanaFire, KatanaThrow, ColdCock, StandardFire, ShotgunFire, AkimboFire) | TODO |
 | **D.5.7 v3** | **Real game sound loading (20/20 samples wired)** | **✅ DONE** |
+| **D.6 v0.1** | **GoldSrc .mdl v10 parser + Babylon loader — seal.mdl parses (22 bones, 7 textures, 1092 verts, 2617 triangles), Babylon meshes built and in scene. T-pose only (no animation).** | **🔄 IN PROGRESS** |
 | D.5.8 | Real damage / scoring / slowmo | partial via stubs; full via per-class manifests |
 | D.5.9 v1 | Stub bot (IDLE→PATROL→CHASE→ATTACK→DEAD) | ✅ |
 | D.5.10 v1 | HUD (HP, ammo, crosshair, hit marker, kill counter, death banner, slow-mo notification) | ✅ |
@@ -212,6 +213,84 @@ Babylon LMB click
   so `TraceAttack` can look up `pev.health`, `classname`, `team`,
   etc. — opening the door to decompiled methods that read those
   fields.
+
+### D.6 v0.1 in progress — GoldSrc .mdl parser + Babylon loader
+
+The full GoldSrc .mdl v10 file format (used by Half-Life / The
+Specialists) is now parsed into a structured `MdlModel` object,
+then converted into Babylon meshes. Verification on `seal.mdl`:
+
+```
+Header: id=IDST version=10 name=spaids.mdl
+  22 bones (Bip01*)  ·  20 hitboxes  ·  7 textures (face/mask/body/legs/feet/arm/hands)
+  1 bodypart (body)  ·  1 submodel (swatref)
+Decoded sub-models:
+  [0][0] swatref  verts=1092  meshes=7  triangles=2617
+    mesh  triangles=562  skinRef=0  texture=face.bmp
+    mesh  triangles=510  skinRef=1  texture=mask.bmp
+    mesh  triangles=459  skinRef=2  texture=bodyt.bmp
+    mesh  triangles=320  skinRef=3  texture=legst.bmp
+    mesh  triangles=160  skinRef=4  texture=Feet.bmp
+    mesh  triangles=138  skinRef=5  texture=seal_arm.bmp
+    mesh  triangles=468  skinRef=6  texture=hands.bmp
+```
+
+**Code:**
+- `src/mod/mdl-parser.ts` — GoldSrc .mdl v10 parser
+  (`parseMdl(buffer)` → `{header, bones, hitboxes, textures, bodyparts, subModels}`)
+  Struct shapes cross-referenced against
+  [danakt/web-hlmv](https://github.com/danakt/web-hlmv)
+  (`src/const/structs.ts`) and
+  [skyrim/hlviewer.js](https://github.com/skyrim/hlviewer.js)
+  (`docs/MDL_Format.md`).
+- `src/mod/byte-reader.ts` — little-endian DataView reader used
+  by the parser.
+- `babylon/src/mdl-loader.ts` — turns parsed model into Babylon
+  `Mesh` + `TransformNode` per body part. One sub-mesh per
+  texture (multiple meshes sharing a skin become one Babylon
+  mesh with a single material). GoldSrc → Babylon coordinate
+  swap (Y↔Z, Z flipped for handedness) at build time.
+- `babylon/public/models → _runtime_assets/half-life/ts/models`
+  symlink — Vite serves the .mdl at `/models/player/seal/seal.mdl`.
+
+**Player wiring (main.ts):**
+- Fetches `/models/player/seal/seal.mdl`, parses + builds
+  Babylon meshes, attaches a player instance to the player
+  controller (cloned meshes share geometry/material/textures).
+- `playerModelInstance.position` is updated each frame to
+  follow `player.entity.pev.origin` (the feet position).
+  `rotation.y` follows the camera yaw plus a 180° base offset
+  (the .mdl is authored facing +Y in GoldSrc; the loader's
+  Y↔Z swap turns that into +Z in Babylon — i.e. facing OUT
+  of the screen — so a 180° Y rotation flips the model to face
+  the camera).
+- KeyP toggles third-person view. The camera is positioned
+  ~2.5m behind the player at chest height, looking at the
+  chest. The player controller's FPS camera writes are
+  disabled while in third-person mode (the `logicalPos` field
+  in `PlayerController` keeps the player's actual movement
+  decoupled from the camera position — without this, the FPS
+  controller's camera.y was feeding back into player.pev.origin.y
+  each frame and drifting upward to y=37).
+
+**v0.1 scope:**
+- T-pose only — frame 0 vertex positions, no skeletal animation.
+  The .mdl has 171 sequences (`knife_idle`, `shoot_onehanded`,
+  `circkick`, etc.); playback is a follow-up.
+- Player instance only — bots are still colored spheres.
+- Textures load as RGBA8 RawTextures; chromed/masked variants
+  detected via STUDIO_NF_CHROME / STUDIO_NF_MASKED flags.
+
+**Known follow-ups:**
+- Animation system (sequence playback, blend between
+  sequences, bone transforms → mesh vertex updates)
+- Bot models (clone the player model + tint textures)
+- Camera tuning (third-person framing isn't quite right —
+  the model is small relative to the camera distance and the
+  camera looks slightly above the model's chest)
+- Normal map extraction (v1 uses a uniform (0,1,0) normal;
+  the .mdl has per-vertex normal indices → normal table that
+  we should resolve for proper lighting)
 
 ### D.5.7 v2 in progress — shim layer + first Fire* method wired
 
