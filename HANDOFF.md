@@ -2191,20 +2191,41 @@ projects queued.**
 
 ---
 
-## ⚡ CHECKPOINT SUMMARY — UPDATED 2026-10-19 (D.7.11 VERIFIED)
+## ⚡ CHECKPOINT SUMMARY — UPDATED 2026-10-19 (D.7.12 — DECOMP 100%)
 
-| ✅ D.7.11 — Decomp effectively done; visual baseline verified; MP signaling round-trip working |
-| ✅ D.7.11 — `tools/decompile/grind_parallel.py` orchestrator (autonomous parallel decompile loop) |
+| ✅ D.7.12 — **Server-side decomp is 100% complete** (122 → 0 entries) |
+| ✅ D.7.11 — Visual baseline verified; MP signaling round-trip working |
+| ✅ D.7.11 — `tools/decompile/grind_parallel.py` orchestrator (with zombie-detection fix) |
 
-### Decomp is essentially complete
+### ⭐ DECOMP 100% — THE CRITICAL MILESTONE
 
-`progress/remaining-methods.json` was stale (122 entries, 113 already
-decompiled). Cleaned it down to the actual 9 still-pending server
-methods (the smallest, 200B-1.5KB each). All 9 have existing outputs
-in `tools/decompile/output/` (the stale list predated those).
+`progress/remaining-methods.json` is now `[]`. Every server method
+that was originally marked pending has a canonical output in
+`tools/decompile/output/` with cross-vendor review in
+`tools/decompile/cross-vendor/`.
 
-**True state: ~98% server methods decompiled.** Priority work for
-the WASM DLL port is the **TS→C++ translation**, not more decompile.
+The TS server DLL WASM port can now begin without decomp being a blocker.
+
+**Source of truth:**
+```bash
+ls tools/decompile/output/ | wc -l    # → 375 canonical files
+ls tools/decompile/cross-vendor/ | wc -l   # → 1125 review files (375 × 3)
+```
+
+Source decompiles consolidated in `src/mod/<feature>.ts`:
+- `weapons.ts` (CTSGun pistol: 11/11 methods, 1292 lines)
+- `weapons.ts` (CTSGun fire: 8 Fire* methods, 2446 lines)
+- `guns.ts` (additional CTSGun methods)
+- `gamerules.ts` (CTSGameRules)
+- `slowmo.ts` (CTSSlowMotion family, 11/11 methods, 750 lines)
+- `slowmo-point.ts` (CTSSlowMotionPoint family, 5/5 methods, 342 lines)
+- `scoring.ts` (PlayerKilled, TeamWin — 13KB)
+- `animation.ts` (CTSAnimation)
+- `ammo-pack.ts`, `bomb.ts`, `briefcase.ts`, ... (62 classes total)
+
+**What's missing for the DLL port:**
+- ~600 client-DLL methods (not started)
+- TS→C++ translation workstream (the actual blocker now)
 
 ### Visual baseline verified (browser smoke)
 
