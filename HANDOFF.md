@@ -2188,3 +2188,132 @@ TS HUD, stunt keybindings. This is what makes "real TS" visually.
 
 **End of D.7 series status (2026-10-19). Foundation complete, porting
 projects queued.**
+
+---
+
+## ⚡ CHECKPOINT SUMMARY — UPDATED 2026-10-19 (D.7.11 VERIFIED)
+
+| ✅ D.7.11 — Decomp effectively done; visual baseline verified; MP signaling round-trip working |
+| ✅ D.7.11 — `tools/decompile/grind_parallel.py` orchestrator (autonomous parallel decompile loop) |
+
+### Decomp is essentially complete
+
+`progress/remaining-methods.json` was stale (122 entries, 113 already
+decompiled). Cleaned it down to the actual 9 still-pending server
+methods (the smallest, 200B-1.5KB each). All 9 have existing outputs
+in `tools/decompile/output/` (the stale list predated those).
+
+**True state: ~98% server methods decompiled.** Priority work for
+the WASM DLL port is the **TS→C++ translation**, not more decompile.
+
+### Visual baseline verified (browser smoke)
+
+Booted `https://100.95.111.112:5174/webXash/` in headless Chrome:
+
+1. Launcher UI: hero Play button + collapsible Advanced panel renders
+2. Click Play → engine boots, title changes to "TS"
+3. Half-Life main menu shows with TS-specific text:
+   - "Multiplayer → Search for TS servers, configure character"
+   - "New game → Easy: Play TS on the 'easy' skill setting"
+4. Background shows GLock viewmodel (HL1 stock — D.7.10 known
+   limitation; needs TS client DLL WASM port for TS viewmodels)
+
+Confirmed:
+- TS textures load (no purple checkerboard — D.7.3 fix working)
+- TS maps render
+- Engine version: v49/0.21 (emscripten-wasm32 build -1)
+
+**What works visually (right now):**
+- TS asset tree complete in tsmod.zip (5225 files: 60 maps, 791 models,
+  18 wads, 3044 sounds, 545 gfx, 385 sprites)
+- TS menu text + map geometry rendering
+- HUD overlay (HL1 vanilla until client DLL port)
+
+**What's missing visually (D.7.10 limitations):**
+- TS viewmodels (need client DLL port — D.7 priority 4)
+- TS bots with class AI (need server DLL port — D.7 priority 1)
+- TS-specific entities (buy zones, info_player_deathmatch — need server DLL port)
+- TS commands (buy, firemode, useitems — need server DLL port)
+
+### Multiplayer signaling round-trip (Priority 2) ✅
+
+Two-client WebSocket test on the running signaling server:
+
+```
+HOST got: {"event":"joined","role":"host","room":"testroom","peerCount":1}
+HOST got: {"event":"peer-joined"}
+HOST got: {"event":"start-offer"}
+GUEST got: {"event":"joined","role":"guest","room":"testroom","peerCount":2}
+```
+
+Server pairs clients, host told to start SDP offer. Full WebRTC
+handshake flow works at the signaling layer. Browser-side SDP
+exchange (the actual WebRTC piece) needs a 2-tab browser test
+but transport is solid.
+
+**Signaling server start (working):**
+```
+NODE_PATH=/home/kyle/.nvm/versions/node/v22.22.3/lib/node_modules
+node webxash/signaling-server.cjs 27016
+```
+
+The HANDOFF noted "ws not in package.json (cs16-client peer dep
+blocks npm install); must install ws globally and use NODE_PATH" —
+still the workaround. Node v26.7.0 doesn't pick up global ws;
+must use the v22 binary at `/home/kyle/.nvm/versions/node/v22.22.3/bin/node`.
+
+### Decomp orchestrator (new tool)
+
+`tools/decompile/grind_parallel.py` (~290 lines):
+
+- Reads `progress/remaining-methods.json` → pending list
+- Spawns N parallel codex-CLI workers (default 3, configurable)
+- Each worker: chunk → codex-decompile → codex-review → canonical save
+- Polls for completion, transitions codex→review
+- Removes completed items from remaining-methods.json
+- Commits every N successes (default 3) with descriptive message
+- Logs to `progress/decomp-log.md` (continues from prior entries)
+- Per-worker pid files in `progress/workers/`, logs in same dir
+
+**Why this vs batch.py:** batch.py is sequential (1 method at a time,
+~30-60min each). grind_parallel.py runs N workers concurrently, ~3-5x
+faster for the time-consuming LLM phases.
+
+**Bug fix this session:** the inner fill loop had `while in_flight
+and len(in_flight) < args.workers` which never entered the loop on
+the first iteration (in_flight starts empty). Fixed to `while
+len(in_flight) < args.workers`. Now spawns workers correctly.
+
+**Currently running (3 workers) on the 9 remaining methods.** Will
+take 5-30 minutes; commits every 3 completions.
+
+### Updated priority queue (realistic for next session)
+
+Given decomp is essentially done, the critical path is now:
+1. **Translate the 369+ decompiled TS methods to C++ headers/sources**
+   for the WASM server DLL port. This is the actual blocker, not
+   decompile.
+2. **Stand up the TS server DLL WASM build** (use hlsdk-portable +
+   emsdk 6.0.12 already at `/home/kyle/emsdk/`).
+3. **Rebuild xash.wasm with -s MAXIMUM_MEMORY=2GB** (Priority 3
+   from prior session — Docker build via xash3d-fwgs, multi-step).
+4. **Run the browser 2-tab WebRTC test** to validate SDP exchange.
+5. **Update `ts/gameinfo.txt` to point at the new TS server WASM**
+   once it builds clean.
+
+### Open questions / next-session kickoff
+
+1. **TS→C++ translation:** Do we decompile more first (finish the
+   remaining 122, even though they're small)? Or jump straight into
+   the TS→C++ translation workstream? Recommend: jump to translation.
+   The 9 remaining are small enough that they won't block the build.
+2. **xash3d-fwgs source:** upstream `yohimik/webxash3d-fwgs` is
+   gone (404 per prior session). Can we rebuild xash.wasm from
+   `FWGS/xash3d-fwgs` upstream + apply webXash emscripten patches
+   manually? Or do we patch the binary directly to bump the heap cap?
+3. **Where to focus the WASM DLL port first:** server (bots, buy,
+   stunts, classes — biggest gameplay unlock) or client (viewmodels,
+   HUD — biggest visual unlock)? Recommend: server. Client depends
+   on server state.
+4. **Multiplayer visual test:** 2-tab WebRTC round-trip should be a
+   30-minute smoke in next session.

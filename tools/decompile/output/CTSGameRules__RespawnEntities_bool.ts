@@ -1,108 +1,75 @@
+```typescript
 /**
- * CTSGameRules::RespawnEntities — on round respawn, walk the entity list
- * four times and trigger each entity type's respawn / fall behaviour.
+ * CTSGameRules::RespawnEntities — walk four TS entity classes and trigger
+ * their per-type respawn/fall handlers. The breakable and flag loops always
+ * run; the ground-weapon and powerup loops are gated by a global cvar
+ * (`[ebx+0x152c]`).
  *
- * Sequence:
- *   1. breakables  -> CInfoBreakable::RespawnThink()  (always)
- *   2. weapons     -> CTSGroundWeapon::Fall()         (gated by mode || flag)
- *   3. powerups    -> CTSPowerUp::Fall()              (gated by flag, re-checked)
- *   4. flags       -> CTSFlag::RespawnFlag()          (always)
+ * Each loop iterates entities of a given classname and calls the class's
+ * respawn handler. A per-entity FClassnameIs guard is preserved from the
+ * disassembly (the engine-interface call at `[engine_iface+0x118]`).
  *
- * Each per-entity pass applies the GoldSrc `FNullEnt`-style pattern at
- * offset [esi]→[+0x208] and enginefuncs_t[0x118]. Skip entities where the
- * check fails.
- *
- * Demangled signature: `CTSGameRules::RespawnEntities(bool)`.
- * NOTE: the asm at 0x677d2 double-dereferences the arg (`mov eax,[esp+0x10];
- * mov al,[eax]`) — the demangler dropped a `*`. We type the param as
- * `Uint8Array` so the byte-read at index 0 is type-checked, and we treat
- * the asm's `sub eax,0x2; cmp al,0x1; jbe` as "byte in {2,3} forces
- * weapons", not "byte >= 2 forces weapons".
+ * @param this  The CTSGameRules instance (this in the original C++)
+ * @param arg   The disassembly treats the param's low byte as a small int and
+ *              compares `>= 2` (a value no real bool can take), so the
+ *              original source likely passes an enum here. For a true bool
+ *              this branch is dead.
+ * @returns     void
  */
-
-// --- Stubs for compilation in isolation. Real types land in D.4. ---
-type CTSGameRules = object;
-
-declare const Util_FindEntityByClassname: (
-  prev: any | null,
-  classname: string
-) => any | null;
-
-// enginefuncs_t[0x118] — TBD name (likely pfnPEntityOfEntOffset or similar
-// validity probe). Returns 0 if the entity is no longer alive.
-declare const ENGINE_IFACES: {
-  func118: (arg: number) => number;
-};
-
-// GOT-loaded pointer at [ebx+0x152c]. The asm reads [ptr] (a dword) twice —
-// once before weapons, once after.
-declare const GLOBALS: {
-  respawnFlagPtr: Uint32Array;
-};
-
-// --- Classname strings — placeholders; resolve in D.4 vs strings-n5.txt ---
-const CLASSNAME_BREAKABLE = 'func_breakable';   // [ebx-0x6e758]
-const CLASSNAME_WEAPON    = 'ts_groundweapon';  // [ebx-0x6e749]
-const CLASSNAME_POWERUP   = 'ts_powerup';       // [ebx-0x6e739]
-const CLASSNAME_FLAG      = 'ts_flag';          // [ebx-0x6e72e]
-
-/**
- * Per-entity alive check, matching the repeated 0x208/0x118 pattern.
- * The asm reads:
- *   eax = [esi]                ; entity's first pointer field
- *   edx = [eax + 0x208]        ; vtable slot 0x82 / sub-struct field
- *   if (edx != 0) call ifaces[0x118](edx)
- *   skip the action unless that call returns non-zero.
- */
-const isAlive = (ent: any): boolean => {
-  const sub = ent?.__vtable;
-  if (!sub) return false;
-  const vmethod = sub[0x208 >>> 2];          // [eax+0x208], slot index = byte/4
-  if (!vmethod) return false;
-  return ENGINE_IFACES.func118(vmethod) !== 0;
-};
-
-/**
- * Generic classname iterator. Each asm loop body is exactly:
- *   e = FindEntityByClassname(prev, name);
- *   while (e) { if (isAlive(e)) action(e); e = FindEntityByClassname(e, name); }
- */
-const forEachByClass = (classname: string, action: (e: any) => void): void => {
-  let e: any = Util_FindEntityByClassname(null, classname);
-  while (e !== null) {
-    if (isAlive(e)) action(e);
-    e = Util_FindEntityByClassname(e, classname);
-  }
-};
-
-export function RespawnEntities(this: CTSGameRules, mode: Uint8Array): void {
-  // Asm: mov eax,[esp+0x10]; mov al,[eax]; sub eax,0x2; cmp al,0x1; jbe.
-  // "byte in {2,3} forces weapons; otherwise consult the global flag".
-  const modeByte = mode[0];
-  const forceWeapons = modeByte === 2 || modeByte === 3;
-  const doWeapons = forceWeapons || GLOBALS.respawnFlagPtr[0] !== 0;
-
-  // ---- 1) breakables (always) ----
-  forEachByClass(CLASSNAME_BREAKABLE, (e) => {
-    (e as any).RespawnThink();
-  });
-
-  // ---- 2) weapons ----
-  if (doWeapons) {
-    forEachByClass(CLASSNAME_WEAPON, (e) => {
-      (e as any).Fall();
-    });
+export function RespawnEntities(
+  this: any, // TODO: full CTSGameRules type
+  arg: boolean,
+): void {
+  // === Loop 1 — func_breakable → CInfoBreakable::RespawnThink ===
+  for (
+    let ent: any = null; // TODO: CBaseEntity type
+    (ent = UTIL_FindEntityByClassname(ent, "func_breakable")) !== null;
+  ) {
+    if (engineFClassnameIs(ent, "func_breakable")) {
+      (ent as any).RespawnThink(); // TODO: CInfoBreakable::RespawnThink
+    }
   }
 
-  // ---- 3) powerups: same global flag, re-checked after weapons ----
-  if (GLOBALS.respawnFlagPtr[0] !== 0) {
-    forEachByClass(CLASSNAME_POWERUP, (e) => {
-      (e as any).Fall();
-    });
+  // === Branch at 0x677d2 — arg (>= 2) OR global cvar on ===
+  // TODO(asm-ambiguous): `[ebx+0x152c]` is an unknown global; treated as a
+  //   cvar pointer with the value at `[0]`.
+  // TODO(asm-ambiguous): the `mov al, BYTE PTR [eax]` after loading the bool
+  //   param suggests the source actually passes a small int/enum here.
+  const cvarOn = (g_someCvar as any)[0] !== 0;
+
+  if ((arg as unknown as number) >= 2 || cvarOn) {
+    // === Loop 2 — ts_ground_weapon → CTSGroundWeapon::Fall ===
+    for (
+      let ent: any = null;
+      (ent = UTIL_FindEntityByClassname(ent, "ts_ground_weapon")) !== null;
+    ) {
+      if (engineFClassnameIs(ent, "ts_ground_weapon")) {
+        (ent as any).Fall(); // TODO: CTSGroundWeapon::Fall
+      }
+    }
   }
 
-  // ---- 4) flags (always) ----
-  forEachByClass(CLASSNAME_FLAG, (e) => {
-    (e as any).RespawnFlag();
-  });
+  // === Branch at 0x67842 — same cvar re-checked after loop 2 ===
+  if (cvarOn) {
+    // === Loop 3 — ts_powerup → CTSPowerUp::Fall ===
+    for (
+      let ent: any = null;
+      (ent = UTIL_FindEntityByClassname(ent, "ts_powerup")) !== null;
+    ) {
+      if (engineFClassnameIs(ent, "ts_powerup")) {
+        (ent as any).Fall(); // TODO: CTSPowerUp::Fall
+      }
+    }
+  }
+
+  // === Loop 4 — ts_flag → CTSFlag::RespawnFlag ===
+  for (
+    let ent: any = null;
+    (ent = UTIL_FindEntityByClassname(ent, "ts_flag")) !== null;
+  ) {
+    if (engineFClassnameIs(ent, "ts_flag")) {
+      (ent as any).RespawnFlag(); // TODO: CTSFlag::RespawnFlag
+    }
+  }
 }
+```

@@ -4,38 +4,50 @@
 > Mirror: `~/Obsidian/projects/specialists-browser/SPEC.md`
 > Authoritative canonical: this file in the repo.
 
-**Status:** Phase 1 scope — **Option D (AI-decompile the .so)**.
-The CheerpX-based Option B path was abandoned after Phase 1 step 1.2
-revealed the dynamic linker has cascading buffer-state bugs (see
-`docs/option-d-scope.md` § "Why we pivoted"). New approach: use
-Claude to decompile `ts/dlls/ts_i386.so` directly to TypeScript, then
-clean up and integrate into a Babylon.js scene. The Oct 2026 wave
-(HL2, Black Ops, GTA V) proved this pattern works for similar games.
-**Estimate: 4-6 weeks for Phase 1 MVP, vs. 10-16 for Option C
-clean reimpl.** Option C remains valid as a fallback if Option D
-doesn't converge.
-**Last updated:** 2026-10-15 (D.2, D.3, D.4.1 complete)
+**Status:** Phase 1 scope — **webXash WASM port path (D.7)**.
+**Pivot history:** Option B (CheerpX) → abandoned 2026-10-14 after
+cascading linker bugs. Option D (AI decompile) completed D.4 (369+
+methods decompiled). D.5 Babylon attempt → visual baseline didn't
+match. **D.7 webXash engine-port path active** (the engine port
+already exists, just run it). WASM DLL port still needed for "real
+TS" gameplay (Priority 1, multi-week).
+**Last updated:** 2026-10-19 (D.7.11 — visual + MP signaling verified)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 
-## Phase 1 D-step progress (Option D)
+## Phase 1 D-step progress (Option D + webXash)
 
 | Step | Status | Deliverable |
 |---|---|---|
 | D.1 | ✅ Complete (2026-10-14) | `tools/decompile/analysis/` (3,894 symbols, 619 TS-specific) |
-| D.2 | ✅ Complete (2026-10-15) | `tools/decompile/{chunk,decompile,decompile-review}.py` + `prompts/` |
+| D.2 | ✅ Complete (2026-10-15) | `tools/decompile/{chunk,decompile,decompile-review,grind_parallel}.py` + `prompts/` |
 | D.3 | ✅ Complete (2026-10-15) | `src/mod/interface.ts` (4 entry points, GoldSrc engine↔mod) |
 | D.4.1 | ✅ Complete (2026-10-15) | `src/mod/slowmo.ts` (CTSSlowMotion, 11/11 methods, 750 lines) |
 | D.4.5 | ✅ Complete (2026-10-15) | `src/mod/slowmo-point.ts` (CTSSlowMotionPoint, 5/5 methods, 342 lines) |
 | D.4.2 | ✅ Complete (2026-10-15) | `src/mod/weapons.ts` (CTSGun pistol, 11/11 methods, 1292 lines) |
-| D.4.7 | ✅ | 2026-10-15 | CTSGun fire dispatcher (8 Fire* methods). Output: `src/mod/weapons.ts` (103KB, 2446 lines, 19/33 CTSGun methods). Full fire path: PrimaryAttack → Fire → mode switch → {StandardFire, ShotgunFire, AkimboFire, GrenadeFire, KatanaFire, KatanaThrow, KnifeFire, ColdCock}. |
-| D.4.3 | ⏸ N/A | — | **Bots: 0 methods in binary.** TS is PvP-only; bots are external to TS (Botman's BotLib etc.). Cannot decompile what doesn't exist. |
-| D.4.4 | ✅ | 2026-10-15 | Damage/scoring (2 methods). Output: `src/mod/scoring.ts` (~13KB). Methods: PlayerKilled (CHalfLifeMultiplay, 6912 B — kill handler, score, cash, slowmo, check-deads), TeamWin (CTSGameRules, 1564 B — round winner, HUD, cash distribution, announcer sounds). |
-| D.4.6 | ✅ Complete (2026-10-15) | `src/mod/weapons.ts` (CCombat Idle/Block/Attack + UpdateClientData) — 4 more methods |
-| D.5 | ⏸ Pending | Babylon.js integration (1-2 weeks) |
-| D.6 | ⏸ Pending | bridge semantics + polish (1-2 weeks) |
+| D.4.7 | ✅ Complete (2026-10-15) | CTSGun fire dispatcher (8 Fire* methods) |
+| D.4.3 | ⏸ N/A | — | TS is PvP-only, no bot logic in binary |
+| D.4.4 | ✅ Complete (2026-10-15) | `src/mod/scoring.ts` (PlayerKilled, TeamWin — 13KB) |
+| D.4.6 | ✅ Complete (2026-10-15) | CCombat Idle/Block/Attack + UpdateClientData |
+| D.4.9 | ⏸ Pending | per-class manifest modules (62 of them) for pool binding |
+| D.5 | ⏸ Parked at tag `babylon-port-frozen` | Babylon.js integration |
+| D.5.5 | ✅ Complete (2026-10-16) | Engine simulator + 9 decompiled methods running end-to-end |
+| D.5.6 | ✅ Complete | Real entity pool (2048 slots, replaces __botRegistry) |
+| D.5.7 v3 | ✅ Complete | Real TS sounds (20/20 samples wired, audio-loader.ts) |
+| D.6 v0.1 | ✅ Complete | GoldSrc .mdl v10 parser + Babylon loader |
+| D.7.1 | ✅ Complete (2026-10-19) | webXash boots, TS single-player via HL1 fallback |
+| D.7.2-7.9 | ✅ Complete | Launcher UX, texture fix, MP scaffold, defaults, cache, heap |
+| D.7.10 | ✅ Complete (2026-10-19) | Architectural realization (TS detection ≠ TS gameplay) |
+| D.7.11 | ✅ Complete (2026-10-19) | Visual baseline verified, MP signaling round-trip working |
+| **Server DLL WASM port** | ⏸ Pending | The real unlock for TS gameplay (~1-2 weeks) |
+| **Client DLL WASM port** | ⏸ Pending | The real unlock for TS viewmodels (~2-4 weeks) |
+| **xash.wasm heap cap** | ⏸ Pending | -s MAXIMUM_MEMORY=2GB rebuild (Docker; multi-step) |
 
-**Play-test surface:** not yet. First browser-playable game at end of D.5 / start of D.6. D.4 produces reviewable TS source; even those need `tsc` to verify.
+**Current state (2026-10-19):** decompiled TS code exists in
+`tools/decompile/output/` (~378 methods) and consolidated into
+`src/mod/<feature>.ts`. Engine boots The Specialists mod in a
+browser. HL1 vanilla gameplay falls back gracefully. **Path to
+100% visual + gameplay parity is the WASM DLL port.**
 
 ---
 

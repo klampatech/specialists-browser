@@ -1,106 +1,94 @@
-// Forward-declared external. Real signature resolved in D.5.
-declare function GetRandomPowerup(gameRules: any, categoryMask: number): number;
-
+```typescript
 /**
- * CTSPowerUp::SetupPowerUp — configure a CTSPowerUp entity with a powerup
- * type, charge count, expiration duration, and respawn behavior.
+ * CTSPowerUp::SetupPowerUp — initializes a power-up entity, resolving the
+ * type (random or explicit) and configuring its weapon, schedule, and amount.
  *
- * @param this        CTSPowerUp entity instance.
- * @param powerupType int — control word for selecting the powerup type:
- *                           - > 0 with g_pGameRules override flag AND
- *                             bit 8 (& 0x100) set → forced random pick
- *                           - > 0 with low-byte bit 7 (& 0x80) set
- *                             → forced random pick
- *                           - > 0 otherwise → used directly as the
- *                             powerup type bits
- *                           - <= 0 → random pick using this entity's own
- *                                    category mask (mask 0x1ff fallback)
- * @param count       int — if > 0, override the count; else scale the
- *                          switch-assigned count by m_flCountMultiplier
- *                          (truncated to int, like the asm's FPU cw trick).
- * @param duration    float — seconds until expiration (added to
- *                            gpGlobals->time).
- * @param respawn     bool — stored in m_bRespawn.
+ * @param this        The CTSPowerUp entity.
+ * @param powerupType Power-up selector. Positive values select an explicit
+ *                    type (low byte is the type bitmask); values with bit
+ *                    0x100 set (when the game rules allow) or bit 0x80 set
+ *                    force a random pick from the full pool (filter 0x1ff).
+ *                    Non-positive values pick random using the associated
+ *                    weapon's filter field (falling back to 0x1ff on miss).
+ * @param amount      If > 0, m_iAmount is set directly; otherwise it's
+ *                    computed as (int)(m_iAmount * m_flAmountScale).
+ * @param delay       Added to gpGlobals->time and stored in m_flStartTime.
+ * @param someFlag    Stored as a byte in m_bSomeFlag.
  */
 export function SetupPowerUp(
-  this: any, // CTSPowerUp
+  this: CTSPowerUp,
   powerupType: number,
-  count: number,
-  duration: number,
-  respawn: boolean,
+  amount: number,
+  delay: number,
+  someFlag: boolean,
 ): void {
-  // 1. Reset the count slot; the switch (or the explicit count arg) sets it.
-  this.m_iCount = 0;
+  this.m_iAmount = 0;
 
-  // asm: edx = *(ebx+0x14f0)         // g_pGameRules (CTSGameRules*)
-  const gameRules: any = /* g_pGameRules */;
-
-  // 2. Resolve the powerup-type bits.
+  // Step 1: Resolve m_iPowerupType. m_bAutoSelect is set when the caller
+  // passed a non-positive powerupType (asking for a default random pick).
   if (powerupType > 0) {
-    // asm: test byte ptr [edx+0x5885]; je skip
-    //      test eax, 0x100;           je skip
-    // TODO(asm-ambiguous): [gameRules+0x5885] is an unknown flag byte
-    // (likely an "override" / admin toggle). When set AND powerupType has
-    // bit 8 set, it forces a random pick.
-    const overrideFlag: boolean = /* gameRules.field_0x5885 */ !== 0;
-    if (overrideFlag && (powerupType & 0x100) !== 0) {
-      this.m_iPowerupBits = GetRandomPowerup(gameRules, 0x1ff);
-    } else if ((powerupType & 0x80) !== 0) {
-      // asm: test al,al; jns — sign of the LOW BYTE of powerupType.
-      // powerupType & 0x80 tests the same bit (bit 7 of low byte ≡ bit 7 of int).
-      this.m_iPowerupBits = GetRandomPowerup(gameRules, 0x1ff);
-    } else {
-      this.m_iPowerupBits = powerupType;
-    }
-    this.m_bIsRandom = false;
+    const gameRules = gpGameRules;
+    const forceRandom =
+      (gameRules.field_0x5885 !== 0 && (powerupType & 0x100) !== 0) ||
+      (powerupType & 0x80) !== 0;
+    this.m_iPowerupType = forceRandom
+      ? GetRandomPowerup(gameRules, 0x1ff)
+      : powerupType;
+    this.m_bAutoSelect = 0;
   } else {
-    // asm: picked = GetRandomPowerup(g_pGameRules, this->pev+0x1a0)
-    //      if (picked == 0) picked = GetRandomPowerup(g_pGameRules, 0x1ff)
-    // TODO(asm-ambiguous): [pev+0x1a0] is the entity-specific category mask
-    // controlling which powerup types are valid here.
-    const categoryMask: number = this.pev.field_0x1a0;
-    let picked = GetRandomPowerup(gameRules, categoryMask);
-    if (picked === 0) {
-      picked = GetRandomPowerup(gameRules, 0x1ff);
+    // powerupType <= 0: random pick using the associated weapon's filter.
+    const filter = this.m_pWeapon.field_0x1a0; // TODO(asm-ambiguous): field meaning
+    let resolved = GetRandomPowerup(gpGameRules, filter);
+    if (resolved === 0) {
+      resolved = GetRandomPowerup(gpGameRules, 0x1ff);
     }
-    this.m_iPowerupBits = picked;
-    this.m_bIsRandom = true;
+    this.m_iPowerupType = resolved;
+    this.m_bAutoSelect = 1;
   }
 
-  // 3. Translate the bit pattern into a concrete powerup-type ID stored on
-  //    the parent entvar, and assign the default count for that type.
-  // asm: eax = *(esi+0)  // this->pev (entvars_t*)
-  // TODO(asm-ambiguous): [pev+0x114] is a TS-specific entvar slot (not the
-  // vanilla HL1 fuser2). The bit→ID mapping below is hand-coded and reflects
-  // the assembly's 9-way test (lowest set bit wins, count set only on bits
-  // 0x01, 0x02, 0x08, 0x10).
-  const bits: number = this.m_iPowerupBits;
-  if      (bits & 0x001) { this.pev.powerupTypeId = 4; this.m_iCount = 3; }
-  else if (bits & 0x002) { this.pev.powerupTypeId = 2; this.m_iCount = 3; }
-  else if (bits & 0x004) { this.pev.powerupTypeId = 0;                    }
-  else if (bits & 0x008) { this.pev.powerupTypeId = 9; this.m_iCount = 2; }
-  else if (bits & 0x010) { this.pev.powerupTypeId = 1; this.m_iCount = 3; }
-  else if (bits & 0x020) { this.pev.powerupTypeId = 5;                    }
-  else if (bits & 0x040) { this.pev.powerupTypeId = 6;                    }
-  else if (bits & 0x080) { this.pev.powerupTypeId = 7;                    }
-  else if (bits & 0x100) { this.pev.powerupTypeId = 8;                    }
-  // Other bits of the high byte are ignored.
-
-  // 4. Resolve the final count.
-  if (count > 0) {
-    this.m_iCount = count;
-  } else {
-    // asm: explicit fldcw / 0xc (truncate) / fistp / fldcw restore — equivalent to Math.trunc.
-    this.m_iCount = Math.trunc(this.m_iCount * this.m_flCountMultiplier);
+  // Step 2: Map the resolved power-up type to a weapon ID and default amount.
+  const weaponPtr = this.m_pWeapon; // TODO(asm-ambiguous): which entity this points to
+  switch (this.m_iPowerupType) {
+    case 0x01: weaponPtr.m_iId = 4; this.m_iAmount = 3; break;
+    case 0x02: weaponPtr.m_iId = 2; this.m_iAmount = 3; break;
+    case 0x04: weaponPtr.m_iId = 0; break;
+    case 0x08: weaponPtr.m_iId = 9; this.m_iAmount = 2; break;
+    case 0x10: weaponPtr.m_iId = 1; this.m_iAmount = 3; break;
+    case 0x20: weaponPtr.m_iId = 5; break;
+    case 0x40: weaponPtr.m_iId = 6; break;
+    case 0x80: weaponPtr.m_iId = 7; break;
+    case 0x100: weaponPtr.m_iId = 8; break; // 9th type, stored in the second byte of the int.
   }
 
-  // 5. Stamp expiration time, max value, and respawn flag.
-  // asm: eax = *(*(ebx+0x1600))         // gpGlobals (one indirection
-  //                                       //   for the GOT entry, one for
-  //                                       //   the actual globalvars_t*)
-  //      fadd DWORD PTR [eax]            // gpGlobals->time
-  const gpGlobals: any = /* g_pGlobals */;
-  this.m_flExpireTime = gpGlobals.time + duration;
-  this.m_flMaxValue = 100.0; // 0x42c80000
-  this.m_bRespawn = respawn;
+  // Step 3: Apply explicit amount or scale by per-instance multiplier.
+  if (amount > 0) {
+    this.m_iAmount = amount;
+  } else {
+    this.m_iAmount = Math.trunc(this.m_iAmount * this.m_flAmountScale);
+  }
+
+  // Step 4: Schedule activation and persist the bool flag.
+  this.m_flStartTime = gpGlobals.time + delay;
+  this.m_flDuration = 100.0;
+  this.m_bSomeFlag = someFlag ? 1 : 0;
 }
+
+// ---- External runtime bindings (provided by the engine bindings module). ----
+
+declare const gpGameRules: any;
+declare const gpGlobals: { time: number };
+declare function GetRandomPowerup(rules: any, filter: number): number;
+
+// TODO(decompile): CTSPowerUp field layout is reconstructed from disassembly;
+// some field names are educated guesses.
+declare interface CTSPowerUp {
+  m_pWeapon: { m_iId: number; field_0x1a0: number };
+  m_iPowerupType: number;
+  m_iAmount: number;
+  m_bAutoSelect: number;
+  m_flStartTime: number;
+  m_flDuration: number;
+  m_flAmountScale: number;
+  m_bSomeFlag: number;
+}
+```
