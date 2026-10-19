@@ -465,6 +465,126 @@ Multiplayer via WebSocket to a Docker server.
   builds from source. Setup script (`webxash/setup-xash.sh`)
   handles it.
 
+---
+
+## D.7.0 — webXash is currently broken (CRITICAL FINDING 2026-10-19)
+
+After rsyncing the HL1 base content from Kyle's MacBook and
+bundling it with TS into a 578 MB zip, I went to wire up the
+webXash launch path and discovered webXash **cannot launch any
+game in its current state**.
+
+### What's broken
+
+The webXash scaffold in this repo (and the upstream
+x8BitRain/webXash) has:
+
+1. `xash3d-fwgs@1.2.2` — **works**, available on npm + unpkg.
+   Provides the Xash3D engine compiled to WASM (xash.wasm,
+   filesystem_stdio.wasm, libref_webgl2.wasm, libmenu.wasm,
+   libref_soft.wasm).
+
+2. `hlsdk-portable@0.1.2` — **NOT AVAILABLE**. The WASM client.dll
+   and server.dll that the engine needs to run any HL1 game are
+   not on npm (`npm install` fails with "Cannot convert undefined
+   or null to object") and not on unpkg (404). The upstream
+   npm package may have been unpublished or never published.
+
+3. `cs16-client@0.1.2` — same situation as hlsdk-portable.
+
+4. In `webxash/src/services/xash-loader.ts` the URL constants are
+   hard-coded to empty strings with a comment:
+   ```
+   // Game launch will fail until webXash is forked and rebuilt
+   // with working deps. See HANDOFF.md Phase 0 step 1.5 (fork webXash).
+   const HLClientURL = '';
+   const HLServerURL = '';
+   ```
+
+   So this is a known issue in the upstream project that nobody
+   has resolved. The engine loads, but no game DLLs are available
+   to make it do anything.
+
+### Live demo verification
+
+The webXash live demo at https://x8bitrain.github.io/webXash/
+exists and has buttons (Half-Life, Counter-Strike, HLDM, Uplink,
+Day One) but I haven't confirmed whether it actually launches games
+today. Likely either broken too, or hosting the WASM DLLs from a
+non-npm CDN.
+
+### Why the live demo might still work
+
+The upstream `xash-loader.ts` (HEAD on GitHub) DOES import
+hlsdk-portable via vite `?url` imports:
+```typescript
+import HLClientURL from 'hlsdk-portable/cl_dlls/client_emscripten_wasm32.wasm?url';
+```
+This works if the npm packages exist at install time. Our local
+copy has the empty-string version, suggesting someone either
+downgraded the file or the project was forked before the
+import-style URLs were added.
+
+### D.7 paths forward (ranked)
+
+**Path A — Rebuild WASM DLLs from HLSDK-portable (preferred)**
+- Clone FWGS/hlsdk-portable, set up emsdk, build with
+  `-s TARGET=wasm32-unknown-emscripten`, produce
+  `client_emscripten_wasm32.wasm` + `hl_emscripten_wasm32.wasm`.
+- Drop them into `webxash/public/cl_dlls/` and `webxash/public/dlls/`.
+- Update xash-loader.ts to point at the local files (no npm).
+- Time: 2-4 hours including emsdk setup, build, debugging.
+- Risk: medium — emscripten build of HLSDK has known quirks.
+
+**Path B — Use CheerpX PoC as the rendering layer**
+- `webxash/public/cheerpx-test.html` shows CheerpX running
+  `ts-host` + `ts_i386.so` (the actual TS mod .so) in browser.
+- CheerpX runs unmodified Linux x86 binaries in browser.
+- This loads the TS GAME LOGIC (server-side weapons, classes,
+  abilities) but NOT the rendering engine.
+- We'd still need a client. Babylon as client = back to where we
+  started. webXash + CheerpX = hopeful but unproven.
+- Time: 4-6 hours to figure out integration.
+
+**Path C — Standalone HL1 Linux binary via CheerpX**
+- Get a Linux x86 build of HL1 (SteamPipe has hl_linux.x86).
+- Run it via CheerpX. This gives us the actual engine, not a
+  WASM reimplementation.
+- CheerpX would run the engine + DLLs unmodified.
+- Time: 2-3 hours to obtain + test the binary.
+- Risk: high — CheerpX is slow and HL1 wasn't designed for it.
+  Performance may be unusable.
+
+**Path D — Find WASM DLLs elsewhere**
+- Search GitHub for `hlsdk-portable` forks, releases, or prebuilt
+  WASM DLLs. The webXash fork might have a private branch.
+- Time: 1-2 hours of digging.
+- Risk: low if found, dead-end if not.
+
+### What I did NOT find
+
+- No source for the missing WASM HL client/server DLLs in this repo.
+- No build script for `xash.wasm` (only prebuilt in public/xash3d-fwgs/dist/).
+- No instruction in HANDOFF.md for resolving the missing DLLs.
+- No fallback content (no standalone HL1 Linux binary).
+
+### Realistic expectations
+
+Even after solving the WASM DLL problem, **The Specialists mod
+itself may not run in webXash** because:
+- TS has heavily customized server DLLs (ts_i386.so, ts_i686.so)
+- Xash3D FWGS has a not-supported-mods list that includes Day of
+  Defeat, Sven-Coop, and other custom mods for similar reasons
+- If TS uses non-HL1-standard hooks, we need to compile TS's
+  custom server code to WASM too (months).
+
+### Recommendation
+
+Pursue **Path A** (rebuild WASM DLLs) for a Half-Life session in
+browser first. If that works, **stock HL1 in browser = success**.
+Then decide if TS-specific gameplay is achievable via TS
+decompilation + a custom HL1-compatible server binary.
+
 ### D.5.7 v2 in progress — shim layer + first Fire* method wired
 
 Honest read on the scope: each decompiled Fire* method is 100-234 lines
