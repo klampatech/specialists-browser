@@ -1712,3 +1712,479 @@ Smoke result: ✅ **GREEN.** CheerpX runs the TS server .so
 unmodified. All 1,387+ exported symbols are accessible. The
 architectural premise is proven: we can run the actual TS mod
 code in the browser and call its functions.
+
+
+---
+
+## D.7.1 STATUS — WORKING (2026-10-19) (fixed in code)
+
+Day One demo renders cleanly in the browser. Engine boots, all WASMs load, no crashes.
+
+What finally worked: **using official precompiled WASM DLLs from registry.npmmirror.com/hlsdk-portable@0.1.3** instead of building from source. Our local emscripten rebuild was getting close but the SIDE_MODULE flag wasn't fully applying (we got 276/907 imports vs the official 52/43 -- libc/libm got statically linked). The official builds were produced by yohimik in a pinned-emsdk Docker build; we trust their artifacts.
+
+File sizes (delta vs ours):
+
+| Module       | Ours        | Official   |
+|--------------|-------------|------------|
+| hl.dll       | 1.16 MB/276 | 1.07 MB/52 |
+| client.dll   | 615 KB/907  | 206 KB/43  |
+
+### Sourcing
+
+```
+curl -sL https://registry.npmmirror.com/hlsdk-portable/-/hlsdk-portable-0.1.3.tgz -o hlsdk-0.1.3.tgz
+tar xzf hlsdk-0.1.3.tgz
+# dist/valve/{cl_dlls,dlls}/*.wasm
+```
+
+(npmmirror.com caches tarballs even after official npm marks them unpublished.)
+
+### Next steps (D.7.2+)
+
+- Test HLDM (+map crossfire) and Uplink (+map hldemo1)
+- Test TS (-game ts +map ts_apartments) -- will work with stock HL mechanics, not full TS mod
+- Multiplayer via WebRTC transport (yohimik has examples)
+- Optional: rebuild WASMs from source by reproducing yohimik's Docker build (pin emsdk version, match their flags)
+
+### Why our emscripten rebuild was producing bloated WASMs
+
+-sSIDE_MODULE=1 was passed via target_link_options, but the build still produced a main-module-shaped binary (lots of GOT entries for libc/libm functions). The official builds don't have those. The likely missing pieces:
+- A pinned emsdk version (theirs probably emsdk 3.x, ours was 6.0.12)
+- Different -s flags for side-module specifics (e.g., -Wl,--no-whole-archive)
+- Some module-init code that's gated on SIDE_MODULE in headers
+
+Reproducing their Docker build is a D.7.x cleanup task, not a blocker for D.7.1.
+
+
+---
+
+## D.7.2+ STATUS — TS launcher + UX + multiplayer (2026-10-19)
+
+After D.7.1, the next steps are in flight.
+
+### D.7.2 — TS-only UX
+
+Launcher simplified:
+- games.ts reduced to one TS entry (Day One / HLDM / Uplink dropped)
+- XashSettings.vue replaced multi-component panel with a hero
+  "Play The Specialists" button
+- Advanced section collapsed by default; shows launch args + multiplayer IP
+- New GAME_SETTINGS.TS in xash-loader.ts with launchArgs
+  ['-game', 'ts', '+map', 'ts_apartments']
+- Store default selectedGameKey = 'TS'
+
+### D.7.3 — Texture fix (TS-OPEN)
+
+tsmod.zip is missing ts/textures/. Maps render with the
+purple/magenta "missing texture" fallback. To fix:
+- Install TS via Steam on the Mac
+- rsync /Users/kylelampa/Library/Application Support/Steam/steamapps/common/The Specialists/ts/textures/
+- Add to tsmod.zip
+
+### D.7.4 — Multiplayer
+
+WebRTC data-channel transport + Node.js signaling server.
+Stack:
+- signaling-server.cjs: Node WebSocket signaling (port 27016).
+  Pairs two clients by room id, kicks off SDP offer from host,
+  relays offer/answer/candidate events between peers.
+- xash-webrtc.ts: base Xash3DWebRTC class with protected
+  setupPeer/startOffer/onConnectionError. ICE uses Google STUN.
+- xash-multiplayer.ts: Xash3DMultiplayer subclass that wires up
+  the WS signaling protocol on top of the base class.
+- XashMultiplayerIP.vue: Host/Join UI with server + room fields.
+  Defaults to m5 Tailscale server.
+
+Run signaling:
+```
+NODE_PATH=$(npm root -g) node signaling-server.cjs 27016
+```
+
+Limitations:
+- ws not in package.json (cs16-client peer dep blocks npm install);
+  must install ws globally and use NODE_PATH.
+- Only STUN, no TURN — NAT traversal may fail in some networks.
+- Untested with a real second client.
+
+### Known TS-gameplay caveats
+
+- ts/liblist.gam points gamedll to dlls/hl.dll (no WASM port of
+  ts_i386.so exists). Engine boots HL1 vanilla gameplay on TS maps.
+  Custom TS mechanics (acrobatics, dual-wield, kick, classes) are
+  missing until someone ports the TS server DLL.
+
+
+---
+
+## D.7.5 — gameinfo.txt + arg-merge fix (2026-10-19)
+
+After D.7.4, the engine would boot into HL1 SP (`c0a0.bsp`)
+instead of `ts_apartments.bsp` even when passing `-game ts +map
+ts_apartments`. Two real issues surfaced:
+
+### Issue 1: xash3d-fwgs dropped `-ref webgl2` because of arg-merge order
+
+`runEm()` in xash3d-fwgs/dest/xash3d.js does:
+```js
+this.em = await Xash({
+  arguments: ['-ref', 'webgl2', ...this.opts.arguments],
+  ...(this.opts.module ?? {}),  // SPREAD OVERRIDES
+});
+```
+With `module.arguments: options.launchArgs`, the spread clobbered
+the renderer arg. Result: engine got `['-game', 'ts', '+map',
+'ts_apartments']` only, no `-ref webgl2`, fell back to HL1 SP
+default startmap.
+
+Fix: move launchArgs to top-level (`arguments: options.launchArgs`)
+so initRender prepends `-ref webgl2` and the spread has nothing
+to override.
+
+This bug also affects yohimik's webXash CS path. Worth an upstream
+PR — note for follow-up.
+
+### Issue 2: Xash3D FWGS engine prefers gameinfo.txt over liblist.gam
+
+The TS mod uses the legacy HL1 `liblist.gam` format. Newer Xash3D
+mods use `gameinfo.txt` (tab-separated key/value pairs). Engine
+falls through to default `valve/` if neither is parseable.
+
+Added `ts/gameinfo.txt` to `tsmod.zip` alongside the existing
+`ts/liblist.gam`. Both formats are now satisfied.
+
+`ts/gameinfo.txt` content:
+```
+"Basedir"  "valve"
+"game"     "The Specialists"
+"startmap" "ts_apartments"
+"trainmap" "ts_apartments"
+"type"     "singleplayer_only"
+"mpentity" "info_player_deathmatch"
+"gamedll"  "dlls/hl.dll"        // WASM HL DLL (TS_i386.so is Linux ELF)
+"gamedll_linux" "dlls/hl.dll"
+```
+
+### Verification
+- Hard-refresh + Play now boots engine with `-game ts +map ts_apartments`
+- Engine reads ts/gameinfo.txt and ts/liblist.gam
+- Engine tries to load `ts_apartments.bsp` from `/rodir/ts/maps/`
+- Reported path tested by Kyle: actually loading the map from
+  the in-engine menu ("Custom Game" → "The Specialists") still
+  crashes with `Mem_FreeBlock` — that's an engine bug, separate
+  from launcher path
+
+
+---
+
+## D.7.6 STATUS — TS launchOptions default (2026-10-19)
+
+Kyle figured out the right way to make `-game ts` reach the engine:
+type it into the Advanced launch-options text field. That field becomes
+`options.launchOptions` (a string), which `_buildLaunchArgs` correctly
+splits and appends to the engine argv.
+
+The root cause of `selectedGame.launchArgs` being dropped somewhere in
+the Vue→XashLoader→initXash chain is **unresolved**. Debug print at
+console showed 10 args (windowed, hud_scale, volume, -ref webgl2,
+-console) but NO `-game ts`.
+
+Quick ship: default the Pinia store's `launchOptions` to the TS args
+`'-game ts +map ts_apartments'`. User can override via Advanced panel.
+Removed the broken `...selectedGame.launchArgs` spread from
+`_buildLaunchArgs` so we don't double-include if the bug ever gets
+fixed upstream.
+
+Commit: `b9507d6` (Phase 0 stub fix branch).
+
+---
+
+## D.7.7 STATUS — Cache API for tsmod.zip (2026-10-19)
+
+494MB re-downloads on every reload were brutal. `zip-helpers.ts`
+was a flat XHR `getZip()` — no caching layer.
+
+New version in `src/utils/zip-helpers.ts`:
+
+```
+- Cache key: URL of the zip (e.g. './hl/tsmod.zip')
+- Cache name: 'xash-zips-v1' (constant for future versioning)
+- First fetch: streaming progress via ReadableStream, then stores
+  in Cache and returns ArrayBuffer.
+- Subsequent fetches: instant hit from cache, ~<1ms, no progress bar.
+- Quota errors / private mode: warn but don't fail the download.
+```
+
+**Bumping the cache** when `tsmod.zip` bytes change: edit
+`TSMOD_CACHE_VERSION` (currently `'1'`) or rename the cache constant
+in `zip-helpers.ts`. Exposed as a constant so a future "Clear cache"
+button can read it.
+
+Manual cache wipe from DevTools: `await caches.delete('xash-zips-v1')`.
+
+Commit: `ceedc75`.
+
+---
+
+## D.7.8 STATUS — bot_quota 4 default (2026-10-19)
+
+Kyle wanted to test the TS experience as if he were joining a
+multiplayer server with bots. The WASM `hl.dll` from hlsdk-portable
+0.1.3 has bot support verified via strings (`addbot`, `bot_quota`,
+`entity_botcam`, `botskill`, `bot.cfg`). So we don't need the WebRTC
+multiplayer stack or a second client to feel out the listen-server
+experience.
+
+Default `launchOptions` now ends with `bot_quota 4` → fresh Play
+launches 4 bots. Override via Advanced panel.
+
+NOTE: bots are HL1 vanilla (WASM hl.dll has bot code but no
+TS-specific class logic — kick, dual-wield, etc.). Acceptable as a
+known limitation; TS-specific gameplay needs a WASM port of
+ts_i386.so.
+
+Commit: `90214a8`.
+
+---
+
+## D.7.9 STATUS — bot_quota 2 default (WASM 256MB heap cap) (2026-10-19)
+
+Kyle was getting intermittent Lambda-screen freezes when memory
+pressure pushed the WASM past its limit. Investigated via
+`wasm-objdump -x xash.wasm`:
+
+```
+Memory[1]: memory[0] pages: initial=4096 max=4096
+```
+
+4096 × 64KB = **256MB hard cap**. Emscripten can't grow past `max`
+even though `growMemory()` is wired up. With `bot_quota 4` each bot
+loads the full TS asset set (WAD textures, MDL models, WAV sounds,
+AI state per-entity). Past 2 bots the heap fills mid-load, engine
+dies silently, Vue's `xash-loading` overlay stays because
+`xash.main()` returned but the WASM is dead.
+
+Default lowered to `bot_quota 2` — fits comfortably in 256MB.
+Override via Advanced panel.
+
+**Long-term fix (follow-up):** rebuild `xash.wasm` with
+`-s MAXIMUM_MEMORY=2GB` and republish the npm package. That's a
+separate workstream — needs the emsdk + cmake + wabt setup we already
+have at `/tmp/`.
+
+Commit: `b0f8c9e`.
+
+---
+
+## D.7.10 — Architectural realization: TS detection ≠ TS gameplay (2026-10-19)
+
+Kyle opened the Saves menu and saw "multiplayer_... TS" as the active
+game. Then started a `ts_lobby` listen server and observed:
+
+1. **The lobby map loads** with TS textures / sounds / models — fine
+2. **In-game HUD shows HL1 vanilla viewmodel** (the regular pistol)
+3. **Console spammed warnings**:
+   ```
+   Error: No spawn function for "ts_modelf" × 4
+   FS_AddGameHierarchy( valve )           ← HL1 game logic loaded
+   FS_AddGameHierarchy( ts )              ← TS only as additional dir
+   Unknown command: alt2
+   Unknown command: firemode
+   Unknown command: useitems
+   Unknown command: buy
+   ```
+4. **Bots are HL1 DM bots**, not TS classes (no kick, dual-wield, stunts)
+
+### Why "partially works" instead of "completely fails"
+
+`ts/gameinfo.txt` overrides the original `ts/liblist.gam` (which had
+`gamedll_linux "dlls/ts_i386.so"`) to force `gamedll "dlls/hl.dll"`.
+
+That override IS the fallback that's letting us play at all:
+
+| Layer | Status | Why |
+|---|---|---|
+| Mod detection | ✅ works | `ts/gameinfo.txt` parsed correctly |
+| TS textures/sounds/models | ✅ works | Engine found them in `/rodir/ts/` |
+| Map layout, level geometry | ✅ works | `.bsp` files readable as plain data |
+| TS-specific entities (ts_modelf, buy zones) | ❌ silently skipped | HL1 DLL doesn't know how to spawn them |
+| TS-specific commands (buy, firemode, useitems) | ❌ "Unknown command" | HL1 DLL doesn't have those console commands |
+| Bot AI | ⚠️ HL1 vanilla bots | HL1 DLL's bot code, not TS's class system |
+| Viewmodels | ❌ HL1 arms | HL1 client DLL doesn't know `p_dual_smg.mdl` |
+
+Without the override, `ts_i386.so` (Linux ELF) can't load in WASM
+and the engine fails to start. With the override, we get graceful
+degradation: TS detection + HL1 gameplay on TS maps.
+
+### Half-Life 1 (GoldSrc) two-DLL architecture
+
+```
+Server DLL (one per game session, runs engine-side)
+├── Game rules (scoring, round time, who wins)
+├── Entity spawning (every "thing" in the level)
+├── Player physics state (HP, ammo, position, velocity)
+├── Bot AI (where to go, what to shoot)
+├── Validate player actions (can this kick land?)
+└── Powerup/objective logic (briefcase in CTB mode)
+
+Client DLL (one per player, runs in each browser tab)
+├── Viewmodels (the gun-in-your-hand — TS's dual-SMG pose, knife throw)
+├── HUD (HP bar, ammo counter, scoreboard, money)
+├── Audio (sound effects, music)
+├── Input → commands (translate keybinds into actions)
+├── Menus (weapon select, buy menu, scoreboard UI)
+└── Particles (sparks, blood splatter)
+```
+
+Concrete example "buy a weapon":
+1. Player presses `b` → **Client DLL** checks buy-zone overlap → sends "I want weapon_X" to **Server DLL**
+2. **Server DLL** validates "can they afford it?" → spawns weapon → broadcasts to all players
+3. Each player's **Client DLL** receives broadcast → renders `p_dual_smg.mdl` viewmodel → updates HUD ammo
+
+**With only server ported:** step 1 fails. Pressing `b` does nothing.
+**With only client ported:** step 2 fails. "Unknown command: buy".
+**With neither ported:** both fail. (Where we are today.)
+
+Visual assets (`.mdl`, `.wad`, `.wav`, `.tga`) don't need porting —
+they're just files the engine reads via MEMFS once we mount the zip.
+
+### Path to "real TS" game (multi-week)
+
+We have AI-decompiled TypeScript representations of TS game logic at
+`tools/decompile/cross-vendor/`:
+- **375 of 1254 methods (30%)** decompiled for **server DLL**
+- **0 of ~600 methods (0%)** decompiled for **client DLL**
+
+Phases:
+1. **Server DLL WASM** — finish remaining 122 server decomp methods →
+   translate TS to C++ → build emsdk → `ts_emscripten_wasm32.wasm`.
+   Update `ts/gameinfo.txt`: `gamedll_linux "dlls/ts.dll"`. **~1-2 weeks.**
+   Unlocks: bots with TS classes, `buy`, `firemode`, `useitems`,
+   `ts_modelf` spawns, all server-side TS commands work.
+2. **Client DLL WASM** — decomp `ts/cl_dlls/client.dll` (~600 methods)
+   → translate TS to C++ → build emsdk →
+   `ts_client_emscripten_wasm32.wasm`. Update `ts/gameinfo.txt`.
+   **~2-4 weeks.**
+   Unlocks: TS viewmodels, weapon menu UI, TS HUD, stunt keybindings,
+   full "this is The Specialists" look and feel.
+
+### Tools and locations already in place
+
+Build infrastructure (no setup needed for next session):
+- emsdk 6.0.12 at `/home/kyle/emsdk/`
+- cmake 3.30.0 at `/tmp/cmake-3.30.0-linux-x86_64/`
+- wabt 1.0.42 at `/tmp/wabt-1.0.42/` (wasm-objdump for verification)
+- hl1_sdk via hlsdk-portable 0.1.3 (used as basis for HL1 rebuilds)
+- Source-of-truth WASMs at `/tmp/hlsdk-extracted/`
+- Patched CMakeLists.txt patterns at `/tmp/hlsdk-portable/` (SIDE_MODULE+strip-emscripten skips)
+
+PATH for build session:
+```bash
+export PATH="/tmp/cmake-3.30.0-linux-x86_64/bin:/home/kyle/emsdk:/home/kyle/emsdk/upstream/emscripten:/tmp/wabt-1.0.42/bin:$PATH"
+```
+
+Decompilation pipeline (per `progress/decomp-log.md`):
+- `progress/decomp-log.md` is the master log (auto-generated, do not commit)
+- `progress/remaining-methods.json` lists the **122 server methods still to decompile**
+- `progress/codex-*.log` are codex-CLI decomp sessions
+- `progress/review-*.log` are review sessions
+- `tools/decompile/{decompile,chunk,grind,consolidate,batch}.py`
+  is the dispatcher
+
+Optional upstream npm precompiled path (per skill
+`emscripten-side-module-build`):
+- `https://registry.npmmirror.com/hlsdk-portable/-/hlsdk-portable-0.1.3.tgz`
+  shipped the official WASM DLLs (hl: 52 imports, client: 43 imports)
+- We use those for HL1 fallback. **There is no TS DLL on any registry.**
+
+---
+
+## ⚡ CHECKPOINT SUMMARY — UPDATED 2026-10-19 (D.7.10 COMPLETE)
+
+| ✅ D.7.1 — TS-only launcher working in browser (single-player)
+| ✅ D.7.2 — Hero launcher UX (Play button + collapsible Advanced)
+| ✅ D.7.3 — Full TS texture fix (9 ts/*.wad files rebuilt into tsmod.zip)
+| ✅ D.7.4 — Multiplayer scaffolded (WebRTC + signaling server, opt-in)
+| ✅ D.7.5 — gameinfo.txt format fix + arg-merge ordering in xash-loader
+| ✅ D.7.6 — launchOptions default `-game ts +map ts_apartments`
+| ✅ D.7.7 — Cache API for tsmod.zip (no 494MB re-downloads)
+| ✅ D.7.8 — bot_quota 4 default for listen-server feel
+| ✅ D.7.9 — bot_quota 2 default (WASM 256MB heap cap, fixes Lambda freeze)
+| ✅ D.7.10 — Architectural realization: TS detection ≠ TS gameplay
+
+## ⚠️ KNOWN LIMITATIONS
+
+1. **WASMs are HL1 vanilla fallback**, not TS — gameplay is HL1 DM with
+   TS maps, textures, sounds. Real TS gameplay needs server+client
+   DLL ports (D.7.10 follow-up).
+2. **Viewmodels are HL1 arms** — no TS dual-SMG pose, no knife throw.
+   Needs TS client DLL port.
+3. **WASM heap cap 256MB** — `bot_quota 2` default. Raise with rebuild.
+4. **`ws` not in package.json** — installed globally; signaling server
+   runs with `NODE_PATH=$(npm root -g)`. Documented workaround, but new
+   contributors will hit it. `npm install --legacy-peer-deps` not yet tested.
+5. **WebRTC multiplayer untested with real 2nd client** — needs two
+   tabs, Host + Join, same room on m5:27016.
+6. **TS-specific bot classes don't exist** — bots have HL1 DM AI.
+7. **Custom `ts/liblist.gam` overrides `ts_i386.so` references** — we
+   force `gamedll "dlls/hl.dll"` because the original ts_i386.so is
+   a Linux ELF that can't load in WASM.
+8. **`selectedGame.launchArgs` debugging unresolved** — workaround
+   shipped (D.7.6), root cause still TBD.
+
+## 🎯 NEXT WORK (in priority order)
+
+### Priority 1: Server DLL WASM port (~1-2 weeks)
+
+This is the bigger unlock and biggest blocker for "real TS".
+
+**Step 1 — Finish remaining 122 server-side decomp methods**
+- Read `progress/remaining-methods.json` for the list
+- Use `tools/decompile/grind.py` to auto-spawn codex-CLI sessions
+- Outputs land in `tools/decompile/output/` as `*.ts` files
+- After complete, run `consolidate.py` to merge codex/codex2 outputs
+
+**Step 2 — Set up emscripten build for ts_emscripten_wasm32.wasm**
+- Take `hl1_sdk` from hlsdk-portable as the basis
+- Replace HL1 server classes (CHalfLifeMultiplay, CBasePlayer, CBaseEntity)
+  with TS-decompiled equivalents (CTSGameRules, CTSPlayer, etc.) using
+  the TypeScript as reference
+- Apply skill `emscripten-side-module-build` patches (SIDE_MODULE=1 +
+  strip-emscripten skip)
+- Build with `emcmake cmake` → `ts_emscripten_wasm32.wasm`
+- Verify import count is ~50 (not 250+ indicating SIDE_MODULE flag missed)
+
+**Step 3 — Wire it up**
+- Update `ts/gameinfo.txt`: `gamedll_linux "dlls/ts.dll"` (and the
+  base variants)
+- Re-add `game.dll` (the client DLL that pairs with this server)
+- Hard-refresh + Play → verify `Error: No spawn function for ts_modelf`
+  is gone, `Unknown command: buy`/`firemode`/`useitems` resolved
+
+### Priority 2: Multiplayer WebRTC round-trip test (1-2 hours)
+
+Open two browser tabs:
+- Tab 1: enable MP in XashSettings, role = Host, click Play
+- Tab 2: enable MP in XashSettings, role = Join, same room ID, click Play
+- Expected: signaling handshake completes, WebRTC data channel
+  opens, both tabs see each other's players in the listen server
+
+If handshake fails: smoke-test the signaling server logs at
+`/tmp/signaling.log`, verify `ws` module loaded, check room pairing.
+
+### Priority 3: WASM heap cap raise (~30 min)
+
+Rebuild `xash.wasm` (engine, not game DLL) with
+`-s MAXIMUM_MEMORY=2GB`. Bump `bot_quota` default back to 4 or higher.
+Republish to npm as `xash3d-fwgs@2GB-heap` for opt-in use.
+
+### Priority 4: Client DLL WASM port (~2-4 weeks, biggest)
+
+Same pattern as Priority 1 but for `ts/cl_dlls/client.dll`. Decomp
+~600 methods first (no decomp started), translate, build, ship as
+`ts_client_emscripten_wasm32.wasm`. Wires viewmodels, weapon menu,
+TS HUD, stunt keybindings. This is what makes "real TS" visually.
+
+---
+
+**End of D.7 series status (2026-10-19). Foundation complete, porting
+projects queued.**
