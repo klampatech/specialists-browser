@@ -292,6 +292,81 @@ Decoded sub-models:
   the .mdl has per-vertex normal indices → normal table that
   we should resolve for proper lighting)
 
+---
+
+### D.6 v0.1.1 → v0.1.3 — third-person + first-person weapon hand
+
+**v0.1.1 (commit 1c701a8) — feet placement fix**
+
+The .mdl origin is the pelvis bone, not the feet. When placed at
+`player.entity.pev.origin`, the model's feet end up at y=-0.6
+below the floor. Fix: compute `feetOffset = min(bb.minimum.y across
+all bodyPart meshes)` then `inst.position.y -= feetOffset`. Bounds
+are in pre-scale local units, so multiply by 0.1 (the model scale)
+to convert to world meters.
+
+**v0.1.2 (commit b71f506) — third-person camera fix**
+
+Three bugs fixed:
+1. `camera.setTarget()` was mutating `camera.rotation.y`, which the
+   next frame's camera position offset was computed from — positive
+   feedback (camera teleported between z=-7 and z=-17). Fix:
+   `player.getYaw()` returns the stable yaw field instead of
+   `camera.rotation.y`.
+2. Third-person block ran in `runRenderLoop` AFTER `scene.render()`,
+   so the render used last frame's camera. Fix: move to
+   `scene.onBeforeRenderObservable` so it runs before the actual draw.
+3. Distance 5m was too far; pulled to 2.5m back, 0.7m up.
+
+**v0.1.3 (commit 9f8dd80 / b6c688c) — model hiding + WASD fix**
+
+- "Polygons all over" in first-person was the camera INSIDE the
+  player's torso (crouched eye height 0.8m < 1.6m-tall model). Fix:
+  toggle `playerModelInstance.setEnabled()` based on `thirdPerson`.
+- "WASD reversed" after toggling: stale `setTarget` rotation
+  persisted, making the camera face backward. Fix: in the
+  first-person branch, explicitly set `camera.rotation = (-pitch,
+  yaw, 0)` every frame if locked.
+
+**D.6.7 (commit 2da66cc, WIP) — real level loader**
+
+`loadGLBLevel(scene, glbPath, opts)` in `babylon/src/world.ts`
+parses a converted BSP→glTF .glb file manually (Babylon's loader
+chokes on the pre-converted `ts_mathar.glb` — JSON chunk has
+NUL padding instead of spaces, and the GLB itself has 507 corrupt
+vertices from a buggy `bsp2glb` tool run).
+
+Manual parser does the minimum needed:
+- Fix NUL→space padding in JSON chunk
+- Read GLB header (12 bytes) + JSON chunk + BIN chunk
+- Iterate `meshes[].primitives[]` → `accessors[].bufferView[]`
+  → typed-array view of positions/indices/colors
+- Build Babylon `Mesh` per primitive, `VertexData.applyToMesh`
+- Compute real bounds from finite vertex positions only
+  (bsp2glb ships 0x7F7FFFFF placeholder values)
+- Scale by 0.0254 (1 GoldSrc unit ≈ 1 inch → meters)
+
+Default-disabled via `USE_GLB_LEVEL = false` in `main.ts`. Real
+level rendering requires fixing `tools/bsp2glb.ts` to produce
+clean vertex data first (D.6.8 follow-up).
+
+**D.6.8 (commit 9e25c23) — first-person weapon hand**
+
+Loads `v_knife.mdl` (simplest TS mod weapon: hand + blade, 36
+bones, 8 sequences, 3 textures). Same `parseMdl` + `buildMdlMeshes`
+pipeline as the player model.
+
+- Parent: camera (TransformNode parented to the camera)
+- Position: +0.25 right, -0.22 down, +0.45 forward (camera-local)
+- Rotation: yaw π (flip to face camera), pitch -0.2 rad (blade up)
+- Scale: 0.04 (knife ~25cm native → 1cm mesh, in lower-right of FOV)
+- Visibility: shown only in first-person, hidden in third-person
+  (otherwise floats behind the player's back)
+
+Verified: knife hand visible in bottom-right of first-person view.
+No animation yet (knife is in idle pose). Sequence parsing +
+bone animation is queued for D.6.9.
+
 ### D.5.7 v2 in progress — shim layer + first Fire* method wired
 
 Honest read on the scope: each decompiled Fire* method is 100-234 lines
