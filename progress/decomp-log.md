@@ -196,3 +196,146 @@ Spawned 6 codex calls (detached)
 [2026-10-16 19:08:49]   review pid=3694279 for HandleDive__8CTSStunt
 [2026-10-16 19:08:49] 
 Done. Output count: 54/281 = 19.2%
+[2026-10-16 19:09:13] === Spawn next 10 codex calls ===
+[2026-10-16 19:09:13]   CTSGameRules::UpdateTeamScores (21B)
+[2026-10-16 19:09:13]   CTSAnimation::IsInCloseCombat (31B)
+[2026-10-16 19:09:13]   CTSGun::Holster (33B)
+[2026-10-16 19:09:13]   CTSAnimation::DisableBulletDance (35B)
+[2026-10-16 19:09:13]   CTSAnimation::EnableBulletDance (35B)
+[2026-10-16 19:09:13]   CTSGun::Zoom (53B)
+[2026-10-16 19:09:13]   CTSGameRules::CallCheckDeads (63B)
+[2026-10-16 19:09:13]   CTSGameRules::SendObjectiveList (75B)
+[2026-10-16 19:09:13]   CTSGameRules::IsCTB (85B)
+[2026-10-16 19:09:13]   CTSStunt::CanDiveHigh (85B)
+[2026-10-16 19:09:14]   spawned #1: CallCheckDeads (63B) pid=3726197
+[2026-10-16 19:09:14]   spawned #2: SendObjectiveList (75B) pid=3726253
+[2026-10-16 19:09:14]   spawned #3: IsCTB (85B) pid=3726450
+[2026-10-16 19:09:14]   spawned #4: CanDiveHigh (85B) pid=3726881
+[2026-10-16 19:09:14] 
+Total spawned: 4
+[2026-10-16 19:09:14] Canonical outputs: 54/281 = 19.2%
+[2026-10-16 19:12:59] === Code files needing review: 49 ===
+[2026-10-16 19:12:59]   review: CCombatBlock__6CTSGun pid=4112040
+[2026-10-16 19:12:59]   review: Spawn__18CTSSlowMotionPoint pid=4112041
+[2026-10-16 19:12:59]   review: ActivateSlow__18CTSSlowMotionPointfffb pid=4112042
+[2026-10-16 19:12:59]   review: Use__13CTSSlowMotionP11CBaseEntityT18USE_TYPEf pid=4112043
+[2026-10-16 19:12:59]   review: EmptySound__6CTSGun pid=4112044
+[2026-10-16 19:12:59]   review: ObjectCaps__13CTSSlowMotion pid=4112045
+[2026-10-16 19:12:59]   review: WeaponIdle__6CTSGun pid=4112046
+[2026-10-16 19:12:59]   review: Reload__6CTSGun pid=4112047
+[2026-10-16 19:12:59] 
+=== Spawn next 10 codex calls (priority queue) ===
+[2026-10-16 19:13:00]   spawned #1: CanDiveLow (85B) pid=4112587
+[2026-10-16 19:13:00]   spawned #2: CanDiveMedium (85B) pid=4113696
+[2026-10-16 19:13:00]   spawned #3: Init (85B) pid=4115033
+[2026-10-16 19:13:01]   spawned #4: GetTeamCash (87B) pid=4116283
+[2026-10-16 19:13:01]   spawned #5: TogglePlayerFromSlow (87B) pid=4117166
+[2026-10-16 19:13:01]   spawned #6: CountPlayers (90B) pid=4118244
+[2026-10-16 19:13:01]   spawned #7: Init (90B) pid=4119461
+[2026-10-16 19:13:02]   spawned #8: GetActiveItems (93B) pid=4120757
+[2026-10-16 19:13:02]   spawned #9: Unzoom (96B) pid=4121732
+[2026-10-16 19:13:02]   spawned #10: ShowObjectiveOnHud (107B) pid=4122863
+[2026-10-16 19:13:02] 
+Total spawned this round: 10
+[2026-10-16 19:13:02] Canonical now: 60/281
+[2026-10-16 19:16:59] === Code files needing review (no canonical yet): 12 ===
+[2026-10-16 19:16:59]   Init__8CTSStuntP11CBasePlayer
+[2026-10-16 19:16:59]   SendObjectiveList__12CTSGameRulesP11CBaseEntity
+[2026-10-16 19:16:59]   GetActiveItems__6CTSGun
+[2026-10-16 19:16:59]   Unzoom__6CTSGun
+[2026-10-16 19:16:59]   CountPlayers__12CTSGameRules
+[2026-10-16 19:16:59]   CanDiveMedium__8CTSStunt
+[2026-10-16 19:16:59]   TogglePlayerFromSlow__12CTSGameRulesP11CBasePlayer
+[2026-10-16 19:16:59]   CanDiveHigh__8CTSStunt
+[2026-10-16 19:16:59]   IsCTB__12CTSGameRules
+[2026-10-16 19:16:59]   CanDiveLow__8CTSStunt
+[2026-10-16 19:16:59]   Init__12CTSAnimation
+[2026-10-16 19:16:59]   CallCheckDeads__12CTSGameRules
+[2026-10-16 19:16:59]   review pid=252076: Init__8CTSStuntP11CBasePlayer
+[2026-10-16 19:16:59]   review pid=252079: SendObjectiveList__12CTSGameRulesP11CBaseEntity
+[2026-10-16 19:16:59]   review pid=252082: GetActiveItems__6CTSGun
+[2026-10-16 19:16:59]   review pid=252084: Unzoom__6CTSGun
+[2026-10-16 19:16:59]   review pid=252085: CountPlayers__12CTSGameRules
+[2026-10-16 19:16:59]   review pid=252086: CanDiveMedium__8CTSStunt
+[2026-10-16 19:16:59]   review pid=252087: TogglePlayerFromSlow__12CTSGameRulesP11CBasePlayer
+[2026-10-16 19:16:59]   review pid=252089: CanDiveHigh__8CTSStunt
+[2026-10-16 19:16:59] 
+=== Spawn next 10 codex calls ===
+[2026-10-16 19:17:01]   codex pid=259525: GetTeamCash (87B)
+[2026-10-16 19:17:02]   codex pid=261231: ShowObjectiveOnHud (107B)
+[2026-10-16 19:17:02]   codex pid=262453: SwitchFireMode (116B)
+[2026-10-16 19:17:02]   codex pid=263636: GetBetterWeapon (118B)
+[2026-10-16 19:17:02]   codex pid=264732: SelectWeapon (118B)
+[2026-10-16 19:17:02] 
+Spawned: 8 reviews + 5 codex calls
+[2026-10-16 19:17:02] Current canonical: 60/281
+[2026-10-16 19:20:15] Codex needing review: 9
+[2026-10-16 19:20:15]   review pid=391581: ShowObjectiveOnHud__12CTSGameRulesP12CTSObjectiveb
+[2026-10-16 19:20:15]   review pid=391582: GetTeamCash__12CTSGameRulesP11CBasePlayer
+[2026-10-16 19:20:15]   review pid=391583: GetBetterWeapon__6CTSGuni
+[2026-10-16 19:20:15]   review pid=391584: IsCTB__12CTSGameRules
+[2026-10-16 19:20:15]   review pid=391585: CanDiveLow__8CTSStunt
+[2026-10-16 19:20:15]   review pid=391586: Init__12CTSAnimation
+[2026-10-16 19:20:15]   review pid=391587: CallCheckDeads__12CTSGameRules
+[2026-10-16 19:20:15]   review pid=391588: SelectWeapon__6CTSGun10tsweapon_tb
+[2026-10-16 19:20:15] Spawned 8 reviews
+[2026-10-16 19:20:15] 
+=== Spawn 10 more codex calls ===
+[2026-10-16 19:20:18]   codex pid=398968: SetObjective (124B)
+[2026-10-16 19:20:18]   codex pid=400029: StopReload (125B)
+[2026-10-16 19:20:18] Spawned 2 codex
+[2026-10-16 19:20:18] 
+Canonical: 68/281
+[2026-10-16 19:23:47] Codex needing review: 4
+[2026-10-16 19:23:47]   review pid=434292: StopReload__6CTSGun
+[2026-10-16 19:23:47]   review pid=434293: SetObjective__12CTSGameRules
+[2026-10-16 19:23:47]   review pid=434294: ShowObjectiveOnHud__12CTSGameRulesP12CTSObjectiveb
+[2026-10-16 19:23:47]   review pid=434295: SwitchFireMode__6CTSGun
+[2026-10-16 19:23:48] 
+=== Spawn 15 more codex calls ===
+[2026-10-16 19:23:49]   codex pid=437632: AddObjectiveInList (126B)
+[2026-10-16 19:23:49]   codex pid=438184: RoundTimeLeft (142B)
+[2026-10-16 19:23:49]   codex pid=438927: ReloadWeapon (149B)
+[2026-10-16 19:23:49]   codex pid=439403: FindIndexByObjective (154B)
+[2026-10-16 19:23:50]   codex pid=440341: AddAmmo (157B)
+[2026-10-16 19:23:50]   codex pid=441306: GetPlayerModel (162B)
+[2026-10-16 19:23:50]   codex pid=442148: SetGlobalSlowMotion (170B)
+[2026-10-16 19:23:51]   codex pid=443277: DropWeapon (181B)
+[2026-10-16 19:23:51] 
+Canonical now: 75/281
+[2026-10-16 19:27:07] Need review: 6
+[2026-10-16 19:27:07]   review pid=567278: DropWeapon__6CTSGunib
+[2026-10-16 19:27:07]   review pid=567279: ReloadWeapon__6CTSGuniif
+[2026-10-16 19:27:07]   review pid=567280: SetGlobalSlowMotion__12CTSGameRulesff
+[2026-10-16 19:27:07]   review pid=567281: AddObjectiveInList__12CTSGameRulesP12CTSObjectivePi
+[2026-10-16 19:27:07]   review pid=567282: FindIndexByObjective__12CTSGameRulesP12CTSObjective
+[2026-10-16 19:27:07]   review pid=567283: AddAmmo__6CTSGunUci
+[2026-10-16 19:27:07] 
+=== Spawn 15 more codex ===
+[2026-10-16 19:27:09]   codex pid=572435: RoundTimeLeft (142B)
+[2026-10-16 19:27:10]   codex pid=575287: GetPlayerModel (162B)
+[2026-10-16 19:27:10]   codex pid=577663: GaitCloseCombat (181B)
+[2026-10-16 19:27:10] 
+Canonical: 79/281
+[2026-10-16 19:30:20] Need review: 4
+[2026-10-16 19:30:20]   review pid=609852: RoundTimeLeft__12CTSGameRules
+[2026-10-16 19:30:20]   review pid=609853: DropWeapon__6CTSGunib
+[2026-10-16 19:30:20]   review pid=609854: SetGlobalSlowMotion__12CTSGameRulesff
+[2026-10-16 19:30:20]   review pid=609855: GetPlayerModel__12CTSGameRulesP11CBasePlayer
+[2026-10-16 19:30:20] 
+=== Spawn 15 more codex ===
+[2026-10-16 19:30:22]   codex pid=614873: GaitCloseCombat (181B)
+[2026-10-16 19:30:23]   codex pid=615430: GetTeamIndex (185B)
+[2026-10-16 19:30:23]   codex pid=615789: BulletDance (200B)
+[2026-10-16 19:30:23]   codex pid=616634: GetRandomPowerup (229B)
+[2026-10-16 19:30:23] 
+Canonical: 83/281
+[2026-10-16 19:30:40] Need review: 4
+[2026-10-16 19:30:40] 
+=== Spawn 15 more codex ===
+[2026-10-16 19:30:40]   codex: ShouldCollide (6B)
+[2026-10-16 19:30:41]   codex: GetDescription (80B)
+[2026-10-16 19:30:43]   codex: GaitCloseCombat (181B)
+[2026-10-16 19:30:43]   codex: GetTeamIndex (185B)
+[2026-10-16 19:30:43] 
+Canonical: 84/281

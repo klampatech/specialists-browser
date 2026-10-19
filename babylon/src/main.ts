@@ -425,7 +425,7 @@ const onKeyDown = (e: KeyboardEvent) => {
     if (thirdPerson) {
       // Move camera back and up so it looks at the player from
       // behind. Babylon UniversalCamera supports `position` +
-      // `setTarget` — we re-anchor on every frame below.
+      // setTarget — we re-anchor on every frame below.
       hud.addNotification("3RD-PERSON");
     } else {
       hud.addNotification("1ST-PERSON");
@@ -550,6 +550,30 @@ scene.onBeforeRenderObservable.add(() => {
   );
 });
 
+// Third-person camera update — must run BEFORE scene.render() in
+// every frame so the render uses the new camera position (not
+// last frame's). Putting it in an onBeforeRenderObservable also
+// guarantees it runs after the player controller update (which is
+// also in onBeforeRender) but before the actual scene render.
+scene.onBeforeRenderObservable.add(() => {
+  if (thirdPerson && playerModelInstance) {
+    player.setExternalCamera(true);
+    const px = player.entity.pev.origin.x;
+    const pz = player.entity.pev.origin.z;
+    const yaw = player.getYaw();
+    // 3m back, 1m up — frames the 1.6m-tall model from chest
+    // height with full body in view.
+    const back = 3.0;
+    const up = 1.0;
+    camera.position.x = px + Math.sin(yaw) * back;
+    camera.position.y = player.entity.pev.origin.y + up;
+    camera.position.z = pz + Math.cos(yaw) * back;
+    camera.setTarget(new Vector3(px, player.entity.pev.origin.y + 0.9, pz));
+  } else {
+    player.setExternalCamera(false);
+  }
+});
+
 let frameCount = 0;
 engine.runRenderLoop(() => {
   scene.render();
@@ -572,36 +596,20 @@ engine.runRenderLoop(() => {
   // Third-person view: pull camera back and up, looking at the
   // player model. Re-applied every frame because the player is
   // moving (and the camera was originally a FPS controller).
-  if (thirdPerson) {
-    // Tell the player controller to stop driving the camera
-    // (in third-person, we position the camera manually from the
-    // player's origin). Without this, the controller writes
-    // camera.position based on its own smoothed position, which
-    // then feeds back into player.entity.pev.origin.y → py → camera.y
-    // each frame (positive feedback loop until y = 37+).
-    player.setExternalCamera(true);
-    // The model is rendered at the player's FEET (entity.pev.origin
-    // is the feet position) with a +(-feetOffset) translation.
-    // Aim the camera at the model's chest — about 1.0m above the
-    // feet (the model is ~1.6m tall after scale 0.1).
-    const px = player.entity.pev.origin.x;
-    const pz = player.entity.pev.origin.z;
-    const yaw = camera.rotation.y;
-    // Behind the player, raised so the camera looks at the upper
-    // body. With back=5, up=2.0 the camera is 5m back and 2m
-    // above the feet — frames the full 1.6m-tall model with the
-    // head in the upper third of the view.
-    const back = 5.0;
-    const up = 2.0;
-    camera.position.x = px + Math.sin(yaw) * back;
-    camera.position.y = player.entity.pev.origin.y + up;
-    camera.position.z = pz + Math.cos(yaw) * back;
-    // Target the model's chest (1.0m above the feet — about 60% up
-    // the model, which is 1.6m tall after scale 0.1).
-    camera.setTarget(new Vector3(px, player.entity.pev.origin.y + 1.0, pz));
-  } else {
-    // First-person: let the player controller drive the camera.
-    player.setExternalCamera(false);
+  // (third-person camera is now in onBeforeRenderObservable above,
+  // before the render — that way the render uses the new camera
+  // position immediately, no 1-frame delay)
+  if (false) {
+    // [moved to onBeforeRender above]
+  }
+
+  // TEMP DEBUG: log camera frustum details
+  if (frameCount === 30) {
+    console.log(`[debug] camera pos=(${camera.position.x.toFixed(2)},${camera.position.y.toFixed(2)},${camera.position.z.toFixed(2)}) rot=(${camera.rotation.x.toFixed(2)},${camera.rotation.y.toFixed(2)},${camera.rotation.z.toFixed(2)}) fov=${camera.fov} minZ=${camera.minZ} maxZ=${camera.maxZ}`);
+    console.log(`[debug] active camera: ${scene.activeCamera?.name}`);
+    // List ALL meshes in scene
+    const all = scene.meshes.map(m => `${m.name}(${m.isVisible ? 'V' : 'h'})`).join(', ');
+    console.log(`[debug] ${scene.meshes.length} meshes total: ${all.substring(0, 800)}`);
   }
 
   if (status && frameCount % 30 === 0) {

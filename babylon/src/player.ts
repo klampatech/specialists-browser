@@ -176,6 +176,16 @@ export class PlayerController {
     return this.locked;
   }
 
+  /**
+   * Current camera yaw (radians). 0 = +Z, π/2 = +X.
+   * This is the player's *intent* (driven by mouse-look) and
+   * is stable across frames — unlike camera.rotation.y, which
+   * Babylon mutates whenever setTarget is called.
+   */
+  getYaw(): number {
+    return this.yaw;
+  }
+
   /** Set AABB world bounds (player can't leave this box on XZ). */
   setBounds(b: { minX: number; maxX: number; minZ: number; maxZ: number } | null): void {
     this.bounds = b;
