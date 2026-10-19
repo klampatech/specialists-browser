@@ -306,6 +306,56 @@ fetch("/models/player/seal/seal.mdl")
     console.warn("[mdl] failed to load player model:", err);
   });
 
+// ─── D.6.8 — First-person weapon hand (viewmodel) ─────────────────
+//
+// TS mod weapon viewmodels (v_*.mdl) are rendered from the player's
+// own perspective. They're attached to the camera at a fixed offset
+// (lower-right of the view), so when the player moves the camera,
+// the weapon moves with them. We hide the weapon in third-person —
+// it should not be visible in the world model.
+//
+// v_knife.mdl is the simplest weapon and doesn't need ammo / firing
+// state. Just hold it in the lower-right and idle.
+let weaponInstance: TransformNode | null = null;
+fetch("/models/v_knife.mdl")
+  .then((r) => r.arrayBuffer())
+  .then((buf) => {
+    const mdl = parseMdl(buf);
+    // Knives are ~25cm long in their native units, scale 0.1 → 2.5cm
+    // mesh; in a 1.7m world that'd be tiny — bump scale so the hand
+    // looks roughly right in first-person.
+    const built = buildMdlMeshes(scene, mdl, { scale: 0.04 });
+    for (const bp of built.bodyParts) {
+      for (const m of bp.meshes) m.isVisible = false;
+    }
+    const inst = new TransformNode("weapon_model", scene);
+    inst.parent = camera; // attach to camera — moves with the view
+    // Position: lower-right of the screen, just below the crosshair.
+    // In Babylon's left-handed Y-up frame, the camera looks down -Z,
+    // so +X is right, +Y is up, -Z is forward.
+    // Translate in camera-local space: right, slightly down, in front.
+    inst.position.set(0.25, -0.22, 0.45);
+    // Tilt: knives tilt slightly so the blade faces up.
+    inst.rotation.set(0.0, Math.PI, -0.2);
+    // The mdl's authored forward axis differs from Babylon's. The
+    // loader already swaps Y↔Z (see buildMdlMeshes); the +Math.PI
+    // yaw above flops the model to face the right direction.
+    for (const bp of built.bodyParts) {
+      const bpNode = new TransformNode(`weapon_${bp.name}`, scene);
+      bpNode.parent = inst;
+      for (const srcMesh of bp.meshes) {
+        const m = srcMesh.clone(`weapon_${srcMesh.name}`, bpNode);
+        m.isVisible = true;
+        m.isPickable = false;
+      }
+    }
+    weaponInstance = inst;
+    console.log("[mdl] weapon model loaded: v_knife.mdl, bodyParts=", built.bodyParts.length, "meshes=", built.bodyParts.flatMap(bp => bp.meshes.length));
+  })
+  .catch((err) => {
+    console.warn("[mdl] failed to load weapon model:", err);
+  });
+
 // Bots.
 const bots: StubBot[] = [
   new StubBot(scene, { id: 100, name: "bot_red",   spawn: { x: 8,  y: 0, z: 8 },  color: new Color3(0.9, 0.3, 0.3) }),
@@ -586,6 +636,13 @@ scene.onBeforeRenderObservable.add(() => {
     // the TransformNode tree's render flag — toggling each mesh's
     // isVisible is the more reliable way to show/hide the model).
     playerModelInstance.getChildMeshes().forEach((m) => { m.isVisible = true; });
+    // Hide the weapon hand in third-person — the world-space
+    // camera position in third-person would show the weapon
+    // floating in the air behind the player's back.
+    if (weaponInstance) {
+      weaponInstance.setEnabled(false);
+      weaponInstance.getChildMeshes().forEach((m) => { m.isVisible = false; });
+    }
     const px = player.entity.pev.origin.x;
     const pz = player.entity.pev.origin.z;
     const yaw = player.getYaw();
@@ -600,6 +657,12 @@ scene.onBeforeRenderObservable.add(() => {
     if (playerModelInstance) {
       playerModelInstance.setEnabled(false);
       playerModelInstance.getChildMeshes().forEach((m) => { m.isVisible = false; });
+    }
+    // Show the weapon hand in first-person. (If the model failed
+    // to load, weaponInstance is null and we just skip.)
+    if (weaponInstance) {
+      weaponInstance.setEnabled(true);
+      weaponInstance.getChildMeshes().forEach((m) => { m.isVisible = true; });
     }
     if (player.isLocked()) {
       camera.rotation.set(-player.getPitch(), player.getYaw(), 0);
