@@ -186,6 +186,11 @@ export class PlayerController {
     return this.yaw;
   }
 
+  /** Current camera pitch (radians). Positive = look UP. */
+  getPitch(): number {
+    return this.pitch;
+  }
+
   /** Set AABB world bounds (player can't leave this box on XZ). */
   setBounds(b: { minX: number; maxX: number; minZ: number; maxZ: number } | null): void {
     this.bounds = b;

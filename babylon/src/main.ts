@@ -80,7 +80,7 @@ scene.ambientColor = new Color3(0.4, 0.4, 0.4);
 
 // Light.
 const light = new HemisphericLight("light", new Vector3(0, 1, 0), scene);
-light.intensity = 1.4;
+light.intensity = 1.0;
 light.groundColor = new Color3(0.5, 0.5, 0.5);
 light.diffuse = new Color3(0.95, 0.92, 0.85);
 
@@ -558,19 +558,30 @@ scene.onBeforeRenderObservable.add(() => {
 scene.onBeforeRenderObservable.add(() => {
   if (thirdPerson && playerModelInstance) {
     player.setExternalCamera(true);
+    playerModelInstance.setEnabled(true);
+    // Also flip visibility on each child mesh (the cloned meshes
+    // have isVisible=true from setup, but setEnabled only toggles
+    // the TransformNode tree's render flag — toggling each mesh's
+    // isVisible is the more reliable way to show/hide the model).
+    playerModelInstance.getChildMeshes().forEach((m) => { m.isVisible = true; });
     const px = player.entity.pev.origin.x;
     const pz = player.entity.pev.origin.z;
     const yaw = player.getYaw();
-    // 3m back, 1m up — frames the 1.6m-tall model from chest
-    // height with full body in view.
-    const back = 3.0;
-    const up = 1.0;
+    const back = 2.5;
+    const up = 0.7;
     camera.position.x = px + Math.sin(yaw) * back;
     camera.position.y = player.entity.pev.origin.y + up;
     camera.position.z = pz + Math.cos(yaw) * back;
-    camera.setTarget(new Vector3(px, player.entity.pev.origin.y + 0.9, pz));
+    camera.setTarget(new Vector3(px, player.entity.pev.origin.y + 0.8, pz));
   } else {
     player.setExternalCamera(false);
+    if (playerModelInstance) {
+      playerModelInstance.setEnabled(false);
+      playerModelInstance.getChildMeshes().forEach((m) => { m.isVisible = false; });
+    }
+    if (player.isLocked()) {
+      camera.rotation.set(-player.getPitch(), player.getYaw(), 0);
+    }
   }
 });
 
@@ -601,15 +612,6 @@ engine.runRenderLoop(() => {
   // position immediately, no 1-frame delay)
   if (false) {
     // [moved to onBeforeRender above]
-  }
-
-  // TEMP DEBUG: log camera frustum details
-  if (frameCount === 30) {
-    console.log(`[debug] camera pos=(${camera.position.x.toFixed(2)},${camera.position.y.toFixed(2)},${camera.position.z.toFixed(2)}) rot=(${camera.rotation.x.toFixed(2)},${camera.rotation.y.toFixed(2)},${camera.rotation.z.toFixed(2)}) fov=${camera.fov} minZ=${camera.minZ} maxZ=${camera.maxZ}`);
-    console.log(`[debug] active camera: ${scene.activeCamera?.name}`);
-    // List ALL meshes in scene
-    const all = scene.meshes.map(m => `${m.name}(${m.isVisible ? 'V' : 'h'})`).join(', ');
-    console.log(`[debug] ${scene.meshes.length} meshes total: ${all.substring(0, 800)}`);
   }
 
   if (status && frameCount % 30 === 0) {
