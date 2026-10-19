@@ -367,6 +367,104 @@ Verified: knife hand visible in bottom-right of first-person view.
 No animation yet (knife is in idle pose). Sequence parsing +
 bone animation is queued for D.6.9.
 
+---
+
+## D.7 — PIVOT: webXash (Xash3D WebAssembly port) for "real game in browser"
+
+**Status:** parked. Branch `experimental/babylon-port` (tag
+`babylon-port-frozen`) holds the last committed Babylon work at
+`a18e93c`. New webXash development lands on `main`.
+
+**Why pivot:** the Babylon port never produced visuals that looked
+"correct" — the .mdl parser is fine, but TS mod assets are designed
+for GoldSrc's specific shaders, lightmaps, MDL v10 renderer, and
+entity system. Reimplementing that in Babylon from scratch gets you
+low-poly triangle vomit. The user has been consistently unhappy
+with the visual result.
+
+**Goal:** "closest to the original game, running in the browser,
+with multiplayer, for the least amount of work." → webXash runs
+the actual Xash3D engine (open-source GoldSrc port) in WebAssembly.
+Half-Life 1 + CS 1.6 + The Specialists mod → render in browser.
+Multiplayer via WebSocket to a Docker server.
+
+### What we have today
+
+- `_runtime_assets/half-life/ts/` (608 MB) — The Specialists mod
+  folder (cl_dlls, dlls, maps, sound, models, sprites). This is the
+  mod-specific content that we extracted for the Babylon work.
+- `webxash/` (untracked scaffold) — webXash frontend that loads
+  the Xash3D WASM engine and serves game files.
+- `tools/bsp2glb.ts` (unused, parked) — BSP→glTF converter.
+- `src/mod/mdl-parser.ts`, `babylon/src/mdl-loader.ts` (parked) —
+  decompiled TS mod logic + .mdl→Babylon mesh bridge. Kept as
+  documentation of what TS mod does; not used in the webXash path.
+- Decompiled TS mod entity-pool + decomp-bridge (`src/mod/`) —
+  reference reading of TS gameplay code (bots, weapons, classes).
+
+### What's missing
+
+- `_runtime_assets/half-life/valve/` — Half-Life 1 base content
+  (pak0.pak + ~250MB of models/sounds). NOT shipped in repo for
+  licensing. Was on Kyle's MacBook at
+  `~/Library/Application Support/Steam/steamapps/common/Half-Life/valve/`
+  (516 MB). Being rsync'd to m5 in the background as part of this
+  pivot.
+
+### D.7 plan (webXash → multiplayer)
+
+**D.7.1 — Boot webXash with stock HL1.** Confirm WASM engine starts,
+  loads `valve/` folder, shows a level. Smoke test only.
+- Effort: ~30 min (mostly running setup + debugging Xash3D launch args)
+- Risk: low — webXash is widely deployed for HL1DM
+
+**D.7.2 — Bundle TS mod.** Copy `valve/` + `ts/` into
+  `webxash/public/`. Bundle as `valve.zip` so the user can pick
+  the bundled option (no manual folder selection each time).
+- Effort: ~20 min
+
+**D.7.3 — Launch TS via `-game ts`.** Run webXash with `-game ts`,
+  verify the TS mod boots. Check what works: default TS map loads,
+  TS player models render, TS weapons render, TS HUD shows.
+- Effort: ~30 min
+- Risk: medium — TS mod is heavily customized, Xash3D may
+  not support all of its entity types.
+
+**D.7.4 — Multiplayer server (Docker).** Stand up the webXash
+  Docker server (webxash3d-fwgs/hl-web-server). Expose via
+  Tailscale. Connect from webXash via WebSocket.
+- Effort: ~1 hour (docker-compose + tailscale expose)
+- Risk: low
+
+**D.7.6 — Multiplayer session.** Two browsers, one as host, one
+  as client, verify both connect and see each other.
+- Effort: ~30 min
+
+### What's NOT in D.7
+
+- Customizing webXash UI (no changes needed — webXash's own UI is
+  the in-game menu).
+- Building a TS-specific server binary (the C++ TS server code
+  stays on the user's local Steam install; we use stock HL1DM
+  server for browser multiplayer).
+- Animations beyond what the engine provides (webXash = full model
+  animation, no custom code).
+
+### Caveats / risks
+
+- **TS mod may not fully boot in webXash.** Xash3D explicitly lists
+  some GoldSrc mods as unsupported. If TS hits one of those, we
+  have a decision: ship HL1DM with TS assets (different from "The
+  Specialists" gameplay) or find a different engine port.
+- **valve folder licensing.** Cannot commit to repo. Must be
+  locally cached on m5 (under `_runtime_assets/` which is
+  gitignored) and bundled in `webxash/public/` which is also
+  gitignored. Each fresh setup requires re-copying from the
+  MacBook.
+- **webXash isn't on npm as a deployable artifact.** The README
+  builds from source. Setup script (`webxash/setup-xash.sh`)
+  handles it.
+
 ### D.5.7 v2 in progress — shim layer + first Fire* method wired
 
 Honest read on the scope: each decompiled Fire* method is 100-234 lines
