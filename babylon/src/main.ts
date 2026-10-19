@@ -80,8 +80,8 @@ scene.ambientColor = new Color3(0.4, 0.4, 0.4);
 
 // Light.
 const light = new HemisphericLight("light", new Vector3(0, 1, 0), scene);
-light.intensity = 0.9;
-light.groundColor = new Color3(0.3, 0.3, 0.3);
+light.intensity = 1.4;
+light.groundColor = new Color3(0.5, 0.5, 0.5);
 light.diffuse = new Color3(0.95, 0.92, 0.85);
 
 // Audio.
@@ -205,6 +205,7 @@ player.setBounds(bounds);
 // actually see your own model.
 let playerModel: BuiltMdl | null = null;
 let playerModelInstance: TransformNode | null = null;
+let playerFeetOffset = 0; // negative Y offset to shift the model up so feet are at y=0
 let thirdPerson = false;
 
 fetch("/models/player/seal/seal.mdl")
@@ -232,6 +233,29 @@ fetch("/models/player/seal/seal.mdl")
     // player has its own world transform (and rotation) but shares
     // geometry/material/textures.
     const inst = new TransformNode("player_model", scene);
+    // Compute the model's lowest Y across all sub-models so we can
+    // shift the whole instance UP by that amount, putting the
+    // model's FEET at y=0 in world space. (The .mdl's "origin" is
+    // the pelvis bone, which sits above the feet in this model —
+    // without this offset, ~½ of the body ends up buried below
+    // the floor.)
+    //
+    // The bounds are in mesh-local units (pre-scale, post Y↔Z
+    // swap). At the time we compute feetOffset the mesh has
+    // `scaling = 0.1` applied, so bb.minimum.y is the LOCAL min
+    // (in pre-scale units like -9.4). We multiply by 0.1 to
+    // convert to world meters.
+    let feetOffset = 0;
+    for (const bp of built.bodyParts) {
+      for (const m of bp.meshes) {
+        const bb = m.getBoundingInfo().boundingBox;
+        if (bb.minimum.y < feetOffset) feetOffset = bb.minimum.y;
+      }
+    }
+    // Re-apply the scale we set on each mesh in the loader.
+    feetOffset *= 0.1;
+    playerFeetOffset = feetOffset; // store for the per-frame update
+    console.log(`[mdl] feetOffset = ${feetOffset.toFixed(3)}m (lowest vertex in world space; model is shifted up by this much so feet are at y=0)`);
     for (const bp of built.bodyParts) {
       const bpNode = new TransformNode(`player_${bp.name}`, scene);
       bpNode.parent = inst;
@@ -246,14 +270,15 @@ fetch("/models/player/seal/seal.mdl")
     // forward in Babylon is -Z (into the screen). The mesh was
     // authored facing +Y in GoldSrc, which the swap converts to
     // +Z in Babylon — i.e. facing OUT of the screen. Rotate 180°
-    // around Y so it faces the same way as the player's camera.
-    // Authored in GoldSrc as forward=+Y; after the loader's Y↔Z swap
-    // that's +Z in Babylon (out of the screen). Rotate 180° so
-    // the model faces the same direction as the player's camera.
+    // around Y so the model faces the same direction as the
+    // camera. Then translate UP by -feetOffset (which is
+    // negative) so the feet sit on the ground at y=0 instead of
+    // the pelvis being at y=0.
     inst.rotation.y = Math.PI;
     inst.position.copyFrom(spawn);
+    inst.position.y -= feetOffset; // shift up so feet are at y=0
     playerModelInstance = inst;
-    console.log("[mdl] player model loaded: seal.mdl, bodyParts=", built.bodyParts.length, "meshes=", built.bodyParts.flatMap(bp => bp.meshes).length);
+    console.log("[mdl] player model loaded: seal.mdl, bodyParts=", built.bodyParts.length, "meshes=", built.bodyParts.flatMap(bp => bp.meshes.length));
   })
   .catch((err) => {
     console.warn("[mdl] failed to load player model:", err);
@@ -533,7 +558,10 @@ engine.runRenderLoop(() => {
   // D.6 v0.1: keep the player model anchored to the player controller.
   if (playerModelInstance) {
     playerModelInstance.position.x = player.entity.pev.origin.x;
-    playerModelInstance.position.y = player.entity.pev.origin.y;
+    // Y is shifted up by -playerFeetOffset (which is negative) so
+    // the model's feet sit on the ground at y=0 instead of the
+    // pelvis (which is what entity.pev.origin maps to in the .mdl).
+    playerModelInstance.position.y = player.entity.pev.origin.y - playerFeetOffset;
     playerModelInstance.position.z = player.entity.pev.origin.z;
     // Yaw follows the camera (player faces the same direction they're
     // looking). Add the 180° base rotation that gets the .mdl's
@@ -553,21 +581,23 @@ engine.runRenderLoop(() => {
     // each frame (positive feedback loop until y = 37+).
     player.setExternalCamera(true);
     // The model is rendered at the player's FEET (entity.pev.origin
-    // is the feet position). With scale 0.1, the model is 1.6m
-    // tall (from y=0 to y=1.6). The FPS controller's eyeHeight
-    // (1.7m) is at the top of the model — aim the camera at the
-    // model's chest, not the controller's eye height.
+    // is the feet position) with a +(-feetOffset) translation.
+    // Aim the camera at the model's chest — about 1.0m above the
+    // feet (the model is ~1.6m tall after scale 0.1).
     const px = player.entity.pev.origin.x;
     const pz = player.entity.pev.origin.z;
     const yaw = camera.rotation.y;
-    // Behind the player, eye-level with the model's head.
-    const back = 2.5;
-    const up = 0.7;
+    // Behind the player, raised so the camera looks at the upper
+    // body. With back=5, up=2.0 the camera is 5m back and 2m
+    // above the feet — frames the full 1.6m-tall model with the
+    // head in the upper third of the view.
+    const back = 5.0;
+    const up = 2.0;
     camera.position.x = px + Math.sin(yaw) * back;
     camera.position.y = player.entity.pev.origin.y + up;
     camera.position.z = pz + Math.cos(yaw) * back;
-    // Target the model's chest (about 60% up the model — the
-    // .mdl is 1.6m tall in world units after scaling).
+    // Target the model's chest (1.0m above the feet — about 60% up
+    // the model, which is 1.6m tall after scale 0.1).
     camera.setTarget(new Vector3(px, player.entity.pev.origin.y + 1.0, pz));
   } else {
     // First-person: let the player controller drive the camera.
