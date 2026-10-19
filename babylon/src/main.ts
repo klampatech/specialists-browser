@@ -51,7 +51,7 @@ import { tryDecompFire, tryDecompReload, tryDecompSpawn, tryDecompSlowMotion, tr
 import { EntityPool, getGlobalPool, setGlobalPool } from "../../src/mod/entity-pool";
 
 import { PlayerController } from "./player";
-import { buildTestLevel } from "./world";
+import { buildTestLevel, loadGLBLevel } from "./world";
 import { StubBot, BotWorld } from "./bot";
 import { Pistol, HudOverlay } from "./weapon";
 import { GameAudio } from "./audio";
@@ -178,8 +178,30 @@ function resolveEntityByMesh(mesh: any): any {
   return null;
 }
 
-// World.
-const { spawn, bounds, obstacles } = buildTestLevel(scene);
+// World — try the real GLB level first; fall back to the test arena
+// if the GLB load fails (missing file, browser blocks it, bad data, etc.).
+//
+// Set USE_GLB_LEVEL to true to enable the GLB loader. The pre-converted
+// ts_mathar.glb has 507 corrupt vertices from a buggy bsp2glb tool run,
+// so the level renders with chaotic geometry. Setting up the BSP→glTF
+// pipeline properly is queued (D.6.8) but needs a working tool first.
+const USE_GLB_LEVEL = false;
+let level: { spawn: any; bounds: any; obstacles: any[] };
+if (USE_GLB_LEVEL) {
+  try {
+    level = await loadGLBLevel(scene, "ts_mathar.glb", {
+      scale: 0.0254,        // 1 GoldSrc unit ≈ 1 inch → meters
+      spawn: new Vector3(0, 0, 0),
+    });
+  } catch (e) {
+    console.error("[level] GLB load FAILED, falling back to test arena:", e, e instanceof Error ? e.stack : "");
+    level = buildTestLevel(scene);
+  }
+} else {
+  level = buildTestLevel(scene);
+}
+console.log(`[main] level loaded, building camera + player`);
+const { spawn, bounds, obstacles } = level;
 console.log(`[level] bounds=${JSON.stringify(bounds)}, obstacles=${obstacles.length}`);
 
 // Camera.
