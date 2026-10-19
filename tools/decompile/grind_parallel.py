@@ -106,13 +106,23 @@ def spawn(name: str, cmd: list[str], cwd: Path = REPO) -> int:
 
 
 def alive(pid: int) -> bool:
+    """True if process is alive AND not a zombie."""
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
         return True
+    # Zombies are technically alive but the work is done. Check /proc/<pid>/stat.
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            stat = f.read().split()
+        state = stat[2]  # 3rd field is process state (R/S/D/Z/T/...)
+        if state == "Z":
+            return False
+    except (FileNotFoundError, IndexError):
+        pass
+    return True
 
 
 def wait_for(name: str, timeout: float = 7200.0) -> bool:
