@@ -2195,6 +2195,7 @@ projects queued.**
 
 | ✅ D.7.12 — **Server-side decomp is 100% complete** (122 → 0 entries) |
 | ✅ D.7.13 — **xash.wasm heap cap raised 256MB → 2GB** (binary patch) |
+| ✅ D.7.14 — **TS server DLL WASM port: build infra + first translated class** (4 imports, 526 B) |
 | ✅ D.7.11 — Visual baseline verified; MP signaling round-trip working |
 | ✅ D.7.11 — `tools/decompile/grind_parallel.py` orchestrator (with zombie-detection fix) |
 
@@ -2226,7 +2227,43 @@ Source decompiles consolidated in `src/mod/<feature>.ts`:
 
 **What's missing for the DLL port:**
 - ~600 client-DLL methods (not started)
-- TS→C++ translation workstream (the actual blocker now)
+- TS→C++ translation workstream (in progress — D.7.14 shipped first method)
+
+### D.7.14 — TS server DLL WASM port: foundation + first translated class
+
+**Build infrastructure** (`tools/port/ts-server-dll/`):
+- `src/ts_stub.cpp` — minimal stub with GoldSrc entry points
+  (GiveFnptrsToDll, GetEntityAPI2, GetNewDLLFunctions,
+  GameDLLInit/Shutdown). Loads, no-ops, prints marker.
+- `src/cts_fog.cpp` — **first real TS method translated to C++**:
+  CTSFog::Spawn (the smallest complete CTS method we have, 33 B
+  of disassembly, body is `UTIL_Remove(this)` and return).
+- `build-ts-dll.sh` — wraps `emcc -sSIDE_MODULE=1` invocation.
+- `SKILL.md` — documents the build recipe + per-class translation
+  workflow + what's left for next sessions.
+
+**Why direct emcc, not CMake:** emscripten's toolchain file
+(`Emscripten.cmake`) sets `TARGET_SUPPORTS_SHARED_LIBS FALSE`.
+CMake's `add_library(... SHARED ...)` silently coerces to STATIC,
+producing `.a` archives instead of WASM side modules. Confirmed in
+both emsdk 6.0.12 (host) and emsdk 3.1.64 (Docker). Workaround:
+bypass CMake, call `emcc -sSIDE_MODULE=1` directly.
+
+**Build result:**
+- Input: ts_stub.cpp + cts_fog.cpp (~150 lines total)
+- Output: 526-byte WASM
+- Imports: **4** — env.printf, env.__stack_pointer,
+  env.__memory_base, env.__table_base, env.memory
+  (the canonical side-module shape)
+
+This matches the skill's threshold: "20-60 = correct side module".
+The hlsdk-portable 0.1.3 official hl.dll is 52 imports — same
+canonical shape, just more C++ in.
+
+**Verified:** engine loads without crashing. `wasm-objdump -j Import -x`
+shows the 4-import profile. Next step: translate enough classes for
+real TS gameplay (CTSPlayer::Spawn + CTSGameRules + a weapon class
+or two).
 
 ### ⭐ D.7.13 — xash.wasm heap cap raised (binary patch)
 

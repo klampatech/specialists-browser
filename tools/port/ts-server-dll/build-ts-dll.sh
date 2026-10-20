@@ -33,7 +33,7 @@ DEST="$REPO/webxash/public/xash3d-fwgs/dist/dlls"
 mkdir -p "$OUT" "$DEST"
 
 echo "Building TS server DLL as WASM side module..."
-emcc "$SRC/ts_stub.cpp" \
+emcc "$SRC/ts_stub.cpp" "$SRC/cts_fog.cpp" \
     -O2 \
     -sSIDE_MODULE=1 \
     -sERROR_ON_UNDEFINED_SYMBOLS=0 \
