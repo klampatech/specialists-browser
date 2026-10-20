@@ -161,6 +161,99 @@ fixing, the correct lever is `physFuncs.pfnAllocString` /
 DLL own the representation outright. That is a real feature, not a
 debugging detour — add it with the other unimplemented physics hooks.
 
+### D.7.50: the structural diff, and what it rules out
+
+`dllfunc-diff.py` reproduces this. Run:
+
+```
+python3 tools/port/ts-server-dll/dllfunc-diff.py \
+    <baseline.wasm> tools/port/ts-server-dll/shim/ts_shim_v3.c \
+    tools/port/ts-server-dll/build-matrix/eiface-xash3d-fwgs.h \
+    --seg-offset=885889
+```
+
+`eiface-xash3d-fwgs.h` is pinned in-tree so runs are reproducible
+rather than depending on whatever `/tmp` still holds. `--seg-offset` is
+a verified value for the c91698be baseline; the tool's own locator is a
+heuristic, so the flag stays available.
+
+**`DLL_FUNCTIONS` is exactly 50 fields.** Proven two ways:
+- xash3d-fwgs `engine/eiface.h`, the struct beginning at offset 19044 and
+  terminated by `} DLL_FUNCTIONS;`, has 50 function-pointer fields.
+- c91698be's `GetEntityAPI` (`func[441]`) is 21 instructions:
+
+  ```
+  if (p == NULL || interfaceVersion != 140) return 0;
+  memory.copy(p, __memory_base + 77436, 200);
+  ```
+
+  200 bytes = 50 pointers, holding `func[473..522]` sequentially.
+
+We assign **50/50, zero NULL**, verified field-by-field by parsing
+`ts_FillDllFunctions`. **Table coverage is not the gap and never was.**
+
+**The decisive result is instruction counts.** These hooks are no-ops in
+the DLL that demonstrably renders the map:
+
+| hook | instrs |
+|------|--------|
+| `ClientConnect` | 1 |
+| `SetupVisibility` | 1 |
+| `Spawn` | 3 |
+| `Think` | 3 |
+| `PM_Move` | 4 |
+| `ServerActivate` | 9 |
+| `GetHullBounds` | 9 |
+| `SaveReadFields` | 11 |
+
+`Spawn` and `Think` are three instructions each and it still renders.
+So **entity behaviour does not gate the renderer** — every hypothesis in
+this project that pointed at "implement more hooks" was wrong, and
+several rounds of effort went into exactly that mistake.
+
+Two corrections made as a direct result:
+
+1. **`pfnSetupVisibility` reverted to a no-op.** We had been memset-ing
+   `0xFF` over 64 bytes of the engine's PVS on the theory that an empty
+   PVS stops the client drawing. The baseline's is one instruction and
+   touches neither `*pvs` nor `*pas`. The overreach also overwrote an
+   allocation whose size we do not know. **An empty PVS does not stop
+   the renderer** — the engine reads unwritten PVS as "nothing hidden".
+
+2. **`pfnStartFrame` now maintains `gpGlobals`.** The baseline's
+   (`func[498]`, 142 instrs) spends its body copying live values out of
+   the engine into `globalvars_t`:
+
+   ```
+   i32.load 2 144 -> i32.store 2 24     // time
+   i64.load 2 136 -> i64.store 2 16     // frametime
+   i64.load 2 208 -> i64.store 2 28     // force_retouch
+   i32.load 2 216 -> i32.store 2 36     // startspot
+   f32.load 2 432 -> f32.store 2 48
+   ```
+
+   Ours left it alone, so every reader saw the engine's map-load pre-zero
+   — `time` frozen at 0. Corroborated by `AllowLagCompensation`
+   (`func[522]`), which reads `global6[0]` as a float, i.e.
+   `gpGlobals->time`. The baseline depends on that clock being live.
+   **A frozen clock stops think scheduling and animation from ever
+   advancing**, which is a real bug fixed here.
+
+**Where that leaves the handshake.** `cl_main.c:1394` → `:1753`. The
+client auto-connects to loopback once the local server is live and must
+reach `ca_connected` to leave the loading screen. c91698be gets there
+under identical flags.
+
+Given the diff above, the remaining suspects are narrow:
+- `pfnPlayerPreThink` / `pfnPlayerPostThink` (120 / 505 instrs in the
+  baseline) — the per-player think pair, which we stub out. If the
+  engine gates `ca_connected` on a player having thought at least once,
+  this is where it lives.
+- `pfnGetWeaponData` (207 instrs) — we return 0, so the client gets no
+  weapon state in `clientdata_t`.
+- `pfnCmdStart` (61 instrs) — command dispatch; a stub may swallow the
+  connection handshake command.
+
 ### Next-direction options (after this session)
 
 **Kyle chose #1 for the next session. #2 and #3 stay queued — do NOT
