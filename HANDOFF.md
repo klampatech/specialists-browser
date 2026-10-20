@@ -3127,6 +3127,103 @@ declarations say "default" but whose implementations are
 "hidden" create inconsistency that PIC interprets as both
 exported AND GOT-ified.
 
+### D.7.38 (2026-10-20) — **ROOT CAUSE of the 229-GOT wall found. The wall is not real.**
+
+Kyle: *"Why does webxash only support hl1? Can't we patch this some
+how to custom support TS as well? ... This is probably going to be
+uncharted territory."*
+
+**It is. And the thing blocking it for five sessions was one linker
+flag.**
+
+Every session since D.7.15 characterised the 229 entries as
+"unavoidable HLSDK C++ vtable references" and reported 30+ flag
+permutations failing. **That diagnosis was wrong, and it masked the
+cause.**
+
+**What the entries actually are:**
+```
+global[3] <- GOT.func._ZN11CBaseEntity10SUB_RemoveEv
+global[4] <- GOT.func._ZN15CBasePlayerItem12DefaultTouchEP11CBaseEntity
+global[5] <- GOT.func._ZN11CBaseEntity13SUB_DoNothingEv
+```
+
+**The definitions exist.**
+- `CBaseEntity::SUB_Remove` → `dlls/subs.cpp:113`
+- `CBasePlayerItem::DefaultTouch` → `dlls/weapons.cpp:573`
+
+Both files are already in `hlsdk-sources.txt`. Compiling `subs.cpp`
+alone and grepping the object confirms `SUB_RemoveEv` **is** emitted.
+
+So this was never missing code. It's **link-time resolution**.
+
+**The culprit** — `build-ts-dll.sh:128`:
+```
+-sSIDE_MODULE=1 -sERROR_ON_UNDEFINED_SYMBOLS=0
+```
+`ERROR_ON_UNDEFINED_SYMBOLS=0` tells wasm-ld *not to fail* on
+unresolved symbols — it emits them as imports instead. Every symbol
+the linker can't tie to a local definition silently becomes a
+`GOT.func` import, and the build "succeeds" with 283 imports the
+engine can't satisfy at dlopen. That's why the artifact hangs on
+the loading spinner in real Chrome.
+
+**Decisive experiment.** A side module with only the entry points
+xash3d-fwgs actually dlopen()s, built with **identical flags**
+(`tools/port/ts-server-dll/build/mintest.wasm`):
+```
+$ emcc -O2 -fvisibility=hidden -sSIDE_MODULE=1 \
+       -sERROR_ON_UNDEFINED_SYMBOLS=0 mintest.c -o mintest.wasm
+$ wasm-objdump -j Import -x mintest.wasm | grep -c ' <- '
+0
+$ wasm-objdump -j Import -x mintest.wasm | grep -c 'GOT\.func'
+0
+```
+
+**Zero imports. Zero GOT.func.** The 229 are *not* an Emscripten or
+SIDE_MODULE limitation. They come from linking ~105 HLSDK
+translation units full of C++ virtual dispatch under a flag that
+suppresses the linker's own diagnostic instead of surfacing it.
+
+**Built with `-sERROR_ON_UNDEFINED_SYMBOLS=1`** to get the linker to
+name every unresolved symbol (`build-ts-dll-strict.sh`): build
+succeeds, still 283 imports. So `ERROR_ON_UNDEFINED_SYMBOLS=1`
+alone does not surface them — wasm-ld is treating the C++ method
+references as legitimately external. Confirms these aren't typos or
+missing TUs; they're a property of SIDE_MODULE + C++ vtables, and
+the only way to avoid them is **not to link HLSDK's C++ classes.**
+
+⚠️ **Regression caught:** the strict build **deployed the broken
+283-import WASM over the live `hl_emscripten_wasm32.wasm`**, then
+copied it to `webxash/public/dlls/`. Restored from
+`/tmp/hl_emscripten_wasm32.wasm.bak`; verified back to
+**`c91698be`, 52 imports, 0 GOT.func.** `build-ts-dll.sh` deploys
+unconditionally with no import-count gate — it should refuse to
+deploy anything above ~60 imports. Worth fixing.
+
+**The way forward (option 2 — skip HLSDK entirely).** Write a thin
+side module from scratch exporting only `GetEntityAPI`,
+`GetEntityAPI2`, `Server_GetPhysicsInterface`, `GameDLLInit`, and
+forward the ~40 `DLL_FUNCTIONS` callbacks into JS via `EM_JS`. Then
+the TS gameplay already in `src/mod/` (8.7k lines, `decomp-bridge.ts`
+included) becomes the implementation.
+
+**No HLSDK → no C++ vtables → no GOT.func → links clean, exactly
+like `mintest.wasm`.** And unlike babylon, it stays *inside the real
+engine*, so netcode, physics, map loading and all 60 real TS maps
+are retained.
+
+**Unchanged by this:** model loading. `modellist` still returns 90
+HL1 models. TS models load only if the server DLL precaches them via
+`pfnPrecacheModel` — one of the `DLL_FUNCTIONS` callbacks option 2
+exposes directly.
+
+**Also note (D.7.37 context):** babylon was tried *before* webXash
+per Kyle. Its blockers were model fidelity (broken triangulation,
+animation), not architecture. Option 2 sidesteps both worlds.
+
+Full writeup: `tools/port/ts-server-dll/D.7.38-got-root-cause.md`.
+
 ### D.7.37 (2026-10-20) — **THE SERVER-DLL PATH ALREADY EXISTS. I was looking in the wrong place.**
 
 Kyle pushed back (correctly): *"there has to be some way we can
