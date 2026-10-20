@@ -2982,34 +2982,75 @@ in the source; once we have a working build of the new source
   `ClearObjectiveList` translation + `m_NumObjectives` /
   `m_Objectives` field additions
 
-### D.7.23 — NEXT SESSION TASKS
+### D.7.23 (2026-10-20) — IsCTB translation; build script idempotent
 
-Path B (recommended above) means the next session should:
+**Translation:**
+- **`CTSGameRules::IsCTB`** — gates on m_iGameMode byte == 1 (CTB
+  mode), caches a `ts_ctb_*` entity-class scan via
+  `UTIL_FindEntityByClassname`. No `g_engfuncs.pfnX` calls
+  (util.cpp is local). Adds fields:
+    - `m_iGameMode` (4-byte int)
+    - `m_bCTBCacheResult` + `m_bCTBCacheValid` (chars at +0x5890/1)
+    - padding to reach original byte offsets
+- **`CTSGameRules::ClearObjectiveList`** (D.7.22) — confirmed
+  import-count stable after addition.
 
-1. **Translate `IsCTB`** (no pfnX calls, 8-line TS body).
-2. **Translate `GetTeamCash_p_CBasePlayer`** (depends on
-   `GetTeamIndex` first).
-3. **Translate `GetTeamIndex_p_?_?`** (depends on `m_Teams[]`
-   array layout — needs D.4 class reconstruction).
-4. **Run build, verify import count stays stable** at 283
-   (or investigate further if it changes).
-5. **Deploy and have Kyle test in real Chrome** — check
-   whether the 283-import version actually works there
-   (Playwright-only failure) or if we genuinely have a loader
-   problem to solve.
+**Verified:** import count stays at **283 / 229 GOT entries**
+after both additions. D.7.22 matrix confirms no inflation.
 
-If 283-import works in real Chrome, we have parity-shaped progress
-without the loader fight. If not, the binary-patch approach
-(option T10 in earlier HANDOFF) becomes the next lever.
+**Build script fix:**
+`tools/port/ts-server-dll/build-ts-dll.sh` was inserting
+`#include "cts_game_rules.h"` *inside* the `InstallGameRules()`
+function body. With the new class declarations this placed the
+class definition inside a function — compile error
+("storage class specified for a member declaration").
 
-Also worth investigating when there's time:
-- Why c91698be produced 52 imports when current builds
-  produce 283. Possibly:
-  - Different emcc state at build time
-  - Emscripten optimization timing differences
-  - Different LTO seeds
-  - Memory layout from the linker (`--strip-all`/`--gc-sections`
-    interactions)
+Patch now:
+1. Strips any stale `#include "cts_game_rules.h"` lines from
+   inside function bodies
+2. Inserts the include at the top of `gamerules.cpp` after the
+   other `#include`s
+3. Idempotent — safe to re-run on already-patched hlsdk-portable
+   copies.
+
+**Deployed WASM:** `webxash/public/dlls/hl_emscripten_wasm32.wasm`
+hash `6cd96c795f6d85acb2bbae42b03eb396b9459e2076fe195eae95692117ddd13e`
+(283 imports, 1.36 MB). **Different from D.7.19's `c91698be`
+working baseline** — this version has the new IsCTB +
+ClearObjectiveList methods.
+
+**Test status:**
+- Playwright headless: `[PAGEERROR] Cannot read properties of
+  undefined (reading 'value')` during WASM load. Same error we
+  saw with the 283-import version earlier.
+- Real Chrome: unknown — Kyle needs to test.
+
+### D.7.24 — NEXT SESSION: decide which WASM to ship
+
+Two paths forward:
+
+**Path A: 283-import is fine in real Chrome (Kyle confirms):**
+- We have parity-progressing methods (IsCTB, ClearObjectiveList)
+  and can continue adding more (GetTeamIndex, GetTeamCash, etc.)
+- Path forward: keep accumulating methods, test in real Chrome.
+
+**Path B: 283-import fails in real Chrome (Kyle reports):**
+- Revert `webxash/public/dlls/hl_emscripten_wasm32.wasm` to
+  `c91698be` (52-import, 0 GOT, working baseline). Lose the
+  IsCTB / ClearObjectiveList methods for now.
+- Pick up the binary-patch approach (option T10 from D.7.21):
+  strip unused GOT.func imports from the 283-import WASM, keep
+  only the env.* entries. Likely 50-60 imports, working state.
+
+Recommended next-session order:
+1. Kyle: hard-refresh and report whether engine boots cleanly
+   with the 283-import version. (Decision: A vs B)
+2. If A: continue D.7.23 with more no-pfnX method translations.
+3. If B: revert to c91698be and implement T10 (binary patch).
+4. In parallel: investigate why Playwright catches a
+   pageerror that real Chrome may not. Compare
+   `--enable-features` flags and `SharedArrayBuffer` support
+   settings between the two.
 
 
 **What D.7.17 DID NOT fix (in priority order):**
