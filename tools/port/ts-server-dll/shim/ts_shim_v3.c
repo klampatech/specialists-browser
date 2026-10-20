@@ -666,11 +666,27 @@ static void ts_Think(edict_t *e) { (void)bridge_think((int)e); }
 static void ts_Use(edict_t *a, edict_t *b) { (void)bridge_use((int)a, (int)b); }
 static void ts_Touch(edict_t *a, edict_t *b) { (void)bridge_touch((int)a, (int)b); }
 
+/* pfnClientConnect — the server decides whether a client may join.
+ *
+ * CRITICAL: returning 0 here means "reject the connection", and the
+ * engine writes `reason` into the client's rejection message and
+ * drops them. The shim was returning whatever the JS bridge produced,
+ * and with no bridge installed that is 0 — so the local client was
+ * being refused at the door. That is a direct cause of the client
+ * never reaching ca_connected (cl_main.c:1753).
+ *
+ * Policy: default to ACCEPT, and only reject when a host handler has
+ * explicitly asked us to. The engine already applies maxplayers and
+ * cvar limits on its side; the DLL hook exists for game-specific
+ * rules (passwords, banned names, team balance) which a stub has none
+ * of. Returning true with an empty reason is the neutral answer.
+ */
 static qboolean ts_ClientConnect(edict_t *e, const char *n, const char *a, char reason[128])
 {
-    int ok = bridge_clientConnect((int)e, (int)n, (int)a);
-    if (!ok && reason) reason[0] = '\0';
-    return ok ? 1 : 0;
+    (void)reason;
+    int verdict = bridge_clientConnect((int)e, (int)n, (int)a);
+    if (verdict == 0) return 1;      /* bridge absent or silent -> accept */
+    return (qboolean)(verdict > 0);
 }
 static void ts_ClientDisconnect(edict_t *e) { (void)bridge_clientDisconnect((int)e); }
 static void ts_ClientPutInServer(edict_t *e) { (void)bridge_putInServer((int)e); }
@@ -865,7 +881,31 @@ static void ts_NoopStr(const char *s) { (void)s; }
 static void ts_NoopSave(edict_t *a, SAVERESTOREDATA *b) { (void)a; (void)b; }
 static void ts_NoopSave1(SAVERESTOREDATA *a) { (void)a; }
 static void ts_NoopSaveF(SAVERESTOREDATA *, const char *, void *, void *, int) {}
-static void ts_NoopVis(edict_t *a, edict_t *b, byte **pvs, byte **pas) { (void)a; (void)b; (void)pvs; (void)pas; }
+/* pfnSetupVisibility — the engine asks the DLL to fill in the
+ * potentially-visible-set and ambient-sound-set for one client.
+ *
+ * Both outputs are byte arrays the engine allocated; we must WRITE
+ * into them, not replace the pointers. Leaving them untouched is the
+ * "ts_NoopVis" case, which gave the client an empty PVS — with
+ * nothing potentially visible, the client has no reason to draw
+ * anything and the render pipeline short-circuits.
+ *
+ * Until we have a real PVS walk we mark the world fully visible:
+ * that is over-inclusive, never under-inclusive, so the client draws
+ * more than it should rather than nothing. Correctness of the PVS is
+ * a performance concern; correctness of "at least the world" is a
+ * correctness concern. F6 covers the real implementation.
+ *
+ * pvs/pas are one byte per model slot; we are handed no count, so we
+ * clear a conservative window and leave the rest untouched rather
+ * than write past the engine's allocation. */
+static void ts_SetupVisibility(edict_t *viewer, edict_t *pvs_target,
+                              byte **pvs, byte **pas)
+{
+    (void)viewer; (void)pvs_target;
+    if (pvs && *pvs) memset(*pvs, 0xFF, 64);
+    if (pas && *pas) memset(*pas, 0, 64);
+}
 
 /* pfnUpdateClientData — per-frame payload for one client.
  *
@@ -1163,7 +1203,7 @@ static void ts_FillDllFunctions(DLL_FUNCTIONS *p)
     p->pfnPM_Move                  = ts_PM_Move;
     p->pfnPM_Init                  = ts_PM_Init;
     p->pfnPM_FindTextureType       = ts_FindTextureType;
-    p->pfnSetupVisibility          = ts_NoopVis;
+    p->pfnSetupVisibility          = ts_SetupVisibility;
     p->pfnUpdateClientData         = ts_UpdateClientData;
     p->pfnAddToFullPack            = ts_AddToFullPack;
     p->pfnCreateBaseline           = ts_CreateBaseline;
