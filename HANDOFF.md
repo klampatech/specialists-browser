@@ -2813,33 +2813,109 @@ c91698be...  webxash/public/xash3d-fwgs/dist/dlls/ts_emscripten_wasm32.wasm
 
 ---
 
-### D.7.21 — NEXT SESSION TASKS
+### D.7.21 (2026-10-19→20) — TS Command Registration: GOT Inflation Trap
 
-**P1 is GREEN for the unrewritten WASM.** Map renders, no traps.
-What's left for actual gameplay verification:
+**Goal:** Register the four TS-specific console commands (`buy`,
+`firemode`, `useitems`, `alt2`) so the engine stops logging
+`Unknown command: <X>` when a player presses the keybind.
 
-1. **Confirm `ts_apartments` is what's rendering** (vs HL1
-   fallback `c0a0`). Walk the player to a known landmark, or
-   set `-game ts +map ts_lobby` and compare visuals. Easy 1-session task.
+**Implementation:** Added `RegisterTSCommands()` to `cts_game_rules.cpp`
+that calls `g_engfuncs.pfnAddServerCommand("buy", TS_BuyHandler)` for
+each of the 4 commands. Called from `CTSGameRules::InitHUD` (which
+fires when a player joins) with a one-shot guard.
 
-2. **Register a TS-specific command in our WASM** as a smoke for
-   P0 of the server-DLL TS port. Easiest: add `RegisterCommand` for
-   one TS command (e.g., `+slomo`) in `cts_game_rules.cpp`,
-   rebuild, deploy, verify `Got command "slomo"` appears in
-   engine-stdout. Pattern translates to all 39 decompiled methods.
+**Build artifact 1 (no dedup):** 283 imports, 1.35 MB. The new
+`g_engfuncs.pfnAddServerCommand` and `g_engfuncs.pfnServerPrint`
+references trigger Emscripten's PIC codegen to balloon the GOT
+table from ~52 → 283 entries. Playwright caught:
+```
+[PAGEERROR] Cannot read properties of undefined (reading 'value')
+```
+during WASM load. The engine's dylink loader chokes when the
+import count exceeds its JS handler's hard-coded bounds. Even Kyle's
+real-browser tests of 283-import versions were broken (we didn't
+verify Kyle's path before deploying).
 
-3. **Get a player client to render HUD.** Multi-week: port
-   `ts/cl_dlls/client.dll` to WASM.
+**Dedup via indirection (TS_PrintFromHandler wrapper):** Re-tested —
+emcc still produces 283 imports. Each `g_engfuncs.pfnX` reference
+generates its own GOT.func entry at compile-time; LTO can't dedupe
+across different functions calling different fields.
 
-4. **Add TS bot AI.** Multi-week: port a few CTSPlayer methods
-   so bots have TS classes (acrobatics, dual-wield, stunts).
+**Reverted to D.7.19 baseline (c91698be, 52 imports).** The c91698be
+binary is the canonical working version. The Haskell half of the
+commit, the .orig_bak in `/tmp/hl_emscripten_wasm32.wasm.bak` is now
+also at `webxash/public/dlls/hl_emscripten_wasm32.wasm` and
+`webxash/public/xash3d-fwgs/dist/dlls/ts_emscripten_wasm32.wasm`.
 
-For the **next concrete session** (1-2h smoke work):
-- Re-confirm `c91698be` deploys cleanly on second fresh browser load
-  (verify no caching artifacts)
-- Run a multi-tab WebRTC test using the existing wiring
-- Capture full session screen recording / series of screenshots
-  showing level loaded + bots moving
+**Why the rebuilds produce 283 imports even with reverted code:**
+the .orig_bak at /tmp/hl_emscripten_wasm32.wasm.bak came from a
+specific emcc invocation with different intermediate state
+(probably an earlier HLSDK + earlier LTO cache combination). Re-applying
+patches cleanly to upstream hlsdk-portable doesn't reproduce it
+on this build host. The exact conditions that produce 52 vs 283
+imports is a separate investigation.
+
+**Playwright verified:** restored 52-import version reports
+`PAGEERROR events: 0`, and the menu → 3D scene flow works as
+Kyle saw before.
+
+### D.7.22 — NEXT SESSION: fix command-registration GOT inflation
+
+The TS command registration needs to find a path that doesn't add
+GOT entries. Options:
+
+1. **Direct Cmd_AddCommand call.** If `Cmd_AddCommand` is exported
+   by the engine (not a `pfnX` thunk), we'd skip the GOT.
+   Caveat: in WASM Emscripten, every engine entry-point is
+   PIC-ified; the question is whether a static-direct function call
+   to an exported name costs less.
+
+2. **Delay registration to a `__attribute__((constructor))`**
+   that runs ONCE per WASM module-load at a known offset. This
+   doesn't help — global constructor runs in the same WASM module
+   where GOT happens.
+
+3. **Use direct `xash.Cmd_ExecuteString` from JS** to dispatch the
+   command via the engine's already-wired JS API. Engine captures
+   the string before WASM. But this means the TS-side stubs are
+   no longer TS — they're JS.
+
+4. **Single-shot registration via the `dylink.0` metadata.** When
+   the engine dylink-loads our WASM, set up our vtable pointers
+   via metadata patching at engine-load time. Heavy but works.
+   See the `tools/port/ts-server-dll/replace_dylink_tableSize.py`
+   work that was abandoned in D.7.17 for being too fragile.
+
+5. **Translate the was-not-yet-known `g_engfuncs` symbol away.**
+   Use a local pointer (`enginefuncs_t* gp = &g_engfuncs;`) and
+   call `gp->pfnAddServerCommand(...)` repeatedly. Emcc may
+   dedupe via the local pointer. Hmm, tested in D.7.21 — didn't
+   help.
+
+6. **Use emcc `--closure-compiled` or `-sRELOCATABLE=0`** flags
+   to change the PIC generation strategy. Untested.
+
+7. **Direct binary patch of the deployed WASM at build time:**
+   After emcc produces the 283-import version, strip the 230+
+   unused GOT.func imports by rewriting the import section in
+   WABT. The remaining ~10-15 entries (the ones `g_engfuncs.pfnX`
+   actually references) would still be there. This may be the
+   fastest fix.
+
+Recommended next-session task:
+1. Try option 6 (emcc flags) first — fastest if it works
+2. If not, option 1 (direct Cmd_AddCommand)
+3. If those fail, option 7 (binary patching) as last resort
+
+### D.7.21 x2 — verify Kyle's session shows the restored 52-import version
+
+Hard-refresh Vivaldi: clear localStorage (or click Reset in
+Advanced panel). The deployed WASM hash is `c91698be...`. Should
+boot cleanly through menu → ts_apartments render with no pageerror.
+
+Currently in flight — pushed a HEAD commit but Kyle may need to
+hard-refresh to pick up the binary change (HMR for .wasm files is
+tricky).
 
 
 

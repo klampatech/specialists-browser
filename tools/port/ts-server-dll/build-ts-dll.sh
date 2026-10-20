@@ -139,23 +139,22 @@ if [[ -x /tmp/wabt-1.0.42/bin/wasm-objdump ]]; then
         "$OUT/ts_emscripten_wasm32.wasm" 2>/dev/null | grep -E "memory|pages" | head -3 || true
 fi
 
-# --- Strip GOT.* imports via rewrite-got.py ---------------------------
-# Emscripten's SIDE_MODULE=1 PIC codegen emits 200+ GOT.func imports
-# that the runtime loader has no way to populate (they reference
-# same-module functions). Default -1 traps call_indirect. Fix:
-# collapse them to const-init globals + densify the elem section
-# so call_indirect(decl_idx) resolves to func decl_idx.
 echo
-echo "Running rewrite-got.py..."
-if [[ -f "$SCRIPT_DIR/rewrite-got.py" ]]; then
+echo "Decide whether to run rewrite-got.py (D.7.19 proof: the rewrite
+turns the working 52-import raw emcc WASM into a 49-import version
+that traps on first call_indirect with 'function signature mismatch'
+when running on the current build). Default: skip. Pass
+--with-rewrite to opt in."
+if [[ "${1:-}" == "--with-rewrite" ]] && [[ -f "$SCRIPT_DIR/rewrite-got.py" ]]; then
+    echo "Running rewrite-got.py (--with-rewrite)..."
     REWRITE_IN="$OUT/ts_emscripten_wasm32.wasm"
     REWRITE_OUT="$OUT/ts_emscripten_wasm32.rw.wasm"
     if python3 "$SCRIPT_DIR/rewrite-got.py" "$REWRITE_IN" "$REWRITE_OUT" 2>&1; then
         # rewrite-got.py's pipeline produces these intermediate files:
-#   .rw.wasm          (post-wat2wasm)
-#   .rw.wasm.reordered                (dylink-first)
-#   .rw.wasm.reordered.dylinkpatched  (dylink-first + tableSize-patched)
-# Pick the most-processed one that exists.
+        #   .rw.wasm          (post-wat2wasm)
+        #   .rw.wasm.reordered                (dylink-first)
+        #   .rw.wasm.reordered.dylinkpatched  (dylink-first + tableSize-patched)
+        # Pick the most-processed one that exists.
         candidates=(
             "$REWRITE_OUT.reordered.dylinkpatched"
             "$REWRITE_OUT.reordered"
@@ -172,23 +171,7 @@ if [[ -f "$SCRIPT_DIR/rewrite-got.py" ]]; then
         echo "  WARNING: rewrite-got.py failed; using original WASM"
     fi
 else
-    # D.7.19: empirical proof the unrewritten emcc output (52-import
-    # profile) boots the engine through to map load. The rewrite
-    # turned a working WASM into one that traps on the first
-    # `call_indirect` with "function signature mismatch" — see
-    # HANDOFF.md D.7.19. We preserve rewrite-got.py for reference
-    # but skip it by default. Pass --with-rewrite to opt in.
-    if [[ "${1:-}" == "--with-rewrite" ]] && [[ -f "$SCRIPT_DIR/rewrite-got.py" ]]; then
-        echo "running rewrite-got.py (--with-rewrite)..."
-        REWRITE_IN="$OUT/ts_emscripten_wasm32.wasm"
-        REWRITE_OUT="$OUT/ts_emscripten_wasm32.rw.wasm"
-        python3 "$SCRIPT_DIR/rewrite-got.py" "$REWRITE_IN" "$REWRITE_OUT" \
-            && cp "$REWRITE_OUT" "$REWRITE_IN" \
-            && echo "  rewrite-got.py output deployed" \
-            || echo "  WARNING: rewrite-got.py failed; using raw emcc WASM"
-    else
-        echo "skipping rewrite-got.py (raw emcc WASM deployed as-is)"
-    fi
+    echo "Skipping rewrite-got.py (raw emcc WASM deployed as-is — works on current build)."
 fi
 
 # Deploy to both engine paths
