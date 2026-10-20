@@ -3127,6 +3127,41 @@ declarations say "default" but whose implementations are
 "hidden" create inconsistency that PIC interprets as both
 exported AND GOT-ified.
 
+### D.7.30 (2026-10-20) — Keyboard isolation diagnostics
+
+After D.7.29 confirmed the toast shim works but **didn't restore
+keyboard** in real Chrome:
+
+**Kyle's hypothesis:** the HUD overlay might be absorbing key
+presses somehow. Only `B` (his window-level handler) works; W/A/S/D,
+Escape, console all dead.
+
+**Two new diagnostic hooks (webxash `15ce7c9`, `5c94967`):**
+
+1. **URL flag `?nohud=1`** prevents the entire TSHud overlay from
+   mounting. Hard test: launch with the flag and check keyboard.
+   - If W/A/S/D works → HUD is intercepting.
+   - If still dead → engine's keyboard handler is broken.
+
+2. **`[KEY]` console log** on every keypress that bubbles to
+   `window`. Logs `e.key`, `document.activeElement.tagName#id`,
+   and `e.target.tagName`. Used to see exactly what fires in real
+   Chrome — Playwright can't reproduce this since headless Chromium
+   doesn't deliver reliable key events to a WebGL canvas.
+
+**Kyle's next test:** hard-refresh, then try **either**:
+  - Press W/A/S/D normally → look at the console for `[KEY]`
+    entries. If they appear, the events reach the HUD's window
+    listener, meaning the engine's own listener is the problem.
+  - Or load `?nohud=1` and try again. If keys now work, the
+    overlay is intercepting (via focus / event path).
+
+**Out-of-band note (from Kyle's screenshot at 14:41):** the
+live-state bridge is reading **all 5 cvars correctly**:
+MAP `ts_apartments`, TEAMS `hgrunt;scientist`, NAME `Specialist`,
+hostmap at the right edge of the strip, with no
+`(loading...)`. The 5s+staggered fix is working in real Chrome.
+
 ### D.7.29 (2026-10-20) — **ROOT CAUSE FOUND**: modal `alert()` was killing the keyboard
 
 **This is the fix for both reported bugs.**
