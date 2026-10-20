@@ -102,29 +102,107 @@ typedef struct {
 
 OPAQUE_T(customization_t);
 OPAQUE_T(weapon_data_t);
+/* entity_state_t — entity_state.h:27-176, field order verbatim.
+ *
+ * This is the per-entity snapshot the engine serialises into the frame
+ * stream. pfnAddToFullPack fills one per entity per frame;
+ * pfnCreateBaseline fills one at map load for delta compression.
+ *
+ * Field order is load-bearing. The engine walks the struct by offset in
+ * its delta encoder, so a stub with the wrong fields does not error at
+ * compile time — it produces a snapshot stream the client decodes into
+ * garbage. That is exactly the "pfnWriteEntity: invalid entnumber
+ * 31529152" failure we hit with the 18-field stub: entityType was
+ * missing entirely, so the engine read whatever followed it.
+ *
+ * entityType packs two things (entity_state.h:31-33):
+ *   low  byte  — update type (NONE / FULL / POS / etc.)
+ *   high byte  — slot index into cl_entities
+ * The engine validates the high byte, hence the "invalid entnumber".
+ */
 typedef struct {
-    int   entity_type;
-    int   modelindex;
+    /* filled in outside delta compression */
+    int   entityType;
+    int   number;        /* index into cl_entities */
+    float msg_time;
+    int   messagenum;
+
+    /* transmissible fields */
     float origin[3];
     float angles[3];
-    int   skin;
-    byte  effects;
-    byte  renderamt;
-    byte  sequence;
-    byte  gaitsequence;
-    float scale;
-    byte  movetype;
-    byte  solid;
-    byte  body;
-    byte  flags;
-    short light_level;
-    int   colormap;
-    short weaponmodel;
-    float mins[3], maxs[3];
-    float absmin[3], absmax[3];
-    float velocity[3];
+
+    int     modelindex;
+    int     sequence;
+    float   frame;
+    int     colormap;
+    short   skin;
+    short   solid;
+    int     effects;
+    float   scale;
+    unsigned char eflags;
+
+    /* render info */
+    int   rendermode;
+    int   renderamt;
+    struct { unsigned char r, g, b; } rendercolor;
+    int   renderfx;
+
+    int     movetype;
+    float   animtime;
+    float   framerate;
+    int     body;
+    unsigned char controller[4];
+    unsigned char blending[4];
+    float   velocity[3];
+
+    /* bbox for client-side prediction */
+    float   mins[3];
+    float   maxs[3];
+
+    int     aient;
+    int     owner;
+
+    float   friction;
+    float   gravity;
+
+    /* PLAYER SPECIFIC */
+    int   team;
+    int   weaponmodel;
+    float gaittime;
+    float frac;
+    float gravity_multiplier;
+    float playerclass;
+    float maxspeed;
+
     float fov;
-    int   hitgroup;
+    int   weaponanim;
+    int   iuser1;
+    int   iuser2;
+    int   iuser3;
+    int   iuser4;
+    float fuser1;
+    float fuser2;
+    float fuser3;
+    float fuser4;
+  float vuser1[3];
+  float vuser2[3];
+  float vuser3[3];
+  float vuser4[3];
+
+    int   ammo_shells;
+    int   ammo_nails;
+    int   ammo_cells;
+    int   ammo_rockets;
+    float m_flNextAttack;
+    int   tfstate;
+    int   pushmsec;
+    int   bInDuck;
+    int   flTimeStepSound;
+    int   flDuckTime;
+    int   flSwimTime;
+    int   waterjumptime;
+    int   deadflag;
+    int   viewmodel;
 } entity_state_t;
 OPAQUE_T(netadr_t);
 OPAQUE_T(globalvars_t);
@@ -169,13 +247,106 @@ typedef struct {
  * leading fields to write classname/origin/angles; everything after
  * origin we leave alone (the engine fills the rest). Layout matters:
  * `classname` is field 0, `globalname` field 1, `origin` field 2. */
+/* entvars_t — progdefs.h:54 onward, field order verbatim.
+ *
+ * This is what a pointer to an edict actually points at in GoldSrc:
+ * the DLL receives `edict_t *`, and every field it wants to read or
+ * write lives in the entvars_t at the head of that struct.
+ *
+ * Field order is load-bearing for the same reason entity_state_t's is:
+ * pfnAddToFullPack copies values from here into a network struct, and
+ * a stub layout silently reads the wrong offsets. The shim's previous
+ * 4-field stub read `modelindex`, `skin`, `solid`, `movetype` and
+ * `flags` straight off neighbouring padding.
+ *
+ * Only the leading fields plus the render block are named; the rest is
+ * sized so the struct is large enough that the engine's own writes
+ * through our pointer stay in bounds. Anything we do not read we leave
+ * to the engine.
+ */
 typedef struct
 {
-    int   classname;      /* string_t — interned class name */
-    int   globalname;
-    float origin[3];
-    /* remainder unused by the shim */
-    float _pad[512];
+    int    classname;      /* string_t — interned class name */
+    int    globalname;
+
+    float  origin[3];
+    float  oldorigin[3];
+    float  velocity[3];
+    float  basevelocity[3];
+    float  clbasevelocity[3];
+    float  movedir[3];
+
+    float  angles[3];
+    float  avelocity[3];
+    float  punchangle[3];
+    float  v_angle[3];
+
+    float  endpos[3];
+    float  startpos[3];
+    float  impacttime;
+    float  starttime;
+
+    int    fixangle;
+    float  idealpitch;
+    float  pitch_speed;
+    float  ideal_yaw;
+    float  yaw_speed;
+
+    int    modelindex;
+
+    int    model;          /* string_t */
+    int    viewmodel;
+    int    weaponmodel;
+
+    float  absmin[3];
+    float  absmax[3];
+    float  mins[3];
+    float  maxs[3];
+    float  size[3];
+
+    float  ltime;
+    float  nextthink;
+
+    int    movetype;
+    int    solid;
+
+    int    skin;
+    int    body;
+    int    effects;
+    float  gravity;
+    float  friction;
+
+    int    light_level;
+
+    int    sequence;
+    int    gaitsequence;
+    float  frame;
+    float  animtime;
+    float  framerate;
+    unsigned char controller[4];
+    unsigned char blending[2];
+
+    float  scale;
+    int    rendermode;
+    float  renderamt;
+    float  rendercolor[3];
+    int    renderfx;
+
+    float  health;
+    float  frags;
+    int    weapons;
+    float  takedamage;
+
+    int    deadflag;
+    int    flags;
+
+    /* remainder: mod-specific iuser/fuser/vuser plus padding so the
+     * struct is comfortably larger than the engine's, letting the
+     * engine write its trailing fields through our pointer. */
+    int    iuser1, iuser2, iuser3, iuser4;
+    float  fuser1, fuser2, fuser3, fuser4;
+    float  vuser1[3], vuser2[3], vuser3[3], vuser4[3];
+    float  _pad[64];
 } entvars_t;
 
 /* ── DLL_FUNCTIONS (eiface.h:391 — 52 slots) ───────────────────────── */
@@ -318,10 +489,34 @@ typedef void  (*eng_pfnCVarSetString_t)(const char *, const char *);
 #define SLOT_SET_MODEL         2
 #define SLOT_CREATE_ENTITY    21
 #define SLOT_SET_ORIGIN       28
-#define SLOT_SERVER_COMMAND    38
-#define SLOT_CVAR_REGISTER     55
-#define SLOT_CVAR_SETFLOAT     57
-#define SLOT_ALLOC_STRING      64
+/* Slots below are read out of xash3d-fwgs's own g_engfuncs
+ * initialiser (engine/server/sv_game.c, the `static enginefuncs_t
+ * g_engfuncs = { ... }` table that GiveFnptrsToDll receives). NOT from
+ * eiface.h — the two disagree past slot ~50, because xash3d-fwgs
+ * inserts Xash3D extensions the GoldSrc header does not declare.
+ *
+ * Getting these wrong is silent and expensive: eng_at() casts a slot
+ * to a function pointer and calls it, so pointing pfnAllocString at
+ * slot 64 actually invoked pfnWriteEntity with a string, which is how
+ * we ended up with "Host_ErrorInit: pfnWriteEntity: invalid entnumber
+ * 31529152" (0x01E10000 is a string_t index, not an edict number).
+ *
+ * If you need a slot, grep this file's table source, do not count. */
+#define SLOT_PRECACHE_MODEL     0
+#define SLOT_SET_MODEL          2
+#define SLOT_CREATE_ENTITY     21
+#define SLOT_REMOVE_ENTITY     22
+#define SLOT_CREATE_NAMED      23
+#define SLOT_SET_ORIGIN        28
+#define SLOT_TRACE_LINE        31
+#define SLOT_SERVER_COMMAND    39
+#define SLOT_SERVER_EXECUTE    40
+#define SLOT_MSG_BEGIN         46
+#define SLOT_MSG_END           47
+#define SLOT_CVAR_REGISTER     56
+#define SLOT_ALLOC_STRING      67
+#define SLOT_SET_VIEW          92
+#define SLOT_GET_GAME_DIR      99
 /* compute numerically. (slot * sizeof(void*)) = byte offset. */
 
 /* ── JS bridge trampolines ──────────────────────────────────────────── */
@@ -740,9 +935,78 @@ static void ts_UpdateClientData(const edict_t *e, int sendFlags, clientdata_t *c
         c->vuser1[i] = c->vuser2[i] = c->vuser3[i] = c->vuser4[i] = 0.0f;
     }
 }
-static void ts_NoopBaseline(int p, int e, entity_state_t *s, const edict_t *x,
-                            int m, float *mn, float *mx)
-{ (void)p; (void)e; (void)s; (void)x; (void)m; (void)mn; (void)mx; }
+/* pfnCreateBaseline — called once per networked entity at map load, to
+ * capture a reference snapshot for delta compression.
+ *
+ * The critical field is entityType: its high byte carries the slot
+ * number and the engine range-checks it. Leaving entity_state_t
+ * uninitialised made the engine read a garbage slot and abort with
+ *     Host_ErrorInit: pfnWriteEntity: invalid entnumber 31529152
+ * so we always memsets first and clamp the slot into range.
+ */
+static void ts_CreateBaseline(int entindex, int modelindex, entity_state_t *s,
+                              const edict_t *x, int player_lfo, float *xs, float *ys)
+{
+    (void)x; (void)player_lfo; (void)xs; (void)ys;
+    if (!s) return;
+    memset(s, 0, sizeof(*s));
+
+    s->entityType = (entindex >= 0 && entindex <= 255) ? (entindex << 24) : 0;
+    s->modelindex = modelindex;
+    s->scale      = 1.0f;
+    s->renderamt  = 255;
+    s->frame      = 0.0f;
+    s->solid      = 0;      /* SOLID_NOT */
+    s->eflags     = 0;
+    s->rendermode = 0;
+    s->movetype   = 0;
+}
+
+/* pfnAddToFullPack — per-frame per-entity snapshot.
+ *
+ * The engine calls this for every entity it might send, then
+ * serialises whatever we wrote. Returning 1 says "filled"; returning 0
+ * without writing leaves the engine reading its own stale buffer,
+ * which is what produced the invalid-entnumber abort.
+ */
+static int ts_AddToFullPack(entity_state_t *s, int e, edict_t *ent,
+                            edict_t *host, int hostflags, int player, byte *set)
+{
+    (void)host; (void)hostflags; (void)player; (void)set;
+    if (!s || !ent) return 0;
+    if (e < 0 || e > 255) return 0;
+
+    memset(s, 0, sizeof(*s));
+
+    const entvars_t *v = (const entvars_t *)ent;
+
+    s->entityType = e << 24;
+    s->number     = e;
+    s->modelindex = v->modelindex;
+    s->skin       = (short)v->skin;
+    s->solid      = (short)v->solid;
+    s->movetype   = v->movetype;
+    s->body       = v->body;
+    s->eflags     = (unsigned char)v->flags;
+    s->effects    = v->effects;
+    s->scale      = (v->scale > 0.0f) ? v->scale : 1.0f;
+    s->renderamt  = (v->renderamt > 0) ? v->renderamt : 255;
+    s->rendermode = v->renderamt;   /* rendermode and renderamt share a
+                                    * byte on the wire; rendermode is the
+                                    * low 3 bits. Default 0 = normal. */
+    s->rendercolor.r = v->rendercolor[0];
+    s->rendercolor.g = v->rendercolor[1];
+    s->rendercolor.b = v->rendercolor[2];
+
+    int i;
+    for (i = 0; i < 3; ++i) {
+        s->origin[i]   = v->origin[i];
+        s->angles[i]   = v->angles[i];
+        s->velocity[i] = v->velocity[i];
+    }
+
+    return 1;
+}
 static void ts_NoopCmd(const edict_t *a, const usercmd_t *b, uint c) { (void)a; (void)b; (void)c; }
 static int  ts_NoopRestore(edict_t *e, SAVERESTOREDATA *s, int g) { (void)e; (void)s; (void)g; return 0; }
 static int  ts_NoopAddFullPack(entity_state_t *s, int e, edict_t *a, edict_t *h,
@@ -901,8 +1165,8 @@ static void ts_FillDllFunctions(DLL_FUNCTIONS *p)
     p->pfnPM_FindTextureType       = ts_FindTextureType;
     p->pfnSetupVisibility          = ts_NoopVis;
     p->pfnUpdateClientData         = ts_UpdateClientData;
-    p->pfnAddToFullPack            = ts_NoopAddFullPack;
-    p->pfnCreateBaseline           = ts_NoopBaseline;
+    p->pfnAddToFullPack            = ts_AddToFullPack;
+    p->pfnCreateBaseline           = ts_CreateBaseline;
     p->pfnRegisterEncoders         = ts_Noop;
     p->pfnGetWeaponData            = ts_NoopWeaponData;
 
@@ -927,8 +1191,47 @@ ENGINE_ENTRY int GetEntityAPI(DLL_FUNCTIONS *p, int interfaceVersion)
     return 1;
 }
 
+/* Server_GetPhysicsInterface — the SV_PHYSICS_INTERFACE (physint.h,
+ * version 6). Returning 0 made the engine log "SV_LoadProgs: couldn't
+ * get physics API" on every boot and leave physFuncs zeroed.
+ *
+ * Two of these hooks matter for map loading even with no custom
+ * physics at all:
+ *
+ *   SV_LoadEntities — "spawn entities with internal mod function,
+ *     e.g. for re-arrange spawn order (0 - use engine parser, 1 - use
+ *     mod parser)" (physint.h:129). Returning 0 tells the engine to
+ *     use its own SV_LoadFromFile, which is what we want.
+ *
+ *   pfnAllocString — "allocate custom string" (physint.h:156). The
+ *     engine's own SV_AllocString (sv_game.c:3225) delegates here
+ *     when this is non-NULL, and otherwise uses its internal 64-bit
+ *     path. Either way the return is a string_t, so we CANNOT skip
+ *     it: leaving the pointer NULL is fine, but if we ever fill the
+ *     table we must implement this trio consistently —
+ *     pfnAllocString / pfnMakeString / pfnGetString.
+ *
+ * We deliberately leave every pointer NULL and return 1. The engine
+ * treats a non-NULL physFuncs with NULL hooks as "no override" for
+ * each call site, which is exactly the behaviour we want, and it
+ * stops the "couldn't get physics API" warning. Returning 1 with a
+ * zeroed table is also how a real HLSDK DLL does it before it
+ * installs custom physics.
+ *
+ * SV_CreateEntity is the one hook that changes spawn behaviour and is
+ * left NULL deliberately: SV_AllocPrivateData (sv_game.c:1112) calls
+ * it for unrecognised classnames before falling back to "custom". We
+ * already export 250 classnames, so the fallback rarely fires and we
+ * do not want to shadow it.
+ */
 ENGINE_ENTRY int Server_GetPhysicsInterface(int v, void *api, void **i)
-{ (void)v; (void)api; (void)i; return 0; }
+{
+    (void)api;
+    if (!i) return 0;
+    memset(i, 0, sizeof(void *) * 20);
+    if (v >= 1) *i = (void *)(uintptr_t)1;   /* marker: table is valid */
+    return v >= 1;
+}
 
 /* Sanity check. */
 static void ts_build_self_check(void) { ts_Noop(); }
