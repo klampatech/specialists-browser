@@ -27,6 +27,12 @@ typedef int qboolean;
 typedef unsigned char byte;
 typedef unsigned int uint;
 typedef struct edict_s edict_t;
+
+/* eiface.h:420 — the interface version the engine expects back from
+ * GetEntityAPI/GetEntityAPI2. xash3d-fwgs compares it against
+ * INTERFACE_VERSION of its own and only marks init_entity_api when
+ * they match (sv_game.c:5291). */
+#define INTERFACE_VERSION 140
 typedef struct { int dummy; } opaque_t;
 #define OPAQUE_T(name) typedef opaque_t name
 OPAQUE_T(SAVERESTOREDATA);
@@ -663,9 +669,69 @@ ENGINE_ENTRY void GiveFnptrsToDll(void *pe, void *pg)
     (void)pg;
 }
 
-ENGINE_ENTRY int GetEntityAPI(DLL_FUNCTIONS *p, int interfaceVersion)
+static void ts_FillDllFunctions(DLL_FUNCTIONS *p);   /* defined below */
+
+/* GetEntityAPI2 — the extended EntityAPI entry point.
+ *
+ * xash3d-fwgs looks for BOTH exports and prefers the "2" variant
+ * (sv_game.c:5246 resolves GetEntityAPI2 first, then GetEntityAPI at
+ * :5289 as the legacy path):
+ *
+ *     GetEntityAPI2 = (APIFUNCTION2)COM_GetProcAddress( hInstance, "GetEntityAPI2" );
+ *     ...
+ *     if ( GetEntityAPI2 && GetEntityAPI2( &svgame.dllFuncs, &version ))
+ *         if ( INTERFACE_VERSION == version ) init_entity_api = true;
+ *
+ * APIFUNCTION2 takes the interface version BY POINTER (eiface.h:
+ * typedef int (*APIFUNCTION2)(DLL_FUNCTIONS*, int*) ) — the old
+ * APIFUNCTION passes it by value. Getting that wrong is a silent
+ * ABI mismatch, so the signature below is deliberate.
+ *
+ * c91698be exports it; we did not, so the engine took the legacy
+ * path. That is not fatal on its own but it is one of the two
+ * documented entry points and costs nothing to provide.
+ */
+ENGINE_ENTRY int GetEntityAPI2(DLL_FUNCTIONS *p, int *interfaceVersion)
 {
-    (void)interfaceVersion;
+    if (!p) return 0;
+    memset(p, 0, sizeof(*p));
+    ts_FillDllFunctions(p);
+    if (interfaceVersion) *interfaceVersion = INTERFACE_VERSION;
+    return 1;
+}
+
+/* GetNewDLLFunctions — the NEW_DLL_FUNCTIONS table
+ * (eiface.h:477-489, version 1). Five optional hooks:
+ *   pfnOnFreeEntPrivateData  called before an edict's private data is freed
+ *   pfnGameShutdown           on SV_Shutdown
+ *   pfnShouldCollide          collision filter
+ *   pfnCvarValue / Value2    client cvar query replies
+ * The engine memsets the table and leaves pointers NULL if we don't
+ * provide it (sv_game.c:5281), so it is optional — but c91698be
+ * provides it and the engine calls into it during edict teardown. */
+typedef struct {
+    void (*pfnOnFreeEntPrivateData)(edict_t *pEnt);
+    void (*pfnGameShutdown)(void);
+    int  (*pfnShouldCollide)(edict_t *pentTouched, edict_t *pentOther);
+    void (*pfnCvarValue)(const edict_t *pEnt, const char *value);
+    void (*pfnCvarValue2)(const edict_t *pEnt, int requestID, const char *cvarName, const char *value);
+} NEW_DLL_FUNCTIONS;
+
+ENGINE_ENTRY int GetNewDLLFunctions(NEW_DLL_FUNCTIONS *p, int *interfaceVersion)
+{
+    if (!p) return 0;
+    memset(p, 0, sizeof(*p));
+    if (interfaceVersion) *interfaceVersion = 1;
+    return 1;
+}
+
+/* Fill a DLL_FUNCTIONS table with the shim's 52 hooks.
+ * Shared by GetEntityAPI (legacy, version by value) and
+ * GetEntityAPI2 (extended, version by pointer).
+ */
+static void ts_FillDllFunctions(DLL_FUNCTIONS *p)
+{
+    if (!p) return;
     p->pfnGameInit                 = ts_GameInit;
     p->pfnSpawn                    = ts_Spawn;
     p->pfnThink                    = ts_Think;
@@ -727,6 +793,14 @@ ENGINE_ENTRY int GetEntityAPI(DLL_FUNCTIONS *p, int interfaceVersion)
     p->pfnInconsistentFile         = ts_NoopInconsist;
     p->pfnAllowLagCompensation     = ts_NoopZero;
 
+}
+
+ENGINE_ENTRY int GetEntityAPI(DLL_FUNCTIONS *p, int interfaceVersion)
+{
+    (void)interfaceVersion;
+    if (!p) return 0;
+    memset(p, 0, sizeof(*p));
+    ts_FillDllFunctions(p);
     return 1;
 }
 
