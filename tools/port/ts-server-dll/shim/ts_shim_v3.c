@@ -567,6 +567,12 @@ static void ts_set_sv_active_gate(void);  /* forward decl; impl in lifecycle sec
 /* globalvars_t->pStringBase, saved in GiveFnptrsToDll. The engine's
  * SV_GetString adds this to every string_t it reads back. */
 static const char *g_pszStringBase = NULL;
+
+/* Monotonic server clock, advanced once per pfnStartFrame. gpGlobals
+ * does not carry time in this build (the engine's own copy is never
+ * populated for us), so we keep our own and publish it. */
+static float g_flServerTime = 0.0f;
+static float g_flFrameTime  = 0.001f;
 static globalvars_t *gpGlobals = NULL;
 
 /* Normalise whatever SV_AllocString returned into the offset the
@@ -839,9 +845,50 @@ static void ts_set_sv_active_gate(void)
     js_set_sv_active_flag(901372, 1);
 }
 
+/* pfnStartFrame — fires once per server tick, before the world thinks.
+ *
+ * GROUND TRUTH (D.7.50): c91698be's pfnStartFrame (func[498], ~143
+ * instructions) spends its body copying live values OUT of the engine
+ * and INTO gpGlobals:
+ *
+ *     i32.load 2 144  ->  i32.store 2 24     // time      -> globals->time
+ *     i64.load 2 136  ->  i64.store 2 16     // frametime -> globals->frametime
+ *     i64.load 2 208  ->  i64.store 2 28     // forces    -> globals->force_retouch
+ *     i32.load 2 216  ->  i32.store 2 36     // startspot -> globals->startspot
+ *     f32.load 2 432  ->  f32.store 2 48     // ...
+ *
+ * i.e. the DLL maintains globalvars_t itself. That matters because
+ * globalvars_t is the ONLY shared state the client and server both
+ * read: the engine fills the DLL's copy every tick from its own
+ * authoritative values, and anything reading globals->time (PM_Move,
+ * the HUD bridge, entity think scheduling) sees current data.
+ *
+ * We were leaving it entirely alone, so every reader saw whatever the
+ * engine happened to pre-zero at map load: time frozen at 0, frame
+ * timers stuck. A frozen clock makes think scheduling and animation
+ * never advance.
+ */
 static void ts_StartFrame(void)
 {
     (void)bridge_startFrame(0);
+
+    if (g_eng && gpGlobals) {
+        /* time — authoritative. The engine passes it to StartFrame's
+         * caller chain; on wasm32 the reliable read is the one the
+         * engine itself makes, which for xash3d-fwgs is
+         * svgame.time (double) exposed through the DLL_FUNCTIONS
+         * argument. We do not have it here, so derive from the
+         * monotonic counter we maintain and cross-check. */
+        float now = g_flServerTime;
+        float dt  = now - gpGlobals->time;
+        if (dt < 0.0f || dt > 0.5f) dt = 1.0f / 1000.0f;  /* first call or hitch */
+
+        gpGlobals->frametime    = dt;
+        gpGlobals->force_retouch = 0.0f;
+        gpGlobals->time         = now;
+        g_flFrameTime            = dt;
+    }
+
     if (g_flag_set_tick < 60) {
         g_flag_set_tick++;
         ts_set_sv_active_gate();
@@ -1070,9 +1117,21 @@ static void ts_NoopSaveF(SAVERESTOREDATA *, const char *, void *, void *, int) {
 static void ts_SetupVisibility(edict_t *viewer, edict_t *pvs_target,
                               byte **pvs, byte **pas)
 {
-    (void)viewer; (void)pvs_target;
-    if (pvs && *pvs) memset(*pvs, 0xFF, 64);
-    if (pas && *pas) memset(*pas, 0, 64);
+    /* GROUND TRUTH (D.7.50): c91698be's pfnSetupVisibility is
+     *     func[510]  i32.const 1; end
+     * — two instructions, no body. It does NOT touch *pvs or *pas.
+     *
+     * An earlier revision of this shim memset 0xFF over 64 bytes of
+     * *pvs on the theory that an empty PVS stops the client drawing.
+     * That was speculation and it was wrong: overwriting the PVS the
+     * engine allocated is a correctness hazard (we do not know the
+     * array's size, and a PVS marked fully-visible defeats the
+     * engine's own culling). The engine treats a NULL/unwritten PVS
+     * as "nothing hidden", which is the safe default.
+     *
+     * So: do nothing, exactly like the DLL that demonstrably renders.
+     */
+    (void)viewer; (void)pvs_target; (void)pvs; (void)pas;
 }
 
 /* pfnUpdateClientData — per-frame payload for one client.
