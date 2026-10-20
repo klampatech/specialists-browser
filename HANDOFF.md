@@ -2197,6 +2197,7 @@ projects queued.**
 | ✅ D.7.13 — **xash.wasm heap cap raised 256MB → 2GB** (binary patch) |
 | ✅ D.7.14 — **TS server DLL WASM port: build infra + first translated class** (4 imports, 526 B) |
 | ✅ D.7.15 — **Full HLSDK + CTSGameRules subclass** (283 imports, 1361 KB) |
+| 🎯 **D.7.16 — Path 1 architecture decided; wabt post-process is next** |
 | ✅ D.7.11 — Visual baseline verified; MP signaling round-trip working |
 | ✅ D.7.11 — `tools/decompile/grind_parallel.py` orchestrator (with zombie-detection fix) |
 
@@ -2309,6 +2310,143 @@ None eliminated the GOT entries. The next session's task is the
 linker flags / source-level inlining to make them go away — OR
 a different strategy: ship our TS code as a **second** side module
 that the engine loads alongside hl.dll (instead of replacing it).
+
+### D.7.16 — ARCHITECTURE DECISION + IMPLEMENTATION PLAN
+
+**Decision (Kyle, 2026-10-19): Path 1 — single TS DLL replacing hl.dll.**
+
+Comparison:
+
+| Concern | Path 1 (replace hl.dll) | Path 2 (overlay + hl.dll) |
+|---|---|---|
+| Native GoldSrc pattern | One DLL per mod (correct) | Two side modules = a hack |
+| Performance | Single dlopen, no cross-module calls | Every hook is a cross-DLL call |
+| Stability | Atomic rebuilds | Two WASMs can drift apart |
+| Vtable integrity | Subclassing works because vtable is local | Can't subclass across side-module boundary without patching vtables at runtime — fragile as hell |
+| Maintenance | One build, one commit | Two WASMs + dlopen plumbing in engine |
+| Future TS work | Add a `.cpp`, rebuild, done | Every hook needs engine wiring or vtable surgery |
+
+**Killer for path 2:** `CTSGameRules::InitHUD` works in path 1
+because `g_pGameRules->InitHUD(pl)` dispatches via the local vtable
+to our override. In path 2, hl.dll's `g_pGameRules` points to ITS
+class instance — we have no clean way to inject our method at that
+vtable index without runtime patching. We'd have to either patch
+vtables at known offsets (brittle), or ship our own complete fake
+`CHalfLifeMultiplay` (which is path 1 in a trenchcoat).
+
+**So path 2 isn't a shortcut, it's path 1 with extra steps.**
+
+**The 229 GOT.func gap is the next-session task.** All 229 entries
+reference symbols that exist WITHIN the same module — they're
+PIC-relative calls to `CBaseEntity::TraceBleed` etc. emscripten-side-module
+PIC code generates them as external imports by default; the engine
+doesn't know to look within the same module. Fix is post-process the
+WAT and rewrite those GOT imports as direct symbol references. Same
+trick we used for the heap-cap binary patch.
+
+#### Concrete next-session tasks (D.7.17 — wabt GOT rewriter)
+
+**Goal:** A build pipeline that produces a 50–60-import WASM that
+boots in the browser and renders TS gameplay.
+
+**Step 1: Write the GOT rewriter.**
+Path: `tools/port/ts-server-dll/rewrite-got.py`
+
+Approach (~100 lines of Python):
+1. Read the bloated WASM (283 imports, 1361 KB)
+2. `wasm2wat` → WAT
+3. Walk the WAT's Import section. For each `import "env" "GOT.func.<mangled>"`
+   or `import "env" "GOT.mem.<mangled>":
+   a. Strip the GOT prefix → look up `<mangled>` in the WASM's Function and
+      Global sections
+   b. Replace each call site that referred to the import with a direct
+      `call $func_NN` or `global.get $global_MM`
+4. `wat2wasm` → final WASM
+
+Verification: should drop to ~50–60 imports. The functions themselves
+are already in the module's exports (or function table); the GOT pattern
+is purely a linker convenience.
+
+**Step 2: Wire into build-ts-dll.sh.**
+After `emcc ... -o .../temp.wasm`, add:
+```bash
+python3 tools/port/ts-server-dll/rewrite-got.py \
+    $OUT/temp.wasm $OUT/ts_emscripten_wasm32.wasm
+```
+
+`rewrite-got.py` should be idempotent (detect if already rewritten —
+no `GOT.*` imports → no-op).
+
+**Step 3: Smoke-test in browser.**
+1. `bash tools/port/ts-server-dll/build-ts-dll.sh`
+2. Confirm rebuild produces a ≤100-import WASM
+3. cp it over `webxash/public/dlls/hl_emscripten_wasm32.wasm`
+4. Browser-test (bypass cert, click Play, expect TS main menu
+   instead of loading spinner)
+5. Open dev-server console (browser_execlog capture) and confirm
+   `[TS] CTSGameRules::InitHUD — TS HUD initialized for player`
+   appears when a player joins
+
+**Step 4 (only if Step 3 is green): translate more classes.**
+Now that the engine loads our DLL, add to `src/`:
+- `cts_player.cpp` — `class CTSPlayer : public CBasePlayer`
+  with class loadout logic (1 translated method as pattern)
+- `cts_knife_weapon.cpp` — the smallest weapon family
+  Override `GetItemInfo` to add TS-specific stats
+- More CTSGameRules methods (the decompiled 39 `tools/decompile/output/CTSGameRules__*.ts`
+  files — start with `PlayerKilled` and `TheOneIsDead` since they
+  visibly affect gameplay)
+
+Each class: copy the decompile, replace offset reads with real C++
+field accesses, name mangling comes out as `__cxxabiv120...` quirks
+but nothing breaks.
+
+**Step 5 (multi-session, eventually):**
+- All 39 CTSGameRules methods
+- CTSPlayer class (HP, loadouts, custom spawn behavior)
+- 5–10 weapon classes (knife, gun, etc.)
+- The class system (10 distinct classes from CHalfLife to registered)
+- Bot AI replacement (HL1 vanilla → TS-class-aware bots)
+- Once server is feature-complete: client DLL port (visual viewmodels,
+  HUD, stunts) — that one's multi-week, can be done concurrently
+
+#### Why this is the right sequence
+
+The wabt post-process is a one-shot unlock. Once it works, every
+session after this adds a class instead of fighting the linker.
+Each translated class adds 30–300 lines of C++. With 30+ classes
+remaining before visual gameplay parity, we're now in a "linear
+progress, not exponential debugging" regime.
+
+Visual win ETA: 2–3 sessions from now (assuming 1 session per
+mid-size class translation).
+
+#### Files to be touched by D.7.17
+
+- **new:** `tools/port/ts-server-dll/rewrite-got.py` (the script)
+- **modified:** `tools/port/ts-server-dll/build-ts-dll.sh` (call the script)
+- **new:** `src/cts_player.{h,cpp}` — CTSPlayer : public CBasePlayer
+- **new:** `src/cts_knife_weapon.cpp` — first translated weapon
+- **modified:** `src/cts_game_rules.cpp` — add more translated methods
+- **modified:** `HANDOFF.md` — D.7.17 entry when done
+
+#### If the wabt rewriter fails
+
+Fallback chain (in order of preference):
+
+1. **Single-TU compile** — concatenate all 105 .cpp files into
+   one big .cpp, no cross-TU references, no GOT.func. Slow compile but clean.
+2. **No `-flto` + manual inlining** — Mark every internal C++ method
+   `static` or `__attribute__((always_inline))` so they resolve
+   within TU. Aggressive but might work.
+3. **Source-level vtable modifications** — manually craft a custom
+   vtable that includes our overrides. Hacky but least likely to
+   break.
+4. **Pivot back to path 2** — accept the architecture smell, ship
+   TS as overlay. (Last resort; only if path 1 truly can't work.)
+
+Don't pivot to path 2 unless D.7.17 + fallbacks 1–3 all fail.
+The architecture decision stands.
 
 ### ⭐ D.7.13 — xash.wasm heap cap raised (binary patch)
 
