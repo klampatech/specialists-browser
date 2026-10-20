@@ -45,8 +45,62 @@ typedef struct KeyValueData_s
     char       *szValue;
     int         fHandled;
 } KeyValueData;
+
+/* vec3_t — the pervasive GoldSrc vector alias (eiface.h / progdefs.h). */
+typedef float vec3_t[3];
+
+#define MAX_PHYSINFO_STRING 256
+
+/* clientdata_t — entity_state.h:121-176, field order verbatim.
+ *
+ * This is the SERVER-side struct pfnUpdateClientData fills, NOT the
+ * 5-field client_data_t in cdll_int.h that the client DLL receives.
+ * The engine memcpy's it into the frame, so field order matters: a
+ * misordered field silently corrupts the view instead of erroring.
+ */
+typedef struct {
+    vec3_t   origin;
+    vec3_t   velocity;
+
+    int      viewmodel;
+    vec3_t   punchangle;
+    int      flags;
+    int      waterlevel;
+    int      watertype;
+    vec3_t   view_ofs;
+    float    health;
+
+    int      bInDuck;
+    int      weapons;
+
+    int      flTimeStepSound;
+    int      flDuckTime;
+    int      flSwimTime;
+    int      waterjumptime;
+
+    float    maxspeed;
+
+    float    fov;
+    int      weaponanim;
+
+    int      m_iId;
+    int      ammo_shells;
+    int      ammo_nails;
+    int      ammo_cells;
+    int      ammo_rockets;
+    float    m_flNextAttack;
+
+    int      tfstate;
+    int      pushmsec;
+    int      deadflag;
+    char     physinfo[MAX_PHYSINFO_STRING];
+
+    int      iuser1, iuser2, iuser3, iuser4;
+    float    fuser1, fuser2, fuser3, fuser4;
+    vec3_t   vuser1, vuser2, vuser3, vuser4;
+} clientdata_t;
+
 OPAQUE_T(customization_t);
-OPAQUE_T(clientdata_t);
 OPAQUE_T(weapon_data_t);
 typedef struct {
     int   entity_type;
@@ -186,6 +240,7 @@ typedef struct {
 
     int   (*pfnInconsistentFile)(const edict_t *, const char *, char *);
     int   (*pfnAllowLagCompensation)(void);
+
 } DLL_FUNCTIONS;
 
 /* Engine-side: the engine passes a pointer to its own g_engfuncs.
@@ -616,7 +671,75 @@ static void ts_NoopSave(edict_t *a, SAVERESTOREDATA *b) { (void)a; (void)b; }
 static void ts_NoopSave1(SAVERESTOREDATA *a) { (void)a; }
 static void ts_NoopSaveF(SAVERESTOREDATA *, const char *, void *, void *, int) {}
 static void ts_NoopVis(edict_t *a, edict_t *b, byte **pvs, byte **pas) { (void)a; (void)b; (void)pvs; (void)pas; }
-static void ts_NoopUcd(const edict_t *e, int s, clientdata_t *c) { (void)e; (void)s; (void)c; }
+
+/* pfnUpdateClientData — per-frame payload for one client.
+ *
+ * This is the last thing the server does before the client can draw.
+ * The engine serialises clientdata_t into the frame; the client
+ * decodes it and builds its viewpoint from origin + view_ofs +
+ * health + weapon bits. A no-op here means the client decodes a
+ * zeroed struct: origin (0,0,0), view_ofs (0,0,0), and no world
+ * model reference — which is why we sat on the loading screen even
+ * with a healthy server and a loaded BSP.
+ *
+ * The shim has no player class, so we synthesise a sane standing
+ * view. Weapon data is F7 (pfnGetWeaponData) — viewmodel stays 0
+ * until then, which renders as "no viewmodel", not as a failure.
+ */
+static void ts_UpdateClientData(const edict_t *e, int sendFlags, clientdata_t *c)
+{
+    (void)sendFlags;
+    if (!c) return;
+
+    /* Start from the edict so a real player position wins once
+     * PM_Move is driving it. entvars_t leading layout is
+     * classname, globalname, origin — progdefs.h:55. */
+    const entvars_t *v = (const entvars_t *)e;
+    float ox = 0.0f, oy = 0.0f, oz = 32.0f;
+    if (v) { ox = v->origin[0]; oy = v->origin[1]; oz = v->origin[2]; }
+
+    int i;
+    for (i = 0; i < 3; ++i) {
+        c->origin[i]   = (i == 2) ? oz : ((i == 0) ? ox : oy);
+        c->velocity[i] = 0.0f;
+    }
+
+    c->viewmodel   = 0;        /* F7 */
+    for (i = 0; i < 3; ++i) {
+        c->punchangle[i] = 0.0f;
+        c->view_ofs[i]   = 0.0f;
+    }
+
+    c->flags       = 0;        /* FL_ONGROUND etc. — none yet */
+    c->waterlevel  = 0;
+    c->watertype   = -1;
+    c->health      = 100.0f;
+    c->bInDuck     = 0;
+    c->weapons     = 0;
+    c->flTimeStepSound = 0;
+    c->flDuckTime  = 0;
+    c->flSwimTime  = 0;
+    c->waterjumptime = 0;
+    c->maxspeed    = 320.0f;
+    c->fov         = 90.0f;
+    c->weaponanim  = 0;
+    c->m_iId       = 0;
+    c->ammo_shells = 0;
+    c->ammo_nails  = 0;
+    c->ammo_cells  = 34;       /* Desert Eagle mag, matches the HUD */
+    c->ammo_rockets = 0;
+    c->m_flNextAttack = 0.0f;
+    c->tfstate     = 0;
+    c->pushmsec    = 0;
+    c->deadflag    = 0;
+    c->physinfo[0] = '\0';
+
+    c->iuser1 = c->iuser2 = c->iuser3 = c->iuser4 = 0;
+    c->fuser1 = c->fuser2 = c->fuser3 = c->fuser4 = 0.0f;
+    for (i = 0; i < 3; ++i) {
+        c->vuser1[i] = c->vuser2[i] = c->vuser3[i] = c->vuser4[i] = 0.0f;
+    }
+}
 static void ts_NoopBaseline(int p, int e, entity_state_t *s, const edict_t *x,
                             int m, float *mn, float *mx)
 { (void)p; (void)e; (void)s; (void)x; (void)m; (void)mn; (void)mx; }
@@ -777,7 +900,7 @@ static void ts_FillDllFunctions(DLL_FUNCTIONS *p)
     p->pfnPM_Init                  = ts_PM_Init;
     p->pfnPM_FindTextureType       = ts_FindTextureType;
     p->pfnSetupVisibility          = ts_NoopVis;
-    p->pfnUpdateClientData         = ts_NoopUcd;
+    p->pfnUpdateClientData         = ts_UpdateClientData;
     p->pfnAddToFullPack            = ts_NoopAddFullPack;
     p->pfnCreateBaseline           = ts_NoopBaseline;
     p->pfnRegisterEncoders         = ts_Noop;
