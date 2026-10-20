@@ -2982,7 +2982,39 @@ in the source; once we have a working build of the new source
   `ClearObjectiveList` translation + `m_NumObjectives` /
   `m_Objectives` field additions
 
-### D.7.23 (2026-10-20) — IsCTB translation; build script idempotent
+### D.7.23a (2026-10-20) — Path A confirmed broken; revert to c91698be
+
+**Kyle's browser test confirmed:** the 283-import version
+(ISCTB + ClearObjectiveList translations) fails in real
+Chrome with the SAME pageerror as in headless Playwright:
+
+  ```
+  Uncaught (in promise) TypeError: xash3d-fwgs.js?v=a636de4f:2975
+  Cannot read properties of undefined (reading 'value')
+      at createWasm
+      at initXash (xash-loader.ts:273)
+      at startWithZip (xash-loader.ts:381)
+      at startGameWithZip (xash-loader.ts:490)
+      at startGameZip (xash-loader.ts:588)
+      at XashSettings.vue:93
+  ```
+
+Same `[PAGEERROR] Cannot read properties of undefined (reading 'value')`
+in `createWasm` as we saw in Playwright headless. The 229 GOT.func
+imports really do break the Xash3D-FWGS dylink loader — it's not
+a Playwright-only quirk.
+
+**Fix deployed:** webxash/public/dlls/hl_emscripten_wasm32.wasm
+reverted to c91698be (52 imports, 0 GOT entries, working baseline).
+Kyle should hard-refresh and be back in the game.
+
+**Side work preserved in source** (NOT yet deployed):
+- `tools/port/ts-server-dll/src/cts_game_rules.h` — IsCTB,
+  ClearObjectiveList, and all field additions remain.
+- These compile correctly into the 283-import version. The
+  question now is how to get them into a 52-import binary.
+
+### D.7.23 — IsCTB translation; build script idempotent
 
 **Translation:**
 - **`CTSGameRules::IsCTB`** — gates on m_iGameMode byte == 1 (CTB
@@ -3025,32 +3057,78 @@ ClearObjectiveList methods.
   saw with the 283-import version earlier.
 - Real Chrome: unknown — Kyle needs to test.
 
-### D.7.24 — NEXT SESSION: decide which WASM to ship
+### D.7.24 — What we tried in this round (and what didn't work)
 
-Two paths forward:
+**Already-tried flag permutations** (all from D.7.22 matrix — see
+`tools/port/ts-server-dll/D.7.22-build-matrix.md`):
+- `-O0 / -O1 / -O2 / -O3 / -Os / -Oz` — all give 283/229 with hidden vis
+- `-flto` vs `-fno-lto` — same
+- `-fvisibility=hidden` vs default — default is WORSE (3904 imports)
+- `-fno-plt` / `-fno-pic` / `-fno-PIE` / `-fno-addrsig` / `-fno-toplevel-reorder` / `-fno-emulated-tls` — all ignored or no effect
+- `-sEXPORT_ALL=0` / `-sNO_DYNAMIC_EXECUTION=1` / `-sRELOCATABLE=0` — none strip GOT
 
-**Path A: 283-import is fine in real Chrome (Kyle confirms):**
-- We have parity-progressing methods (IsCTB, ClearObjectiveList)
-  and can continue adding more (GetTeamIndex, GetTeamCash, etc.)
-- Path forward: keep accumulating methods, test in real Chrome.
+**Structural reason for the 229 GOT entries:**
+HLSDK's class hierarchy (CHalfLifeMultiplay, CBaseEntity,
+CBasePlayer, CBasePlayerItem, CGib, CSprite, etc.) has hundreds
+of virtual methods. Each `call_indirect` site through a vtable
+becomes a GOT entry when Emscripten PIC kicks in (`-sSIDE_MODULE=1`).
+The 229 entries ARE the 229 unique virtual call sites whose
+targets can't be statically resolved.
 
-**Path B: 283-import fails in real Chrome (Kyle reports):**
-- Revert `webxash/public/dlls/hl_emscripten_wasm32.wasm` to
-  `c91698be` (52-import, 0 GOT, working baseline). Lose the
-  IsCTB / ClearObjectiveList methods for now.
-- Pick up the binary-patch approach (option T10 from D.7.21):
-  strip unused GOT.func imports from the 283-import WASM, keep
-  only the env.* entries. Likely 50-60 imports, working state.
+c91698be avoided this by exporting every HLSDK class method
+(504 exports, all the mangled C++ methods). With those exported,
+internal cross-references resolve DIRECTLY at link time, no GOT
+needed. The exact emcc flag combo that produced 504 exports
+eludes us — we've spent ~3 hours on the matrix without
+reproducing it.
 
-Recommended next-session order:
-1. Kyle: hard-refresh and report whether engine boots cleanly
-   with the 283-import version. (Decision: A vs B)
-2. If A: continue D.7.23 with more no-pfnX method translations.
-3. If B: revert to c91698be and implement T10 (binary patch).
-4. In parallel: investigate why Playwright catches a
-   pageerror that real Chrome may not. Compare
-   `--enable-features` flags and `SharedArrayBuffer` support
-   settings between the two.
+### D.7.25 — Next-session options
+
+**Option Z (recommend): annotate HLSDK methods as
+`__attribute__((visibility("default")))` to force export.**
+Each C++ virtual method that's currently becoming a GOT entry
+gets a visibility annotation that keeps emcc from PIC-ifying it.
+The compiler can then resolve the call directly. ~229 one-line
+touches across HLSDK's source files, but each is mechanical:
+search for `void CClassXxx::MethodName`, add `EXPORTED` macro.
+
+This is the LIGHTEST intervention that should produce a 52-import
+build like c91698be.
+
+**Option Y: stop fighting the loader.** Accept that we can't
+make new WASM features work in real Chrome. Continue with
+launcher UX, persistence, and HL1-side parity (UI, maps, etc.)
+while the underlying WASM stays at the c91698be baseline.
+
+**Option X: WAT surgery.** Take the 283-import WAT, replace
+each `(import "GOT.func" X)` with a `global` definition of the
+same name initialized to 0, then patch every `global.get X`
+call site to inline `ref.func` with the resolved function.
+Significant work but produces a self-contained 52-import binary.
+
+**Path forward:** Recommend Option Z as next session. Approach:
+1. Identify the 229 methods with `-Wl,--print-symbols=...
+   GOT:.*` or `--print-got=all`
+2. Add `EXPORTED` macro to each one
+3. Build, verify import count drops to ~52 with 0 GOT entries
+4. If it works, deploy and have Kyle test in real Chrome (but
+   the deployed binary is unlikely to work because the existing
+   c91698be baseline already works)
+
+Actually, re-reading this: with c91698be working AND Playwright
+showing the pageerror on 283-import, option Z has uncertain
+outcome. c91698be may be a unicorn build that we can't
+reproduce; subsequent rebuilds will give 283-import which fails.
+
+The cleanest path may be **Option Y**: live with the working
+52-import baseline. New TS server-DLL features (Buy, FireMode,
+class loadouts, etc.) would need a different deployment
+mechanism — maybe a JS-side dispatcher that runs alongside the
+c91698be WASM, or a separate "TS-side" runtime that bridges
+the engine.
+
+That's a bigger architectural change and worth discussing
+before committing to it.
 
 
 **What D.7.17 DID NOT fix (in priority order):**
