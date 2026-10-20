@@ -2673,3 +2673,153 @@ cp rewritten.wasm webxash/public/dlls/hl_emscripten_wasm32.wasm
    have valid runtime values.
 4. **Translate more TS classes** (D.7.14 already shipped CTSFog + CTSGameRules
    subclass; 5–10 weapon classes are the next big gameplay unlock).
+
+
+### D.7.18 — NEXT SESSION: verify in-game + finish the GOT.func coverage
+
+**Where D.7.17 left off (verified working):**
+- All WASMs load: xash → filesystem_stdio → menu → hl (rewritten) → client → libref_webgl2 → libvgui_support
+- Half-Life main menu renders with TS-detection text intact
+- **No `pageerror` / no `WebAssembly.instantiate()` exceptions**
+
+**What D.7.17 DID NOT fix (in priority order):**
+
+#### P1 — Verify actual gameplay works (1-2h smoke test)
+
+We rendered the menu but never clicked through "New game" to a TS map.
+That's the smoke test that proves D.7.17 actually shipped gameplay.
+
+Steps:
+1. Start dev server: `cd /home/kyle/Development/specialists-browser/webxash && npm run dev`
+2. Open `https://localhost:5174/webXash/` in Chrome (or use the
+   `/tmp/smoke-test/play-test5.js` Playwright harness that already works)
+3. Click ▶ Play, wait 20s, click "New game", select difficulty, start
+4. Open DevTools console, look for:
+   - **`Unknown command: buy`** / **`Unknown command: firemode`** / etc.
+     — would indicate the server DLL didn't load and the client is talking
+     to stock HL1 commands. (TS-specific commands live in the server.)
+   - **`Got command "buy"`** — would indicate the server accepted it.
+5. If commands fail with "Unknown command", that's D.7.18's signal that
+   the GOT.func coverage is incomplete and we need P2 below.
+
+#### P2 — Densify the elem so all 229 GOT.func targets are reachable (3-4h)
+
+**The bug:** Only 1 of 229 GOT.func decls (`SUB_DoNothing` at decl 57)
+is in the original elem. For the other 228, `call_indirect(D)` reads
+`table[D]` — which the loader filled from xash.wasm's elem, NOT our
+func. Wrong target → trap or silent wrong-function.
+
+**Two valid fixes; recommend the second (call_indirect → call).**
+
+**Fix A: Densify the elem + working dylink patcher**
+- The dylink `MEM_INFO.tableSize` patcher in `rewrite-got.py` keeps
+  corrupting the section byte layout (NEEDED subsection LEB parsing is
+  wrong). Fix it or use `wabt`'s `wasm-objdump --patch-section` if it
+  exists.
+- After fix, expand elem to `(max_decl + 1)` entries (one per func,
+  identity) and bump dylink `tableSize` to match.
+
+**Fix B (recommended): Rewrite `call_indirect` → direct `call $D`**
+- For each `global.get $G; <some_ops>; call_indirect (type T)` where
+  `$G` is one of our const globals holding value `D`, replace the
+  whole sequence with `call $D`. WASM's `call` instruction takes a
+  direct func index — no table lookup, no `__table_base` confusion.
+- Tradeoff: bypasses the loader's table merge entirely, so we don't
+  care what `__table_base` is set to. Cleaner.
+- Implementation in `rewrite-got.py`: do a small data-flow walk on
+  each `call_indirect` site; if its index argument is provably one of
+  our const globals, replace. Tested via the smoke test in P1.
+
+#### P3 — Set GOT.mem values via start function (1-2h)
+
+Currently GOT.mem defaults to 0:
+- `stderr` (global 71) — `fputs(stderr, ...)` will trap on first call
+- `g_VCSInfo_Commit` (128), `g_VCSInfo_Branch` (129) — read-only, less
+  critical
+- `__si_class_type_infoE` (233), `__class_type_infoE` (234) — C++ RTTI
+  vtable pointers; `dynamic_cast` and `catch(typeid)` will trap
+
+Fix: define a `(start $init_got)` function that does:
+```wat
+(func $init_got
+  i32.const <stderr_addr>      ;; absolute address of stderr
+  global.set 71
+  ;; ... same for the other 4
+)
+```
+And add `(start $init_got)` to the module. The runtime loader runs
+`start` at instantiation time, BEFORE `updateGOT` runs over the
+module's exports — and since our globals are no longer imports
+(updateGOT doesn't iterate imports), our values stick.
+
+Stdout for vtables is harder: those are in our WASM's static data
+section already (the engine doesn't need to provide them since our
+module owns its own static data). Just need a `(data ...)` initializer.
+
+#### P4 — Translate more TS classes (3-4h per class, 5-10 classes to go)
+
+D.7.14 shipped `CTSFog` + `CTSGameRules` subclass. Gameplay still feels
+HL1 because the weapons / monsters / NPCs haven't been touched.
+
+Top priorities by gameplay impact:
+1. **CTSPlayerWeaponBase** — base class for all weapons (CM4A1,
+   CBeretta, CM249, etc.). Translate the **base** first; each weapon
+   subclasses this. (D.7.14's pattern: copy from HL1, overlay a
+   `.cpp`/`.h` with TS-specific fields, rebuild.)
+2. **CCrowbar** — already exists in HL1 as `weapon_crowbar`, easy
+   first weapon to verify the base class works.
+3. **CShotgun** — idem; weapon shot logic differs slightly in TS
+   (more damage, different spread).
+4. **CBasePlayer** — needed if `PlayerClass` differs (TS may have
+   `CPly` instead of `CBasePlayer`). Check `game_shared/player.h`.
+
+#### P5 — Multiplayer round-trip (deferred until server-side P1-P3 done)
+
+`stores.ts` already has 2-tab WebRTC plumbing. Once the server DLL is
+fully functional, fire up 2 browser tabs, host + join a TS server,
+confirm sync.
+
+### Memory pipeline (preserve across sessions)
+
+After committing, sync to vault:
+```
+git push origin main            # already done — 2326619
+cd webxash && git push origin phase-0-stub-fix  # already done — cab79f0
+# HANDOFF.md updates → ~/Obsidian/projects/specialists-browser/HANDOFF.md
+# (the HANDOFF.md here is the canonical one; vault copy is read-only backup)
+```
+
+### Files added this session (D.7.17, all committed in 2326619)
+
+- `tools/port/ts-server-dll/rewrite-got.py` (~280 lines, NEW) —
+  the GOT rewriter. Add the call_indirect → call rewrite here for P2.
+- `tools/port/ts-server-dll/build-ts-dll.sh` — invokes rewriter
+  automatically. Has `set -euo pipefail`, so keep the rewrite-got.py
+  exit codes clean (rc=0 on success, rc=2 on FATAL).
+- `webxash/public/dlls/hl_emscripten_wasm32.wasm` (submodule
+  commit `cab79f0`) — deployed rewritten version.
+- `webxash/public/xash3d-fwgs/dist/dlls/ts_emscripten_wasm32.wasm`
+  — mirrored copy.
+
+### Quick state of binaries (sanity numbers)
+
+| File                                  | Imports | GOT.func | GOT.mem | Size     |
+|---------------------------------------|---------|----------|---------|----------|
+| emcc direct output (broken)           | 283     | 229      | 5       | 1.36 MB  |
+| post-rewrite-got.py (D.7.17 working)  | 49      | 0        | 0       | 1.35 MB  |
+| official hl.dll (untouched reference) | 50      | 0        | 2       | (similar)|
+
+49-imports-deployed is verified working (no crashes through menu).
+The runtime correctness of the 228 GOT.func targets that aren't in
+the elem is still unverified — P1's gameplay test will catch that.
+
+### Tools available for next session
+
+- `/tmp/wabt-1.0.42/bin/{wasm2wat, wat2wasm, wasm-objdump, wasm-validate}`
+  — wabt 1.0.42 (already cached)
+- `/tmp/smoke-test/play-test*.js` — Playwright harnesses that load
+  the dev server + click through menu. Pattern established.
+- `python3 -c "import hermes_tools"` — for any quick scripts.
+- The `xash3d-fwgs` source we shipped (~7000 lines of generated JS,
+  `node_modules/xash3d-fwgs/dist/generated/xash.js`) has the dylink
+  loader; useful for understanding loader behavior when debugging.
