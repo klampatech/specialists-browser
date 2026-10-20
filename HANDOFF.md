@@ -2907,16 +2907,109 @@ Recommended next-session task:
 2. If not, option 1 (direct Cmd_AddCommand)
 3. If those fail, option 7 (binary patching) as last resort
 
-### D.7.21 x2 — verify Kyle's session shows the restored 52-import version
+### D.7.22 (2026-10-20) — Build-matrix investigation; non-pfn method translation
 
-Hard-refresh Vivaldi: clear localStorage (or click Reset in
-Advanced panel). The deployed WASM hash is `c91698be...`. Should
-boot cleanly through menu → ts_apartments render with no pageerror.
+**Goal:** Register the four TS-specific console commands (`buy`,
+`firemode`, `useitems`, `alt2`) without inflating the WASM import
+count beyond what the xash3d-fwgs dylink loader can handle.
 
-Currently in flight — pushed a HEAD commit but Kyle may need to
-hard-refresh to pick up the binary change (HMR for .wasm files is
-tricky).
+**Build-matrix run (8 permutations):** `tools/port/ts-server-dll/`
+`build-matrix.sh` + manual variants. Full results in
+`tools/port/ts-server-dll/D.7.22-build-matrix.md`. Highlights:
 
+| Flags                                   | Imports | GOT.func |
+|-----------------------------------------|---------|----------|
+| `-O3 -flto -fvisibility=hidden` (current) | 283    | 229      |
+| `-O3 -fno-lto -fvisibility=hidden`        | 284    | 229      |
+| `-O2 -flto -fvisibility=hidden`          | 283    | 229      |
+| `-Os -flto -fvisibility=hidden`          | 283    | 229      |
+| `-Oz -flto -fvisibility=hidden`          | 283    | 229      |
+| `-O3 -flto` (NO vis flag)                | 3904   | 2128     |
+| `-O0 -fvisibility=default`               | 4931   | 2133     |
+
+`c91698be` baseline (working, currently deployed): **52 imports,
+0 GOT entries** (built at an earlier D.7.19 session; cannot
+reproduce with current emcc+HLSDK state).
+
+**Source-reduction tests:** stripping `g_engfuncs.pfnServerPrint`
+calls and clearing our overlay files entirely still produces
+283 imports / 229 GOT entries. **The 229 GOT entries come from
+HLSDK's C++ virtual method calls** (SIDE_MODULE forces PIC; each
+call_indirect site generates one GOT entry). Out of our control
+with current emcc configuration.
+
+**What didn't help:** dedup via indirection wrapper, caching
+`g_engfuncs.pfnX` into static pointers, removing
+`-fvisibility=hidden`, `EXPORT_ALL=0`, `-sRELOCATABLE=0`.
+
+**D.7.22 actionable: ClearObjectiveList translation.** Added a new
+CTSGameRules method (`ClearObjectiveList`) with **no `g_engfuncs.pfnX`
+calls** — pure instance-memory zero-fill. Confirmed import count
+unchanged at 283/229 after the addition (validates that
+method-only translations don't balloon imports). The translation
+sits in `tools/port/ts-server-dll/src/cts_game_rules.h` and
+demonstrates the safe pattern: most CTSGameRules methods can be
+translated without affecting the loader.
+
+**Decision: shift D.7.22 strategy.** Instead of fighting the
+loader to register console commands, **translate CTSGameRules
+methods that don't need engine interface calls**. Each method
+that compiles cleanly advances parity without needing loader
+fixes. Goals:
+
+1. Add `ClearObjectiveList` (done — D.7.22 above).
+2. Add `IsCTB`, `GetTeamCash`, `GetTeamIndex` (no pfnX calls;
+   next-session 1-2h task).
+3. Once enough methods are in, ship the rebuilt WASM as the
+   canonical version (even at 283 imports) and verify with
+   Kyle in a real browser whether the loader actually chokes
+   there (only Playwright headless caught it; Kyle didn't
+   reproduce a session with the 283-import deploy).
+
+**Deployed:** `webxash/public/dlls/hl_emscripten_wasm32.wasm`
+(hash `c91698be...`, 52 imports, 0 GOT entries, working
+baseline). Both Kyle's localStorage `launchOptions` (new
+reorder from D.7.19) and the new method addition are present
+in the source; once we have a working build of the new source
++ 0 GOT entries, the engine should accept it.
+
+**Files added/changed D.7.22:**
+- `tools/port/ts-server-dll/D.7.22-build-matrix.md` (new) —
+  matrix results + analysis
+- `tools/port/ts-server-dll/build-matrix.sh` (new) — runs the
+  matrix for future re-validation
+- `tools/port/ts-server-dll/src/cts_game_rules.h` —
+  `ClearObjectiveList` translation + `m_NumObjectives` /
+  `m_Objectives` field additions
+
+### D.7.23 — NEXT SESSION TASKS
+
+Path B (recommended above) means the next session should:
+
+1. **Translate `IsCTB`** (no pfnX calls, 8-line TS body).
+2. **Translate `GetTeamCash_p_CBasePlayer`** (depends on
+   `GetTeamIndex` first).
+3. **Translate `GetTeamIndex_p_?_?`** (depends on `m_Teams[]`
+   array layout — needs D.4 class reconstruction).
+4. **Run build, verify import count stays stable** at 283
+   (or investigate further if it changes).
+5. **Deploy and have Kyle test in real Chrome** — check
+   whether the 283-import version actually works there
+   (Playwright-only failure) or if we genuinely have a loader
+   problem to solve.
+
+If 283-import works in real Chrome, we have parity-shaped progress
+without the loader fight. If not, the binary-patch approach
+(option T10 in earlier HANDOFF) becomes the next lever.
+
+Also worth investigating when there's time:
+- Why c91698be produced 52 imports when current builds
+  produce 283. Possibly:
+  - Different emcc state at build time
+  - Emscripten optimization timing differences
+  - Different LTO seeds
+  - Memory layout from the linker (`--strip-all`/`--gc-sections`
+    interactions)
 
 
 **What D.7.17 DID NOT fix (in priority order):**

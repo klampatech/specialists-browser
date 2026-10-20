@@ -94,6 +94,42 @@ public:
         // Layer 1 — parent's tick (round timing, etc.)
         CHalfLifeMultiplay::Think();
     }
+
+    // === D.7.22 new: ClearObjectiveList ===
+    //
+    // Source: tools/decompile/output/CTSGameRules__ClearObjectiveList.ts
+    //
+    // Resets the round objective list. Zeros the m_NumObjectives
+    // counter at +0x2d0 and bulk-zeros the 160-slot m_Objectives
+    // pointer array at +0x2d4 (0x280 bytes).
+    //
+    // Pure instance-memory operation — no g_engfuncs.pfnX calls, so
+    // adding this does NOT inflate the WASM import count (see
+    // D.7.22-build-matrix.md).
+    //
+    // Called when a round restarts or before re-initialising the
+    // objective set. Pair with InitObjectives (decompiled, not yet
+    // translated).
+    void ClearObjectiveList(void) {
+        m_NumObjectives = 0;
+        // memzero the m_Objectives array (160 × 4-byte pointers).
+        memset(m_Objectives, 0, sizeof(m_Objectives));
+    }
+
+    // ============================================================
+    // Field layout additions for D.7.22+ translations
+    // ============================================================
+
+    // Total objectives count — at +0x2d0 (4-byte int).
+    // See ClearObjectiveList above. The 0x2d0 offset comes from
+    // [edi+0x2d0] = 0 in the original disassembly.
+    int m_NumObjectives;
+
+    // 160-slot array of objective pointers, at +0x2d4 (0x280 bytes).
+    // Layout inferred from decomp — full CTSObjective definition
+    // awaits D.4 class reconstruction. Padded to alignment so
+    // memset() on a sizeof-able struct doesn't reach past the end.
+    void* m_Objectives[160];
 };
 
 #endif  // CTS_GAME_RULES_H
