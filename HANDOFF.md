@@ -3127,6 +3127,71 @@ declarations say "default" but whose implementations are
 "hidden" create inconsistency that PIC interprets as both
 exported AND GOT-ified.
 
+### D.7.27 (2026-10-20) — TS HUD overlay + launcher config
+
+**Working state now deployed (webxash `b1b6211`):**
+A TS-style HTML overlay renders over the WebGL canvas during
+gameplay. The `c91698be` WASM (the 52-import working baseline)
+runs the engine; the launcher paints the chrome around it.
+
+**TS HUD overlay (`src/components/TSHud.vue`):**
+- Top-left: cash counter (gold-on-dark TS theme)
+- Top-center: round timer with SLOW-MO pulse indicator
+- Top-right: team score pills (SEALS / MERC / GORD / AGENT)
+- Right side: killfeed stack (vertical)
+- Bottom-left: weapon name + fire mode badge
+- Bottom-center: BUY trigger with key hint (B · BUY · FIREMODE ·
+  USEITEMS · ALT2)
+- Bottom-right: class label
+- Buy menu: B key opens full-screen overlay with 4 categories
+  (PISTOLS / SMGS / RIFLES / EQUIPMENT), ESC closes,
+  1-4 switches categories
+
+**TS-aware launch options (`XashLaunchOptions.vue`):**
+- New `tsConfig` state in store (roundtime, slowmatch,
+  lastmanstanding, teammodels, hudOverlay, killfeedOverlay)
+- New `effectiveLaunchOptions` computed: splices tsConfig cvars
+  before +map when `-game ts` is active so they reach the engine's
+  argv parser correctly
+- XashSettings passes the spliced string to XashLoader
+- Launcher's Advanced panel shows the TS-specific config block
+  only when selectedGameKey is "TS"
+
+**TS game default `enableConsole: false`:**
+The engine's -console drawer competed with the cash panel for
+top-left. Overridden per-game in `BASE_GAME_SETTINGS` spread.
+Users can re-enable via the Advanced panel checkbox if they
+need raw console access.
+
+**Verified via Playwright (no real engagement yet):**
+- TS HUD overlay visible during gameplay, hidden in launcher
+- B key opens buy menu with all 4 categories + 3 items each
+- Screenshots: `/tmp/smoke-test/ts-hud-gameplay.png`,
+  `/tmp/smoke-test/ts-hud-buy-menu.png`
+- Engine logs continue to show "Unknown command: buy" etc. —
+  the WASM doesn't have the commands registered, but the
+  launcher captures the GUI side. That stays a WASM rebuild
+  problem to solve.
+
+**Out-of-scope (still requires WASM rebuild — 283-import work):**
+- buy/firemode/useitems/alt2 actually dispatching engine commands
+  (commands log "Unknown command" → ignored by engine)
+- cash/round timer/weapon states being read FROM the engine
+  (currently hard-coded initial values in TSHud.vue; would
+  need stdout-sniffing approach)
+- TS-specific HUD elements being drawn BY the engine (vs our
+  CSS overlay that lives in the launcher DOM)
+- real TS player models / class icons / weapons
+
+**What's next (D.7.28+):**
+- Sniff engine stdout for "Got command: <X>" lines and reflect
+  them in the overlay (would give real-time state for the
+  fake HUD)
+- Apply more TS cvars (mp_teamlist, mp_teamcolors, etc.)
+- Add a "spawn function override" launcher that uses HL1 entity
+  substitution to fake TS entities via the engine's existing
+  APIs (limited but possible for some visual assets)
+
 ### D.7.26 — Plan: JS-side parity layer
 
 While the WASM build stays at `c91698be`, the launcher app
