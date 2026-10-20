@@ -171,6 +171,24 @@ if [[ -f "$SCRIPT_DIR/rewrite-got.py" ]]; then
     else
         echo "  WARNING: rewrite-got.py failed; using original WASM"
     fi
+else
+    # D.7.19: empirical proof the unrewritten emcc output (52-import
+    # profile) boots the engine through to map load. The rewrite
+    # turned a working WASM into one that traps on the first
+    # `call_indirect` with "function signature mismatch" — see
+    # HANDOFF.md D.7.19. We preserve rewrite-got.py for reference
+    # but skip it by default. Pass --with-rewrite to opt in.
+    if [[ "${1:-}" == "--with-rewrite" ]] && [[ -f "$SCRIPT_DIR/rewrite-got.py" ]]; then
+        echo "running rewrite-got.py (--with-rewrite)..."
+        REWRITE_IN="$OUT/ts_emscripten_wasm32.wasm"
+        REWRITE_OUT="$OUT/ts_emscripten_wasm32.rw.wasm"
+        python3 "$SCRIPT_DIR/rewrite-got.py" "$REWRITE_IN" "$REWRITE_OUT" \
+            && cp "$REWRITE_OUT" "$REWRITE_IN" \
+            && echo "  rewrite-got.py output deployed" \
+            || echo "  WARNING: rewrite-got.py failed; using raw emcc WASM"
+    else
+        echo "skipping rewrite-got.py (raw emcc WASM deployed as-is)"
+    fi
 fi
 
 # Deploy to both engine paths

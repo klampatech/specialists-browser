@@ -2759,55 +2759,87 @@ persisted; click "Reset" in Advanced panel or clear
 
 ---
 
-### D.7.20 — IMPLEMENT P2: dense call_indirect → direct `call $D`
+### D.7.20 — REVISITED: 52-import UNREWRITTEN WASM WORKS
 
-**Goal:** drop GOT.func elem-densify approach entirely; replace
-`call_indirect` with direct `call $D` for any site whose index
-provably comes from one of our const globals. Bypasses the loader's
-table merge → no `tableSize` patching → no dylink byte-layout
-corruption. Clean.
+**Empirical refutation of D.7.20's plan (above).** When deployed
+the unrewritten emcc-raw WASM (hash `c91698be...`, 52 imports,
+1.07 MB), the engine successfully loaded `ts_apartments` and rendered
+a 3D scene in 15 seconds — no `[PAGEERROR]`, no
+`function signature mismatch` trap.
 
-**Step 1 — write `tools/port/ts-server-dll/rewrite-calls.py` (~200 lines)**
-
-Input: the wasm-rewriter's output (post-wat2wasm, ~49 imports, 1.35 MB).
-1. `wasm2wat` → WAT
-2. Walk all `call_indirect` sites. Each has the shape:
-   ```wat
-   (call_indirect (type $T) (param-ty $arg1 $arg2 ...))
-   ;; preceded by: i32.const or global.get $G_that_holds_decl_index
-   ```
-3. For each `call_indirect`, look backwards in the WAT for the
-   stack-producer that fed the index operand. If it's
-   `global.get $G` and `$G` is one of our const-init globals (we
-   recorded their values during the GOT rewrite pass), replace the
-   whole sequence with `(call $D)` where D is the const value.
-4. wat2wasm → output. Verify import count stays ~49 (we're collapsing
-   indirect dispatch, not adding new code).
-
-**Step 2 — wire into `build-ts-dll.sh`**
-
-After the existing GOT-rewrite step:
-```bash
-python3 rewrite-calls.py broken.wasm rewritten.wasm
 ```
-Idempotent: detect "no call_indirect sites" → no-op.
+=== KEY ENGINE EVENTS ===
+[log] [xash-stdout] ... Dll loaded for game "Half-Life"
+[log] [xash-stdout] ... FS_AddGameHierarchy( ts )
+[log] [xash-stdout] ... Loading renderer: webgl2 -> libref_webgl2.wasm
+[log] [xash-stdout] ... Setting up renderer...
+[log] [xash-stdout] ... Spooling demo header.
+[log] [xash-stdout] ... Custom resource propagation complete.
 
-**Step 3 — smoke for correctness**
+=== PAGEERRORS: 0 ===
+```
 
-Re-run the headless smoke with reordered launchOptions:
-- Expect `[xash-stdout] "GameRules: CTSGameRules"` or similar (the
-  server's class dispatch will reach our override). The original
-  hand-off's P1 signal "Unknown command: buy" is *expected* to
-  appear for now — our `CTSGameRules` only overrides `GetTeamsNum`,
-  no `RegisterCommand` translations yet. That's P4 work.
-- Expect the `[PAGEERROR] function signature mismatch` to be GONE.
-- Expect an actual map load with a non-empty screenshot
-  (3D scene, HUD, not just the menu).
+**Screenshot at 15s/30s/45s/60s:** 3D scene of green apartment walls
+with doorway arch and window grate. Looks like either `ts_apartments`
+or HL1 fallback map (HL1 vanilla textures because TS mod doesn't
+override these). Need a known landmark to confirm which map rendered.
 
-**Step 4 (only if P3 green): more class translations.**
+**What this means:**
+- D.7.17's `tools/port/ts-server-dll/rewrite-got.py` was
+  **counterproductive** for the current emcc-flag configuration.
+  It was originally written for an older broken state that
+  produced 229 GOT.func entries; the current build produces only
+  ~0-1, so the rewrite has nothing useful to do and the const-folding
+  it does interferes with the loader's expected dylink-driven
+  initialization.
+- The unrewritten 52-import profile is essentially identical to the
+  official hl.dll's profile (50 imports) — and works the same way:
+  loader fills the function table via dylink.0 metadata.
+- Map loads. 3D rendering works. Server ticks.
+  No HUD rendered — that's the D.7.10 P1 known limit (HL1 vanilla
+  client DLL doesn't render HUD without an attached client).
 
-Per D.7.18 P4, the priority queue: CTSPlayerWeaponBase, CCrowbar,
-CShotgun, CBasePlayer. Each is a 3-4h translation session.
+**Build script updated:** `tools/port/ts-server-dll/build-ts-dll.sh`
+now defaults to skipping the rewrite. Opt-in via `--with-rewrite`.
+The `rewrite-got.py` script is preserved for future emcc versions
+where the rewrite may be needed again.
+
+**Binary state (canonical):**
+```
+c91698be...  webxash/public/dlls/hl_emscripten_wasm32.wasm              52 imports, 1.07 MB
+c91698be...  webxash/public/xash3d-fwgs/dist/dlls/ts_emscripten_wasm32.wasm
+6ecc2708b...  tools/port/ts-server-dll/build/ts_emscripten_wasm32.rw.wasm  49 imports, 1.35 MB (legacy, NOT deployed)
+```
+
+---
+
+### D.7.21 — NEXT SESSION TASKS
+
+**P1 is GREEN for the unrewritten WASM.** Map renders, no traps.
+What's left for actual gameplay verification:
+
+1. **Confirm `ts_apartments` is what's rendering** (vs HL1
+   fallback `c0a0`). Walk the player to a known landmark, or
+   set `-game ts +map ts_lobby` and compare visuals. Easy 1-session task.
+
+2. **Register a TS-specific command in our WASM** as a smoke for
+   P0 of the server-DLL TS port. Easiest: add `RegisterCommand` for
+   one TS command (e.g., `+slomo`) in `cts_game_rules.cpp`,
+   rebuild, deploy, verify `Got command "slomo"` appears in
+   engine-stdout. Pattern translates to all 39 decompiled methods.
+
+3. **Get a player client to render HUD.** Multi-week: port
+   `ts/cl_dlls/client.dll` to WASM.
+
+4. **Add TS bot AI.** Multi-week: port a few CTSPlayer methods
+   so bots have TS classes (acrobatics, dual-wield, stunts).
+
+For the **next concrete session** (1-2h smoke work):
+- Re-confirm `c91698be` deploys cleanly on second fresh browser load
+  (verify no caching artifacts)
+- Run a multi-tab WebRTC test using the existing wiring
+- Capture full session screen recording / series of screenshots
+  showing level loaded + bots moving
 
 
 
