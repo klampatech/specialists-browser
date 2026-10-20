@@ -2598,3 +2598,78 @@ Given decomp is essentially done, the critical path is now:
    on server state.
 4. **Multiplayer visual test:** 2-tab WebRTC round-trip should be a
    30-minute smoke in next session.
+
+
+### D.7.17 — wabt GOT rewriter (shipped 2026-10-19)
+
+The `tools/port/ts-server-dll/rewrite-got.py` (~280 lines, Python) is now
+built into the build pipeline. It transforms the broken 283-import Emscripten
+side-module WASM (229 GOT.func + 5 GOT.mem + 49 env.*) into a valid
+49-import WASM that boots in xash3d-fwgs.
+
+**What it does:**
+1. **`GOT.func` → const globals.** For each `(import "GOT.func" "MANGLED"
+   (global (;N;) (mut i32)))`, find the matching `(export "MANGLED" (func D))`,
+   then emit `(global (;N;) i32 (i32.const D))` (const initializer, not import).
+   All 229 entries collapsed.
+2. **`GOT.mem` → const 0.** Same trick but `i32.const 0` for cxxabi vtables,
+   stderr, g_VCS_*. Will crash on first dereference — next-session fix.
+3. **Section reorder.** wabt's `wat2wasm` emits `@custom` blocks in WAT-source
+   order, so `dylink.0` ends up at the END. Xash3D's loader requires
+   `dylink.0` to be the FIRST section (its `getDylinkMetadata` walks
+   sections and validates the dylink appears first). Post-process the
+   binary to move it.
+4. **Idempotency.** If a WASM has zero `GOT.*` imports, the rewriter is a
+   no-op — `cp` the input to the output unchanged.
+
+**Build pipeline integration (`build-ts-dll.sh`):**
+```bash
+emcc [105 files] -sSIDE_MODULE=1 → 283-import broken WASM
+python3 rewrite-got.py broken.wasm rewritten.wasm
+  → wasm2wat, strip GOT imports, emit const globals
+  → wat2wasm (49 imports, 0 GOT)
+  → reorder_dylink_first (binary section reorder)
+cp rewritten.wasm webxash/public/dlls/hl_emscripten_wasm32.wasm
+```
+
+**Browser-verified end-to-end (Playwright + headless Chrome):**
+- xash.wasm, filesystem_stdio.wasm, menu_emscripten_wasm32.wasm,
+  hl_emscripten_wasm32.wasm (rewritten), client_emscripten_wasm32.wasm,
+  libref_webgl2.wasm, libvgui_support.wasm all load cleanly
+- Half-Life main menu renders with TS detection intact ("Search for TS
+  servers, configure character")
+- Version banner: `v49/0.21 (emscripten-wasm32 build -1)`
+- **No `pageerror`, no `WebAssembly.instantiate()` exceptions**
+
+**Known not-yet-done:**
+- 228 of 229 GOT.func decls aren't in the original elem (only `SUB_DoNothing`
+  at decl 57 is). For those, `call_indirect(D)` reads `table[D]` which
+  the loader filled from xash.wasm's elem — wrong target. We didn't densify
+  the elem because that requires bumping table size + a dylink patcher
+  (kept corrupting the section byte layout during this session).
+- GOT.mem defaults to 0: RTTI vtables / stderr will trap on first use.
+  Need a separate small fix (maybe in the loader's `startupdateGOT`, or via
+  a start function that initializes these globals at instantiation time).
+- WASM viewmodels are HL1 stock — needs TS client DLL port (D.7.10).
+
+**Files added/changed this session:**
+- `tools/port/ts-server-dll/rewrite-got.py` (new, ~280 lines)
+- `tools/port/ts-server-dll/build-ts-dll.sh` (rewriter invocation added;
+  `set -e` + `grep` exit-1 bug from "Section not found" upstream
+  message fixed with `|| true`)
+- `webxash/public/dlls/hl_emscripten_wasm32.wasm` (now the rewritten version)
+- `webxash/public/xash3d-fwgs/dist/dlls/ts_emscripten_wasm32.wasm` (mirror)
+
+**Next session (D.7.18 candidates, in priority order):**
+1. **Verify actual gameplay** — click through difficulty selection, load a TS
+   map, look for `Unknown command: buy` / `firemode` errors. The HUD won't
+   have TS viewmodels (D.7.10 limitation), but server-side commands should
+   work for at least the decls that ARE in the elem.
+2. **Fix the elem densification.** Either fix the dylink-tableSize patcher
+   (currently corrupting sections), OR replace `call_indirect` with direct
+   `call $D` for the GOT-init pattern. The second is more invasive but
+   sidesteps the table-merge problem entirely.
+3. **Set GOT.mem values via start function** so cxxabi vtables / stderr
+   have valid runtime values.
+4. **Translate more TS classes** (D.7.14 already shipped CTSFog + CTSGameRules
+   subclass; 5–10 weapon classes are the next big gameplay unlock).
