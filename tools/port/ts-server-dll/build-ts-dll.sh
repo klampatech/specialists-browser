@@ -37,8 +37,8 @@ mkdir -p "$OUT" "$DEST" "$DEST2"
 #
 # 1. Replace `return new CHalfLifeMultiplay;` with `return new CTSGameRules;`
 #    in dlls/gamerules.cpp — both occurrences.
-# 2. Add `#include "cts_game_rules.h"` at the top of InstallGameRules.
-# 3. Add a header include for cts_game_rules.h resolution.
+# 2. Insert `#include "cts_game_rules.h"` at the TOP of gamerules.cpp (after other #includes).
+# 3. Strip any stale #include lines from prior patches inside function bodies.
 #
 # These patches are what hooks TS behavior at every multiplayer code
 # point. The factory in InstallGameRules now returns our class, which
@@ -49,14 +49,23 @@ PATCH_MARKER="$OUT/.ts_patches_applied"
 if [[ ! -f "$PATCH_MARKER" ]] || [[ "$HLSDK/dlls/gamerules.cpp" -nt "$PATCH_MARKER" ]]; then
     echo "Patching hlsdk-portable (CTSGameRules hook)..."
     if grep -q "return new CTSGameRules;" "$HLSDK/dlls/gamerules.cpp"; then
-        echo "  gamerules.cpp already patched"
+        echo "  gamerules.cpp already has 'new CTSGameRules' (factory wired)"
     else
         sed -i 's|return new CHalfLifeMultiplay;|return new CTSGameRules;|g' \
             "$HLSDK/dlls/gamerules.cpp"
         # Insert #include for cts_game_rules.h after the function opens
         sed -i 's|^\tSERVER_EXECUTE();$|\tSERVER_EXECUTE();\n\n#include "cts_game_rules.h"|' \
             "$HLSDK/dlls/gamerules.cpp"
-        echo "  Applied patches"
+        echo "  Replaced 'new CHalfLifeMultiplay' with 'new CTSGameRules' (x2 sites)"
+        # Strip any stale #include lines that earlier patches left inside
+        # function bodies, then ensure the include sits at the top of the
+        # file (after the other #includes).
+        sed -i '/^#include "cts_game_rules.h"$/d' "$HLSDK/dlls/gamerules.cpp"
+        if ! grep -q '^#include "cts_game_rules.h"$' "$HLSDK/dlls/gamerules.cpp"; then
+            LAST_INC=$(grep -n "^#include" "$HLSDK/dlls/gamerules.cpp" | tail -1 | cut -d: -f1)
+            sed -i "${LAST_INC}a #include \"cts_game_rules.h\"" "$HLSDK/dlls/gamerules.cpp"
+            echo "  Inserted include after line $LAST_INC (top of gamerules.cpp)"
+        fi
     fi
     touch "$PATCH_MARKER"
 fi

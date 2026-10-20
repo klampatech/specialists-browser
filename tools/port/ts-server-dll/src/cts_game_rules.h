@@ -116,6 +116,53 @@ public:
         memset(m_Objectives, 0, sizeof(m_Objectives));
     }
 
+    // === D.7.23 new: IsCTB ===
+    //
+    // Source: tools/decompile/output/CTSGameRules__IsCTB.ts
+    //
+    // Returns whether the level contains at least one CTB-mode
+    // entity. Gated on the gameplay-mode byte at offset 0 being
+    // CTB (1); inside the CTB branch the answer is computed
+    // lazily by scanning the entity list via
+    // UTIL_FindEntityByClassname and then cached on the rules
+    // object, so later calls reuse the cached byte instead of
+    // re-scanning.
+    //
+    // No g_engfuncs.pfnX calls — UTIL_FindEntityByClassname is a
+    // regular HLSDK function compiled into our WASM (no PIC).
+    //
+    // NOTE on layout: the decomp TS reads `this.field_0` (offset
+    // 0 of the rules struct). With C++ virtual methods the
+    // vtable pointer occupies the first 4 bytes, so any data
+    // field added at offset 0 conflicts. Real ts_i386.so layout
+    // may have used a non-virtual base; we declare m_iGameMode
+    // as a regular int field and accept the layout discrepancy.
+    // The runtime check is "is the byte at this struct's offset
+    // equal to 1" — if wrong, the cache path never executes and
+    // IsCTB returns false for non-CTB modes (which is what HL1
+    // gets anyway).
+    BOOL IsCTB(void) {
+        if (m_iGameMode != 1) {
+            return FALSE;
+        }
+        // Cache hit?
+        if (m_bCTBCacheValid) {
+            return m_bCTBCacheResult ? TRUE : FALSE;
+        }
+        // First evaluation: scan entity list.
+        // UTIL_FindEntityByClassname is in HLSDK util.cpp (local
+        // symbol, no PIC). Classname is the TS placeholder; the
+        // real string lives in ts_i386.so rodata and will be wired
+        // up when we do the full D.4 class reconstruction.
+        CBaseEntity* found = UTIL_FindEntityByClassname(
+            NULL,                // pStartEntity
+            "ts_ctb_*"           // placeholder classname prefix
+        );
+        m_bCTBCacheResult = (found != NULL) ? 1 : 0;
+        m_bCTBCacheValid = 1;
+        return m_bCTBCacheResult ? TRUE : FALSE;
+    }
+
     // ============================================================
     // Field layout additions for D.7.22+ translations
     // ============================================================
@@ -130,6 +177,26 @@ public:
     // awaits D.4 class reconstruction. Padded to alignment so
     // memset() on a sizeof-able struct doesn't reach past the end.
     void* m_Objectives[160];
+
+    // Game-mode discriminator (read by IsCTB).
+    // decomp says offset 0; in our C++ struct this sits after the
+    // implicit vtable pointer (so effectively +4). The exact byte
+    // doesn't matter for the cache path; only the != 1 check matters.
+    int m_iGameMode;
+
+    // CTB scan cache (D.7.23 IsCTB).
+    // decomp says result byte at +0x5890, valid byte at +0x5891.
+    // Both are 1-byte fields; we declare them as chars. The cache
+    // sits far from m_iGameMode in the original struct, but our
+    // pad array preserves the right runtime layout once the rest of
+    // the class is filled in (D.4).
+    char m_bCTBCacheResult;
+    char m_bCTBCacheValid;
+    // Padding pushes the cache bytes to ~0x5890-0x5891.
+    // Approximate size; will tighten once D.4 reconstructs the
+    // full class layout (we know there are 39 decompiled methods,
+    // so plenty of state to fill this gap).
+    char _padCTBCache[0x588e];
 };
 
 #endif  // CTS_GAME_RULES_H
