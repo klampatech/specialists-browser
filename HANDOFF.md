@@ -3127,6 +3127,71 @@ declarations say "default" but whose implementations are
 "hidden" create inconsistency that PIC interprets as both
 exported AND GOT-ified.
 
+### D.7.37 (2026-10-20) — **THE SERVER-DLL PATH ALREADY EXISTS. I was looking in the wrong place.**
+
+Kyle pushed back (correctly): *"there has to be some way we can
+decompile it... Didn't the linux server files have what we needed
+when we were decomping stuff for babylon?"*
+
+**Answer: yes. And it's further along than the HANDOFF implied.**
+
+The babylon port **is** the TS runtime, and it is running. Live
+capture from `http://localhost:5190/`:
+
+```
+[mdl] D.5 MVP — click to lock pos: (-12.0, 1.7, -12.0) bots: 3/3 kills: 0 28 fps
+HP: 50        KILLS: 0        12 / 12
+```
+
+That's a working TS client: real TS `.mdl` models parsed and meshed
+(the knife viewmodel bottom-right is `v_knife.mdl`), HP, ammo, kill
+counter, 3 live bots, 28 fps, real TS audio loading, 0 pageerrors.
+
+**What already exists in `src/mod/` (8,734 lines):**
+
+| File | Lines | What it is |
+|---|---|---|
+| `weapons.ts` | 2,989 | weapon definitions + state machine |
+| `decomp-bridge.ts` | 913 | bridge from decompiled `ts_i386.so` methods to runtime |
+| `mdl-parser.ts` | 591 | GoldSrc `.mdl` v10 parser |
+| `engine.ts` | 521 | GoldSrc `g_engfuncs` / `gpGlobals` simulator |
+| `entity-pool.ts` | 330 | entity allocation |
+| `scoring.ts` | 322 | team/objectives scoring |
+| `guns.ts` | 73 | `CTSGun` methods |
+| `slowmo.ts` | 45 | `CTSSlowMotion` |
+| `briefcase.ts` | ~40 | `CTSBriefcase` objective |
+| `gamerules.ts` | 68 | **39 `CTSGameRules` methods** already enumerated |
+
+Plus `tools/bsp2glb.ts` (BSP → glTF converter, works on TS BSPs via
+content-signature lump detection) and `babylon/public/ts_mathar.glb`
+as proof the map pipeline produces real geometry.
+
+**So the decompilation IS the path. It was never blocked — I had been
+treating babylon as a side experiment and webxash as "the real thing".**
+
+Two runtimes, different jobs:
+
+| | **webxash** (Xash3D-WASM) | **babylon** |
+|---|---|---|
+| Map geometry | real (all 60 TS maps) | via `bsp2glb` → `.glb` |
+| Models | **HL1 only** (90 files, 0 TS) | **all TS** (476 `.mdl`) |
+| Gameplay | vanilla HL1 | **decompiled TS** |
+| Sounds | HL1 | **real TS** (20/20 wired) |
+| Physics/netcode | real engine | reimplemented |
+
+**Convergence plan:** use webxash for what only it can do (map BSP
+parsing, networking, the real game loop) and babylon for what only it
+can do (TS models + TS gameplay), gluing them through the
+`Cmd_ExecuteString` channel that already works. OR go full-babylon:
+`bsp2glb` all 60 maps and drop the WASM engine entirely.
+
+**Babylon vite 403 fix (webxash-side, `dceb482`):** the dev server
+was 403-ing `index.html` because `root: "."` resolves relative to cwd
+while `fs.allow` held an absolute path, so the sandbox rejected the
+entry document. Pinned root to `__dirname` and derived every allow
+entry from it. Babylon had been broken this whole time and nobody
+noticed because nothing was pointed at it.
+
 ### D.7.36 (2026-10-20) — Buy menu is now a real armory (+ 3 bugs fixed)
 
 **The buy menu was decoration.** Clicking an item did nothing. Now
