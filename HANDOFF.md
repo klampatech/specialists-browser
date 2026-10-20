@@ -3127,6 +3127,58 @@ declarations say "default" but whose implementations are
 "hidden" create inconsistency that PIC interprets as both
 exported AND GOT-ified.
 
+### D.7.31 (2026-10-20) — Keyboard recovery via JS bridge (workaround)
+
+**Kyle's diagnostic log nailed it:**
+```
+[KEY] w | active= BODY # | target= BODY
+[KEY] d | active= BODY # | target= BODY
+[KEY] s | active= BODY # | target= BODY
+```
+W/A/S/D all reach `window` with `target=BODY`. The HUD is innocent.
+
+**WASM disassembly of `xash.wasm` showed** the engine registers
+`emscripten_set_keydown_callback` with `i32.const 2` for the target
+parameter. In xash3d-fwgs's runtime,
+`specialHTMLTargets = [0, document, window]`, so target 2 = `window`
+— **the same place Kyle's `[KEY]` events reach**. The listener is on
+the right node; events get there; engine ignores them.
+
+That's an SDL2-internal bug: the `_Mem_Alloc: pool == NULL` failure
+at `common/cmd.c:638` happens during `SDL_KeyboardInit`, leaving
+SDL's keymap unbuilt. The callback fires but matches nothing.
+
+**Workaround (webxash `20b83b6`):** a keyboard→command bridge. We
+already have a proven command channel via `Cmd_ExecuteString`, and the
+engine accepts every movement command without error (Playwright-verified:
+`+forward`, `-forward`, `+back`, `+moveleft`, `+moveright`, `+jump`,
+`+duck`, `+attack`, `impulse`, `weapon`, `slot1` — all "ok").
+
+`src/services/keyboard-bridge.ts` maps:
+```
+W A S D / arrows  → +forward/+moveleft/+back/+moveright
+space             → +jump
+ctrl              → +duck
+Q / E / R         → +lastinv / +use / +reload
+1 2 3 4           → +slot1 .. +slot4
+F                 → +impulse 100 (flashlight)
+```
+On keydown: emit `+cmd`. On keyup: emit `-cmd`. On `window.blur`:
+release all held keys. Skips input/textarea/contentEditable targets.
+
+Skipped entirely when `?nohud=1` is set (preserves the isolation
+flag from D.7.30).
+
+**Out-of-band discovery:** the live-state bridge is reading **all 5
+cvars correctly** on Kyle's real Chrome:
+```
+MAP    ts_apartments
+TEAMS  hgrunt;scientist
+NAME   Specialist
+hostmap shows live value in the strip
+```
+No more `(loading...)`. The 5s delay + 4s poll cadence is working.
+
 ### D.7.30 (2026-10-20) — Keyboard isolation diagnostics
 
 After D.7.29 confirmed the toast shim works but **didn't restore
