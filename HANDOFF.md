@@ -2196,6 +2196,7 @@ projects queued.**
 | ✅ D.7.12 — **Server-side decomp is 100% complete** (122 → 0 entries) |
 | ✅ D.7.13 — **xash.wasm heap cap raised 256MB → 2GB** (binary patch) |
 | ✅ D.7.14 — **TS server DLL WASM port: build infra + first translated class** (4 imports, 526 B) |
+| ✅ D.7.15 — **Full HLSDK + CTSGameRules subclass** (283 imports, 1361 KB) |
 | ✅ D.7.11 — Visual baseline verified; MP signaling round-trip working |
 | ✅ D.7.11 — `tools/decompile/grind_parallel.py` orchestrator (with zombie-detection fix) |
 
@@ -2264,6 +2265,50 @@ canonical shape, just more C++ in.
 shows the 4-import profile. Next step: translate enough classes for
 real TS gameplay (CTSPlayer::Spawn + CTSGameRules + a weapon class
 or two).
+
+### D.7.15 — Full HLSDK + CTSGameRules subclass
+
+Build pipeline that compiles **all 105 hlsdk-portable source files**
+plus our TS overlays into a single WASM side module. The
+`InstallGameRules()` factory in `dlls/gamerules.cpp` is patched (via
+auto-applied sed) to return `new CTSGameRules` instead of
+`new CHalfLifeMultiplay` for deathmatch mode.
+
+**`tools/port/ts-server-dll/`:**
+- `src/cts_game_rules.{h,cpp}` — `class CTSGameRules : public CHalfLifeMultiplay`
+  - One real translated method (`GetTeamsNum` — 940B decompiled)
+  - Override stubs for InitHUD, PlayerSpawn, Think
+- `src/cts_fog.cpp` — first pattern translation (CTSFog::Spawn)
+- `build-ts-dll.sh` — auto-patches /tmp/hlsdk-portable, builds via
+  direct `emcc -sSIDE_MODULE=1`, applies `-fvisibility=hidden` +
+  `-O3 -flto` + `-Wl,--strip-all -Wl,--gc-sections`
+- `hlsdk-sources.txt` — 105 source files extracted from upstream
+  CMakeLists (the same SVDLL_SOURCES used by the official build)
+- `PATCHES.md` — documents the patches to /tmp/hlsdk-portable
+
+**Build result:**
+- 1361 KB WASM (vs 526 B in D.7.14 — we're now actually linking
+  HLSDK, not just a stub)
+- **283 imports** (vs official's 52)
+  - 49 env.* (libc/engine)
+  - 5 GOT.mem (vs official's 2)
+  - 229 GOT.func (vs official's **0**) ← THIS IS THE GAP
+
+**The GOT.func gap is the next-session debug target.** Official
+hl.dll has zero GOT.func entries. Mine has 229. These are C++
+class method references that PIC compilation generates as runtime
+imports. The official was clearly built without PIC, OR with
+sufficient inlining that all the methods resolved internally.
+The current build is **deployable** (just copy over hl.dll) but
+**not bootable** — engine hangs on the loading spinner because
+those GOT entries don't resolve.
+
+**Workarounds tried:** `-fno-pic` (silently ignored — SIDE_MODULE=1
+forces PIC), `-flto`, `-Wl,--gc-sections`, `-fvisibility=hidden`.
+None eliminated the GOT entries. The next session's task is the
+linker flags / source-level inlining to make them go away — OR
+a different strategy: ship our TS code as a **second** side module
+that the engine loads alongside hl.dll (instead of replacing it).
 
 ### ⭐ D.7.13 — xash.wasm heap cap raised (binary patch)
 
