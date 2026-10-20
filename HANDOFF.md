@@ -3127,6 +3127,55 @@ declarations say "default" but whose implementations are
 "hidden" create inconsistency that PIC interprets as both
 exported AND GOT-ified.
 
+### D.7.28 (2026-10-20) — Live-state bridge (real engine cvars)
+
+**Working state (webxash `43db6ac`):** the launcher HUD now reads
+real engine state via a JS-side cvar probe. The mechanism is
+important: **the engine WASM exports `Cmd_ExecuteString` as a
+public method on the Xash3D wrapper class**. We never needed the
+WASM rebuild to get live state — we just needed to send console
+commands and read stdout back.
+
+**Mechanism:**
+- `XashLoader.setLiveInstance(xash)` captures the running engine
+  after init()
+- `XashLoader.exec(cmd)` runs `xash.Cmd_ExecuteString(cmd)` from JS
+- The engine's `print` callback (already wired via `emitXashLog`)
+  forwards the response to a `xash:stdout` window event
+- A polling loop in `live-state.ts` rolls through `hostmap`,
+  `mp_teamlist`, `host_framerate`, `sv_cheats`, `name` once every
+  900ms and pattern-matches the `"<name>" is "<value>" (...)` reply
+- One-time probes of TS cvars (`roundtime`, `slowmatch`,
+  `lastmanstanding`, `mp_teammodels`) document that the engine
+  rejects them with "Unknown command: <name>"
+
+**Subtle findings:**
+- `cvar <name>` is **not** a Xash3D command — it returns
+  "Unknown command: cvar". The bare cvar name is the read command.
+- TEAMS reports `hgrunt;scientist` (HL1 default), proving our
+  `+mp_teammodels` from the launcher didn't take — the engine
+  rejected it because the server DLL doesn't register that cvar.
+
+**Live-state HUD strip (right-edge):**
+```
+MAP    ts_apartments
+TEAMS  hgrunt;scientist
+NAME   Specialist
+MISSING ts_powerup
+```
+The `MISSING` row is auto-derived from `Error: No spawn function
+for "X"` lines the engine emits during BSP load.
+
+**Verified (Playwright + 0 pageerrors):** see screenshots
+`livestate-verified.png`. Real values populate within ~5s of
+engine boot.
+
+**Out-of-scope (still WASM-rebuild-blocked):**
+- cash/round-timer/weapon-state as live values — these are server
+  memory (per-player) and never reach the engine's cvar table.
+  Even with full cvar access, we'd need server-DLL hooks.
+- Engine-side `buy`, `firemode`, `useitems`, `alt2` registration
+
 ### D.7.27 (2026-10-20) — TS HUD overlay + launcher config
 
 **Working state now deployed (webxash `b1b6211`):**
