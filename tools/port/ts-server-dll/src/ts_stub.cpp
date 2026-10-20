@@ -1,38 +1,18 @@
-
-// ts_stub.cpp — Minimal TS game DLL stub.
+// ts_stub.cpp — TS overlay marker.
 //
-// This is the smallest possible WASM side module that exposes the
-// standard GoldSrc game-DLL entry points. It exists to prove the
-// build pipeline (emcc + SIDE_MODULE=1 + linker flags) end-to-end.
+// When building with hlsdk-portable as the base (build-ts-dll.sh
+// pulls in its 105 source files), HLSDK already provides:
+//   - GiveFnptrsToDll, GetEntityAPI2, GetNewDLLFunctions (h_export.cpp)
+//   - GameDLLInit, GameDLLShutdown (game.cpp)
+//   - All HL1 game logic: weapons, monsters, gamerules
 //
-// To grow: add CBaseEntity subclasses here (CTSPlayer, CTSGameRules,
-// CTSKnifeWeapon, etc.) translating from
-// tools/decompile/output/<class>__<method>.ts files.
-//
-// Engine interface (enginefuncs_t + DLL_FUNCTIONS) lives in:
-//   hlsdk-portable/engine/progdefs.h    (g_engfuncs)
-//   hlsdk-portable/dlls/game.cpp         (the entry points)
-//   HLSDK reference: FWGS/hlsdk-portable
+// This file only adds a marker so we can confirm the TS overlay
+// linked into the combined hl7+ts side module. Real TS translations
+// (cts_player.cpp, cts_gamerules.cpp, etc.) land in their own files
+// and use HLSDK's parent classes.
 
 #include <cstdio>
 
-// Forward declare the engine entry points we'll hook
-extern "C" {
-    // Engine expects these exports. Stub them — engine gets a no-op
-    // game DLL, but it loads without crashing.
-    int GetEntityAPI(void *) { return 0; }
-    int GetEntityAPI2(void *) { return 0; }
-    int GetNewDLLFunctions(void *) { return 0; }
-    void GiveFnptrsToDll(void *, void *) {}
-    void Initialize(struct edict_s *, void *, void *) {}
-    void GameDLLInit(void) {
-        // Print a marker so we know our DLL loaded
-        fprintf(stderr, "[TS DLL] loaded (stub — no TS logic yet)\n");
-    }
-    void GameDLLShutdown(void) {}
-}
-
-// Prevent linker from stripping these — they must be exported
 extern "C" __attribute__((used, visibility("default"))) void ts_marker(void) {
-    fprintf(stderr, "[TS DLL] ts_marker called\n");
+    fprintf(stderr, "[TS DLL] ts-overlay linked OK\n");
 }
