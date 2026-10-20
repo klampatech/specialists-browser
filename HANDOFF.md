@@ -2194,6 +2194,7 @@ projects queued.**
 ## ⚡ CHECKPOINT SUMMARY — UPDATED 2026-10-19 (D.7.12 — DECOMP 100%)
 
 | ✅ D.7.12 — **Server-side decomp is 100% complete** (122 → 0 entries) |
+| ✅ D.7.13 — **xash.wasm heap cap raised 256MB → 2GB** (binary patch) |
 | ✅ D.7.11 — Visual baseline verified; MP signaling round-trip working |
 | ✅ D.7.11 — `tools/decompile/grind_parallel.py` orchestrator (with zombie-detection fix) |
 
@@ -2227,6 +2228,46 @@ Source decompiles consolidated in `src/mod/<feature>.ts`:
 - ~600 client-DLL methods (not started)
 - TS→C++ translation workstream (the actual blocker now)
 
+### ⭐ D.7.13 — xash.wasm heap cap raised (binary patch)
+
+`xash.wasm` shipped with a 256MB hard cap (`memory[0]: initial=4096
+max=4096`). With bot_quota 4 each bot loads the full TS asset set
+(WAD textures, MDL models, WAV sounds, AI state) — total exceeded
+256MB mid-load and the engine died silently (D.7.9 → bumped down to
+bot_quota 2).
+
+**Fix this session: binary patch of the memory section.**
+- The upstream `yohimik/webxash3d-fwgs` source repo (containing the
+  Dockerfile) is gone (404 per D.7.1), so we can't rebuild with
+  `-s MAXIMUM_MEMORY=2GB` from source.
+- Patched directly via `wabt`'s wasm2wat / wat2wasm round-trip:
+  ```bash
+  wasm2wat xash.wasm -o xash.wat
+  # in xash.wat: (memory (;0;) 4096 4096) → (memory (;0;) 4096 32768)
+  wat2wasm xash-patched.wat -o xash-2gb.wasm
+  ```
+- `32768 × 64KB = 2GB`. `initial` kept at 4096 (256MB) so the engine
+  still uses the same lazy `growMemory()` strategy — it just no
+  longer hits the cap on growth.
+- Result: same file size (3.8MB), verified via
+  `wasm-objdump -j Memory -x`:
+  - Before: `memory[0] pages: initial=4096 max=4096`
+  - After:  `memory[0] pages: initial=4096 max=32768`
+- Deployed to BOTH `webxash/public/xash3d-fwgs/dist/xash.wasm` and
+  `webxash/node_modules/xash3d-fwgs/dist/xash.wasm`. Vite serves
+  from `public/`, but we keep `node_modules/` in sync so a fresh
+  `npm install` doesn't reintroduce the old binary.
+- Backup of original: `/tmp/xash.wasm.bak` (just in case).
+
+**Launch option bumped:** `webxash/src/stores/store.ts` default
+`bot_quota 2 → 4`. Comment updated to reflect the heap raise.
+
+**Verification:** engine boots with the patched WASM (title shows
+"TS", main menu renders with TS-specific text). Full bot-count
+verification needs an actual map load — this session confirmed the
+patch doesn't break boot. Worth a 4-bot listen-server smoke test in
+the next session.
+
 ### Visual baseline verified (browser smoke)
 
 Booted `https://100.95.111.112:5174/webXash/` in headless Chrome:
@@ -2259,7 +2300,6 @@ Confirmed:
 ### Multiplayer signaling round-trip (Priority 2) ✅
 
 Two-client WebSocket test on the running signaling server:
-
 ```
 HOST got: {"event":"joined","role":"host","room":"testroom","peerCount":1}
 HOST got: {"event":"peer-joined"}
