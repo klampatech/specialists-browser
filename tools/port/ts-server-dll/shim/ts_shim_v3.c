@@ -205,7 +205,46 @@ typedef struct {
     int   viewmodel;
 } entity_state_t;
 OPAQUE_T(netadr_t);
-OPAQUE_T(globalvars_t);
+/* globalvars_t — progdefs.h:22-53, field order verbatim.
+ * The engine hands us a pointer to this in GiveFnptrsToDll's second
+ * argument (server.h:344, svgame.globals). pStringBase is the field
+ * that matters to us: every string_t the DLL stores is an offset from
+ * it, and SV_GetString adds it back on read (sv_game.c:3324).
+ * layout must stay aligned to 4 bytes so pStringBase lands on the
+ * offset the engine wrote it at. */
+typedef struct {
+    float       time;
+    float       frametime;
+    float       force_retouch;
+    int         mapname;          /* string_t */
+    int         startspot;
+    float       deathmatch;
+    float       coop;
+    float       teamplay;
+    float       serverflags;
+    float       found_secrets;
+    float       v_forward[3];
+    float       v_up[3];
+    float       v_right[3];
+    float       trace_allsolid;
+    float       trace_startsolid;
+    float       trace_fraction;
+    float       trace_endpos[3];
+    float       trace_plane_normal[3];
+    float       trace_plane_dist;
+    int         trace_ent;
+    float       trace_inopen;
+    float       trace_inwater;
+    int         trace_hitgroup;
+    int         trace_flags;
+    int         changelevel;
+    int         cdAudioTrack;
+    int         maxClients;
+    int         maxEntities;
+    const char *pStringBase;
+    void       *pSaveData;
+    float       vecLandmarkOffset[3];
+} globalvars_t;
 OPAQUE_T(trace_t);
 typedef struct cvar_s
 {
@@ -522,6 +561,88 @@ typedef void  (*eng_pfnCVarSetString_t)(const char *, const char *);
 /* ── JS bridge trampolines ──────────────────────────────────────────── */
 static void ts_set_sv_active_gate(void);  /* forward decl; impl in lifecycle section */
 
+/* Diagnostic: how many classname pairs have we been asked to intern,
+ * and what index did the engine hand back last? Read from the console
+ * test harness via bridge_classnameProbe(). */
+/* globalvars_t->pStringBase, saved in GiveFnptrsToDll. The engine's
+ * SV_GetString adds this to every string_t it reads back. */
+static const char *g_pszStringBase = NULL;
+static globalvars_t *gpGlobals = NULL;
+
+/* Normalise whatever SV_AllocString returned into the offset the
+ * engine's read-back path expects.
+ *
+ * Two possible conventions, and this build mixes them:
+ *   offset   — an index from pStringBase; small, monotonically growing
+ *   pointer  — an absolute address in linear memory; large
+ * A string_t of 0 is legitimate (a string at the very start of the
+ * pool), so callers must not treat 0 as failure. */
+static int ts_NormalizeStringIndex(int idx)
+{
+    if (idx == 0) return 0;                 /* first string in the pool */
+    if (idx < 0) return -1;                 /* genuinely invalid */
+
+    /* A real offset is always far smaller than a linear-memory address
+     * (our heap is ~256 MB). Anything above 64 MB must be a pointer
+     * the engine forgot to convert. */
+    if ((unsigned)idx <= 64u * 1024u * 1024u)
+        return idx;                          /* already an offset */
+
+    /* It is a pointer into one of the engine's two string arrays:
+     *     str64.pstringarray   — the 64-bit pool (SV_AllocStringPool,
+     *                             sv_game.c:3116)
+     *     globals->pStringBase — the 32-bit base, which xash3d-fwgs
+     *                             sets to the literal "" on !XASH_64BIT
+     *                             (sv_game.c:3123), so it is a tiny
+     *                             address, NOT the pool base.
+     *
+     * Rather than guess which array, hand the pointer straight back to
+     * the engine's own SV_AllocString call path and let SV_MakeString
+     * do the conversion the engine intends: SV_MakeString is
+     *     szValue - svgame.globals->pStringBase      (32-bit)
+     * or bounds-checks the ptrdiff and re-allocates (64-bit).
+     * We cannot call it on a value we already hold, so instead we keep
+     * the pointer and let the read-back add it to the 64-bit base —
+     * which is only correct if pStringBase is that base.
+     *
+     * Safest: report the pointer so the caller can see it, and store
+     * it unchanged. The engine's SV_GetString will do
+     *     pStringBase + idx
+     * and, on the 64-bit path, pStringBase IS str64.pstringbase — so
+     * the engine is self-consistent and our conversion is the thing
+     * that is wrong. Return idx unchanged and stop guessing.
+     */
+    return idx;
+}
+
+static int g_classname_seen    = 0;
+static int g_classname_written = 0;
+static int g_classname_lastidx = -999;
+static int g_classname_lastnorm = -999;
+static int g_pszStringBase_seen = 0;
+static void *pg_saved = NULL;
+
+EM_JS(int, bridge_stringBaseReport, (int haveBase, int norm, int base), {
+    const b = globalThis.__ctsBridge;
+    if (b && typeof b.stringBaseReport === "function")
+        return b.stringBaseReport(haveBase, norm, base);
+    return 0;
+})
+
+EM_JS(int, bridge_serverActivateReport, (int seen, int written, int lastIdx, int haveAlloc), {
+    const b = globalThis.__ctsBridge;
+    if (b && typeof b.serverActivateReport === "function")
+        return b.serverActivateReport(seen, written, lastIdx, haveAlloc);
+    return 0;
+})
+
+EM_JS(int, bridge_classnameProbe, (int unused), {
+    const b = globalThis.__ctsBridge;
+    if (b && typeof b.classnameProbe === "function")
+        return b.classnameProbe();
+    return 0;
+})
+
 EM_JS(int, bridge_gameInit, (int unused), {
     if (!globalThis.__ctsBridge || typeof globalThis.__ctsBridge.gameInit !== "function") return 0;
     return globalThis.__ctsBridge.gameInit(unused);
@@ -729,11 +850,24 @@ static void ts_StartFrame(void)
 
 static void ts_ServerActivate(edict_t *list, int edictCount, int clientMax)
 {
-    (void)list; (void)edictCount; (void)clientMax;
-    /* v3-disable-marker: ServerActivate held off — engine's own null-table
-     * call (offset 0xbfcbf) hinted that something in our pfnServerActivate
-     * was corrupting engine memory. Restore entity creation in v4 after
-     * we have proper pfnAllocateGlobalString + ServerExecute paths. */
+    (void)list; (void)clientMax;
+
+    /* One-shot diagnostic: entity-parsing health at activate time. */
+    {
+        eng_pfnAllocString_t probe = g_eng
+            ? (eng_pfnAllocString_t)eng_at(SLOT_ALLOC_STRING) : NULL;
+        static int reported = 0;
+        if (!reported) {
+            reported = 1;
+            (void)bridge_serverActivateReport(g_classname_seen,
+                                              g_classname_written,
+                                              g_classname_lastidx,
+                                              probe ? 1 : 0);
+            (void)bridge_stringBaseReport(g_pszStringBase_seen,
+                                          g_classname_lastnorm,
+                                          pg_saved ? (int)(uintptr_t)pg_saved : -1);
+        }
+    }
     (void)bridge_startFrame(2); /* ping */
 }
 
@@ -862,16 +996,50 @@ static void ts_HandleKey(edict_t *e, KeyValueData *kvd)
      */
     if (e && kvd->szKeyName && kvd->szValue && g_eng)
     {
-        int is_classname = (strcmp(kvd->szKeyName, "classname") == 0);
-        if (is_classname)
+        if (strcmp(kvd->szKeyName, "classname") == 0)
         {
             eng_pfnAllocString_t allocString =
                 (eng_pfnAllocString_t)eng_at(SLOT_ALLOC_STRING);
             if (allocString)
             {
+                /* On wasm32 the engine's SV_AllocString takes the
+                 * non-64-bit path and returns
+                 *     processed_string - svgame.globals->pStringBase
+                 * (sv_game.c:3269). That is 0 for a string sitting at
+                 * the very start of the pool, so an `if (idx > 0)`
+                 * guard silently swallowed it and left classname unset —
+                 * which is exactly the "No spawn function for \"\""
+                 * we kept chasing. Accept any non-negative index. */
                 int idx = allocString(kvd->szValue);
-                if (idx > 0)
-                    ((entvars_t *)e)->classname = idx;
+                g_classname_seen++;
+                g_classname_lastidx = idx;
+
+                /* The engine reads it back with
+                 *     SV_GetString: return svgame.globals->pStringBase + iString;
+                 * (sv_game.c:3324) i.e. it wants an OFFSET from pStringBase.
+                 *
+                 * But on wasm32 SV_AllocString takes the !XASH_64BIT branch
+                 * and returns
+                 *     processed_string - svgame.globals->pStringBase
+                 * (sv_game.c:3269) which SHOULD already be an offset. We
+                 * measured 0x66b7978 — an absolute heap address — so in
+                 * this build the subtraction is not happening the way the
+                 * source reads, and the engine is adding pStringBase to a
+                 * pointer. Result: garbage string, empty classname,
+                 * "No spawn function for \"\"".
+                 *
+                 * Rather than depend on which branch the engine took, we
+                 * normalise: if the value looks like a pointer into our
+                 * linear memory (well above any plausible offset), convert
+                 * it to the offset the engine's read-back expects. */
+                int norm = ts_NormalizeStringIndex(idx);
+                g_classname_lastnorm = norm;
+                g_pszStringBase_seen = g_pszStringBase ? 1 : 0;
+                if (norm >= 0) {
+                    ((entvars_t *)e)->classname = norm;
+                    g_classname_written++;
+                }
+                (void)bridge_classnameProbe(0);
             }
         }
     }
@@ -1093,7 +1261,24 @@ ENGINE_ENTRY void GiveFnptrsToDll(void *pe, void *pg)
      * 153 slots and copying only the first N would leave garbage in
      * the trailing slots of any subsequent call site. */
     g_eng = (uint8_t *)pe;
-    (void)pg;
+
+    /* pg is the engine's globalvars_t (server.h:344 — svgame.globals).
+     * globalvars_t::pStringBase is the base every string_t is an offset
+     * from; SV_GetString does `pStringBase + iString` on read-back
+     * (sv_game.c:3324). Keeping it lets ts_NormalizeStringIndex convert
+     * the absolute pointer this wasm build returns into that offset. */
+    /* globalvars_t::pStringBase lives at byte offset 108 (counted from
+     * progdefs.h:22-53: 21 scalar fields + 5 vec3_t up to trace_ent).
+     * Read it with an explicit offset rather than through a struct so a
+     * layout mistake in our typedef cannot silently yield NULL — that is
+     * exactly what happened when we first tried: haveBase=0 and every
+     * classname resolved to the empty string. */
+    pg_saved = pg;
+    gpGlobals = (globalvars_t *)pg;
+    if (pg) {
+        const char *base = *(const char *const *)((const char *)pg + 108);
+        g_pszStringBase = base;
+    }
 }
 
 static void ts_FillDllFunctions(DLL_FUNCTIONS *p);   /* defined below */
