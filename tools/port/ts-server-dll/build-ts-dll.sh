@@ -183,6 +183,50 @@ else
     echo "Skipping rewrite-got.py (raw emcc WASM deployed as-is — works on current build)."
 fi
 
+# === Safety gate: inspect freshly built WASM before deploying ===
+# Gate criteria (webXash breaks with 283-import / 229-GOT.func WASM):
+#   - Refuse if total import count  > 60
+#   - Refuse if any GOT.func import entry exists (GOT.func count > 0)
+# Leave existing deployed WASMs untouched on refusal.
+WASM_OBJ="$OUT/ts_emscripten_wasm32.wasm"
+WABT_BIN="${WABT_BIN:-/tmp/wabt-1.0.42/bin/wasm-objdump}"
+IMPORT_COUNT=0
+GOT_FUNC_COUNT=0
+
+if [[ -x "$WABT_BIN" ]] && [[ -f "$WASM_OBJ" ]]; then
+    # Capture full Import section dump
+    DUMP=$("$WABT_BIN" -j Import -x "$WASM_OBJ" 2>/dev/null) || true
+
+    # Count total import lines (each import ends with " <- ")
+    IMPORT_COUNT=$(printf '%s\n' "$DUMP" | grep -c ' <- ' || true)
+
+    # Count GOT.func import entries specifically
+    GOT_FUNC_COUNT=$(printf '%s\n' "$DUMP" | grep -c 'GOT.func' || true)
+
+    if [[ "$IMPORT_COUNT" -gt 60 ]]; then
+        echo "ERROR: Safety gate refused deploy." >&2
+        echo "  WASM import count $IMPORT_COUNT exceeds threshold of 60." >&2
+        echo "  File: $WASM_OBJ" >&2
+        echo "  GOT.func entries: $GOT_FUNC_COUNT" >&2
+        echo "  Leaving existing deployed WASMs untouched." >&2
+        exit 1
+    fi
+
+    if [[ "$GOT_FUNC_COUNT" -gt 0 ]]; then
+        echo "ERROR: Safety gate refused deploy." >&2
+        echo "  WASM contains $GOT_FUNC_COUNT GOT.func import(s) (gotp3 broken on current build)." >&2
+        echo "  File: $WASM_OBJ" >&2
+        echo "  Import count: $IMPORT_COUNT" >&2
+        echo "  Leaving existing deployed WASMs untouched." >&2
+        exit 1
+    fi
+
+    echo
+    echo "[gate] import_count=$IMPORT_COUNT  got_func=$GOT_FUNC_COUNT  PASS"
+else
+    echo "WARNING: WABT wasm-objdump not available at $WABT_BIN — skipping safety gate." >&2
+fi
+
 # Deploy to both engine paths
 cp "$OUT/ts_emscripten_wasm32.wasm" "$DEST/"
 echo
