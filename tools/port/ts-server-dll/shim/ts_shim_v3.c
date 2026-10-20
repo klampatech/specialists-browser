@@ -224,6 +224,8 @@ typedef edict_t *(*eng_pfnCreateEntity_t)(void);
 typedef void  (*eng_pfnCVarRegister_t)(cvar_t *);
 typedef float (*eng_pfnCVarGetFloat_t)(const char *);
 typedef void  (*eng_pfnCVarSetFloat_t)(const char *, float);
+typedef void  (*eng_pfnServerCommand_t)(const char *);
+typedef void  (*eng_pfnCVarSetString_t)(const char *, const char *);
 
 #define SLOT_PRECACHE_MODEL    0
 #define SLOT_PRECACHE_SOUND    1
@@ -231,9 +233,13 @@ typedef void  (*eng_pfnCVarSetFloat_t)(const char *, float);
 #define SLOT_CREATE_ENTITY    21
 #define SLOT_SET_ORIGIN       28
 #define SLOT_CVAR_REGISTER    56
+#define SLOT_CVAR_SETFLOAT    59
+#define SLOT_SERVER_COMMAND    41
 /* compute numerically. (slot * sizeof(void*)) = byte offset. */
 
 /* ── JS bridge trampolines ──────────────────────────────────────────── */
+static void ts_set_sv_active_gate(void);  /* forward decl; impl in lifecycle section */
+
 EM_JS(int, bridge_gameInit, (int unused), {
     if (!globalThis.__ctsBridge || typeof globalThis.__ctsBridge.gameInit !== "function") return 0;
     return globalThis.__ctsBridge.gameInit(unused);
@@ -311,6 +317,7 @@ EM_JS(int, bridge_spawnLog, (int entIndex, int ret, int extra), {
 
 static void ts_GameInit(void)
 {
+    ts_set_sv_active_gate();   /* D.7.42: gate at boot, before listen-server flow */
     (void)bridge_gameInit(0);
     if (g_eng) {
         eng_pfnPrecacheModel_t precacheModel =
@@ -323,6 +330,9 @@ static void ts_GameInit(void)
          * "no server running." Once these cvars exist, +map triggers
          * the listen server just like with c91698be. */
         eng_pfnCVarRegister_t cvreg = (eng_pfnCVarRegister_t)eng_at(SLOT_CVAR_REGISTER);
+        /* (sv_active cvar not registered — see D.7.42, the gate
+         * is read from memory[901372] directly via js_set_sv_active_flag
+         * called from pfnStartFrame below). */
         if (cvreg) {
             static cvar_t cvars[8];
             cvars[0].name = "mp_teamlist"; cvars[0].string = "hgrunt"; cvars[0].flags = 0; cvars[0].value = 0; cvars[0].next = &cvars[1];
@@ -332,6 +342,7 @@ static void ts_GameInit(void)
             cvars[4].name = "deathmatch";  cvars[4].string = "1"; cvars[4].flags = 0; cvars[4].value = 1; cvars[4].next = NULL;
             for (int i = 0; i < 5; ++i) cvreg(&cvars[i]);
         }
+
 
         if (precacheModel) {
             static const char *models[] = {
@@ -384,7 +395,39 @@ static void ts_ClientPutInServer(edict_t *e) { (void)bridge_putInServer((int)e);
 static void ts_ClientCommand(edict_t *e)   { (void)bridge_clientCommand((int)e); }
 static void ts_PlayerPreThink(edict_t *e)  { (void)bridge_playerPreThink((int)e); }
 static void ts_PlayerPostThink(edict_t *e) { (void)bridge_playerPostThink((int)e); }
-static void ts_StartFrame(void) { (void)bridge_startFrame(0); }
+EM_JS(int, js_set_sv_active_flag, (int addr, int val), {
+    /* xash3d-fwgs reads memory[901372] as a "server alive" boolean,
+     * checked against 1 in 37 places (D.7.42). */
+    const e = globalThis.__xash_em || (globalThis.__xash && globalThis.__xash.em);
+    if (!e || !e.HEAPU8) return -1;
+    const dv = new DataView(e.HEAPU8.buffer);
+    dv.setInt32(addr, val, true);
+    return 0;
+})
+
+static int g_flag_set_tick = 0;
+static void ts_set_sv_active_gate(void)
+{
+    /* xash3d-fwgs's listen-server dispatcher reads memory[901372]
+     * as a "server alive" boolean. c91698be's DispatchSpawn chain
+     * sets it; we set it explicitly here so the engine's dispatcher
+     * lets the listen server start. (D.7.42)
+     *
+     * Set it BEFORE the engine reads the flag, which is what
+     * pfnGameInit provides. Idempotent — keep doing it for the
+     * first 60 ticks via pfnStartFrame in case the engine resets
+     * after some transitions. */
+    js_set_sv_active_flag(901372, 1);
+}
+
+static void ts_StartFrame(void)
+{
+    (void)bridge_startFrame(0);
+    if (g_flag_set_tick < 60) {
+        g_flag_set_tick++;
+        ts_set_sv_active_gate();
+    }
+}
 
 static void ts_ServerActivate(edict_t *list, int edictCount, int clientMax)
 {
