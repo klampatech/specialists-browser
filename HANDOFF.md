@@ -3082,53 +3082,94 @@ needed. The exact emcc flag combo that produced 504 exports
 eludes us — we've spent ~3 hours on the matrix without
 reproducing it.
 
-### D.7.25 — Next-session options
+### D.7.25 — Final WASM results; time to pivot
 
-**Option Z (recommend): annotate HLSDK methods as
-`__attribute__((visibility("default")))` to force export.**
-Each C++ virtual method that's currently becoming a GOT entry
-gets a visibility annotation that keeps emcc from PIC-ifying it.
-The compiler can then resolve the call directly. ~229 one-line
-touches across HLSDK's source files, but each is mechanical:
-search for `void CClassXxx::MethodName`, add `EXPORTED` macro.
+**Pivoting to JS-side dispatcher + HTML overlay.** Code-level
+TS features (registered commands, class system, weapons) are
+blocked by the loader bug. Visual + gameplay can still come
+from the launcher (HTML overlays over canvas; FS writes to
+inject assets; engine stdout/sniffer for command dispatch).
 
-This is the LIGHTEST intervention that should produce a 52-import
-build like c91698be.
+### D.7.25a (2026-10-20) — Last attempts (all 283/229)
 
-**Option Y: stop fighting the loader.** Accept that we can't
-make new WASM features work in real Chrome. Continue with
-launcher UX, persistence, and HL1-side parity (UI, maps, etc.)
-while the underlying WASM stays at the c91698be baseline.
+Tried before pivoting:
+- `-fvisibility=hidden` ALONE — 283/229
+- All `-O0..-Oz` × flto/no-lto — same
+- `-fvisibility=default` (no hidden) — 3904 imports, 2128 GOT (worse)
+- `-fno-rtti` (matches CMakeLists.txt) — 281 imports
+- `-fno-exceptions -fno-rtti -fno-unwind-tables` — 283/229
+- `-fno-addrsig` — same
+- `-fno-plt` — same
+- `-fno-emulated-tls` — same
+- `-fno-PIE` — same
+- `-sSIDE_MODULE=0` — fails (needs entry/main)
+- `-sSIDE_MODULE=1` — 282/229
+- `-sSIDE_MODULE=2` — STUB MODE (10 imports, 7 functions, 755 bytes —
+  Emscripten ignores input sources in this mode, only emits constructors)
+- `-sMAIN_MODULE=1` (no SIDE) — 349 imports, 260 GOT
+- CMake-based build (full upstream CMakeLists + SIDE_MODULE patch) —
+  produces same 283/229 as handcrafted emcc
 
-**Option X: WAT surgery.** Take the 283-import WAT, replace
-each `(import "GOT.func" X)` with a `global` definition of the
-same name initialized to 0, then patch every `global.get X`
-call site to inline `ref.func` with the resolved function.
-Significant work but produces a self-contained 52-import binary.
+**The 229 GOT entries are intrinsic:**
+HLSDK's class hierarchy (CBaseEntity, CBasePlayer, CGib, etc.)
+has 229 unique virtual-method call sites that PIC turns into
+GOT entries. The c91698be unicorn build had these resolved
+to direct calls (504 exports instead of GOT) — we cannot
+reproduce.
 
-**Path forward:** Recommend Option Z as next session. Approach:
-1. Identify the 229 methods with `-Wl,--print-symbols=...
-   GOT:.*` or `--print-got=all`
-2. Add `EXPORTED` macro to each one
-3. Build, verify import count drops to ~52 with 0 GOT entries
-4. If it works, deploy and have Kyle test in real Chrome (but
-   the deployed binary is unlikely to work because the existing
-   c91698be baseline already works)
+**Why pragma visibility doesn't help:**
+Trying `#pragma GCC visibility push(default)` around HLSDK
+class declarations adds MORE imports (982 / 855 GOT) instead
+of fewer. The pragma only affects declaration visibility,
+not the implementations compiled in cpp files which are
+compiled with `-fvisibility=hidden`. Methods whose
+declarations say "default" but whose implementations are
+"hidden" create inconsistency that PIC interprets as both
+exported AND GOT-ified.
 
-Actually, re-reading this: with c91698be working AND Playwright
-showing the pageerror on 283-import, option Z has uncertain
-outcome. c91698be may be a unicorn build that we can't
-reproduce; subsequent rebuilds will give 283-import which fails.
+### D.7.26 — Plan: JS-side parity layer
 
-The cleanest path may be **Option Y**: live with the working
-52-import baseline. New TS server-DLL features (Buy, FireMode,
-class loadouts, etc.) would need a different deployment
-mechanism — maybe a JS-side dispatcher that runs alongside the
-c91698be WASM, or a separate "TS-side" runtime that bridges
-the engine.
+While the WASM build stays at `c91698be`, the launcher app
+can deliver TS-side behaviors via three mechanisms:
 
-That's a bigger architectural change and worth discussing
-before committing to it.
+1. **HTML overlay on canvas** — TS-style HUD elements
+   rendered as DOM above the WebGL canvas. Cash counter,
+   class badges, slowmo timer, buy menu. Theme: TS-class
+   palette (gold/black for menu chrome).
+
+2. **Launch options / server config patching** — TS cvars
+   like `slowmatch 1`, `roundtime 180`, `mp_teamlist`, etc.
+   come from `ts/server.cfg` in `tsmod.zip`. Already loaded.
+   We can add TS-specific entry points in
+   `webxash/src/components/XashLaunchOptions.vue` so users
+   see them in the launcher.
+
+3. **FS writes for runtime asset injection** — the
+   launcher already uses `xash.em.FS.writeFile` to load
+   extras.pk3. We can extend this to push TS-specific
+   textures into `ts/gfx` at runtime if they're missing
+   from the loaded zip.
+
+**Out-of-scope until WASM rebuild works:**
+- True server-side command registration (need WASM `g_engfuncs.pfnAddServerCommand`)
+- CTSGameRules::InitHUD / PlayerSpawn overrides (need WASM to ship)
+- Real class system (10 classes from CHalfLife to CTSpecOps etc.)
+- Bot AI replacement
+- TS weapons (knife, gun, etc.)
+- Real multiplayer round logic
+- TS particle effects (envspark variants etc.)
+
+**Question for Kyle:** does the JS-side overlay approach
+satisfy your "we need both" goal? HTML/CSS chrome over
+the canvas = visual layer; HUD with cash/class/etc. = some
+gameplay-info; HL1 weapons still function, but no
+TS-specific buy/firemode yet (those need the WASM rebuild).
+
+If "yes" — proceed with the overlay work in D.7.27.
+If "no, I want real TS commands" — we should escalate the
+WASM loader problem to a different angle (e.g., fork
+xash3d-fwgs to handle 229 GOT entries, or rebuild the
+loader chunk in JS via WAT surgery).
 
 
 **What D.7.17 DID NOT fix (in priority order):**
