@@ -2682,6 +2682,135 @@ cp rewritten.wasm webxash/public/dlls/hl_emscripten_wasm32.wasm
 - Half-Life main menu renders with TS-detection text intact
 - **No `pageerror` / no `WebAssembly.instantiate()` exceptions**
 
+---
+
+### D.7.19 (this session, 2026-10-19→20) — P1 played through, P2 confirmed blocker
+
+**Smoke infrastructure shipped:**
+- Added `print`/`printErr` forwarders to `Xash3D({module: ...})` so every
+  line of engine stdout/stderr reaches the browser console (Playwright
+  captures it). Permanent diagnostic win — previously engine logs were
+  only reachable via `waitLog()` Promises.
+- `/tmp/smoke-test/play-test6-p1.js` captures the full engine boot
+  sequence: `FS_AddGameHierarchy`, `Dll loaded`, `execing *.cfg`, etc.
+- `/tmp/smoke-test/play-test7-argv-variant.js` lets `LAUNCH_OPTS=...`
+  env var override the Pinia store's `launchOptions` and re-run.
+- `/tmp/smoke-test/play-test8-final-p1.js` is the long-wait harness
+  (45-60s) with reordered launchOptions.
+
+**P1 finding — D.7.17 deploys but traps on first indirect call:**
+
+Engine stdout during boot (timestamps stripped):
+```
+Console initialized.
+Adding directory: ./                          (engine workdir)
+FS_AddGameHierarchy( valve )
+Adding directory: valve/
+FS_AddGameHierarchy( ts )                     ← -game ts DETECTED
+Adding directory: ts/downloaded/
+Adding directory: ts/
+Adding directory: ts/custom/
+Touch_Init()
+Warning: SV_LoadProgs: couldn't get physics API
+Dll loaded for game "Half-Life"               ← OUR REWRITTEN WASM
+execing skill.cfg
+Loading renderer: webgl2 -> libref_webgl2.wasm
+...
+(execing userconfig.cfg, gl_settings.cfg, etc.)
+Usage: map <mapname>                          ← (only in broken arg order)
+Localize_AddToDict(...) couldn't open file.   (warning, harmless)
+No saves found for game: ts
+```
+
+**Then the pageerror:**
+```
+[PAGEERROR] function signature mismatch      ← WASM trap
+```
+
+`WebAssembly` throws `function signature mismatch` when `call_indirect`
+finds a function in `table[D]` whose signature doesn't match the
+expected type. The xash loader populated our table with xash.wasm's
+elem entries (since the dylink `tableSize` merger was broken per P2);
+only 1/229 of our GOT.func decls (`SUB_DoNothing`) was in our elem.
+The other 228 indirect calls hit the wrong type and trap.
+
+**The map never loaded.** The engine sat at the HL1 main menu
+rendering TS textures, but no in-game gameplay.
+
+**P1 verdict: D.7.17's pipe IS structurally valid (49-import WASM
+loads, dlopen succeeds, HLSDK init runs through "Dll loaded"), but
+runtime correctness is incomplete. P2 (densify the elem) is the
+actual blocker before gameplay verification is meaningful.**
+
+**Secondary finding — engine argv ordering quirk (FIXED):**
+The engine's argv parser has a bug where cvar values after `+map`
+absorb the map name:
+| launchOptions                           | result |
+|---|---|
+| `-game ts +map ts_apartments`           | OK    |
+| `-game ts +map ts_apartments bot_quota 4` | `Usage: map <mapname>` |
+| `bot_quota 4 -game ts +map ts_apartments`  | OK    |
+
+**Fixed:** `webxash/src/stores/store.ts` default changed to
+`'bot_quota 2 -game ts +map ts_apartments'` (cvar first, then `+map`).
+Caveat: existing browser localStorage may have the old value
+persisted; click "Reset" in Advanced panel or clear
+`localStorage.xash.launchOptions` to pick up the new default.
+
+---
+
+### D.7.20 — IMPLEMENT P2: dense call_indirect → direct `call $D`
+
+**Goal:** drop GOT.func elem-densify approach entirely; replace
+`call_indirect` with direct `call $D` for any site whose index
+provably comes from one of our const globals. Bypasses the loader's
+table merge → no `tableSize` patching → no dylink byte-layout
+corruption. Clean.
+
+**Step 1 — write `tools/port/ts-server-dll/rewrite-calls.py` (~200 lines)**
+
+Input: the wasm-rewriter's output (post-wat2wasm, ~49 imports, 1.35 MB).
+1. `wasm2wat` → WAT
+2. Walk all `call_indirect` sites. Each has the shape:
+   ```wat
+   (call_indirect (type $T) (param-ty $arg1 $arg2 ...))
+   ;; preceded by: i32.const or global.get $G_that_holds_decl_index
+   ```
+3. For each `call_indirect`, look backwards in the WAT for the
+   stack-producer that fed the index operand. If it's
+   `global.get $G` and `$G` is one of our const-init globals (we
+   recorded their values during the GOT rewrite pass), replace the
+   whole sequence with `(call $D)` where D is the const value.
+4. wat2wasm → output. Verify import count stays ~49 (we're collapsing
+   indirect dispatch, not adding new code).
+
+**Step 2 — wire into `build-ts-dll.sh`**
+
+After the existing GOT-rewrite step:
+```bash
+python3 rewrite-calls.py broken.wasm rewritten.wasm
+```
+Idempotent: detect "no call_indirect sites" → no-op.
+
+**Step 3 — smoke for correctness**
+
+Re-run the headless smoke with reordered launchOptions:
+- Expect `[xash-stdout] "GameRules: CTSGameRules"` or similar (the
+  server's class dispatch will reach our override). The original
+  hand-off's P1 signal "Unknown command: buy" is *expected* to
+  appear for now — our `CTSGameRules` only overrides `GetTeamsNum`,
+  no `RegisterCommand` translations yet. That's P4 work.
+- Expect the `[PAGEERROR] function signature mismatch` to be GONE.
+- Expect an actual map load with a non-empty screenshot
+  (3D scene, HUD, not just the menu).
+
+**Step 4 (only if P3 green): more class translations.**
+
+Per D.7.18 P4, the priority queue: CTSPlayerWeaponBase, CCrowbar,
+CShotgun, CBasePlayer. Each is a 3-4h translation session.
+
+
+
 **What D.7.17 DID NOT fix (in priority order):**
 
 #### P1 — Verify actual gameplay works (1-2h smoke test)
