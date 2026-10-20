@@ -3127,6 +3127,99 @@ declarations say "default" but whose implementations are
 "hidden" create inconsistency that PIC interprets as both
 exported AND GOT-ified.
 
+### D.7.36 (2026-10-20) — Buy menu is now a real armory (+ 3 bugs fixed)
+
+**The buy menu was decoration.** Clicking an item did nothing. Now
+each item carries the engine command that grants it
+(webxash `57f0350`):
+
+| Item | Engine command |
+|---|---|
+| Beretta / Uzi | `give weapon_9mmhandgun` |
+| Desert Eagle / Anaconda | `give weapon_357` |
+| MP5 / P90 | `give weapon_9mmAR` |
+| AK-47 | `give weapon_ak47` |
+| M4 / M82 | `give weapon_m4` |
+| HE Grenade | `give weapon_grenade` |
+| Body Armor | `give item_armor` |
+| Flashbang | `give flashlight` + `impulse 104` |
+
+`give` is gated behind `sv_cheats`, which TS itself enables
+(`TSGameRules.enabledCheats`), so we `set sv_cheats 1` at match start.
+
+**Three real bugs found while verifying:**
+
+1. **Keyboard bridge fought the menu.** Pressing "2" to switch
+   category also sent `+slot2` and changed the held weapon. Added
+   `setBridgeSuspended()` — the bridge goes quiet whenever a DOM
+   modal owns the keyboard, releasing anything already held.
+
+2. **`pointer-events` inherited.** `.ts-hud` sets `pointer-events:
+   none` so engine clicks reach the canvas. That value inherits into
+   children, so `.buy-menu__panel`, `.buy-menu__categories` and
+   `.buy-item` all needed explicit `pointer-events: auto`.
+
+3. **Pointer lock made the menu unclickable** (the real find). While
+   the canvas holds pointer lock the cursor is captured and real
+   mouse events go to the canvas *regardless* of what DOM element is
+   under the frozen cursor. `elementFromPoint()` reported
+   `BUTTON.buy-item`, but the browser delivered the click to the
+   canvas. Confirmed via `document.pointerLockElement === canvas`.
+   Fixed with `syncPointerLock()`: exit the lock when the menu
+   opens, re-acquire on close.
+
+**Verified end-to-end (Playwright):**
+```
+cash      $850 -> $150 after buying the $700 Uzi
+commands  ["hostmap", "set sv_cheats 1", "give weapon_9mmhandgun"]
+owned     Uzi marked in the menu
+errors    0 pageerrors
+```
+
+### D.7.35 (2026-10-20) — Full asset + command-surface audit
+
+Ran `modellist` / `texturelist` / `cmdlist` against the live engine.
+
+**Working:**
+- `maps/ts_apartments.bsp` IS loading and rendering real TS
+  apartment geometry (confirmed via `thirdperson` screenshot).
+- The engine's own HL1 HUD renders *underneath* our overlay
+  (health / ammo / weapon strip).
+- `thirdperson` / `firstperson` work — useful for visually verifying
+  the player model instead of guessing.
+- 300 commands respond, including `give`, `impulse`, `jointeam`,
+  `ent_create`, `ent_fire`, `ent_getvars`, `host_timescale`,
+  `modellist`, `texturelist`, `soundlist`, `cvarlist`.
+- `host_timescale 0.5` is accepted — that's how TS slow-motion
+  should work (engine-level, not simulated in the HUD).
+
+**Blocked, with evidence:**
+- `modellist` returns **90 model files, all HL1** (`v_crowbar`,
+  `v_gauss`, `v_egon`, `v_rpg`, `v_crossbow`, `v_tripmine`, …).
+  **Zero TS models.** `ts/models/**` (476 `.mdl` incl.
+  `v_sealknife`, `p_sealknife`, `player/agent`, `player/seal`) is
+  present in the VFS inside `tsmod.zip` but never loaded.
+- `hl_emscripten_wasm32.wasm` exposes exactly one relevant symbol:
+  `worldspawn`. No model-override or precache hook exists.
+- Root cause: our server DLL is vanilla HL1 `hl.dll`. Only the TS
+  gameplay DLL registers TS models, and it isn't loaded.
+
+**CheerpX — already tried, DO NOT RETRY.** `ts/dlls/ts_i386.so`
+(1.7MB ELF32, **unstripped**, contains `CTSGameRules`,
+`CTSBriefcase`, `CTSBulletManager`, `CHalfLifeTeamplay`) is
+tempting, and I was about to propose it again before checking.
+HANDOFF records it was already done on 2026-10-14: Phase 1 step 1.1
+went GREEN (mount + symbols), step 1.2 hit 5 cascading
+dynamic-linker bugs across 11 ts-host versions, ending at
+`_dl_check_map_versions: Assertion 'needed != NULL' failed!` with no
+clean fix.
+
+**Left as a documented no-op:** `-basedir valve` in
+`_buildLaunchArgs`. It does NOT fix the
+`resource/mainui_english.txt` / `colors.lst` warnings — the engine
+has no command to add a secondary search path. Localization stays
+degraded. Cosmetic.
+
 ### D.7.31 (2026-10-20) — Keyboard recovery via JS bridge (workaround)
 
 **Kyle's diagnostic log nailed it:**
