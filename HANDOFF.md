@@ -3127,6 +3127,50 @@ declarations say "default" but whose implementations are
 "hidden" create inconsistency that PIC interprets as both
 exported AND GOT-ified.
 
+### D.7.29 (2026-10-20) — **ROOT CAUSE FOUND**: modal `alert()` was killing the keyboard
+
+**This is the fix for both reported bugs.**
+
+**Kyle's report (real Chrome/Vivaldi, macOS):**
+- `_Mem_Alloc: pool == NULL` alert at every launch.
+- After clicking OK: game loads, mouse look works, **but every
+  keypress is dead** — W/A/S/D, Escape, console. All dead.
+- Only the launcher's own `B` handler (buy menu) responded, because
+  it's a plain `window.addEventListener('keydown')` in Vue, not the
+  engine's input path.
+
+**Root cause:** the Xash WASM build calls `alert()` from C when its
+command-slot pool runs dry (`common/cmd.c:638`). A modal `alert()`
+raised from inside a WebAssembly frame:
+1. Suspends Emscripten's rAF-driven engine loop mid-frame, and
+2. Leaves SDL2's Emscripten keyboard queue broken after dismissal.
+
+Mouse look survives because it's polled on the rAF path that
+partially recovers; the keyboard queue does not. This exactly
+matches the observed asymmetry.
+
+**Fix (webxash `0816682`):** shim `window.alert` in
+`xash-loader.ts` *before* the engine boots. Engine alerts now go to
+`console.error('[xash-alert]', msg)` and dispatch a `xash:alert`
+window event. `TSHud.vue` listens and renders the message as a
+non-modal toast (top-center, red-on-dark, 12s auto-clear).
+
+**Verified (Playwright):**
+- Modal dialogs intercepted: **0** (was 1 every launch)
+- `[xash-alert]` event fired: yes, with the `_Mem_Alloc` text
+- Toast rendered in HUD: yes
+
+**Playwright cannot verify the keyboard recovery** — headless
+Chromium doesn't deliver key events to a WebGL canvas reliably
+(a control test with `bind x → echo GOT_KEY_X` also failed on a
+known-good session). Kyle needs to confirm in a real browser.
+
+**Side fixes in the same commit:**
+- `probeIdx is not defined` ReferenceError in `live-state.ts`
+  (surfaced in Kyle's console as HMR-cached stale module). The
+  rolling poll no longer bursts; first probe at t+6s, then every
+  4s.
+
 ### D.7.28c (2026-10-20) — `_Mem_Alloc` alert traced; NOT caused by the live-state bridge
 
 **Kyle reported (real Chrome, macOS Vivaldi):**
