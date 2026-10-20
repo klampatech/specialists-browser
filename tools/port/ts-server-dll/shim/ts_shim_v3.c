@@ -30,7 +30,15 @@ typedef struct edict_s edict_t;
 typedef struct { int dummy; } opaque_t;
 #define OPAQUE_T(name) typedef opaque_t name
 OPAQUE_T(SAVERESTOREDATA);
-OPAQUE_T(KeyValueData);
+/* KeyValueData_s (eiface.h). szValue is mutable — the DLL may rewrite
+ * it; fHandled is the out-param the engine checks. */
+typedef struct KeyValueData_s
+{
+    const char *szClassName;
+    const char *szKeyName;
+    char       *szValue;
+    int         fHandled;
+} KeyValueData;
 OPAQUE_T(customization_t);
 OPAQUE_T(clientdata_t);
 OPAQUE_T(weapon_data_t);
@@ -97,7 +105,18 @@ typedef struct {
 } playermove_t;
 
 /* Three leading floats of the entvars we read/write. */
-typedef struct { float a[3]; float b[3]; float c[3]; } entvars_t;
+/* entvars_t — GoldSrc field order from progdefs.h:55. We only need the
+ * leading fields to write classname/origin/angles; everything after
+ * origin we leave alone (the engine fills the rest). Layout matters:
+ * `classname` is field 0, `globalname` field 1, `origin` field 2. */
+typedef struct
+{
+    int   classname;      /* string_t — interned class name */
+    int   globalname;
+    float origin[3];
+    /* remainder unused by the shim */
+    float _pad[512];
+} entvars_t;
 
 /* ── DLL_FUNCTIONS (eiface.h:391 — 52 slots) ───────────────────────── */
 typedef struct {
@@ -193,11 +212,14 @@ typedef struct {
  *   2  pfnSetModel
  *  21  pfnCreateEntity
  *  28  pfnSetOrigin
- *  56  pfnCVarRegister   (slot index, see eiface.h)
- *  57  pfnCVarGetFloat
- *  58  pfnCVarGetString
- *  59  pfnCVarSetFloat
- *  60  pfnCVarSetString
+ *  38  pfnServerCommand
+ *  55  pfnCVarRegister
+ *  56  pfnCVarGetFloat
+ *  57  pfnCVarSetFloat
+ *  64  pfnAllocString    <- interns a C string, returns string_t
+ *
+ * Index list generated from eiface.h's enginefuncs_t field order;
+ * do not hand-count, the table has 147 slots and drifts.
  */
 static uint8_t *g_eng = NULL;
 
@@ -222,6 +244,9 @@ typedef void  (*eng_pfnSetModel_t)(edict_t *, const char *);
 typedef void  (*eng_pfnSetOrigin_t)(edict_t *, const float *);
 typedef edict_t *(*eng_pfnCreateEntity_t)(void);
 typedef void  (*eng_pfnCVarRegister_t)(cvar_t *);
+/* pfnAllocateGlobalString (enginefuncs_t slot 55) — interns a C string
+ * into the engine's string pool and returns a string_t (int index). */
+typedef int   (*eng_pfnAllocString_t)(const char *);
 typedef float (*eng_pfnCVarGetFloat_t)(const char *);
 typedef void  (*eng_pfnCVarSetFloat_t)(const char *, float);
 typedef void  (*eng_pfnServerCommand_t)(const char *);
@@ -232,9 +257,10 @@ typedef void  (*eng_pfnCVarSetString_t)(const char *, const char *);
 #define SLOT_SET_MODEL         2
 #define SLOT_CREATE_ENTITY    21
 #define SLOT_SET_ORIGIN       28
-#define SLOT_CVAR_REGISTER    56
-#define SLOT_CVAR_SETFLOAT    59
-#define SLOT_SERVER_COMMAND    41
+#define SLOT_SERVER_COMMAND    38
+#define SLOT_CVAR_REGISTER     55
+#define SLOT_CVAR_SETFLOAT     57
+#define SLOT_ALLOC_STRING      64
 /* compute numerically. (slot * sizeof(void*)) = byte offset. */
 
 /* ── JS bridge trampolines ──────────────────────────────────────────── */
@@ -447,6 +473,31 @@ static void ts_CmdStart(const edict_t *p, const usercmd_t *c, uint seed)
 
 static const char *ts_GetGameDescription(void) { return "The Specialists"; }
 
+/* ── Entity-class spawn exports (D.7.44) ────────────────────────────
+ *
+ * xash3d-fwgs resolves every BSP entity classname to a spawn
+ * function by dlsym on the game DLL:
+ *
+ *     sv_game.c:1066  SV_GetEntityClass()
+ *       return (LINK_ENTITY_FUNC)COM_GetProcAddress( svgame.hInstance, pszClassName );
+ *
+ * and sv_game.c:1083 SV_AllocPrivateData() calls it. If the symbol is
+ * absent, the engine falls through to the "custom" class, then frees
+ * the edict with "No spawn function for \"%s\"" — which means the
+ * world, its lights, its triggers and its spawn points are all
+ * discarded, and the BSP has nothing to render.
+ *
+ * HLSDK game DLLs solve this by exporting a symbol per class (the
+ * LINK_ENTITY_TO_FUNC macro in util.h expands to a function whose
+ * name IS the classname). c91698be exports 250 of them; the list in
+ * ts_class_stubs.inc is generated from that exact export set.
+ *
+ * Our bodies are no-ops. Entity BEHAVIOUR is PINKBIKE.md F6/F7
+ * (AddToFullPack, GetWeaponData, per-class think/touch). What we
+ * need from this layer is only that the engine can retain the edict.
+ */
+#include "ts_class_stubs.inc"
+
 /* ── PM (GOTCHA 3) ─────────────────────────────────────────────────── */
 static void ts_PM_Move(playermove_t *pm, qboolean server)
 {
@@ -492,7 +543,7 @@ static void ts_PM_Move(playermove_t *pm, qboolean server)
     else if (pm->velocity[2] < 0.0f) pm->velocity[2] = 0.0f;
 
     entvars_t *po = (entvars_t *)pm->player;
-    if (po) for (int i = 0; i < 3; ++i) po->a[i] += pm->velocity[i] * pm->delta_time;
+    if (po) for (int i = 0; i < 3; ++i) po->origin[i] += pm->velocity[i] * pm->delta_time;
 }
 
 static void ts_PM_Init(playermove_t *pm)
@@ -510,7 +561,49 @@ static void ts_Noop(void) {}
 static void ts_NoopE(edict_t *e) { (void)e; }
 static void ts_NoopEE(edict_t *a, edict_t *b) { (void)a; (void)b; }
 static void ts_NoopEC(edict_t *a, char *b) { (void)a; (void)b; }
-static void ts_NoopKey(edict_t *a, KeyValueData *b) { (void)a; (void)b; }
+/* xash3d-fwgs's SV_ParseEdict (sv_game.c:4927) aborts the whole map
+ * load with
+ *     Host_Error( "%s: game didn't handled \"%s\" classname\n", ... )
+ * unless pfnKeyValue sets kvd->fHandled on the classname pair.
+ * Marking every pair handled is the minimum contract for a
+ * classname-blind DLL: we have no CBaseEntity children to bind the
+ * pair to, so we consume it and move on. */
+static void ts_HandleKey(edict_t *e, KeyValueData *kvd)
+{
+    if (!kvd) return;
+    kvd->fHandled = 1;
+
+    /* The engine reads the classname back off the edict, NOT out of
+     * the kvd we were handed:
+     *
+     *     sv_game.c:4931  classname = SV_GetString( ent->v.classname );
+     *
+     * so merely marking the pair handled leaves ent->v.classname as
+     * the empty string the engine pre-seeded it with, and every
+     * entity dies at sv_game.c:1123 with
+     *
+     *     No spawn function for ""
+     *
+     * We must intern szValue into the engine's string pool and write
+     * the resulting string_t back onto the edict's entvars. Field 0 of
+     * entvars_t is `classname` (progdefs.h:57).
+     */
+    if (e && kvd->szKeyName && kvd->szValue && g_eng)
+    {
+        int is_classname = (strcmp(kvd->szKeyName, "classname") == 0);
+        if (is_classname)
+        {
+            eng_pfnAllocString_t allocString =
+                (eng_pfnAllocString_t)eng_at(SLOT_ALLOC_STRING);
+            if (allocString)
+            {
+                int idx = allocString(kvd->szValue);
+                if (idx > 0)
+                    ((entvars_t *)e)->classname = idx;
+            }
+        }
+    }
+}
 static void ts_NoopECS(edict_t *a, customization_t *b) { (void)a; (void)b; }
 static void ts_NoopStr(const char *s) { (void)s; }
 static void ts_NoopSave(edict_t *a, SAVERESTOREDATA *b) { (void)a; (void)b; }
@@ -579,7 +672,7 @@ ENGINE_ENTRY int GetEntityAPI(DLL_FUNCTIONS *p, int interfaceVersion)
     p->pfnUse                      = ts_Use;
     p->pfnTouch                    = ts_Touch;
     p->pfnBlocked                  = ts_NoopEE;
-    p->pfnKeyValue                 = ts_NoopKey;
+    p->pfnKeyValue                 = ts_HandleKey;
     p->pfnSave                     = ts_NoopSave;
     p->pfnRestore                  = ts_NoopRestore;
     p->pfnSetAbsBox                = ts_NoopE;
