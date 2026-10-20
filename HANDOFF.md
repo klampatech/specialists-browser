@@ -3127,6 +3127,67 @@ declarations say "default" but whose implementations are
 "hidden" create inconsistency that PIC interprets as both
 exported AND GOT-ified.
 
+### D.7.28c (2026-10-20) — `_Mem_Alloc` alert traced; NOT caused by the live-state bridge
+
+**Kyle reported (real Chrome, macOS Vivaldi):**
+1. A "Xash Error" alert appears at launch:
+   `_Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)`
+2. After dismissing it, the game DOES load and render.
+3. **Keyboard is dead** — cannot move, Escape, or open console.
+   **Mouse look works fine.**
+
+**Diagnosis — two separate issues:**
+
+**A. The `_Mem_Alloc` alert is PRE-EXISTING.** Verified by
+stashing `live-state.ts` + `TSHud.vue` entirely (git stash -u) and
+running against a pristine D.7.27 baseline with zero cvar probing
+and zero argv changes — **the identical dialog fires**. Also
+reproduced with 4 different launch-arg combinations (no map, with
+map, no bot_quota, TS-cvar overload). So neither the live-state
+bridge nor the TS cvar injection causes it.
+
+This is an **upstream Xash3D-WASM bug**: the engine's
+`Cmd_AllocateSlot` pool (`common/cmd.c:638`) is exhausted under
+Emscripten. The error string lives in the engine WASM binary
+(`"%s: pool == NULL (emptypool at %s:%i)"`). Not fixable from the
+launcher.
+
+**B. The keyboard lock is unresolved.** Root cause not yet proven:
+- Hypothesis 1: the modal `alert()` freezes the engine's main loop,
+  so the SDL keyboard handler never runs. Consistent with "mouse
+  look works" (mouse events are polled differently) but not proven.
+- Hypothesis 2: an independent keyboard-focus problem in the
+  browser canvas.
+- Playwright cannot arbitrate: headless Chromium delivers neither
+  real pointer-lock nor reliable key events to a WebGL canvas, so
+  keypress probes return "no engine echo" even on a known-good
+  session. A control test (bind x → echo GOT_KEY_X) also failed,
+  which means the test method itself is unreliable here.
+
+**Fixes applied to `live-state.ts` anyway (hygiene, not the cause):**
+- Poll cadence dropped to 1 cvar / 4s (was 900ms).
+- Boot burst delayed 5s past `startLiveState()` and staggered 300ms.
+  The engine silently swallows probes issued too early — a trace
+  showed 4 of 5 burst probes returned; `hostmap` (the first) was
+  lost every time.
+- Removed the `awaiting` request/response guard entirely; match
+  incoming lines by cvar name. Burst + guard interacted to drop
+  responses.
+- Removed the TS-cvar probes (only ever returned "Unknown command").
+  TS cvars now surface passively in the MISSING row.
+
+**Commits:** webxash `b99f839` (bridge hygiene), root HANDOFF pending.
+
+**Known remaining defect:** the HUD's MAP row intermittently shows
+`(loading...)` when the `hostmap` probe is swallowed. Cosmetic —
+the 4s poll retries and it fills within ~20s.
+
+**Next diagnostic needed:** reproduce the keyboard lock on a real
+browser session with the HUD overlay removed entirely, to confirm
+whether the overlay's `pointer-events: none` full-screen box is
+ implicated at all (Playwright says it isn't — computed style
+ confirms `pointer-events: none`, `z-index: 1000`).
+
 ### D.7.28 (2026-10-20) — Live-state bridge (real engine cvars)
 
 **Working state (webxash `43db6ac`):** the launcher HUD now reads
