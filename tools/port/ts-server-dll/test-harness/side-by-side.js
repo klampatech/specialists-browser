@@ -58,7 +58,7 @@ const CHROME_PATH = resolveChromium();
       ...stored,
       // Match the default we set in src/stores/store.ts:36 — boot
       // straight into -game ts +sv_lan 1 +map ts_lobby.
-      launchOptions: '-noip -noip6 -game ts +sv_lan 1 +maxplayers 4 +mp_game_start 1 +map ts_lobby',
+      launchOptions: '-noip -noip6 -game ts +sv_lan 1 +maxplayers 4 +map ts_lobby',
     };
     cur.launchOptions = newOpts;
     localStorage.setItem(KEY, JSON.stringify(cur));
