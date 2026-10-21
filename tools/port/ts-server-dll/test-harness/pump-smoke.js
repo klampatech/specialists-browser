@@ -93,6 +93,15 @@ const LAUNCH_OPTS = '-noip -noip6 -game ts +sv_lan 1 +maxplayers 4 +map ts_lobby
   await page.waitForSelector('#canvas', { timeout: 30000, state: 'attached' });
   await page.click('button.start-button, .start-button, button');
 
+  // Re-enable full HS logging for the duration of this test. The
+  // shipped default throttles HS_THINK to 1-in-256 (see
+  // cts_game_rules.cpp:bridge_diagLog) because at 60Hz that's 3600
+  // lines/minute. The smoke test needs to SEE them, so install a
+  // log gate — which also verifies the gate hook itself works.
+  await page.evaluate(() => {
+    (window).__hs_log_gate = () => true;
+  });
+
   // Wait for the engine to be up and the pump strip to appear.
   await page.waitForSelector('.ts-hud', { state: 'visible', timeout: 60000 });
   await page.waitForSelector('[data-pump-strip]', { timeout: 30000 });

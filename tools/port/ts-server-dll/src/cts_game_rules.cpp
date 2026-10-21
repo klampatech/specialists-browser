@@ -24,15 +24,61 @@ namespace {
 
 // === Diagnostic bridge to JS console ===
 //
-// 4-arg signature: tag (one of DIAG_* below), entity index (or 0),
+// 4-arg signature: tag (one of HS_* below), entity index (or 0),
 // return value (or 0), extra context (or 0). Tagged so the JS side
 // can filter for `[HS]` lines.
+//
+// THROTTLING — this is load-bearing, not cosmetic.
+//
+// The pump drives TS game logic at ~60Hz (48.9Hz measured in real
+// Chromium, 17.6Hz in headless). Every bridge_diagLog from a hot
+// path is therefore ~60 console lines/sec, which is roughly 3600
+// lines/minute. That drowns everything else in the console — a real
+// `HS_PLAYER_SPAWN` marker scrolls past before you can read it, and
+// the console becomes the single biggest performance cost in the
+// frame. Kyle hit exactly this on 2026-10-21 and called it "tons of
+// console spam".
+//
+// So: hot-path tags are rate-limited here, in the bridge, rather
+// than at each call site. Doing it centrally means a future call
+// site can't reintroduce spam by forgetting to throttle.
+//
+// Overridable at runtime for debugging — no rebuild needed:
+//   window.__hs_log_gate = () => true            // log everything
+//   window.__hs_log_gate = k => k === 'HS_PLAYER_SPAWN'
+// Without a gate, the default policy below applies.
 EM_JS(int, bridge_diagLog, (int tag, int e, int ret, int extra), {
     var tags = ["HS_SPAWN","HS_CLIENT_CONNECT","HS_CLIENT_PUTINSERVER",
                 "HS_CLIENT_DISCONNECT","HS_THINK","HS_INIT_HUD",
                 "HS_PLAYER_SPAWN","HS_INIT","HS_MISC"];
     var name = tags[tag] || ("HS_TAG_" + tag);
-    console.log("[HS]", name, "ent=" + (e>>>0), "ret=" + ret, "extra=" + extra);
+
+    // Rate-limited tags: these fire per-tick. Everything else (init,
+    // connect, spawn, errors) is rare and always logged.
+    //
+    // The counter lives on globalThis, NOT as a property of this
+    // function. Attaching state to the EM_JS function object doesn't
+    // survive Emscripten's codegen — the function is re-emitted per
+    // call site, so `_n` came back undefined every time and the
+    // modulo test never matched. (Caught by pump-smoke.js going from
+    // 7 PASS to 3 FAIL when this was first written.)
+    var G = (typeof globalThis !== 'undefined') ? globalThis : window;
+    G.__hs_diag_n = (G.__hs_diag_n || 0) + 1;
+
+    var allow = true;
+    if (G.__hs_log_gate) {
+        try { allow = G.__hs_log_gate(name, e, ret, extra) ? 1 : 0; }
+        catch (err) { allow = false; }
+    } else if (name === "HS_THINK") {
+        // 1-in-256 keeps a visible monotonic counter for pump-smoke.js
+        // without producing readable-log spam. At 60Hz that's ~4
+        // lines/minute instead of 3600.
+        allow = (G.__hs_diag_n % 256) === 0;
+    }
+
+    if (allow) {
+        console.log("[HS]", name, "ent=" + (e>>>0), "ret=" + ret, "extra=" + extra);
+    }
     return 0;
 })
 
@@ -360,6 +406,125 @@ extern "C" void ts_cmd_spawn_player(void) {
     ts_spawn_local_player();
 }
 
+// The engine knows where to put the local view: when no client
+// connects it falls back to a default (usually worldspawn origin,
+// which in ts_lobby is inside geometry — that's the "spawned in
+// the floor" report). We can't reach that entity from JS directly,
+// so ask the server DLL — which CAN enumerate edicts — to report
+// every info_player_deathmatch it loaded, plus the local view's
+// current origin. Then we can compare and confirm the fallback
+// hypothesis instead of guessing.
+extern "C" void ts_cmd_report_spawns(void) {
+    int max = NUMBER_OF_ENTITIES();
+    int found = 0;
+    // Classname histogram. The DLL's own LINK_ENTITY_TO_CLASS handlers
+    // (ts_groundweapon, ts_powerup, ts_model) are populated at map
+    // load; HL1-baseline classes (info_player_*, func_*, etc.) are
+    // loaded by SV_Spawn. A histogram tells us what we're missing.
+    struct { const char *name; int count; } hist[12];
+    hist[0]={"info_player_deathmatch",0};
+    hist[1]={"info_player_start",0};
+    hist[2]={"worldspawn",0};
+    hist[3]={"ts_groundweapon",0};
+    hist[4]={"ts_powerup",0};
+    hist[5]={"ts_model",0};
+    hist[6]={"func_wall",0};
+    hist[7]={"func_breakable",0};
+    hist[8]={"multi_manager",0};
+    hist[9]={"trigger_multiple",0};
+    hist[10]={"light",0};
+    hist[11]={(const char*)0,0};
+
+    for (int i = 1; i < max; i++) {
+        edict_t *pev = g_engfuncs.pfnPEntityOfEntIndex(i);
+        if (!pev || pev->free) continue;
+        const char *cn = STRING(pev->v.classname);
+        if (!cn) continue;
+
+        // Histogram
+        for (int k = 0; hist[k].name; k++) {
+            if (strcmp(cn, hist[k].name) == 0) { hist[k].count++; break; }
+        }
+
+        // strncmp length = strlen("info_player") = 11, not 12.
+        // The off-by-one was firing for every entity — the histogram
+        // showed 17 loaded but `total_player` was 0 because strncmp
+        // compared a '\0' against '_' and always took the continue.
+        if (strncmp(cn, "info_player", 11) != 0) continue;
+        char buf[128];
+        int ox = (int)pev->v.origin[0];
+        int oy = (int)pev->v.origin[1];
+        int oz = (int)pev->v.origin[2];
+        int n = snprintf(buf, sizeof(buf),
+            "[TS-SPAWN] idx=%d %s org=%d %d %d\n",
+            i, cn, ox, oy, oz);
+        if (n > 0) g_engfuncs.pfnServerPrint(buf);
+        found++;
+    }
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf), "[TS-SPAWN] total_player=%d maxents=%d\n", found, max);
+    g_engfuncs.pfnServerPrint(buf);
+    // Then one line per histogram bucket so the harness can match them
+    for (int k = 0; hist[k].name; k++) {
+        n = snprintf(buf, sizeof(buf), "[TS-CLASS] %s=%d\n", hist[k].name, hist[k].count);
+        g_engfuncs.pfnServerPrint(buf);
+    }
+}
+
+// The engine renders the world from a default observer when no
+// client connects — that's the "spawned in the floor" report:
+// origin (0,0,0) sits inside the geometry. spawn-report.js confirms
+// all 17 info_player_deathmatch entities in ts_lobby.bsp are loaded
+// by the engine, so the fix is to move the view onto one of them.
+//
+// Duck-tape, not a real client: a real player entity is the right
+// answer (see R1.1 in HANDOFF.md), but DispatchSpawn traps until
+// that's fixed, so there is no player edict to move. This at least
+// gets the camera to somewhere a human can look around, which
+// unblocks every visual question that was previously answered with
+// "you're stuck inside a wall".
+extern "C" void ts_cmd_place_camera(void) {
+    int max = NUMBER_OF_ENTITIES();
+    edict_t *pSpot = NULL;
+    // Prefer the spawn point nearest map centre (0,0) — those are the
+    // lobby's main entrances rather than the odd corner spawns at
+    // ±1312 units out.
+    float bestDist = 3.4e38f;
+    for (int i = 1; i < max; i++) {
+        edict_t *pev = g_engfuncs.pfnPEntityOfEntIndex(i);
+        if (!pev || pev->free) continue;
+        const char *cn = STRING(pev->v.classname);
+        if (!cn) continue;
+        if (strcmp(cn, "info_player_deathmatch") != 0) continue;
+        float dx = pev->v.origin[0];
+        float dy = pev->v.origin[1];
+        float d = dx * dx + dy * dy;
+        if (d < bestDist) { bestDist = d; pSpot = pev; }
+    }
+    if (!pSpot) {
+        g_engfuncs.pfnServerPrint("[TS] place_camera: no info_player_deathmatch\n");
+        return;
+    }
+
+    // With no connected client the renderer's view entity is edict 0
+    // (worldspawn) — that's the fallback the engine uses, and it's
+    // what's currently stuck inside the floor. Move it onto the spawn.
+    edict_t *pWorld = g_engfuncs.pfnPEntityOfEntIndex(0);
+    if (!pWorld || pWorld->free) {
+        g_engfuncs.pfnServerPrint("[TS] place_camera: no worldspawn at index 0\n");
+        return;
+    }
+    pWorld->v.origin = pSpot->v.origin;
+    pWorld->v.angles = pSpot->v.angles;
+    pWorld->v.v_angle = pSpot->v.v_angle;
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "[TS] place_camera -> %d %d %d (yaw %d)\n",
+             (int)pSpot->v.origin[0], (int)pSpot->v.origin[1], (int)pSpot->v.origin[2],
+             (int)pSpot->v.angles[1]);
+    g_engfuncs.pfnServerPrint(buf);
+}
+
 // === Spawn path status, as of 2026-10-21 ================================
 //
 // spawn-diag.js pins the current failure precisely:
@@ -412,6 +577,8 @@ extern "C" void ts_post_init(void) {
         g_engfuncs.pfnAddServerCommand("ts_pump", ts_cmd_pump);
         g_engfuncs.pfnAddServerCommand("ts_pump_think", ts_cmd_pump_think);
         g_engfuncs.pfnAddServerCommand("ts_spawn_player", ts_cmd_spawn_player);
+        g_engfuncs.pfnAddServerCommand("ts_report_spawns", ts_cmd_report_spawns);
+        g_engfuncs.pfnAddServerCommand("ts_place_camera", ts_cmd_place_camera);
         g_engfuncs.pfnServerPrint("[TS] ts_post_init: ts_pump commands registered\n");
     } else {
         g_engfuncs.pfnServerPrint("[TS] ts_post_init: pfnAddServerCommand is NULL\n");
