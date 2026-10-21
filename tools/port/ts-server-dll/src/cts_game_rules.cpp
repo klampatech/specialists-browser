@@ -27,7 +27,7 @@ namespace {
 EM_JS(int, bridge_diagLog, (int tag, int e, int ret, int extra), {
     var tags = ["HS_SPAWN","HS_CLIENT_CONNECT","HS_CLIENT_PUTINSERVER",
                 "HS_CLIENT_DISCONNECT","HS_THINK","HS_INIT_HUD",
-                "HS_PLAYER_SPAWN","HS_MISC"];
+                "HS_PLAYER_SPAWN","HS_INIT","HS_TICK","HS_MISC"];
     var name = tags[tag] || ("HS_TAG_" + tag);
     console.log("[HS]", name, "ent=" + (e>>>0), "ret=" + ret, "extra=" + extra);
     return 0;
@@ -41,13 +41,30 @@ enum : int {
     HS_THINK              = 4,
     HS_INIT_HUD           = 5,
     HS_PLAYER_SPAWN       = 6,
-    HS_MISC               = 7,
+    HS_INIT               = 7,   // WASM init-time heartbeat
+    HS_TICK               = 8,   // server frame tick heartbeat
+    HS_MISC               = 9,
 };
 
 // Throttle Think() telemetry — it's once per server tick, which is
 // far too noisy. Emit every 64th call (~once per second at 64-tick
 // rate); reset when counter overflows.
 int g_thinkCount = 0;
+
+// === Init-time heartbeat ===
+//
+// emscripten's `__attribute__((constructor))` runs when the WASM
+// instance finishes load — before the engine ever calls into our
+// function table. If THIS doesn't fire, the WASM side module is
+// not being instantiated by the engine at all (i.e., every byte
+// we've shipped is dead weight). If it does fire, we know the
+// engine has loaded our module successfully and the absence of
+// [HS] calls in Think/InitHUD/PlayerSpawn is a different problem
+// (engine mode, dispatch order, vtable installation, etc.).
+__attribute__((constructor))
+static void ts_overlay_init(void) {
+    bridge_diagLog(HS_INIT, 0, 0, 0);
+}
 
 }  // namespace
 
