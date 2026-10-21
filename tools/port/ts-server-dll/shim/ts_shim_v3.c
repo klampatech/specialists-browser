@@ -282,111 +282,31 @@ typedef struct {
 } playermove_t;
 
 /* Three leading floats of the entvars we read/write. */
-/* entvars_t — GoldSrc field order from progdefs.h:55. We only need the
- * leading fields to write classname/origin/angles; everything after
- * origin we leave alone (the engine fills the rest). Layout matters:
- * `classname` is field 0, `globalname` field 1, `origin` field 2. */
-/* entvars_t — progdefs.h:54 onward, field order verbatim.
+/* entvars_t - from HLSDK's progdefs.h, verbatim.
  *
- * This is what a pointer to an edict actually points at in GoldSrc:
- * the DLL receives `edict_t *`, and every field it wants to read or
- * write lives in the entvars_t at the head of that struct.
+ * See build-matrix/entvars.h for the generated version and the
+ * offset-by-offset reasoning. This shim used to have its own
+ * hand-written struct that was WRONG in a way that mattered:
  *
- * Field order is load-bearing for the same reason entity_state_t's is:
- * pfnAddToFullPack copies values from here into a network struct, and
- * a stub layout silently reads the wrong offsets. The shim's previous
- * 4-field stub read `modelindex`, `skin`, `solid`, `movetype` and
- * `flags` straight off neighbouring padding.
+ *   - sizeof was 712, HLSDK's is 720.
+ *   - deadflag was at 368 and flags at 372; HLSDK puts deadflag at
+ *     368 and view_ofs at 372 and flags at 444. The old struct had
+ *     no view_ofs field at all, so flags landed where the eye
+ *     position should be, and flags lived where the friend/enemy
+ *     pointer block should be.
+ *   - There was no playerclass field (HLSDK: @552).
  *
- * Only the leading fields plus the render block are named; the rest is
- * sized so the struct is large enough that the engine's own writes
- * through our pointer stay in bounds. Anything we do not read we leave
- * to the engine.
+ * pfnPlayerPreThink and pfnPlayerPostThink both read these offsets
+ * directly (baseline func[496] and func[497] load from +372 and
+ * +408). Reading view_ofs from what the old struct labelled flags
+ * gave the renderer the wrong eye height; reading deadflag from the
+ * view_ofs slot gave a garbage death state.
+ *
+ * Field order is load-bearing: pfnAddToFullPack copies values from
+ * here into a network struct, and a wrong layout is invisible until
+ * something draws wrong.
  */
-typedef struct
-{
-    int    classname;      /* string_t — interned class name */
-    int    globalname;
-
-    float  origin[3];
-    float  oldorigin[3];
-    float  velocity[3];
-    float  basevelocity[3];
-    float  clbasevelocity[3];
-    float  movedir[3];
-
-    float  angles[3];
-    float  avelocity[3];
-    float  punchangle[3];
-    float  v_angle[3];
-
-    float  endpos[3];
-    float  startpos[3];
-    float  impacttime;
-    float  starttime;
-
-    int    fixangle;
-    float  idealpitch;
-    float  pitch_speed;
-    float  ideal_yaw;
-    float  yaw_speed;
-
-    int    modelindex;
-
-    int    model;          /* string_t */
-    int    viewmodel;
-    int    weaponmodel;
-
-    float  absmin[3];
-    float  absmax[3];
-    float  mins[3];
-    float  maxs[3];
-    float  size[3];
-
-    float  ltime;
-    float  nextthink;
-
-    int    movetype;
-    int    solid;
-
-    int    skin;
-    int    body;
-    int    effects;
-    float  gravity;
-    float  friction;
-
-    int    light_level;
-
-    int    sequence;
-    int    gaitsequence;
-    float  frame;
-    float  animtime;
-    float  framerate;
-    unsigned char controller[4];
-    unsigned char blending[2];
-
-    float  scale;
-    int    rendermode;
-    float  renderamt;
-    float  rendercolor[3];
-    int    renderfx;
-
-    float  health;
-    float  frags;
-    int    weapons;
-    float  takedamage;
-
-    int    deadflag;
-    int    flags;
-
-    /* remainder: mod-specific iuser/fuser/vuser plus padding so the
-     * struct is comfortably larger than the engine's, letting the
-     * engine write its trailing fields through our pointer. */
-    int    iuser1, iuser2, iuser3, iuser4;
-    float  fuser1, fuser2, fuser3, fuser4;
-    float  vuser1[3], vuser2[3], vuser3[3], vuser4[3];
-    float  _pad[64];
-} entvars_t;
+#include "build-matrix/entvars.h"
 
 /* ── DLL_FUNCTIONS (eiface.h:391 — 52 slots) ───────────────────────── */
 typedef struct {
