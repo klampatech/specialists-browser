@@ -70,30 +70,13 @@ public:
     //   1. Send the player's initial class info (CTS-specific)
     //   2. Initialize slowmo state for the player
     //   3. Show the TS HUD elements (handled by client DLL, not us)
-    void InitHUD(CBasePlayer *pPlayer) override {
-        // Layer 1 — parent's HL1 HUD init (health, ammo display, etc.)
-        CHalfLifeMultiplay::InitHUD(pPlayer);
-
-        // Layer 2 — TS marker so we know our override ran
-        g_engfuncs.pfnServerPrint("[TS] CTSGameRules::InitHUD — TS HUD initialized for player\n");
-    }
+    void InitHUD(CBasePlayer *pPlayer) override;
 
     // PlayerSpawn is called when a player spawns into the world.
     // TS uses it to give class-specific HP and weapons.
-    void PlayerSpawn(CBasePlayer *pPlayer) override {
-        // Layer 1 — HL1 default spawn behavior
-        CHalfLifeMultiplay::PlayerSpawn(pPlayer);
+    void PlayerSpawn(CBasePlayer *pPlayer) override;
 
-        // Layer 2 — TS-specific spawn (TBD)
-        g_engfuncs.pfnServerPrint("[TS] CTSGameRules::PlayerSpawn — TS class loadout pending\n");
-    }
-
-    // Think is called every server tick. TS uses it for slowmo timer,
-    // round timer, dead-check, etc. For now we just log.
-    void Think(void) override {
-        // Layer 1 — parent's tick (round timing, etc.)
-        CHalfLifeMultiplay::Think();
-    }
+    void Think(void) override;
 
     // === D.7.22 new: ClearObjectiveList ===
     //
