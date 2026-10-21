@@ -1,258 +1,258 @@
 #!/usr/bin/env bash
-# build-ts-dll.sh — Build the TS server DLL WASM side module from
-# hlsdk-portable's full source tree + the TS overlays (ts_stub.cpp,
-# cts_game_rules.cpp, future TS translations).
+# build-ts-dll.sh — Build the TS server DLL WASM side module.
 #
-# Why direct emcc + SIDE_MODULE=1:
-# emscripten's Emscripten.cmake disables SHARED library support. CMake's
-# add_library(... SHARED ...) silently produces .a archives. The official
-# hlsdk-portable 0.1.3 .wasm was built with a direct emcc invocation; we
-# reproduce that pattern here.
+# ## Why CMake + Emscripten toolchain, not raw emcc
 #
-# Build output:
-#   build/ts_emscripten_wasm32.wasm
-#   Deployed to: webxash/public/xash3d-fwgs/dist/dlls/ AND
-#                webxash/public/dlls/hl_emscripten_wasm32.wasm
-#                (engine resolves dlopen on the latter)
+# The working baseline (`c91698be…`) was produced by CMake driving the
+# Emscripten toolchain, NOT by a hand-rolled `emcc` invocation. That
+# difference is load-bearing:
+#
+# | Section   | CMake+Emscripten | raw emcc (previous script) |
+# |-----------|-----------------|---------------------------|
+# | Start     | present         | MISSING                   |
+# | DataCount | present         | MISSING                   |
+# | dylink.0  | present, first  | present only after reorder |
+#
+# A side module without a Start section never runs its C++ global
+# constructors or its data relocations, and Xash3D-FWGS's
+# `getDylinkMetadata` loader halts on it. Every raw-emcc build in this
+# repo reproduced the exact symptom
+# `_Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)` then
+# `hostmap Infinity` then a dead engine. Switching to the CMake build
+# path took the module from 3 console milestones to 27.
+#
+# (The previous raw-emcc script is kept as
+# build-ts-dll-raw-emcc.sh.legacy for reference. Do not use it.)
+#
+# ## Pipeline
+#
+#   1. Copy TS overlays into $HLSDK/dlls/ so CMake can see them.
+#   2. Patch gamerules.cpp: `new CHalfLifeMultiplay` -> `new CTSGameRules`
+#      (the factory in InstallGameRules — this routes engine calls through
+#      our overrides).
+#   3. Wire the overlay .cpp files into dlls/CMakeLists.txt's SVDLL_SOURCES.
+#   4. cmake configure + build with the Emscripten toolchain.
+#   5. rewrite-got.py — collapse the ~229 `GOT.func` imports that PIC
+#      codegen emits into const-init globals (277 imports -> 47, GOT -> 0).
+#   6. Safety gate, then deploy to both live paths.
+#
+# ## Usage
+#
+#   ./build-ts-dll.sh              # build + deploy
+#   ./build-ts-dll.sh --no-deploy  # build only
+#
+# Env: HLSDK (default /tmp/hlsdk-portable), EMSDK_ROOT, CMAKE_BIN, WABT_BIN
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
 HLSDK="${HLSDK:-/tmp/hlsdk-portable}"
-[[ -d "$HLSDK" ]] || { echo "ERROR: hlsdk-portable not at $HLSDK"; exit 1; }
+[[ -d "$HLSDK" ]] || { echo "ERROR: hlsdk-portable not at $HLSDK" >&2; exit 1; }
 
 EMSDK_ROOT="${EMSDK_ROOT:-/home/kyle/emsdk}"
+CMAKE_BIN="${CMAKE_BIN:-/tmp/cmake-3.30.0-linux-x86_64/bin}"
+WABT_BIN="${WABT_BIN:-/tmp/wabt-1.0.42/bin/wasm-objdump}"
+EMSCRIPTEN_TOOLCHAIN="$EMSDK_ROOT/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake"
+[[ -f "$EMSCRIPTEN_TOOLCHAIN" ]] || { echo "ERROR: no Emscripten toolchain at $EMSCRIPTEN_TOOLCHAIN" >&2; exit 1; }
+
+DEPLOY=1
+[[ "${1:-}" == "--no-deploy" ]] && DEPLOY=0
+
+export PATH="$CMAKE_BIN:$EMSDK_ROOT/upstream/emscripten:$EMSDK_ROOT/upstream/bin:$PATH"
 if [[ -f "$EMSDK_ROOT/emsdk_env.sh" ]]; then
-    source "$EMSDK_ROOT/emsdk_env.sh" >/dev/null
+    source "$EMSDK_ROOT/emsdk_env.sh" >/dev/null 2>&1 || true
 fi
 
 SRC="$SCRIPT_DIR/src"
+BUILD="$HLSDK/build-emscripten-ts"
 OUT="$SCRIPT_DIR/build"
 DEST="$REPO/webxash/public/xash3d-fwgs/dist/dlls"
 DEST2="$REPO/webxash/public/dlls"
 mkdir -p "$OUT" "$DEST" "$DEST2"
 
-# === Apply patches to /tmp/hlsdk-portable ===
-#
-# 1. Replace `return new CHalfLifeMultiplay;` with `return new CTSGameRules;`
-#    in dlls/gamerules.cpp — both occurrences.
-# 2. Insert `#include "cts_game_rules.h"` at the TOP of gamerules.cpp (after other #includes).
-# 3. Strip any stale #include lines from prior patches inside function bodies.
-#
-# These patches are what hooks TS behavior at every multiplayer code
-# point. The factory in InstallGameRules now returns our class, which
-# inherits from CHalfLifeMultiplay — so engine calls dispatch to our
-# overrides first, then fall through to HL1's defaults.
+# === 1. Copy TS overlays into the hlsdk tree =================================
+# CMake resolves SVDLL_SOURCES relative to dlls/, so the overlays have to
+# physically live there.
 
-PATCH_MARKER="$OUT/.ts_patches_applied"
-if [[ ! -f "$PATCH_MARKER" ]] || [[ "$HLSDK/dlls/gamerules.cpp" -nt "$PATCH_MARKER" ]]; then
-    echo "Patching hlsdk-portable (CTSGameRules hook)..."
-    if grep -q "return new CTSGameRules;" "$HLSDK/dlls/gamerules.cpp"; then
-        echo "  gamerules.cpp already has 'new CTSGameRules' (factory wired)"
-    else
-        sed -i 's|return new CHalfLifeMultiplay;|return new CTSGameRules;|g' \
-            "$HLSDK/dlls/gamerules.cpp"
-        # Insert #include for cts_game_rules.h after the function opens
-        sed -i 's|^\tSERVER_EXECUTE();$|\tSERVER_EXECUTE();\n\n#include "cts_game_rules.h"|' \
-            "$HLSDK/dlls/gamerules.cpp"
-        echo "  Replaced 'new CHalfLifeMultiplay' with 'new CTSGameRules' (x2 sites)"
-        # Strip any stale #include lines that earlier patches left inside
-        # function bodies, then ensure the include sits at the top of the
-        # file (after the other #includes).
-        sed -i '/^#include "cts_game_rules.h"$/d' "$HLSDK/dlls/gamerules.cpp"
-        if ! grep -q '^#include "cts_game_rules.h"$' "$HLSDK/dlls/gamerules.cpp"; then
-            LAST_INC=$(grep -n "^#include" "$HLSDK/dlls/gamerules.cpp" | tail -1 | cut -d: -f1)
-            sed -i "${LAST_INC}a #include \"cts_game_rules.h\"" "$HLSDK/dlls/gamerules.cpp"
-            echo "  Inserted include after line $LAST_INC (top of gamerules.cpp)"
-        fi
-    fi
-    touch "$PATCH_MARKER"
-fi
-
-# === Discover source files (hlsdk-portable's dlls/ + game_shared/ + pm_shared/) ===
-
-# Use the exact SVDLL_SOURCES list from hlsdk-portable's CMakeLists.txt
-# (we pre-extracted this into hlsdk-sources.txt). This avoids pulling
-# in single-player-only stubs like mpstubb.cpp that fail to compile.
-HLSDK_SOURCES=()
-while IFS= read -r line; do
-    [[ -z "$line" ]] && continue
-    # CMakeLists paths are relative to dlls/, e.g. "../game_shared/foo.cpp"
-    resolved="$(realpath -m "$HLSDK/dlls/$line")"
-    [[ -f "$resolved" ]] && HLSDK_SOURCES+=("$resolved")
-done < "$SCRIPT_DIR/hlsdk-sources.txt"
-
-# TS overlays (this directory's src/)
-TS_SOURCES=()
-for f in "$SRC"/*.cpp; do
-    [[ -f "$f" ]] && TS_SOURCES+=("$f")
-done
-
-echo "Building TS server DLL WASM side module"
-echo "  HLSDK sources: ${#HLSDK_SOURCES[@]}"
-echo "  TS overlays:   ${#TS_SOURCES[@]}"
-echo "  TS overlay files:"
-for f in "${TS_SOURCES[@]}"; do
+echo "==> [1/6] Copying TS overlays into $HLSDK/dlls"
+shopt -s nullglob
+for f in "$SRC"/*.cpp "$SRC"/*.h; do
+    cp -f "$f" "$HLSDK/dlls/"
     echo "    $(basename "$f")"
 done
-
-emcc \
-    "${HLSDK_SOURCES[@]}" \
-    "${TS_SOURCES[@]}" \
-    -O3 -flto \
-    -fvisibility=hidden \
-    -DCLIENT_DLL=0 \
-    -DHL_BUILD=1 \
-    -DXASH_EMSCRIPTEN=1 \
-    -DXASH_WASM=1 \
-    -DXASH_LITTLE_ENDIAN=1 \
-    -Dstricmp=strcasecmp \
-    -D_strcasecmp=strcasecmp \
-    -D_strcmpi=strcasecmp \
-    -Dstrnicmp=strncasecmp \
-    -D_strnicmp=strncasecmp \
-    -D_strncasecmp=strncasecmp \
-    -D_snprintf=snprintf \
-    -D_vsnprintf=vsnprintf \
-    -I"$HLSDK" \
-    -I"$HLSDK/dlls" \
-    -I"$HLSDK/game_shared" \
-    -I"$HLSDK/pm_shared" \
-    -I"$HLSDK/common" \
-    -I"$HLSDK/engine" \
-    -I"$HLSDK/public" \
-    -I"$HLSDK/external" \
-    -I"$SRC" \
-    -sSIDE_MODULE=1 \
-    -sERROR_ON_UNDEFINED_SYMBOLS=0 \
-    -sALLOW_MEMORY_GROWTH=1 \
-    -mno-bulk-memory -mno-bulk-memory-opt \
-    -Wl,--strip-all \
-    -Wl,--gc-sections \
-    -o "$OUT/ts_emscripten_wasm32.wasm" \
-    2>&1 | tail -50
-
-echo
-echo "Output: $OUT/ts_emscripten_wasm32.wasm"
-ls -la "$OUT/ts_emscripten_wasm32.wasm"
-
-# Inspect
-if [[ -x /tmp/wabt-1.0.42/bin/wasm-objdump ]]; then
-    echo
-    echo "Import count:"
-    /tmp/wabt-1.0.42/bin/wasm-objdump -j Import -x \
-        "$OUT/ts_emscripten_wasm32.wasm" | grep -c ' <- ' || true
-    echo
-    echo "Memory:"
-    /tmp/wabt-1.0.42/bin/wasm-objdump -j Memory -x \
-        "$OUT/ts_emscripten_wasm32.wasm" 2>/dev/null | grep -E "memory|pages" | head -3 || true
-fi
-
-echo
-echo "Decide whether to run rewrite-got.py (D.7.19 proof: the rewrite
-turns the working 52-import raw emcc WASM into a 49-import version
-that traps on first call_indirect with 'function signature mismatch'
-when running on the current build). Default: skip. Pass
---with-rewrite to opt in. Add --with-densify to also run
-rewrite-got-densify.py after (D.7.52: covers call_indirect trap by
-re-emitting the elem with all decls in [0, tableSize))."
-if [[ "${1:-}" == "--with-rewrite" ]] && [[ -f "$SCRIPT_DIR/rewrite-got.py" ]]; then
-    echo "Running rewrite-got.py (--with-rewrite)..."
-    REWRITE_IN="$OUT/ts_emscripten_wasm32.wasm"
-    REWRITE_OUT="$OUT/ts_emscripten_wasm32.rw.wasm"
-    if python3 "$SCRIPT_DIR/rewrite-got.py" "$REWRITE_IN" "$REWRITE_OUT" 2>&1; then
-        # rewrite-got.py's pipeline produces these intermediate files:
-        #   .rw.wasm          (post-wat2wasm)
-        #   .rw.wasm.reordered                (dylink-first)
-        #   .rw.wasm.reordered.dylinkpatched  (dylink-first + tableSize-patched)
-        # Pick the most-processed one that exists.
-        candidates=(
-            "$REWRITE_OUT.reordered.dylinkpatched"
-            "$REWRITE_OUT.reordered"
-            "$REWRITE_OUT"
-        )
-        for f in "${candidates[@]}"; do
-            if [[ -f "$f" ]]; then
-                mv "$f" "$REWRITE_IN"
-                echo "  Deployed $(basename "$f") version"
-                break
-            fi
+for sub in entities gamerules weapons; do
+    if [[ -d "$SRC/$sub" ]]; then
+        mkdir -p "$HLSDK/dlls/$sub"
+        for f in "$SRC/$sub"/*.cpp "$SRC/$sub"/*.h; do
+            cp -f "$f" "$HLSDK/dlls/$sub/"
+            echo "    $sub/$(basename "$f")"
         done
-    else
-        echo "  WARNING: rewrite-got.py failed; using original WASM"
     fi
+done
+shopt -u nullglob
 
-    # D.7.52 follow-on: chain rewrite-got-densify.py. Reads the post-rewrite
-    # WASM, replaces the (elem (;0;) (global.get 1) func ...) line with one
-    # containing funcref(func D) for every D < tableSize, then re-reorders
-    # dylink.0 to the front. Run with --with-densify after --with-rewrite.
-    if [[ "${2:-}" == "--with-densify" ]] && [[ -f "$SCRIPT_DIR/rewrite-got-densify.py" ]]; then
-        echo
-        echo "Running rewrite-got-densify.py (--with-densify)..."
-        DENSIFY_IN="$REWRITE_IN"
-        DENSIFY_OUT="$OUT/ts_emscripten_wasm32.densified.wasm"
-        if python3 "$SCRIPT_DIR/rewrite-got-densify.py" "$DENSIFY_IN" "$DENSIFY_OUT" 2>&1; then
-            mv "$DENSIFY_OUT" "$DENSIFY_IN"
-            echo "  Deployed densified version"
-        else
-            echo "  WARNING: rewrite-got-densify.py failed; using rewrite-only WASM"
-        fi
-    fi
+# === 2. Patch gamerules.cpp — the factory hook ================================
+# InstallGameRules() constructs the game-rules object. Returning our
+# CTSGameRules (which derives from CHalfLifeMultiplay) makes every engine
+# call dispatch through our overrides first, then fall through to HL1.
+
+echo "==> [2/6] Patching gamerules.cpp factory -> CTSGameRules"
+GAMERULES="$HLSDK/dlls/gamerules.cpp"
+if grep -q "return new CTSGameRules;" "$GAMERULES"; then
+    echo "    already wired"
 else
-    echo "Skipping rewrite-got.py (raw emcc WASM deployed as-is — works on current build)."
+    sed -i 's|return new CHalfLifeMultiplay;|return new CTSGameRules;|g' "$GAMERULES"
+    # Strip stale in-body includes from earlier patch attempts, then put the
+    # include at the top with the other #includes.
+    sed -i '/^[[:space:]]*#include "cts_game_rules.h"$/d' "$GAMERULES"
+    if ! grep -q '^#include "cts_game_rules.h"$' "$GAMERULES"; then
+        LAST_INC=$(grep -n "^#include" "$GAMERULES" | tail -1 | cut -d: -f1)
+        sed -i "${LAST_INC}a #include \"cts_game_rules.h\"" "$GAMERULES"
+        echo "    factory replaced (2 sites), include at line $LAST_INC"
+    fi
 fi
 
-# === Safety gate: inspect freshly built WASM before deploying ===
-# Gate criteria (webXash breaks with 283-import / 229-GOT.func WASM):
-#   - Refuse if total import count  > 60
-#   - Refuse if any GOT.func import entry exists (GOT.func count > 0)
-# Leave existing deployed WASMs untouched on refusal.
-WASM_OBJ="$OUT/ts_emscripten_wasm32.wasm"
-WABT_BIN="${WABT_BIN:-/tmp/wabt-1.0.42/bin/wasm-objdump}"
+# === 3. Wire overlays into CMakeLists.txt ====================================
+# Idempotent: guarded by marker comments so re-runs don't duplicate entries.
+
+echo "==> [3/6] Wiring overlays into dlls/CMakeLists.txt"
+CML="$HLSDK/dlls/CMakeLists.txt"
+if grep -q "TS-TARGET-OVERLAYS" "$CML"; then
+    echo "    already wired"
+else
+    OVERLAY_LIST=""
+    for f in "$SRC"/*.cpp; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"
+        case "$base" in
+            ts_*|cts_*) OVERLAY_LIST="${OVERLAY_LIST}	${base}
+" ;;
+        esac
+    done
+    python3 - "$CML" "$OVERLAY_LIST" <<'PYEOF'
+import sys
+path, overlays = sys.argv[1], sys.argv[2]
+block = (
+    "# >>> TS-TARGET-OVERLAYS >>> (added by build-ts-dll.sh -- do not remove)\n"
+    "# The Specialists mod classes. They must live in the same side module the\n"
+    "# engine dlopen's, so they go into the `server` SHARED target.\n"
+    "list(APPEND SVDLL_SOURCES\n" + overlays + ")\n"
+    "# <<< TS-TARGET-OVERLAYS <<<\n\n"
+)
+text = open(path).read()
+anchor = "include_directories (. wpn_shared"
+idx = text.index(anchor)
+open(path, "w").write(text[:idx] + block + text[idx:])
+print(f"    inserted {overlays.count(chr(10))} overlay sources")
+PYEOF
+fi
+
+# Strip: the Release POST_BUILD step runs GNU strip, which cannot read WASM
+# ("file format not recognized") and fails the link. wasm-strip is worse --
+# it drops the dylink.0 custom section that Xash3D-FWGS's loader needs as the
+# FIRST section. So: skip stripping entirely. The name section costs ~100KB
+# and the module loads fine without it.
+if grep -q "POST_BUILD DEPENDS" "$CML" && ! grep -q "Do NOT strip under EMSCRIPTEN" "$CML"; then
+    echo "    disabling POST_BUILD strip (GNU strip can't read WASM)"
+    python3 - "$CML" <<'PYEOF'
+import sys
+path = sys.argv[1]
+text = open(path).read()
+text = text.replace(
+    "add_custom_command(TARGET ${SVDLL_LIBRARY}\n"
+    "\t\t\tPOST_BUILD DEPENDS ${SVDLL_LIBRARY}\n"
+    "\t\t\tCOMMAND ${CMAKE_STRIP} ${STRIP_FLAGS} $<TARGET_FILE:${SVDLL_LIBRARY}>)",
+    "# Do NOT strip under EMSCRIPTEN: GNU strip can't read WASM and wasm-strip\n"
+    "\t# drops the dylink.0 section the engine loader requires.\n"
+    "\tif(FALSE)\n"
+    "\t\tadd_custom_command(TARGET ${SVDLL_LIBRARY}\n"
+    "\t\t\tPOST_BUILD DEPENDS ${SVDLL_LIBRARY}\n"
+    "\t\t\tCOMMAND ${CMAKE_STRIP} ${STRIP_FLAGS} $<TARGET_FILE:${SVDLL_LIBRARY}>)\n"
+    "\tendif()",
+)
+open(path, "w").write(text)
+PYEOF
+fi
+
+# === 4. cmake configure + build ==============================================
+
+echo "==> [4/6] Building with Emscripten toolchain"
+cmake -S "$HLSDK" -B "$BUILD" \
+    -DCMAKE_TOOLCHAIN_FILE="$EMSCRIPTEN_TOOLCHAIN" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DEMSCRIPTEN_FORCE_COMPILERS=ON \
+    -DBUILD_CLIENT=OFF \
+    2>&1 | tail -4
+
+cmake --build "$BUILD" -j"$(nproc)" 2>&1 | tail -8
+
+RAW_WASM="$BUILD/dlls/hl_emscripten_wasm32.so"
+[[ -f "$RAW_WASM" ]] || { echo "ERROR: build produced no $RAW_WASM" >&2; exit 1; }
+echo "    raw side module: $(stat -c%s "$RAW_WASM") bytes"
+
+# === 5. rewrite-got.py — collapse GOT.func imports ===========================
+# PIC codegen emits ~229 `(import "GOT.func" ...)` globals that the loader
+# can't populate for same-module functions. The rewriter turns them into
+# const-init globals holding the declaration index, taking the module from
+# 277 imports / 229 GOT.func down to 47 / 0.
+
+echo "==> [5/6] rewrite-got.py (GOT.func -> const-init globals)"
+RW_OUT="$OUT/ts_emscripten_wasm32.rw.wasm"
+python3 "$SCRIPT_DIR/rewrite-got.py" "$RAW_WASM" "$RW_OUT" 2>&1 | tail -4
+
+# Pick the most-processed artifact (the dylink-first reorder lands alongside)
+DEPLOY_WASM=""
+for cand in "$RW_OUT.reordered" "$RW_OUT"; do
+    [[ -f "$cand" ]] && { DEPLOY_WASM="$cand"; break; }
+done
+[[ -n "$DEPLOY_WASM" ]] || { echo "ERROR: rewrite-got produced no output" >&2; exit 1; }
+
+# === 6. Safety gate + deploy =================================================
+# The engine's dylink loader cannot handle side modules with a large import
+# count, and a missing dylink.0 means it can't relocate at all. A missing
+# Start section is the raw-emcc symptom that halts the engine. Refuse before
+# touching either live path.
+
+echo "==> [6/6] Safety gate"
 IMPORT_COUNT=0
 GOT_FUNC_COUNT=0
-
-if [[ -x "$WABT_BIN" ]] && [[ -f "$WASM_OBJ" ]]; then
-    # Capture full Import section dump
-    DUMP=$("$WABT_BIN" -j Import -x "$WASM_OBJ" 2>/dev/null) || true
-
-    # Count total import lines (each import ends with " <- ")
+if [[ -x "$WABT_BIN" ]]; then
+    DUMP=$("$WABT_BIN" -j Import -x "$DEPLOY_WASM" 2>/dev/null) || true
     IMPORT_COUNT=$(printf '%s\n' "$DUMP" | grep -c ' <- ' || true)
-
-    # Count GOT.func import entries specifically
-    GOT_FUNC_COUNT=$(printf '%s\n' "$DUMP" | grep -c 'GOT.func' || true)
-
-    if [[ "$IMPORT_COUNT" -gt 60 ]]; then
-        echo "ERROR: Safety gate refused deploy." >&2
-        echo "  WASM import count $IMPORT_COUNT exceeds threshold of 60." >&2
-        echo "  File: $WASM_OBJ" >&2
-        echo "  GOT.func entries: $GOT_FUNC_COUNT" >&2
-        echo "  Leaving existing deployed WASMs untouched." >&2
-        exit 1
-    fi
-
-    if [[ "$GOT_FUNC_COUNT" -gt 0 ]]; then
-        echo "ERROR: Safety gate refused deploy." >&2
-        echo "  WASM contains $GOT_FUNC_COUNT GOT.func import(s) (gotp3 broken on current build)." >&2
-        echo "  File: $WASM_OBJ" >&2
-        echo "  Import count: $IMPORT_COUNT" >&2
-        echo "  Leaving existing deployed WASMs untouched." >&2
-        exit 1
-    fi
-
-    echo
-    echo "[gate] import_count=$IMPORT_COUNT  got_func=$GOT_FUNC_COUNT  PASS"
+    GOT_FUNC_COUNT=$(printf '%s\n' "$DUMP" | grep -c 'GOT' || true)
 else
-    echo "WARNING: WABT wasm-objdump not available at $WABT_BIN — skipping safety gate." >&2
+    echo "WARNING: WABT wasm-objdump not at $WABT_BIN — gate limited" >&2
 fi
 
-# Deploy to both engine paths
-cp "$OUT/ts_emscripten_wasm32.wasm" "$DEST/"
-echo
-echo "Deployed to: $DEST/ts_emscripten_wasm32.wasm"
-cp "$OUT/ts_emscripten_wasm32.wasm" "$DEST2/hl_emscripten_wasm32.wasm"
-echo "Also at:     $DEST2/hl_emscripten_wasm32.wasm (replaces official hl.dll)"
-echo
-echo "Backup of official hl.dll: /tmp/hl_emscripten_wasm32.wasm.bak"
-echo "To restore: cp /tmp/hl_emscripten_wasm32.wasm.bak webxash/public/dlls/hl_emscripten_wasm32.wasm"
+if [[ "$IMPORT_COUNT" -gt 60 ]]; then
+    echo "ERROR: Safety gate refused — $IMPORT_COUNT imports (limit 60)." >&2
+    exit 1
+fi
+if [[ "$GOT_FUNC_COUNT" -gt 0 ]]; then
+    echo "ERROR: Safety gate refused — $GOT_FUNC_COUNT residual GOT entries." >&2
+    exit 1
+fi
+if ! "$WABT_BIN" -h "$DEPLOY_WASM" 2>/dev/null | grep -q dylink.0; then
+    echo "ERROR: Safety gate refused — dylink.0 section missing." >&2
+    exit 1
+fi
+if ! "$WABT_BIN" -h "$DEPLOY_WASM" 2>/dev/null | grep -q 'Start'; then
+    echo "ERROR: Safety gate refused — Start section missing (raw-emcc symptom)." >&2
+    exit 1
+fi
+echo "    import_count=$IMPORT_COUNT got_func=$GOT_FUNC_COUNT dylink=ok start=ok  PASS"
+
+if [[ "$DEPLOY" == "1" ]]; then
+    cp -f "$DEPLOY_WASM" "$DEST/ts_emscripten_wasm32.wasm"
+    cp -f "$DEPLOY_WASM" "$DEST2/hl_emscripten_wasm32.wasm"
+    echo
+    echo "Deployed: $DEPLOY_WASM"
+    echo "  -> $DEST/ts_emscripten_wasm32.wasm"
+    echo "  -> $DEST2/hl_emscripten_wasm32.wasm"
+    echo "  SHA $(sha256sum "$DEPLOY_WASM" | cut -d' ' -f1)"
+else
+    echo
+    echo "Built (not deployed): $DEPLOY_WASM"
+fi

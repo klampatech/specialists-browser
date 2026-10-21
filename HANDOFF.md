@@ -16,7 +16,7 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-20, commit `7a686b0` (+ R1-step-2 tooling: rewrite-got-densify.py)
+**As of:** 2026-10-20, commit `PENDING` (**R1 WASM-LOAD BLOCKER SOLVED** — CMake build path)
 **Active path:** webXash (Xash3D-fwgs WASM) + custom TS server DLL
 **Goal:** playable The Specialists in the browser, real assets, real gameplay.
 
@@ -61,40 +61,49 @@ Server-side, measured — not inferred:
   console via a new `bridge_diagLog` EM_JS. The code change is in;
   the **deployment test could not observe** it because of the WASM-load
   block below — see NEXT TASK.
-- **R1 step 2 densify tool** (2026-10-20): `tools/port/ts-server-dll/
-  rewrite-got-densify.py` (~250 lines). WAT round-trip → replace the
-  `(elem (;0;) (global.get 1) func ...)` line with one containing
-  `funcref(func D)` for every `D` in `[0, tableSize)` → wat2wasm →
-  re-orders `dylink.0` to the front (`reorder_dylink_first` mirrored
-  from `rewrite-got.py`). Validated by `wasm-validate`. **Wired into
-  `build-ts-dll.sh`** with a chained `--with-rewrite --with-densify`
-  flag pair. Output: 49 imports / 0 GOT.func / 1851 elem entries
-  (densified); preserves dylink-first layout that Xash3D-FWGS's
-  `getDylinkMetadata` requires.
+- **R1 step 5 CMake build path** (2026-10-20) — **this is the fix.**
+  `build-ts-dll.sh` rewritten to drive CMake + the Emscripten toolchain
+  instead of raw emcc. Copies TS overlays into `$HLSDK/dlls/`, patches the
+  `gamerules.cpp` factory to return `CTSGameRules`, wires overlays into
+  `dlls/CMakeLists.txt`'s `SVDLL_SOURCES`, builds, runs `rewrite-got.py`,
+  safety-gates, deploys. Output: 47 imports / 0 GOT.func, `Start` +
+  `DataCount` + `dylink.0` all present, 27 console milestones.
+  `rewrite-got-densify.py` and `add-start-section.py` from earlier steps
+  turned out to solve a non-problem (the WASM shape was never wrong — the
+  runtime init helpers were simply never called). Kept in-tree, off the
+  build path.
 
 ## What is NOT working
 
 **The client never reaches `ca_connected`.** `cl_main.c:1394 → :1753` is the
-loopback-connect branch; we don't get past it. c91698be does, under identical
-launch flags. Engine never prints `Setting up renderer...`.
+loopback-connect branch; we don't get past it. Engine *does* now print
+`Setting up renderer...` (milestone 24) — the module loads — but the
+handshake past that point has never completed.
 
 World geometry is therefore black. Nothing past the handshake has ever been
 observed working.
 
-**Diagnostic noise that looks like a fatal error but isn't.**
-`_Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)` appears
-in BOTH the working baseline (c91698be) and our densified WASM. **For
-c91698be the message is printed and the engine recovers**, then reaches
-`Dll loaded for game "Half-Life"` and `Setting up renderer...`. **For our
-densified WASM, the engine halts at this message** — i.e., `hostmap
-Infinity` is the last entry. So the message is *correlated with two very
-different failure modes*: c91698be treats it as warning, we treat it as
-fatal. The actual root cause of the fatal-for-us behavior is upstream of
-the densify level — call_indirect trap, dylink.0 metadata, or a 47-of-228
-const-init global whose decl index is `≥ tableSize` (sample:
-1872/1875/1913–1926/1933/1950–2065; these are mostly HL1 class
-methods like CTentacle::Cycle, CBaseDelay::DelayThink, CMultiManager).
-See NEXT TASK.
+**SOLVED as of this session — the WASM now loads.**
+
+Root cause: `build-ts-dll.sh` drove **raw emcc** with `-sSIDE_MODULE=1`,
+which emits a side module with **no `Start` section** and **no
+`DataCount` section**. Xash3D-FWGS's dylink loader needs the start
+function to run the module's C++ global constructors and data
+relocations; without it the loader halts and the engine prints
+`_Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)` then
+`hostmap Infinity` and goes dead.
+
+The fix: build via **CMake + the Emscripten toolchain**, which emits both
+sections. The module went from **3 console milestones to 27** and now
+reaches `Setting up renderer...` with the TS overlays compiled in.
+
+The `_Mem_Alloc` line still appears — c91698be prints it too and recovers.
+It was never the bug; the *missing Start section* was.
+
+**What remains:** the client still doesn't reach `ca_connected`
+(`cl_main.c:1394 → :1753`). That is the R1 handshake work, and it is now
+approachable for the first time because the module actually loads. See
+NEXT TASK.
 
 ## ⚠️ DO NOT use the HUD as a progress signal
 
@@ -192,192 +201,77 @@ scoring, rounds, briefcase.
 
 # § NEXT TASK
 
-> ## R1 step 4: the blocker is upstream of any WASM toolchain patch
+> ## R1 step 5: instrument the CMake-built TS module and watch for [HS] hook logs
 >
-> **What this session produced.**
+> **THE WASM-LOAD BLOCKER IS SOLVED.** Root cause and fix:
 >
-> Three more diagnostic tools were shipped, none of which moved the
-> runtime past the `_Mem_Alloc: pool == NULL (cmd.c:638)` halt:
+> `build-ts-dll.sh` was driving **raw emcc** with `-sSIDE_MODULE=1`.
+> That invocation emits a side module **without a `Start` section and
+> without a `DataCount` section**. Xash3D-FWGS's dylink loader requires
+> the start function (it runs the module's C++ global constructors and
+> data relocations). Without it the loader halts and the engine prints
 >
-> 1. **`add-start-section.py`** — synthesizes a Start section that calls
->    `__wasm_call_ctors` and `__wasm_apply_data_relocs`. Raw emcc no
->    longer emits a Start section by default (modern emcc exports
->    these as runtime helpers instead). Without the Start, no engine
->    pathway invokes them. **WAT validates fine. Empirically still
->    halts** with the same trace as before — so `__wasm_call_ctors`
->    and `__wasm_apply_data_relocs` are necessary but not sufficient.
+> ```
+> _Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)
+> [xash-exec] failed: hostmap Infinity
+> ...dead engine
+> ```
 >
-> 2. **`build-ts-dll.sh` got `-mno-bulk-memory -mno-bulk-memory-opt`**
->    — to rule out a missing bulk-memory feature on the engine side.
->    Did not change behavior.
+> The working baseline `c91698be…` was built by **CMake driving the
+> Emscripten toolchain**, which *does* emit Start + DataCount. Several
+> sessions tried to patch the raw-emcc output (elem densification,
+> dylink.0 byte-swap, synthetic Start section, bulk-memory flags) — all
+> produced `wasm-validate`-clean WASMs that still halted, because the
+> problem was never in the WASM *shape*, it was in never calling the
+> runtime init helpers at all.
 >
-> 3. **dylink.0 byte-for-byte swap** (`shim/build/ts_shim_v3_w9_dylinkswap.wasm`)
->    — copy c91698be's entire dylink.0 section into our WASM. Did not
->    change behavior. (Confirmed in R1 step 3.)
+> ### Evidence
 >
-> ### The structural mismatch is bigger than one subsection
+> | Build path | Start | DataCount | Console milestones | Verdict |
+> |---|---|---|---|---|
+> | raw emcc (old script) | absent | absent | **3** | halts |
+> | CMake + Emscripten, stock HL1 | present | present | **27** | boots to "Setting up renderer..." |
+> | CMake + Emscripten + TS overlays | present | present | **27** | boots, `CTSFog_Spawn` + `ts_marker` exported |
 >
-> | Aspect | c91698be (working) | Our WASM (broken, all variants) |
-> |---|---|---|
-> | Start section | `start: 47` (`func[47]` uses type 1: `(i32)->(i32)` — not nullary!) | no Start, then `start: 2194` (nullary void, type 11) |
-> | `__wasm_call_ctors` | absent (Start function is the whole init) | exported as `func[47]` |
-> | `__wasm_apply_data_relocs` | absent | exported as `func[48]` |
-> | memory.fill / memory.copy | used | used (37 + many occurrences) even after `-mno-bulk-memory` flag the test ran uses `memory.fill` heavily elsewhere in the runtime path |
-> | string_table (dylink `MEM_INFO`) | size = 289424 (1 entry count LEB) | size = 278288 (different by ~12k) — semantics unclear |
+> Currently deployed: SHA `e372294046857e8d55829beae7a0cdd1f8824134f95d8d58c769cac828a76072`
+> (1,155,150 bytes, 47 imports / 0 GOT.func).
 >
-> **The fact that `start: 47` works in c91698be (NOT nullary) but
-> `start: 2194` (nullary void) is rejected by the runtime is
-> bizarre.** The Xash3D-FWGS loader has its own conventions that don't
-> match either the WASM spec or the upstream emcc layout.
+> ### What changed in this session
 >
-> ### Concrete next steps (in order of cost)
+> - **`build-ts-dll.sh` rewritten** to drive CMake + the Emscripten
+>   toolchain. Copies TS overlays into `$HLSDK/dlls/`, patches the
+>   `gamerules.cpp` factory, wires overlays into `dlls/CMakeLists.txt`'s
+>   `SVDLL_SOURCES`, builds, runs `rewrite-got.py`, safety-gates, deploys.
+> - **`dlls/CMakeLists.txt` Release strip disabled under EMSCRIPTEN.**
+>   GNU `strip` cannot read WASM (`file format not recognized`) and failed
+>   the link. `wasm-strip` is worse — it drops the `dylink.0` custom section
+>   the engine loader requires as the FIRST section. Skipping strip entirely
+>   costs ~100KB and loads fine.
+> - **Safety gate extended** to also refuse on a missing `dylink.0` or a
+>   missing `Start` section — those are the two raw-emcc symptoms.
+> - **`build-ts-dll-raw-emcc.sh.legacy`** — the old script, kept for
+>   reference only. Do not use.
+> - Artifact preserved: `shim/build/ts_shim_v3_wC_cmake_ts.wasm`.
 >
-> 1. **Find one (1) successfully-deployed TS-era side module in
->    webXash's git history.** If there is one, byte-compare its section
->    structure to ours and apply the diff (likely candidates:
->    looking for a `[HS]`-firing past commit). The HANDOFF points to
->    D.7.19 saying we got a menu rendering. We have no artifact of
->    that, only the assumption. **Recovering that artifact would
->    give us a known-good reference.**
+> ### Concrete next steps
 >
-> 2. **Check if the Xash loader has a non-Start-section init pathway.**
->    The c91698be Start function uses `(i32)->(i32)` and works. Our
->    nullary-void Start does not. There's likely some custom JS-bridge
->    path we don't see. Check `webxash/src/services/xash-loader.ts` for
->    runtime helper calls — possibly `__wasm_call_ctors` is registered
->    via `postInstantiate` / `Module['.exports__wasm_call_ctors']` or
->    similar.
->
-> 3. **Stop fighting the toolchain.** The shim is engineered for an
->    engine that doesn't actually load it the way we think. Pivot to
->    Babylon + WebRTC multiplayer (D.5/D.6 substrate is mature) or
->    to a fresh WASM that re-imports the engine's halflife client
->    imports rather than trying to be a fresh server.dll substitute.
->
-> ### Archive (this session)
->
-> - `tools/port/ts-server-dll/add-start-section.py` — synthesizes a
->   Start section pointing at a wrapper that calls
->   `__wasm_call_ctors` and `__wasm_apply_data_relocs`. Idempotent
->   (no-op if Start section already present). Builds a working WASM
->   but doesn't change runtime behavior.
-> - `tools/port/ts-server-dll/build-ts-dll.sh` — adds
->   `-mno-bulk-memory -mno-bulk-memory-opt` to emcc.
-> - `tools/port/ts-server-dll/shim/build/ts_shim_v3_wA_raw_nobulk.wasm`
->   — raw emcc, no bulk-memory, no Start
-> - `tools/port/ts-server-dll/shim/build/ts_shim_v3_wB_raw_start.wasm`
->   — raw emcc, no bulk-memory, **with** Start section
-> - `side-by-side.js` runs for both: same `_Mem_Alloc: pool == NULL`
->   output as c91698be, but **halts** instead of recovering.
+> 1. **Add `[HS]` hook instrumentation** to the TS overlay sources
+>    (`cts_game_rules.cpp`) via an `EM_JS` console-logger, for the four
+>    handshake hooks: `ClientConnect`, `ClientPutInServer`, `Spawn`,
+>    `ClientDisconnect`. The module now loads, so these will actually fire.
+> 2. **Rebuild + deploy + `side-by-side.js`.** First test that should ever
+>    show `[HS]` lines.
+> 3. Then work R2 (spawn at a real `info_player_start`) with a module we
+>    know the engine can call into.
 >
 > ### Do NOT
 >
-> - Keep adding `xxx-section.py` tools that produce shape-correct
->   WASMs without changing runtime behavior. Two of these already
->   (densify, add-start). Three or more is a smell.
-> - Trust `wasm-validate` as a proxy for "engine will load this". The
->   c91698be baseline wouldn't validate either (its Start func uses
->   `(i32)->(i32)` not nullary-void) — yet it works.
-> - Spend another session on this exact path without first recovering
->   a known-good artifact from git history or pivoting approach.
->
-> **What this session produced.** `rewrite-got-densify.py` (WAT
-> round-trip → replace the `(elem (;0;) ...)` line with funcrefs for
-> every `D ∈ [0, tableSize)` → wat2wasm → re-order dylink.0 first).
-> `build-ts-dll.sh --with-rewrite --with-densify`. Validated by
-> `wasm-validate`. Output: 49 imports / 0 GOT.func / 1851 elem
-> entries / dylink at byte 0x0a.
->
-> **Smoke results — baseline is now my BEST diagnostic.**
->
-> | WASM deployed | First few console lines | Net result |
-> |---|---|---|
-> | c91698be (rolls back to original HL1DM client) | `hostmap Infinity` → `Dll loaded for game "Half-Life"` → `Setting up renderer...` | Engine boots, menu renders (R1 satisfied) |
-> | Our densified WASM (rewrite + densify chain) | `hostmap Infinity` (then nothing) | Engine halts at the same `_Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)` message that c91698be recovers from |
->
-> The same trace line is a non-fatal warning in one WASM and a halt in
-> another. **The densify step itself is not the problem.** The crash
-> happens at engine-side library init (`Mem_Alloc` from `cmd.c:638`)
-> BEFORE any of our `[HS]` hook logs could fire.
->
-> ### Hurdles to anticipate
->
-> 1. **dylink.0 metadata mismatch** — even though our WASM has
->    `dylink.0` first (per the loader's requirement), the loader
->    might still reject something: WASM_DYLD_MEM_INFO tables,
->    tableSize=1851 vs c91698be's possibly-different value, or
->    absent/extra subsections. Look at c91698be's `dylink.0` byte-for-
->    byte vs ours (`wasm-objdump -s -j Custom …`).
-> 2. **`hostmap Infinity` quirk** — `hostmap` is the
->    `sv_hostmap` cvar in engine (defined `reference/engine/server.h
->    :455`). Why "Infinity"? Likely the launchArgs get parsed where
->    `bot_quota 2` interpreted by the engine's `Cmd_AddCommand`
->    somehow. Look at how c91698be processes the same launchArgs.
-> 3. **47 const-init globals at D ≥ 1851** (out of 228 total).
->    These are unreachable via the table. Sample:
->    `CBaseDelay::DelayThink (D=1872)`,
->    `CBaseToggle::LinearMoveDone (D=1875)`,
->    `CTentacle::CommandUse (D=1913)`, etc. Not all 47 matter for
->    boot — many are TS entity methods that the engine never calls
->    during init. But if even one is called early, we trap. To rule
->    this out, we'd need to bump `dylink.0.tableSize` to ≥2239.
->    `patch_dylink_table_size` was kept disabled because it kept
->    corrupting the LEB layout.
->
-> ### Concrete steps for next session
->
-> 1. Run `wasm-objdump -s -j Custom hl_emscripten_wasm32.wasm.bak`
->    and compare the dylink.0 byte-for-byte to ours
->    (`shim/build/ts_shim_v3_w8_densified.wasm`). Look for any
->    subsections present in c91698be but absent in ours, or
->    different size values.
-> 2. If a difference is found, port it into rewrite-got.py (or a
->    new patch tool).
-> 3. If no subsystem difference: the engine has an internal
->    initialization path that's incompatible with our specific
->    emission. Use c91698be's `cvar` baseline (D.7.46 finding) as a
->    probe — register the same set of cvars verbatim and see if the
->    crash trace changes.
->
-> ### Archive (this session)
->
-> - `tools/port/ts-server-dll/rewrite-got-densify.py` — the tool
-> - `tools/port/ts-server-dll/build-ts-dll.sh` — extended with
->   `--with-densify` flag
-> - `tools/port/ts-server-dll/shim/build/ts_shim_v3_w8_densified.wasm`
->   — 1,353,383 bytes, SHA `d051c901cf66532d8b2366881340a46d55dd3a8111cb1691d63fe5de74342b2a`
-> - `side-by-side.js` output for c91698be baseline (the diagnostic
->   that revealed "same error, different outcome" — see table above)
->
-> ### Do NOT
+> - Use `build-ts-dll-raw-emcc.sh.legacy`. It cannot produce a loadable module.
+> - Add `wasm-strip` to the build. It removes `dylink.0` and the engine dies.
+> - Trust `wasm-validate` as a proxy for "the engine will load this."
+>   Several `wasm-validate`-clean modules halted. The gate that matters is
+>   "Start section present", which the build script now checks.
 
-- Keep banging on densify variants. The densify tool is correct and
-  the densified WASM is valid. The bug is upstream.
-- Retry Path B (rewrite call_indirect → direct call) right now —
-  the engine halts before any call_indirect has a chance to fire.
-- Trust the build safety gate as the only protection. We can have
-  a `49 imports / 0 GOT.func / wasm-valid` WASM that still doesn't
-  load in the runtime.
-
-### Already ruled out — do not re-investigate
-
-
->
-> **`cl->pViewEntity == NULL` is NOT the bug.** `sv_client.c:1468` sets it
-> to NULL right after `pfnClientPutInServer` returns, which looks alarming.
-> But `sv_client.c:1498-1500` handles it:
-> `if (cl->pViewEntity) viewEnt = NUM_FOR_EDICT(cl->pViewEntity); else
-> viewEnt = NUM_FOR_EDICT(cl->edict);` — a NULL view entity falls back to
-> the client's own edict. Verified in source; no further work needed.
->
-> ### Also useful
->
-> `sv_client.c:1461` — the engine sets `svgame.globals->time = sv.time`
-> itself immediately before calling our hook, so the clock is not
-> something `PutInServer` needs to fix.
-
-Do NOT: retry CheerpX, propose pure Babylon, deploy an experimental shim to
-live webXash, or trust the HUD.
 
 ---
 

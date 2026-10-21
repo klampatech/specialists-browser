@@ -1,0 +1,34 @@
+diff --git a/dlls/CMakeLists.txt b/dlls/CMakeLists.txt
+index 2546c83..15bb01e 100644
+--- a/dlls/CMakeLists.txt
++++ b/dlls/CMakeLists.txt
+@@ -166,6 +166,16 @@ else()
+ 		../external/openbsd/strlcat.c)
+ endif()
+ 
++# >>> TS-TARGET-OVERLAYS >>> (added by build-ts-dll.sh -- do not remove)
++# The Specialists mod classes. They must live in the same side module the
++# engine dlopen's, so they go into the `server` SHARED target.
++list(APPEND SVDLL_SOURCES
++	cts_fog.cpp
++	cts_game_rules.cpp
++	ts_stub.cpp
++)
++# <<< TS-TARGET-OVERLAYS <<<
++
+ include_directories (. wpn_shared ../common ../engine ../pm_shared ../game_shared ../public)
+ 
+ if(MSVC)
+@@ -210,7 +220,11 @@ if(CMAKE_BUILD_TYPE MATCHES "Release" AND NOT WIN32)
+ 	else()
+ 		set(STRIP_FLAGS -s)
+ 	endif()
+-	add_custom_command(TARGET ${SVDLL_LIBRARY}
++	# Do NOT strip under EMSCRIPTEN: GNU strip can't read WASM and wasm-strip
++	# drops the dylink.0 section the engine loader requires.
++	if(FALSE)
++		add_custom_command(TARGET ${SVDLL_LIBRARY}
+ 			POST_BUILD DEPENDS ${SVDLL_LIBRARY}
+ 			COMMAND ${CMAKE_STRIP} ${STRIP_FLAGS} $<TARGET_FILE:${SVDLL_LIBRARY}>)
++	endif()
+ endif()
