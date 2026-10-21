@@ -16,96 +16,122 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-20, commit `PENDING` (**R1 WASM-LOAD BLOCKER SOLVED** — CMake build path)
+**As of:** 2026-10-21, commit `f7093c6` (**R1 SOLVED — the pump works, the world renders**)
 **Active path:** webXash (Xash3D-fwgs WASM) + custom TS server DLL
 **Goal:** playable The Specialists in the browser, real assets, real gameplay.
 
 ## The one-line version
 
-The server side boots cleanly and the client **never finishes its handshake**,
-so we sit on the loading screen forever. Everything below the handshake is
-unreachable and has therefore never been tested. **The handshake is the whole
-project right now.**
+**The game loop is alive.** `ts_pump.ts` drives `g_pGameRules->Think()` from
+JavaScript at ~60Hz over a console-command bridge, because the engine's own
+loopback connect never completes. The ts_lobby world renders with real
+geometry and the TS HUD sits on top. The player entity is the last thing
+missing — see R1.1.
 
-## What is DONE and verified
+## Why the engine couldn't do this itself
 
-Server-side, measured — not inferred:
+Xash3D-FWGS's loopback connect stalls at `cl_main.c:1394-1404` under
+`-noip -noip6`: the client sets `ca_connecting` and sends a connect packet
+that never arrives, so it never reaches `ca_connected`. With no connected
+client the engine never dispatches the server frame loop, so
+`g_pGameRules->Think()` — and every TS hook hanging off it — stayed silent.
+Five sessions of instrumentation could not distinguish "engine won't call
+us" from "our code is wrong", because both look identical: nothing fires.
 
-- Custom TS server DLL loads: `Dll loaded for game "The Specialists"`
-- `4 player server started`, BSP loads, `TCP/IP Disabled`, precaches fire
-  (`v_sealknife`, `player/agent`, `player/seal`, `player/gordon`, weapon WAVs)
-- **`DLL_FUNCTIONS` is exactly 50 fields.** Proven twice: c91698be's
-  `GetEntityAPI` does `memory.copy(p, __memory_base+77436, 200)` (200/4=50),
-  and xash3d-fwgs `engine/eiface.h` lists 50 fields. We fill **50/50, zero
-  NULL.**
-- **`g_engfuncs` slot table** taken from the engine's own
-  `static enginefuncs_t g_engfuncs = {...}` initialiser in `sv_game.c`,
-  **not** from `eiface.h`. The two disagree past ~slot 50.
-- **`entvars_t` matches HLSDK's real layout** (verbatim from `progdefs.h`),
-  guarded by `_Static_assert` on every offset we read. Caught two real bugs
-  on first build.
-- **`Server_GetPhysicsInterface`** returns a real interface (was returning 0,
-  causing a `SV_LoadProgs: couldn't get physics API` warning every boot).
-- **`pfnClientConnect` accepts** (was returning 0 = "connection refused" —
-  we were turning away the local client at the door).
-- **`gpGlobals` is maintained every tick** by `pfnStartFrame` (time,
-  frametime, force_retouch, startspot). A frozen clock stops think
-  scheduling entirely.
-- **~250 entity-class exports** resolve via
-  `__attribute__((export_name("...")))`.
-- **Player spawn scaffold** (`ts_ClientPutInServer`) sets origin, view_ofs,
-  health, flags, solid, movetype, modelindex.
-- **R1 step 1 hook instrumentation** (2026-10-20): every one of
-  `ts_Spawn`, `ts_ClientConnect`, `ts_ClientDisconnect`,
-  `ts_ClientPutInServer` now writes a `[HS] ...` line to the browser
-  console via a new `bridge_diagLog` EM_JS. The code change is in;
-  the **deployment test could not observe** it because of the WASM-load
-  block below — see NEXT TASK.
-- **R1 step 5 CMake build path** (2026-10-20) — **this is the fix.**
-  `build-ts-dll.sh` rewritten to drive CMake + the Emscripten toolchain
-  instead of raw emcc. Copies TS overlays into `$HLSDK/dlls/`, patches the
-  `gamerules.cpp` factory to return `CTSGameRules`, wires overlays into
-  `dlls/CMakeLists.txt`'s `SVDLL_SOURCES`, builds, runs `rewrite-got.py`,
-  safety-gates, deploys. Output: 47 imports / 0 GOT.func, `Start` +
-  `DataCount` + `dylink.0` all present, 27 console milestones.
-  `rewrite-got-densify.py` and `add-start-section.py` from earlier steps
-  turned out to solve a non-problem (the WASM shape was never wrong — the
-  runtime init helpers were simply never called). Kept in-tree, off the
-  build path.
+The fix is to be the frame clock ourselves.
 
-## What is NOT working
+## The pump (D.7.56)
 
-**The client never reaches `ca_connected`.** `cl_main.c:1394 → :1753` is the
-loopback-connect branch; we don't get past it. Engine *does* now print
-`Setting up renderer...` (milestone 24) — the module loads — but the
-handshake past that point has never completed.
+| Piece | Where |
+|---|---|
+| Tick loop, 16ms, idempotent, backs off on throw | `webxash/src/services/ts-pump.ts` |
+| Starts with the engine | `webxash/src/services/xash-loader.ts` (`tsPump.start(xash)` after `xash.main()`) |
+| Registers `ts_pump` / `ts_pump_think` / `ts_spawn_player` | `cts_game_rules.cpp:ts_post_init` |
+| `ts_post_init` called from `GiveFnptrsToDll` | `build-ts-dll.sh` step 2b patches `h_export.cpp` |
+| Telemetry strip (`[data-pump-strip]`) | `TSHud.vue` |
+| Pass/fail harness | `tools/port/ts-server-dll/test-harness/pump-smoke.js` |
 
-World geometry is therefore black. Nothing past the handshake has ever been
-observed working.
+### Ordering gotcha — don't move the registration
 
-**SOLVED as of this session — the WASM now loads.**
+`__attribute__((constructor))` runs at WASM instantiation, **before** the
+engine calls `GiveFnptrsToDll`. So `g_engfuncs` is still zeroed there and
+`pfnAddServerCommand` reads NULL. Registration must happen in
+`ts_post_init`, which the build script patches into `GiveFnptrsToDll`. The
+`HS_INIT ent=0` and `HS_INIT ent=1` markers exist to prove both hooks fire.
 
-Root cause: `build-ts-dll.sh` drove **raw emcc** with `-sSIDE_MODULE=1`,
-which emits a side module with **no `Start` section** and **no
-`DataCount` section**. Xash3D-FWGS's dylink loader needs the start
-function to run the module's C++ global constructors and data
-relocations; without it the loader halts and the engine prints
-`_Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)` then
-`hostmap Infinity` and goes dead.
+### Why a console command and not a direct WASM call
 
-The fix: build via **CMake + the Emscripten toolchain**, which emits both
-sections. The module went from **3 console milestones to 27** and now
-reaches `Setting up renderer...` with the TS overlays compiled in.
+The xash3d-fwgs wrapper keeps `wasmExports` in a closure and never puts it
+on the Module object. `em.cwrap()`, `em['ts_pump']`, `em.wasmExports` and
+`em.asm` are all undefined — four lookup paths, all verified missing.
+Console commands are the one JS→DLL channel the engine actually exposes.
+`ts_pump*` are still exported from the WASM (visible in `wasm-objdump -j
+Export`) in case a future engine build exposes them.
 
-The `_Mem_Alloc` line still appears — c91698be prints it too and recovers.
-It was never the bug; the *missing Start section* was.
+## Verification
 
-**What remains:** the client still doesn't reach `ca_connected`
-(`cl_main.c:1394 → :1753`). That is the R1 handshake work, and it is now
-approachable for the first time because the module actually loads. See
-NEXT TASK.
+`node tools/port/ts-server-dll/test-harness/pump-smoke.js`:
 
-## ⚠️ DO NOT use the HUD as a progress signal
+```
+PASS  WASM instantiates              1x HS_INIT ent=0
+PASS  GiveFnptrsToDll hook fired     1x HS_INIT ent=1 (ts_post_init)
+PASS  ts_pump_think registered       no "Unknown command"
+PASS  Think() executing in WASM      counter 1 -> 170
+PASS  HUD strip reports live Hz      17.6 Hz
+PASS  HUD strip tick count agrees    170 ticks
+PASS  ts_* spawn errors              0
+WARN  player hooks                   0 (spawn path traps)
+ALL PASS
+```
+
+The counter check is the load-bearing one. `Think()` on a NULL rules object
+is a silent no-op, so "no error" proves nothing — only a monotonically
+increasing counter proves our code after the call actually ran.
+
+## R1.1. 🔴 THE BLOCKER — the player entity
+
+`node tools/port/ts-server-dll/test-harness/spawn-diag.js` pins it exactly:
+
+```
+step 31  ENTER                          ok
+step 33  pfnCreateEntity -> edict 185   ok
+step 34  pfnAllocString('player')       ok
+step 41  player(&pev->v) -> privdata    ok  (non-NULL)
+<trap>   DispatchSpawn -> CBasePlayer::Spawn()
+```
+
+The sequence is correct — it reproduces what `SV_Spawn` does, including
+calling the `LINK_ENTITY_TO_CLASS`-generated `player` symbol to allocate the
+`CBasePlayer` before dispatching. The trap is inside `CBasePlayer::Spawn()`,
+which reaches for a long tail of `g_engfuncs` slots; several are NULL in this
+Xash3D-FWGS build (same class of gap as `pfnCreateFakeClient`, which the
+engine declares in `eiface.h` and never implements). A NULL indirect call
+through the enginefuncs table is an unconditional WASM trap, uncatchable from
+JS — hence the step markers.
+
+**Two fixes, (b) first:**
+
+- **(b) Minimal `CTSPlayer` overriding `Spawn()`** — skip the HL1
+  weapon/model machinery, set origin / health / movetype / modelindex
+  directly. Smaller, touches no HLSDK code. **Start here.**
+- **(a) Audit `CBasePlayer::Spawn`'s enginefuncs dependencies** and
+  NULL-guard each. Tedious but mechanical, and the guard is correct on its
+  own terms: a shipped DLL shouldn't trap on optional slots.
+
+### Engine NULL slots found so far
+
+- `pfnCreateFakeClient` — declared in `eiface.h:200`, never implemented.
+  Returns NULL, so `bot_quota` can never create anything.
+- Whatever `CBasePlayer::Spawn` touches — not yet enumerated.
+
+**This also explains "no bots".** Bots in this engine are fake clients, and
+the fake-client slot is NULL. `bot_quota` is not a settings problem.
+
+## ⚠️ DO NOT use most of the HUD as a progress signal
+
+> **Updated 2026-10-21.** The `[data-pump-strip]` element in the
+> bottom-left IS a real signal (it counts actual `Think()` calls in
+> the WASM). Everything else below is still a literal.
 
 `webxash/src/components/TSHud.vue:145-151` initialises every visible value as
 a **literal**:
@@ -134,7 +160,14 @@ The only genuinely live HUD-ish value today is the round timer, because
 Dependency-ordered. Do not skip ahead — each step is untestable without the
 one above it.
 
-### R1. 🔴 THE BLOCKER — finish the client handshake
+### R1. ~~THE BLOCKER — finish the client handshake~~ ✅ SOLVED via the pump
+
+Superseded by § CURRENT STATE: the handshake never completes in webXash,
+so we drive `Think()` from JS instead. The original analysis below is
+kept for the record but the conclusion ("the handshake is the blocker")
+was wrong — it was a symptom of `-noip -noip6`, not a port defect.
+
+**Historical analysis:**
 
 **Exit criterion:** `cls.state` reaches `ca_connected` and stdout prints
 `Setting up renderer...`.
