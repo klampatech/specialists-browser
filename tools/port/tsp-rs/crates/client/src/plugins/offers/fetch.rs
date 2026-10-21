@@ -14,13 +14,9 @@
 
 use super::flow::{CERT_SUFFIX, Fetched, MANIFEST_SUFFIX, SIGNATURE_SUFFIX, Transport};
 use plugin_pkg::{Candidate, Package, Platform, PublicKey, Sha256, Store, Verdict, Verification};
-use std::fs;
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
-use std::time::Duration;
 
 /// A worker's result, tagged with the job's key.
 #[derive(Debug)]
@@ -41,6 +37,47 @@ impl Progress {
         self.cancel.load(Ordering::Relaxed)
     }
 }
+
+/// What [`install`] needs: the offer, what the card showed, and where things go.
+#[derive(Clone, Debug)]
+pub struct InstallJob {
+    pub url: String,
+    pub plain_http: bool,
+    pub size: u32,
+    pub sha256: [u8; 32],
+    /// The manifest the card showed: the package's must be byte-identical (§6.3 step 5).
+    pub manifest_sha256: Sha256,
+    /// The key the card's manifest verified with.
+    pub key: Option<PublicKey>,
+    /// `cl_plugins/staging/<id>-<version>.tspkg.part`.
+    pub staging: std::path::PathBuf,
+    /// `cl_plugins/<id>/<version>/`.
+    pub dest: std::path::PathBuf,
+    /// The installed copy to reuse instead of downloading (the same manifest, approved for
+    /// other servers).
+    pub reuse: bool,
+    pub platform: Platform,
+    pub roots: Vec<PublicKey>,
+    /// The store as it was, for the trust level the approval records.
+    pub store: Store,
+}
+
+/// Runs `f` on a thread of its own and sends its result.
+pub fn spawn(tx: &Sender<Done>, f: impl FnOnce() -> Done + Send + 'static) {
+    let tx = tx.clone();
+    let _ = std::thread::Builder::new().name("tsrs-plugin-offer".into()).spawn(move || {
+        let _ = tx.send(f());
+    });
+}
+
+#[cfg(feature = "tspkg")]
+use std::time::Duration;
+#[cfg(feature = "tspkg")]
+mod real {
+use super::*;
+use std::fs;
+use std::io::{Read, Write};
+use std::path::Path;
 
 fn agent(plain_http: bool, body: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
@@ -79,30 +116,6 @@ pub fn fetch_manifest(t: &Transport) -> Result<Fetched, String> {
     let signature = get_small(&a, &format!("{}{SIGNATURE_SUFFIX}", t.base), sig_limit, true)?;
     let cert = if signature.is_some() { get_small(&a, &format!("{}{CERT_SUFFIX}", t.base), sig_limit, true)? } else { None };
     Ok(Fetched { manifest, signature, cert })
-}
-
-/// What [`install`] needs: the offer, what the card showed, and where things go.
-#[derive(Clone, Debug)]
-pub struct InstallJob {
-    pub url: String,
-    pub plain_http: bool,
-    pub size: u32,
-    pub sha256: [u8; 32],
-    /// The manifest the card showed: the package's must be byte-identical (§6.3 step 5).
-    pub manifest_sha256: Sha256,
-    /// The key the card's manifest verified with.
-    pub key: Option<PublicKey>,
-    /// `cl_plugins/staging/<id>-<version>.tspkg.part`.
-    pub staging: PathBuf,
-    /// `cl_plugins/<id>/<version>/`.
-    pub dest: PathBuf,
-    /// The installed copy to reuse instead of downloading (the same manifest, approved for
-    /// other servers).
-    pub reuse: bool,
-    pub platform: Platform,
-    pub roots: Vec<PublicKey>,
-    /// The store as it was, for the trust level the approval records.
-    pub store: Store,
 }
 
 /// Steps 4–6: download (or reuse), check, unpack, and verify the install. On success the
@@ -209,18 +222,30 @@ fn set_aside(dest: &Path) -> Result<(), String> {
     }
     fs::remove_dir_all(dest).map_err(|e| format!("{} is in the way: {e}", dest.display()))
 }
+} // mod real
 
-/// Runs `f` on a thread of its own and sends its result.
-pub fn spawn(tx: &Sender<Done>, f: impl FnOnce() -> Done + Send + 'static) {
-    let tx = tx.clone();
-    let _ = std::thread::Builder::new().name("tsrs-plugin-offer".into()).spawn(move || {
-        let _ = tx.send(f());
-    });
+#[cfg(feature = "tspkg")]
+pub use real::{fetch_manifest, install};
+
+#[cfg(not(feature = "tspkg"))]
+/// Stub — emits a clear "TSPkg disabled in this build" error for any caller. Keeps the
+/// offers module compileable for builds that don't ship the TSPkg plugin-downloader
+/// (notably `wasm32-unknown-emscripten`, where the filesystem and dlopen aren't
+/// available, ring 0.17's SecureRandom isn't implemented, and rustls 0.23 fails to
+/// compile as a result).
+pub fn fetch_manifest(_t: &Transport) -> Result<Fetched, String> {
+    Err("TSPkg client plugin downloads are disabled in this build (build with --features tspkg on a non-wasm target to enable)".into())
+}
+
+#[cfg(not(feature = "tspkg"))]
+pub fn install(_j: &InstallJob, _p: &Progress) -> Result<Verification, String> {
+    Err("TSPkg client plugin downloads are disabled in this build (build with --features tspkg on a non-wasm target to enable)".into())
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::plugins::offers::flow::Transport;
     use std::collections::BTreeMap;
     use std::io::BufRead;
     use std::net::TcpListener;
@@ -261,6 +286,7 @@ pub(crate) mod tests {
 
     /// A signed package `demo` 1.0.0 with one library: (package bytes, manifest bytes, key).
     pub fn package() -> (Vec<u8>, Vec<u8>, plugin_pkg::SigningKey) {
+        use std::fs;
         let src = tempfile::tempdir().unwrap();
         fs::create_dir_all(src.path().join("lib")).unwrap();
         fs::write(src.path().join("lib/tsmod_demo.so"), b"library bytes").unwrap();
@@ -279,7 +305,10 @@ pub(crate) mod tests {
         (out.into_inner(), m.into_bytes(), key)
     }
 
-    fn job(base: &str, dir: &Path, pkg: &[u8], manifest: &[u8], key: &plugin_pkg::SigningKey) -> InstallJob {
+    fn job(base: &str, dir: &Path, pkg: &[u8], manifest: &[u8], key: &plugin_pkg::SigningKey) -> InstallJob
+    where Path: std::convert::AsRef<std::ffi::OsStr>, // just to satisfy feature-gated body
+    {
+        use std::path::PathBuf;
         InstallJob {
             url: format!("{base}/plugins/demo-1.0.0.tspkg"),
             plain_http: true,
@@ -287,8 +316,8 @@ pub(crate) mod tests {
             sha256: Sha256::of_bytes(pkg).0,
             manifest_sha256: Sha256::of_bytes(manifest),
             key: Some(PublicKey::of(key)),
-            staging: dir.join("cl_plugins/staging/demo-1.0.0.tspkg.part"),
-            dest: dir.join("cl_plugins/demo/1.0.0"),
+            staging: PathBuf::from(dir).join("cl_plugins/staging/demo-1.0.0.tspkg.part"),
+            dest: PathBuf::from(dir).join("cl_plugins/demo/1.0.0"),
             reuse: false,
             platform: Platform::LinuxX86_64,
             roots: Vec::new(),
@@ -296,8 +325,11 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(feature = "tspkg")]
     #[test]
     fn fetch_and_install() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
         let (pkg, manifest, key) = package();
         let sig = plugin_pkg::sign_manifest(&key, &manifest).to_vec();
         let mut files = BTreeMap::new();

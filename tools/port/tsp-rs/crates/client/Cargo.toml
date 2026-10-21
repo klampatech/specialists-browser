@@ -23,7 +23,15 @@ toml = { version = "0.9", default-features = false, features = ["parse", "serde"
 plugin-pkg = { path = "../plugin-pkg" }
 # Server offers (src/plugins/offers, issue #299; client-plugins.md §6.3): a blocking HTTP(S) client
 # on worker threads, rustls with the webpki roots and ring (open question 2), as tsmod-launcher has.
-ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+#
+# Optional, and off unless `tspkg` is on: the whole TSPkg offer flow downloads, unpacks and
+# dlopens a native client plugin into `cl_plugins/`, none of which a wasm32 build can do (no
+# filesystem, no dlopen, and ring 0.17's SecureRandom isn't implemented for the emscripten
+# target, so rustls won't even compile). Turning the feature off makes ureq and its rustls/ring
+# chain drop out of the graph entirely; `offers::fetch` is then compiled from the stub below and
+# every offer is refused with a clear reason. `flow.rs`, the part that decides whether an offer is
+# admissible and builds the card, is unaffected and stays compiled either way.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"], optional = true }
 
 # Tests only: the core's tests run the 3.0 plugin's movement and gun rules (its fixture's `pm`
 # and `gun`). The library never links a ruleset (docs/implementation/gameplay-plugins.md).
@@ -32,6 +40,9 @@ ts30-gameplay = { path = "../ts30" }
 tempfile = "3"
 
 [features]
+# Server offers of client plugins (op 1/3/4/5, issue #299): fetch the package over HTTP(S) with
+# ureq+rustls, verify it, and dlopen it. Native-only; see the ureq note above for why.
+tspkg = ["dep:ureq"]
 # The relaunch e2e test's hooks (`cargo xtask relaunch`, src/relaunch/e2e.rs): card answers and a
 # self-relaunch override, read from the environment. Never in a shipped build.
 e2e = []
