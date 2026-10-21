@@ -16,7 +16,7 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-20, commit `ac6a925` (+ R1-step-1 instrumentation pending)
+**As of:** 2026-10-20, commit `7a686b0` (+ R1-step-2 tooling: rewrite-got-densify.py)
 **Active path:** webXash (Xash3D-fwgs WASM) + custom TS server DLL
 **Goal:** playable The Specialists in the browser, real assets, real gameplay.
 
@@ -61,6 +61,16 @@ Server-side, measured — not inferred:
   console via a new `bridge_diagLog` EM_JS. The code change is in;
   the **deployment test could not observe** it because of the WASM-load
   block below — see NEXT TASK.
+- **R1 step 2 densify tool** (2026-10-20): `tools/port/ts-server-dll/
+  rewrite-got-densify.py` (~250 lines). WAT round-trip → replace the
+  `(elem (;0;) (global.get 1) func ...)` line with one containing
+  `funcref(func D)` for every `D` in `[0, tableSize)` → wat2wasm →
+  re-orders `dylink.0` to the front (`reorder_dylink_first` mirrored
+  from `rewrite-got.py`). Validated by `wasm-validate`. **Wired into
+  `build-ts-dll.sh`** with a chained `--with-rewrite --with-densify`
+  flag pair. Output: 49 imports / 0 GOT.func / 1851 elem entries
+  (densified); preserves dylink-first layout that Xash3D-FWGS's
+  `getDylinkMetadata` requires.
 
 ## What is NOT working
 
@@ -70,6 +80,21 @@ launch flags. Engine never prints `Setting up renderer...`.
 
 World geometry is therefore black. Nothing past the handshake has ever been
 observed working.
+
+**Diagnostic noise that looks like a fatal error but isn't.**
+`_Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)` appears
+in BOTH the working baseline (c91698be) and our densified WASM. **For
+c91698be the message is printed and the engine recovers**, then reaches
+`Dll loaded for game "Half-Life"` and `Setting up renderer...`. **For our
+densified WASM, the engine halts at this message** — i.e., `hostmap
+Infinity` is the last entry. So the message is *correlated with two very
+different failure modes*: c91698be treats it as warning, we treat it as
+fatal. The actual root cause of the fatal-for-us behavior is upstream of
+the densify level — call_indirect trap, dylink.0 metadata, or a 47-of-228
+const-init global whose decl index is `≥ tableSize` (sample:
+1872/1875/1913–1926/1933/1950–2065; these are mostly HL1 class
+methods like CTentacle::Cycle, CBaseDelay::DelayThink, CMultiManager).
+See NEXT TASK.
 
 ## ⚠️ DO NOT use the HUD as a progress signal
 
@@ -167,75 +192,87 @@ scoring, rounds, briefcase.
 
 # § NEXT TASK
 
-> ## R1 step 2: get the shim past the WASM loader so R1-step-1 logs can fire
+> ## R1 step 3: find why the same `_Mem_Alloc: pool == NULL` is fatal-for-us but warning-for-c91698be
 >
-> **What changed in this session.** The four hook logs are now wired
-> (`ts_Spawn`, `ts_ClientConnect`, `ts_ClientDisconnect`,
-> `ts_ClientPutInServer` each call a new `bridge_diagLog` EM_JS that
-> writes `[HS] ...` to the browser console). `side-by-side.js`'s
-> milestone regex was extended to capture `[HS]`. The build succeeds;
-> the **safety gate refused deploy** because the fresh WASM is
-> 283 imports / 229 GOT.func — which the gate's comment correctly
-> predicts breaks webXash at library load (verified empirically:
-> `[xash-exec] hostmap Infinity` + `_Mem_Alloc: pool == NULL
-> (alloc at ../engine/common/cmd.c:638)`, no `[HS]` lines).
+> **What this session produced.** `rewrite-got-densify.py` (WAT
+> round-trip → replace the `(elem (;0;) ...)` line with funcrefs for
+> every `D ∈ [0, tableSize)` → wat2wasm → re-order dylink.0 first).
+> `build-ts-dll.sh --with-rewrite --with-densify`. Validated by
+> `wasm-validate`. Output: 49 imports / 0 GOT.func / 1851 elem
+> entries / dylink at byte 0x0a.
 >
-> **Conclusion: a fifth row for the "Read the result" table.**
-> The four rows listed in the previous NEXT TASK assumed the shim
-> loaded. They do not. R1 step 1 was correct, but the experiment
-> needed the WASM to load before any hook could fire, and our WASM
-> doesn't load.
+> **Smoke results — baseline is now my BEST diagnostic.**
 >
-> | Observed | Conclusion | Next move |
+> | WASM deployed | First few console lines | Net result |
 > |---|---|---|
-> | **No `[HS]` lines + engine crash at library init** | WASM never reaches runtime — GOT.func pool unpopulated, `call_indirect` traps during early C runtime init | Get the shim to the 52-import / 0-GOT.func shape that the working baselines (c91698be, `ts_shim_v3k_sv_gate`) have. Then re-run R1 step 1 to actually see which hooks fire. |
+> | c91698be (rolls back to original HL1DM client) | `hostmap Infinity` → `Dll loaded for game "Half-Life"` → `Setting up renderer...` | Engine boots, menu renders (R1 satisfied) |
+> | Our densified WASM (rewrite + densify chain) | `hostmap Infinity` (then nothing) | Engine halts at the same `_Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)` message that c91698be recovers from |
 >
-> ### How to close step 2
+> The same trace line is a non-fatal warning in one WASM and a halt in
+> another. **The densify step itself is not the problem.** The crash
+> happens at engine-side library init (`Mem_Alloc` from `cmd.c:638`)
+> BEFORE any of our `[HS]` hook logs could fire.
 >
-> 1. **Try `--with-rewrite`** (opt-in flag passed to `build-ts-dll.sh`).
->    Activates `tools/port/ts-server-dll/rewrite-got.py` which
->    converts each `GOT.func <funcname>` import into
->    `(global i32 (i32.const D))` where D is the function's
->    declaration index. The c91698be WASM is exactly this shape
->    and works. We have a 16+ artifact history in `shim/build/`
->    showing past attempts — `ts_shim_v3k_sv_gate.wasm` is
->    the most recent rewrite-passed artifact and likely
->    boots.
-> 2. **If the rewrite path is still broken** (D.7.19: it trapped
->    on `call_indirect` "function signature mismatch" the last
->    time), investigate the signature-mismatch fix — likely an
->    `__indirect_function_table` element-type mismatch (the
->    side module declared `funcref` with one canonical type,
->    while the runtime base module expected `i32`/typed-funcref
->    with a different declaration).
-> 3. **Once the WASM boots**, re-run `side-by-side.js` against the
->    deployed experimental WASM and read which of the four
->    `[HS] ...` lines land in the console. Use the next three
->    rows of the "Read the result" table from the previous
->    NEXT TASK to triage (`CL_CheckForResend` /
->    `pfnClientConnect` / `pfnClientPutInServer`).
+> ### Hurdles to anticipate
 >
-> ### Archive
+> 1. **dylink.0 metadata mismatch** — even though our WASM has
+>    `dylink.0` first (per the loader's requirement), the loader
+>    might still reject something: WASM_DYLD_MEM_INFO tables,
+>    tableSize=1851 vs c91698be's possibly-different value, or
+>    absent/extra subsections. Look at c91698be's `dylink.0` byte-for-
+>    byte vs ours (`wasm-objdump -s -j Custom …`).
+> 2. **`hostmap Infinity` quirk** — `hostmap` is the
+>    `sv_hostmap` cvar in engine (defined `reference/engine/server.h
+>    :455`). Why "Infinity"? Likely the launchArgs get parsed where
+>    `bot_quota 2` interpreted by the engine's `Cmd_AddCommand`
+>    somehow. Look at how c91698be processes the same launchArgs.
+> 3. **47 const-init globals at D ≥ 1851** (out of 228 total).
+>    These are unreachable via the table. Sample:
+>    `CBaseDelay::DelayThink (D=1872)`,
+>    `CBaseToggle::LinearMoveDone (D=1875)`,
+>    `CTentacle::CommandUse (D=1913)`, etc. Not all 47 matter for
+>    boot — many are TS entity methods that the engine never calls
+>    during init. But if even one is called early, we trap. To rule
+>    this out, we'd need to bump `dylink.0.tableSize` to ≥2239.
+>    `patch_dylink_table_size` was kept disabled because it kept
+>    corrupting the LEB layout.
 >
-> - Code change: `ts_shim_v3.c` (4 hook call sites +
->   `bridge_diagLog` EM_JS).
-> - Test harness update: `side-by-side.js` (regex now matches
->   `[HS] ` so the new hook logs show up in the milestone dump).
-> - Experimental artifact: `shim/build/ts_shim_v3_w7_handshake_logs.wasm`
->   (1,361,440 bytes, 283 imports / 229 GOT.func — fails
->   safety gate, see above).
-> - `side-by-side.js` run against the deployed experimental
->   WASM produced:
->   ```
->   0 [zip-helpers] cache write failed: UnknownError: Failed to execute 'put' on 'Cache': Unexpected internal error.
->   1 [xash-alert] Xash Error
->      _Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)
->   2 [xash-exec] failed: hostmap Infinity
->   ```
->   No `[HS]` lines observed — confirming the WASM never reached
->   hook code.
+> ### Concrete steps for next session
 >
-> ### Already ruled out — do not re-investigate
+> 1. Run `wasm-objdump -s -j Custom hl_emscripten_wasm32.wasm.bak`
+>    and compare the dylink.0 byte-for-byte to ours
+>    (`shim/build/ts_shim_v3_w8_densified.wasm`). Look for any
+>    subsections present in c91698be but absent in ours, or
+>    different size values.
+> 2. If a difference is found, port it into rewrite-got.py (or a
+>    new patch tool).
+> 3. If no subsystem difference: the engine has an internal
+>    initialization path that's incompatible with our specific
+>    emission. Use c91698be's `cvar` baseline (D.7.46 finding) as a
+>    probe — register the same set of cvars verbatim and see if the
+>    crash trace changes.
+>
+> ### Archive (this session)
+>
+> - `tools/port/ts-server-dll/rewrite-got-densify.py` — the tool
+> - `tools/port/ts-server-dll/build-ts-dll.sh` — extended with
+>   `--with-densify` flag
+> - `tools/port/ts-server-dll/shim/build/ts_shim_v3_w8_densified.wasm`
+>   — 1,353,383 bytes, SHA `d051c901cf66532d8b2366881340a46d55dd3a8111cb1691d63fe5de74342b2a`
+> - `side-by-side.js` output for c91698be baseline (the diagnostic
+>   that revealed "same error, different outcome" — see table above)
+>
+> ### Do NOT
+
+- Keep banging on densify variants. The densify tool is correct and
+  the densified WASM is valid. The bug is upstream.
+- Retry Path B (rewrite call_indirect → direct call) right now —
+  the engine halts before any call_indirect has a chance to fire.
+- Trust the build safety gate as the only protection. We can have
+  a `49 imports / 0 GOT.func / wasm-valid` WASM that still doesn't
+  load in the runtime.
+
+### Already ruled out — do not re-investigate
 
 
 >

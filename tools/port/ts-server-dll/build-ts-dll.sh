@@ -153,7 +153,9 @@ echo "Decide whether to run rewrite-got.py (D.7.19 proof: the rewrite
 turns the working 52-import raw emcc WASM into a 49-import version
 that traps on first call_indirect with 'function signature mismatch'
 when running on the current build). Default: skip. Pass
---with-rewrite to opt in."
+--with-rewrite to opt in. Add --with-densify to also run
+rewrite-got-densify.py after (D.7.52: covers call_indirect trap by
+re-emitting the elem with all decls in [0, tableSize))."
 if [[ "${1:-}" == "--with-rewrite" ]] && [[ -f "$SCRIPT_DIR/rewrite-got.py" ]]; then
     echo "Running rewrite-got.py (--with-rewrite)..."
     REWRITE_IN="$OUT/ts_emscripten_wasm32.wasm"
@@ -178,6 +180,23 @@ if [[ "${1:-}" == "--with-rewrite" ]] && [[ -f "$SCRIPT_DIR/rewrite-got.py" ]]; 
         done
     else
         echo "  WARNING: rewrite-got.py failed; using original WASM"
+    fi
+
+    # D.7.52 follow-on: chain rewrite-got-densify.py. Reads the post-rewrite
+    # WASM, replaces the (elem (;0;) (global.get 1) func ...) line with one
+    # containing funcref(func D) for every D < tableSize, then re-reorders
+    # dylink.0 to the front. Run with --with-densify after --with-rewrite.
+    if [[ "${2:-}" == "--with-densify" ]] && [[ -f "$SCRIPT_DIR/rewrite-got-densify.py" ]]; then
+        echo
+        echo "Running rewrite-got-densify.py (--with-densify)..."
+        DENSIFY_IN="$REWRITE_IN"
+        DENSIFY_OUT="$OUT/ts_emscripten_wasm32.densified.wasm"
+        if python3 "$SCRIPT_DIR/rewrite-got-densify.py" "$DENSIFY_IN" "$DENSIFY_OUT" 2>&1; then
+            mv "$DENSIFY_OUT" "$DENSIFY_IN"
+            echo "  Deployed densified version"
+        else
+            echo "  WARNING: rewrite-got-densify.py failed; using rewrite-only WASM"
+        fi
     fi
 else
     echo "Skipping rewrite-got.py (raw emcc WASM deployed as-is — works on current build)."
