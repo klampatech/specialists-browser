@@ -18,14 +18,15 @@ pub mod sdl {
 
     #[cfg(not(windows))]
     pub(crate) fn lookup(name: &CStr) -> *mut c_void {
-        unsafe extern "C" {
-            fn dlopen(file: *const std::ffi::c_char, mode: c_int) -> *mut c_void;
-            fn dlsym(handle: *mut c_void, name: *const std::ffi::c_char) -> *mut c_void;
-        }
-        const RTLD_NOW: c_int = 2;
-        const RTLD_NOLOAD: c_int = 4;
-        // SAFETY: dlopen/dlsym are called with NUL-terminated names; RTLD_NOLOAD never loads a new library.
+        #[cfg(not(target_arch = "wasm32"))]
         unsafe {
+            unsafe extern "C" {
+                fn dlopen(file: *const std::ffi::c_char, mode: c_int) -> *mut c_void;
+                fn dlsym(handle: *mut c_void, name: *const std::ffi::c_char) -> *mut c_void;
+            }
+            const RTLD_NOW: c_int = 2;
+            const RTLD_NOLOAD: c_int = 4;
+            // SAFETY: dlopen/dlsym are called with NUL-terminated names; RTLD_NOLOAD never loads a new library.
             for lib in [c"libSDL2-2.0.so.0", c"libSDL2.so"] {
                 let h = dlopen(lib.as_ptr(), RTLD_NOW | RTLD_NOLOAD);
                 if !h.is_null() {
@@ -38,6 +39,11 @@ pub mod sdl {
             // RTLD_DEFAULT: anything already in the global namespace.
             dlsym(std::ptr::null_mut(), name.as_ptr())
         }
+        // On wasm32, no SDL2 library is present. The Rust port's mouse handling falls back
+        // to whatever the engine gives us (webXash's Pointer-Lock-based cursor), so
+        // reporting "no SDL symbol found" here is exactly what we want.
+        #[cfg(target_arch = "wasm32")]
+        std::ptr::null_mut()
     }
 
     #[cfg(windows)]

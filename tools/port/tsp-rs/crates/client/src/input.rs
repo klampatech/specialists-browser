@@ -889,14 +889,26 @@ mod native {
 
     #[cfg(not(windows))]
     pub fn activate(_m: &mut Mouse) {
+        // Skip SDL mouse capture on wasm32: webXash's browser-side Pointer Lock
+        // delivers cursor deltas through the engine's input callbacks, which the
+        // HUD mouse (mouse cursor in CS HUD sense) consumes directly. Going through
+        // SDL2 here would just dlopen a library that isn't there. For a non-wasm
+        // POSIX target, the SDL2 path is unchanged.
+        #[cfg(not(target_arch = "wasm32"))]
         goldsrc::platform::sdl::set_relative(true);
     }
     #[cfg(not(windows))]
     pub fn deactivate(_m: &mut Mouse) {
+        #[cfg(not(target_arch = "wasm32"))]
         goldsrc::platform::sdl::set_relative(false);
     }
     #[cfg(not(windows))]
     pub fn delta() -> [f32; 2] {
+        // On wasm32 we report a no-movement delta so the caller keeps its current
+        // cursor; the browser's Pointer Lock polls supply actual movement.
+        #[cfg(target_arch = "wasm32")]
+        return [0.0, 0.0];
+        #[cfg(not(target_arch = "wasm32"))]
         goldsrc::platform::sdl::relative_delta()
     }
 }

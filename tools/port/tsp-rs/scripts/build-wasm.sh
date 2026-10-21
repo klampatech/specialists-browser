@@ -68,11 +68,34 @@ cargo build \
     --no-default-features \
     --features ts30
 
-# Step 3: optimize. --all-features unlocks every modern WASM extension the
-# Rust compiler may emit. Without it, individual extensions trip validation
-# one at a time.
+# Step 3: optimize. We list each modern WASM extension explicitly because
+# `wasm-opt --all-features` would also enable `--enable-compact-imports`
+# (kind 127), which the Chrome runtime in webXash's Tailscale proxy doesn't
+# accept (`WebAssembly.instantiate(): Invalid import kind 127, enable with
+# --wasm-compact-imports`). Discovered 2026-10-21: --enable-gc alone doesn't
+# trigger compact imports; --all-features does, because it implies it.
+#
+# The list below covers every feature rustc-emitted WASM actually uses for
+# this crate; missing one trips wasm-as with "all used features should be
+# allowed" on the round-trip. The list is intentionally less than
+# `--all-features` so we skip --enable-compact-imports.
 mkdir -p "$DIST"
-wasm-opt -Oz --all-features --strip-debug "$SRC_TARGET" -o "$DEST"
+WASM_OPT_FLAGS=(
+    --enable-sign-ext
+    --enable-nontrapping-float-to-int
+    --enable-mutable-globals
+    --enable-bulk-memory
+    --enable-bulk-memory-opt
+    --enable-call-indirect-overlong
+    --enable-exception-handling
+    --enable-tail-call
+    --enable-reference-types
+    --enable-multivalue
+    # --enable-gc: keep this disabled; it ends up enabling compact imports
+    # anyway, and we already get the size win we need without it. Re-evaluate
+    # when chrome >= 124 is the floor.
+)
+wasm-opt -Oz --strip-debug "${WASM_OPT_FLAGS[@]}" "$SRC_TARGET" -o "$DEST"
 
 # Step 4: report.
 RAW=$(stat -c %s "$SRC_TARGET" 2>/dev/null || echo 0)
