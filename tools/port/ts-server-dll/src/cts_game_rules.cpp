@@ -17,6 +17,9 @@
 
 #include <emscripten.h>
 
+#include "extdll.h"   // for enginefuncs_t / DLL_FUNCTIONS
+#include "eiface.h"   // for DLL_FUNCTIONS layout (HLSDK-provided)
+
 namespace {
 
 // === Diagnostic bridge to JS console ===
@@ -27,7 +30,7 @@ namespace {
 EM_JS(int, bridge_diagLog, (int tag, int e, int ret, int extra), {
     var tags = ["HS_SPAWN","HS_CLIENT_CONNECT","HS_CLIENT_PUTINSERVER",
                 "HS_CLIENT_DISCONNECT","HS_THINK","HS_INIT_HUD",
-                "HS_PLAYER_SPAWN","HS_INIT","HS_TICK","HS_MISC"];
+                "HS_PLAYER_SPAWN","HS_INIT","HS_MISC"];
     var name = tags[tag] || ("HS_TAG_" + tag);
     console.log("[HS]", name, "ent=" + (e>>>0), "ret=" + ret, "extra=" + extra);
     return 0;
@@ -42,8 +45,7 @@ enum : int {
     HS_INIT_HUD           = 5,
     HS_PLAYER_SPAWN       = 6,
     HS_INIT               = 7,   // WASM init-time heartbeat
-    HS_TICK               = 8,   // server frame tick heartbeat
-    HS_MISC               = 9,
+    HS_MISC               = 8,
 };
 
 // Throttle Think() telemetry — it's once per server tick, which is
