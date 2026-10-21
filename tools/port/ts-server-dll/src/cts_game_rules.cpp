@@ -243,6 +243,24 @@ static int ts_alloc_string(const char *s) {
     return g_engfuncs.pfnAllocString(s);
 }
 
+// HLSDK's LINK_ENTITY_TO_CLASS generates an exported function per map
+// classname whose only job is to allocate + attach the C++ object:
+//
+//   extern "C" EXPORT void player(entvars_t *pev);
+//   void player(entvars_t *pev) { GetClassPtr((CBasePlayer *)pev); }
+//
+// That runs BEFORE DispatchSpawn and is what makes GET_PRIVATE() in
+// DispatchSpawn return non-NULL. The engine normally calls it via
+// COM_GetProcAddress on the classname; we have the symbol directly.
+//
+// So the correct two-step for a locally-created edict is:
+//   player(&pev->v);        → allocate + attach CBasePlayer
+//   DispatchSpawn(pev);     → run CBasePlayer::Spawn()
+//
+// Calling DispatchSpawn alone (as the first attempt did) left
+// GET_PRIVATE NULL and trapped. Verified via spawn-diag.js step 35.
+extern "C" void player(entvars_t *pev);
+
 extern "C" void ts_spawn_local_player(void) {
     // Already have one — just respawn it.
     if (ts_local_player && !ts_local_player->free) {
@@ -251,75 +269,69 @@ extern "C" void ts_spawn_local_player(void) {
         return;
     }
     if (++ts_spawn_attempts > 30) {
-        // The world isn't ready (map still loading). Stop trying so
-        // we don't spam the console.
         return;
     }
 
-    // How to make a player edict without a connected client:
-    //
-    //  - pfnSpawnPlayer / pfnCreateFakeClient are SDK2-era names.
-    //    Xash3D-FWGS declares pfnCreateFakeClient in eiface.h but
-    //    never implements it — the slot is NULL (verified: the
-    //    engine has no SV_CreateFakeClient symbol). So we do it by
-    //    hand using the two primitives the engine DOES provide:
-    //
-    //    1. pfnCreateEntity()      → allocs a free edict
-    //    2. pfnSpawn(pev)          → engine looks up our "player"
-    //                                 export by classname, allocates
-    //                                 private data, calls Spawn()
-    //
-    //  That's the same two-step SV_SpawnPlayer does, minus the
-    //  sv_client_t bookkeeping (netchan, userinfo, etc.) that only
-    //  matters for a real networked client. For our purposes — the
-    //  client renderer needs a player entity in the snapshot, and
-    //  the DLL needs a CBasePlayer to run PlayerSpawn against —
-    //  this is sufficient.
+    // Step markers: a WASM trap kills the whole command, so the last
+    // marker we see is the step that trapped. Steps 1..6 map to
+    // extra=31..36 in the HS_MISC line.
+    bridge_diagLog(HS_MISC, 0, 0, 31);
 
+    if (!g_engfuncs.pfnCreateEntity) {
+        bridge_diagLog(HS_MISC, 0, -1, 30);   // engine lacks pfnCreateEntity
+        return;
+    }
     edict_t *pev = g_engfuncs.pfnCreateEntity();
     if (!pev) {
-        bridge_diagLog(HS_MISC, 0, -1, 21);   // -1 = CreateEntity failed
+        bridge_diagLog(HS_MISC, 0, -1, 32);   // CreateEntity returned NULL
         return;
     }
-    pev->v.classname = ts_alloc_string("player");
+    bridge_diagLog(HS_MISC, ENTINDEX(pev), 0, 33);   // edict allocated
 
-    // DispatchSpawn is HLSDK's own entry point for this (it IS what
-    // gFunctionTable.pfnSpawn points at). Calling it directly gives
-    // us the same behaviour the engine would: look up our "player"
-    // export by classname, allocate private data, run Spawn().
-    // Declared here rather than included to keep client.cpp out of
-    // this TU's build.
+    int cn = ts_alloc_string("player");
+    pev->v.classname = cn;
+    bridge_diagLog(HS_MISC, ENTINDEX(pev), cn, 34);  // classname allocated
+
+    // Step 1 of the normal engine path: the LINK_ENTITY_TO_CLASS
+    // export for "player" allocates and attaches the CBasePlayer.
+    player(&pev->v);
+    bridge_diagLog(HS_MISC, ENTINDEX(pev), (int)(size_t)pev->pvPrivateData, 41);
+
+    // Step 2: DispatchSpawn runs CBasePlayer::Spawn() (and
+    // IsAllowedToSpawn, the FL_KILLME check, global-state handling).
     extern int DispatchSpawn( edict_t *pent );
-    if (!DispatchSpawn(pev)) {
-        bridge_diagLog(HS_MISC, ENTINDEX(pev), -1, 22);  // -1 = DispatchSpawn failed
+    int rc = DispatchSpawn(pev);
+    bridge_diagLog(HS_MISC, ENTINDEX(pev), rc, 35);   // dispatch returned
+    if (!rc) {
         g_engfuncs.pfnRemoveEntity(pev);
         return;
     }
 
     ts_local_player = pev;
-    bridge_diagLog(HS_PLAYER_SPAWN, ENTINDEX(pev), ts_spawn_attempts, 0);
-
     CBasePlayer *pPlayer = (CBasePlayer *)pev->pvPrivateData;
-    if (!pPlayer) return;
-
-    // Give the player a spawn point. Prefer the game's own spawn
-    // logic (GetPlayerSpawnSpot walks info_player_start /
-    // info_player_deathmatch entities in the loaded map).
-    edict_t *pSpot = NULL;
-    if (g_pGameRules) pSpot = g_pGameRules->GetPlayerSpawnSpot(pPlayer);
-    if (pSpot) {
-        pev->v.origin      = pSpot->v.origin;
-        pev->v.angles      = pSpot->v.angles;
-        pev->v.v_angle     = pSpot->v.v_angle;
+    bridge_diagLog(HS_PLAYER_SPAWN, ENTINDEX(pev), ts_spawn_attempts, 0);
+    if (!pPlayer) {
+        bridge_diagLog(HS_MISC, ENTINDEX(pev), -1, 36);  // no private data
+        return;
     }
 
-    // Mark as a client so HLSDK's Think paths treat this as a live
-    // player (spectator checks, score accounting, etc).
+    // Give the player a spawn point from the loaded map.
+    edict_t *pSpot = NULL;
+    if (g_pGameRules) pSpot = g_pGameRules->GetPlayerSpawnSpot(pPlayer);
+    bridge_diagLog(HS_MISC, ENTINDEX(pev), pSpot ? ENTINDEX(pSpot) : -1, 37);
+    if (pSpot) {
+        pev->v.origin  = pSpot->v.origin;
+        pev->v.angles  = pSpot->v.angles;
+        pev->v.v_angle = pSpot->v.v_angle;
+    }
+
     pev->v.flags |= FL_CLIENT;
 
-    // Run our TS overrides on top of the spawn pfnSpawn() already did.
+    bridge_diagLog(HS_MISC, ENTINDEX(pev), 0, 38);   // about to InitHUD
     if (g_pGameRules) g_pGameRules->InitHUD(pPlayer);
+    bridge_diagLog(HS_MISC, ENTINDEX(pev), 0, 39);   // about to PlayerSpawn
     if (g_pGameRules) g_pGameRules->PlayerSpawn(pPlayer);
+    bridge_diagLog(HS_MISC, ENTINDEX(pev), 0, 40);   // survived both
 
     g_engfuncs.pfnServerPrint("[TS] ts_spawn_local_player: local player in server\n");
 }
@@ -347,6 +359,44 @@ extern "C" void ts_cmd_spawn_player(void) {
     ts_spawn_attempts = 0;
     ts_spawn_local_player();
 }
+
+// === Spawn path status, as of 2026-10-21 ================================
+//
+// spawn-diag.js pins the current failure precisely:
+//
+//   step 31  ENTER spawn_local_player          ok
+//   step 33  pfnCreateEntity() → edict 185     ok
+//   step 34  pfnAllocString("player")          ok
+//   step 41  player(&pev->v) → private data    ok   (pvPrivateData non-NULL)
+//   <trap>   DispatchSpawn → CBasePlayer::Spawn()
+//
+// The LINK_ENTITY_TO_CLASS + DispatchSpawn sequence is correct — we
+// reproduce exactly what SV_Spawn does. The trap is inside
+// CBasePlayer::Spawn() itself, which reaches for a long tail of
+// g_engfuncs slots (weapon give, model/sound precache, message
+// hooks, PM_*, ...). Several of those slots are NULL in this
+// Xash3D-FWGS build, exactly like pfnCreateFakeClient was. A NULL
+// indirect call through the enginefuncs table is an unconditional
+// WASM trap with no way to catch it in JS.
+//
+// Fixing this needs one of:
+//   a) An audit of CBasePlayer::Spawn's g_engfuncs dependencies,
+//      then NULL-guarding each call. Tedious but mechanical, and
+//      the guard is genuinely correct: the engine can legitimately
+//      leave optional slots NULL and a shipped DLL shouldn't trap
+//      on them.
+//   b) A minimal CTSPlayer that overrides Spawn() to skip the HL1
+//      weapon/model machinery and just set up origin, health,
+//      movetype and modelindex. Matches what ClientPutInServer
+//      would produce for our purposes and avoids the whole tail.
+//
+// (b) is smaller and doesn't touch HLSDK code at all, so it's the
+// one worth doing first. Left for a session with the full build
+// loop rather than half-done here.
+//
+// Until then: the pump is what matters and it works. The world
+// renders, the game logic ticks, and the player entity is the only
+// thing missing.
 
 extern "C" void ts_cmd_pump_think(void) {
     ts_pump_think();
