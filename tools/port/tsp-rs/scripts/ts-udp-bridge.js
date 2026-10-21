@@ -48,6 +48,7 @@ function parseArgs(argv) {
     targetHost: '127.0.0.1',
     targetPort: 27015,
     health: '/health',
+    debug: false,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -58,6 +59,7 @@ function parseArgs(argv) {
       out.targetHost = v.slice(0, idx);
       out.targetPort = parseInt(v.slice(idx + 1), 10);
     } else if (a === '--health') out.health = argv[++i];
+    else if (a === '--debug') out.debug = true;
     else if (a === '--help' || a === '-h') {
       console.log(
         'Usage: node ts-udp-bridge.js [--listen PORT] [--target host:port] [--health PATH]'
@@ -92,6 +94,7 @@ const stats = {
   bytesToServer: 0,
   bytesToClient: 0,
   liveConnections: 0,
+  debugLogged: 0,
 };
 
 const server = http.createServer((req, res) => {
@@ -143,16 +146,42 @@ wss.on('connection', (ws) => {
     stats.bytesToClient += msg.length;
   });
 
+  ws.on('open', () => {
+    console.log(
+      `[bridge] #${connId} WS open, readyState=${ws.readyState}`
+    );
+  });
+
+  ws.on('error', (err) =>
+    console.error(`[bridge] #${connId} ws error:`, err.message)
+  );
+  ws.on('close', (code, reason) => {
+    console.log(
+      `[bridge] #${connId} WS close code=${code} reason=${reason?.toString() || '<none>'}`
+    );
+  });
+
   ws.on('message', (data, isBinary) => {
     // The engine only ever sends binary frames. If we get text, drop it —
     // it isn't a GoldSrc datagram.
-    if (!isBinary) return;
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
     udp.send(buf, 0, buf.length, opts.targetPort, opts.targetHost, (err) => {
       if (err) console.error(`[bridge] #${connId} udp send failed:`, err.message);
     });
     stats.packetsToServer += 1;
     stats.bytesToServer += buf.length;
+    // 2026-10-21 debug: log the first datagram per connection so we can
+    // see whether the engine's GoldSrc handshake is actually crossing
+    // the WebSocket (it should be a 0xffffffff-prefixed challenge with
+    // "TSource Engine Query"). Keep it cheap: only while a debug flag is
+    // set, and only the first 8 bytes so the log stays readable.
+    if (opts.debug && stats.debugLogged < 40) {
+      stats.debugLogged += 1;
+      const head = buf.subarray(0, 8).toString('hex');
+      console.log(
+        `[bridge] #${connId} → udp ${buf.length}B  head=${head}`
+      );
+    }
   });
 
   const teardown = (why) => {
