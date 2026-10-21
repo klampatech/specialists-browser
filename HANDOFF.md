@@ -161,12 +161,61 @@ scoring, rounds, briefcase.
 
 # § NEXT TASK
 
-> **R1 step 1: instrument `cls.state`.**
+> ## R1 step 1: log our own hooks along the handshake chain
 >
-> Get stdout to report every `cls.state` transition during the listen-server
-> handshake so we know precisely where it stops. Build the shim, run
-> `side-by-side.js`, capture the transition sequence for **both** c91698be
-> (works) and our shim (fails), and diff them. That diff *is* the answer.
+> **This is fully actionable today and needs no engine rebuild.**
+> We do not build the engine from source, so instrumenting `cls.state`
+> would mean memory archaeology. We do not need to — the handshake chain
+> passes through **our DLL twice**, and neither hook currently logs
+> anything, so we cannot see how far it gets.
+>
+> ### The chain (verified in `reference/engine/`)
+>
+> ```
+> client  CL_CheckForResend           cl_main.c:1394   cls.state==ca_disconnected && SV_Active()
+>         └─ CL_SendConnectPacket
+> server  SV_ConnectionlessPacket     sv_client.c:3296 → SV_ConnectClient:347
+>         └─ pfnClientConnect         sv_client.c:1681 ◀── OUR CODE, NO LOGGING
+>              └─ accept → SV_SendServerdata + "fullserverinfo"
+>         └─ pfnClientPutInServer     sv_client.c:1462 ◀── OUR CODE, NO LOGGING
+>         └─ svc_setview(viewEnt)     sv_client.c:1502
+> client  CL_ParseConnect             cl_main.c:1752   cls.state = ca_connected
+>         └─ "Setting up renderer..."                    ◀── MARKER WE NEVER REACH
+> ```
+>
+> ### Do this
+>
+> 1. Add one stdout line to each of `ts_ClientConnect`,
+>    `ts_ClientPutInServer`, `ts_ClientDisconnect`, and `ts_Spawn`
+>    (`[HS] ClientConnect edict=%p name=%s -> %d`, etc.). The engine's
+>    stdout already reaches the browser console — `side-by-side.js`
+>    captures it.
+> 2. Build, deploy to a scratch path, run `test-harness/side-by-side.js`.
+> 3. Read which of the four fired.
+>
+> ### Read the result
+>
+> | Observed | Conclusion | Next move |
+> |---|---|---|
+> | **None fire** | Client never sent a connect packet | The stall is *client-side* — `SV_Active()` returning false, or `NET_Init`/loopback failing despite `-noip -noip6`. Look at the client side of `cl_main.c:1394`. |
+> | `ClientConnect` fires, `PutInServer` doesn't | Server rejected after connect | Look at `SV_RejectConnection` / the `fullserverinfo` write — `pfnMessageBegin`/`pfnWriteString` path. |
+> | Both fire, still no `ca_connected` | Handshake completes server-side; client rejects the response | `svc_setview` / serverinfo payload. Now `GetWeaponData` + `PlayerPreThink`/`PostThink` become prime suspects. |
+> | All four fire, `Setting up renderer...` appears | **R1 is done** | Move to R2. |
+>
+> ### Already ruled out — do not re-investigate
+>
+> **`cl->pViewEntity == NULL` is NOT the bug.** `sv_client.c:1468` sets it
+> to NULL right after `pfnClientPutInServer` returns, which looks alarming.
+> But `sv_client.c:1498-1500` handles it:
+> `if (cl->pViewEntity) viewEnt = NUM_FOR_EDICT(cl->pViewEntity); else
+> viewEnt = NUM_FOR_EDICT(cl->edict);` — a NULL view entity falls back to
+> the client's own edict. Verified in source; no further work needed.
+>
+> ### Also useful
+>
+> `sv_client.c:1461` — the engine sets `svgame.globals->time = sv.time`
+> itself immediately before calling our hook, so the clock is not
+> something `PutInServer` needs to fix.
 
 Do NOT: retry CheerpX, propose pure Babylon, deploy an experimental shim to
 live webXash, or trust the HUD.
@@ -236,11 +285,24 @@ live webXash, or trust the HUD.
   + `_Static_assert` layout guards
 - `tools/port/ts-server-dll/shim/probe_entvars.c` — standalone offsetof probe
 
-**Tooling:**
+**Tooling (all vendored — no /tmp dependency):**
+- `tools/port/ts-server-dll/bootstrap-tools.sh` — **RUN THIS FIRST.** Verifies
+  wabt / emscripten / playwright+chromium / dev server / rollback baseline.
 - `tools/port/ts-server-dll/dllfunc-diff.py` — structural DLL_FUNCTIONS diff
   vs the baseline wasm
 - `tools/port/ts-server-dll/build-ts-dll.sh` — build + F1 safety gate
   (refuses >60 imports or any `GOT.func`)
+- `tools/port/ts-server-dll/test-harness/*.js` — 90 Playwright diagnostics
+  (self-locating; auto-detects playwright-core and the newest chromium)
+- `tools/port/ts-server-dll/reference/engine/` — **vendored engine sources.**
+  `cl_main.c` (handshake), `sv_client.c` (connect dispatch, the two hooks we
+  own), `sv_game.c` (authoritative `g_engfuncs` table), `eiface.h`,
+  `physint.h`, `progdefs.h`, + full HLSDK headers. Provenance + re-fetch
+  commands in `reference/PROVENANCE.md`. Do not hand-edit.
+
+> ⚠️ `wasm-objdump` (wabt) is **not on PATH** — it is a tarball in
+> `/tmp/wabt-1.0.42/bin/`. Either `export PATH="/tmp/wabt-1.0.42/bin:$PATH"`
+> or `sudo apt-get install -y wabt`. Every structural analysis needs it.
 
 **Docs:**
 - `tools/port/ts-server-dll/PINKBIKE.md` — findings, dead ends, corrections
@@ -266,18 +328,27 @@ live webXash, or trust the HUD.
 # § VERIFICATION
 
 ```bash
-# build the shim (must print 0 GOT.func)
+cd /home/kyle/Development/specialists-browser
+
+# 0. verify the toolchain (wabt / emcc / playwright / dev server / rollback)
+./tools/port/ts-server-dll/bootstrap-tools.sh
+
+# 1. build the shim — MUST print 0 GOT.func
 cd tools/port/ts-server-dll && ./build-ts-dll.sh
 
-# differential test — baseline vs our shim, same flags
-cd /tmp/smoke-test && node side-by-side.js
+# 2. differential test: baseline vs our shim, same launch flags.
+#    Look for "Setting up renderer..." — the marker R1 must produce.
+cd tools/port/ts-server-dll/test-harness && node side-by-side.js
 
-# roll back live webXash
+# 3. ROLL BACK live webXash (always do this after testing)
 cp /tmp/hl_emscripten_wasm32.wasm.bak \
    webxash/public/dlls/hl_emscripten_wasm32.wasm
 cp /tmp/hl_emscripten_wasm32.wasm.bak \
    webxash/public/xash3d-fwgs/dist/dlls/ts_emscripten_wasm32.wasm
 ```
+
+Vendored rollback (in case `/tmp` was cleared):
+`tools/port/ts-server-dll/baseline/hl_emscripten_wasm32.wasm`
 
 Record on every build attempt: file size, import count, `GOT.func` count, SHA,
 browser result, page errors, and whether TS assets/commands register.

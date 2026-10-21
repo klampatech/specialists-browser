@@ -98,3 +98,10 @@ progress/grind.pid
 
 # Module-level __pycache__
 **/__pycache__/
+
+# Exception to the blanket *.wasm rule above: the known-good TS server
+# rollback baseline MUST be tracked. Without it a fresh clone has no way
+# back from a bad deploy, and /tmp does not survive a reboot.
+# (The many experimental shim builds under shim/build/ stay ignored on
+# purpose — they are artifacts, not state.)
+!tools/port/ts-server-dll/baseline/*.wasm
