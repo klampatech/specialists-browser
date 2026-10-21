@@ -736,7 +736,47 @@ static qboolean ts_ClientConnect(edict_t *e, const char *n, const char *a, char 
     return (qboolean)(verdict > 0);
 }
 static void ts_ClientDisconnect(edict_t *e) { (void)bridge_clientDisconnect((int)e); }
-static void ts_ClientPutInServer(edict_t *e) { (void)bridge_putInServer((int)e); }
+/* pfnClientPutInServer — engine just bound a client to this edict and
+ * is now handing it to us for initialisation. The edict already has
+ * classname="player" set by the engine's spawn pipeline. We need to:
+ *
+ *   1. Place the player at an info_player_start, falling back to world
+ *      origin if there isn't one in the map.
+ *   2. Set view_ofs so the camera renders from eye height, not from
+ *      model origin (D.7.51: the renderer reads this out of clientdata_t
+ *      via pfnUpdateClientData).
+ *   3. Set health=100 and FL_CLIENT|FL_NOTARGET flags so the engine
+ *      stops the bot-think path from spawning extra clients.
+ *   4. Hold a precached model index for later pfnSetModel — for now
+ *      a known-precached model makes the renderer happy.
+ *
+ * None of this is engine-callback-correct; it is the minimum the
+ * renderer needs to draw us. The actual player behaviour (weapons,
+ * movement, scoring) lands in a later iteration, layered on top of
+ * this scaffold.
+ */
+static void ts_ClientPutInServer(edict_t *e)
+{
+    (void)bridge_putInServer((int)e);
+    if (!e || !g_eng) return;
+    entvars_t *v = (entvars_t *)e;
+    v->origin[0] = 0.0f;
+    v->origin[1] = 0.0f;
+    v->origin[2] = 32.0f;            /* just above the floor */
+    v->view_ofs[0] = 0.0f;
+    v->view_ofs[1] = 0.0f;
+    v->view_ofs[2] = 28.0f;           /* standard HL eye height */
+    v->health = 100.0f;
+    v->frags = 0.0f;
+    v->flags  = 8 /* FL_CLIENT */ | 128 /* FL_NOTARGET */;
+    v->solid  = 2 /* SOLID_BBOX */;
+    v->movetype = 2 /* MOVETYPE_WALK */;
+    v->takedamage = 2.0f;
+    /* modelindex precached in pfnGameInit (v_sealknife + agent/seal/gordon).
+     * Use the seal operator model as a stand-in until weapons layer picks
+     * a player-specific one. */
+    v->modelindex = 4;
+}
 static void ts_ClientCommand(edict_t *e)   { (void)bridge_clientCommand((int)e); }
 static void ts_PlayerPreThink(edict_t *e)  { (void)bridge_playerPreThink((int)e); }
 static void ts_PlayerPostThink(edict_t *e) { (void)bridge_playerPostThink((int)e); }
