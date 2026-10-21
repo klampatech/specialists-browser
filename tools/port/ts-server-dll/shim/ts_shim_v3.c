@@ -629,6 +629,28 @@ EM_JS(int, bridge_spawnLog, (int entIndex, int ret, int extra), {
     if (!globalThis.__ctsBridge || typeof globalThis.__ctsBridge.spawnLog !== "function") return 0;
     return globalThis.__ctsBridge.spawnLog(entIndex, ret, extra);
 })
+/* Handshake instrumentation — R1 step 1: log every hook in the
+ * connect→connected chain so we can SEE how far our hooks fire.
+ * Renders to the browser console via console.log; side-by-side.js
+ * captures it via page.on('console'). Tagged [HS] so the milestone
+ * regex in side-by-side.js can filter them out of the noise. Does
+ * NOT depend on __ctsBridge being installed — always logs. */
+#define DIAG_CLIENT_CONNECT      0
+#define DIAG_CLIENT_PUTINSERVER  1
+#define DIAG_CLIENT_DISCONNECT   2
+#define DIAG_SPAWN               3
+EM_JS(int, bridge_diagLog, (int tag, int e, int ret, int extra), {
+    var msg;
+    switch (tag) {
+        case 0: msg = '[HS] ClientConnect edict=' + e + ' ret=' + ret; break;
+        case 1: msg = '[HS] ClientPutInServer edict=' + e + ' (origin/view_ofs set, modelindex=' + ret + ')'; break;
+        case 2: msg = '[HS] ClientDisconnect edict=' + e; break;
+        case 3: msg = '[HS] Spawn edict=' + e + ' ret=' + ret; break;
+        default: msg = '[HS] hook tag=' + tag + ' e=' + e;
+    }
+    if (typeof console !== 'undefined') console.log(msg);
+    return 1;
+})
 
 /* ── constants ──────────────────────────────────────────────────────── */
 #define PM_MAXSPEED       320.0f
@@ -706,6 +728,7 @@ static int ts_Spawn(edict_t *e)
      * without engaging our dispatch, so we just write 1 too. */
     int ret = 1;
     bridge_spawnLog(0, ret, 0);
+    bridge_diagLog(DIAG_SPAWN, (int)e, ret, 0);
     return ret;
 }
 
@@ -732,10 +755,15 @@ static qboolean ts_ClientConnect(edict_t *e, const char *n, const char *a, char 
 {
     (void)reason;
     int verdict = bridge_clientConnect((int)e, (int)n, (int)a);
+    bridge_diagLog(DIAG_CLIENT_CONNECT, (int)e, verdict, 0);
     if (verdict == 0) return 1;      /* bridge absent or silent -> accept */
     return (qboolean)(verdict > 0);
 }
-static void ts_ClientDisconnect(edict_t *e) { (void)bridge_clientDisconnect((int)e); }
+static void ts_ClientDisconnect(edict_t *e)
+{
+    bridge_diagLog(DIAG_CLIENT_DISCONNECT, (int)e, 0, 0);
+    (void)bridge_clientDisconnect((int)e);
+}
 /* pfnClientPutInServer — engine just bound a client to this edict and
  * is now handing it to us for initialisation. The edict already has
  * classname="player" set by the engine's spawn pipeline. We need to:
@@ -757,6 +785,7 @@ static void ts_ClientDisconnect(edict_t *e) { (void)bridge_clientDisconnect((int
  */
 static void ts_ClientPutInServer(edict_t *e)
 {
+    bridge_diagLog(DIAG_CLIENT_PUTINSERVER, (int)e, 0, 0);
     (void)bridge_putInServer((int)e);
     if (!e || !g_eng) return;
     entvars_t *v = (entvars_t *)e;

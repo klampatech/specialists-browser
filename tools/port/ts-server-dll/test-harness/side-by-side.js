@@ -47,7 +47,7 @@ const CHROME_PATH = resolveChromium();
   await page.waitForSelector('.ts-hud',{state:'visible',timeout:60000});
   await new Promise(r=>setTimeout(r,14000));
   // Print the ordered engine milestone sequence
-  const milestones = /Game started|Trying to connect|Spooling demo|Setting up renderer|Custom resource|Dll loaded|TCP\/IP|player server started|precache|Loading|No spawn|Failed|Error|Entering|map:/i;
+  const milestones = /Game started|Trying to connect|Spooling demo|Setting up renderer|Custom resource|Dll loaded|TCP\/IP|player server started|precache|Loading|No spawn|Failed|Error|Entering|map:|\[HS\] /i;
   console.log('=== MILESTONE SEQUENCE (shim w6) ===');
   lines.filter(l=>milestones.test(l)).forEach((l,i)=>console.log('  '+String(i).padStart(2)+' '+l.slice(0,150)));
   await page.screenshot({path:'/tmp/smoke-test/sbs-shim.png'});

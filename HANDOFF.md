@@ -16,7 +16,7 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-20, commit `852f53e`
+**As of:** 2026-10-20, commit `ac6a925` (+ R1-step-1 instrumentation pending)
 **Active path:** webXash (Xash3D-fwgs WASM) + custom TS server DLL
 **Goal:** playable The Specialists in the browser, real assets, real gameplay.
 
@@ -55,6 +55,12 @@ Server-side, measured — not inferred:
   `__attribute__((export_name("...")))`.
 - **Player spawn scaffold** (`ts_ClientPutInServer`) sets origin, view_ofs,
   health, flags, solid, movetype, modelindex.
+- **R1 step 1 hook instrumentation** (2026-10-20): every one of
+  `ts_Spawn`, `ts_ClientConnect`, `ts_ClientDisconnect`,
+  `ts_ClientPutInServer` now writes a `[HS] ...` line to the browser
+  console via a new `bridge_diagLog` EM_JS. The code change is in;
+  the **deployment test could not observe** it because of the WASM-load
+  block below — see NEXT TASK.
 
 ## What is NOT working
 
@@ -161,48 +167,77 @@ scoring, rounds, briefcase.
 
 # § NEXT TASK
 
-> ## R1 step 1: log our own hooks along the handshake chain
+> ## R1 step 2: get the shim past the WASM loader so R1-step-1 logs can fire
 >
-> **This is fully actionable today and needs no engine rebuild.**
-> We do not build the engine from source, so instrumenting `cls.state`
-> would mean memory archaeology. We do not need to — the handshake chain
-> passes through **our DLL twice**, and neither hook currently logs
-> anything, so we cannot see how far it gets.
+> **What changed in this session.** The four hook logs are now wired
+> (`ts_Spawn`, `ts_ClientConnect`, `ts_ClientDisconnect`,
+> `ts_ClientPutInServer` each call a new `bridge_diagLog` EM_JS that
+> writes `[HS] ...` to the browser console). `side-by-side.js`'s
+> milestone regex was extended to capture `[HS]`. The build succeeds;
+> the **safety gate refused deploy** because the fresh WASM is
+> 283 imports / 229 GOT.func — which the gate's comment correctly
+> predicts breaks webXash at library load (verified empirically:
+> `[xash-exec] hostmap Infinity` + `_Mem_Alloc: pool == NULL
+> (alloc at ../engine/common/cmd.c:638)`, no `[HS]` lines).
 >
-> ### The chain (verified in `reference/engine/`)
->
-> ```
-> client  CL_CheckForResend           cl_main.c:1394   cls.state==ca_disconnected && SV_Active()
->         └─ CL_SendConnectPacket
-> server  SV_ConnectionlessPacket     sv_client.c:3296 → SV_ConnectClient:347
->         └─ pfnClientConnect         sv_client.c:1681 ◀── OUR CODE, NO LOGGING
->              └─ accept → SV_SendServerdata + "fullserverinfo"
->         └─ pfnClientPutInServer     sv_client.c:1462 ◀── OUR CODE, NO LOGGING
->         └─ svc_setview(viewEnt)     sv_client.c:1502
-> client  CL_ParseConnect             cl_main.c:1752   cls.state = ca_connected
->         └─ "Setting up renderer..."                    ◀── MARKER WE NEVER REACH
-> ```
->
-> ### Do this
->
-> 1. Add one stdout line to each of `ts_ClientConnect`,
->    `ts_ClientPutInServer`, `ts_ClientDisconnect`, and `ts_Spawn`
->    (`[HS] ClientConnect edict=%p name=%s -> %d`, etc.). The engine's
->    stdout already reaches the browser console — `side-by-side.js`
->    captures it.
-> 2. Build, deploy to a scratch path, run `test-harness/side-by-side.js`.
-> 3. Read which of the four fired.
->
-> ### Read the result
+> **Conclusion: a fifth row for the "Read the result" table.**
+> The four rows listed in the previous NEXT TASK assumed the shim
+> loaded. They do not. R1 step 1 was correct, but the experiment
+> needed the WASM to load before any hook could fire, and our WASM
+> doesn't load.
 >
 > | Observed | Conclusion | Next move |
 > |---|---|---|
-> | **None fire** | Client never sent a connect packet | The stall is *client-side* — `SV_Active()` returning false, or `NET_Init`/loopback failing despite `-noip -noip6`. Look at the client side of `cl_main.c:1394`. |
-> | `ClientConnect` fires, `PutInServer` doesn't | Server rejected after connect | Look at `SV_RejectConnection` / the `fullserverinfo` write — `pfnMessageBegin`/`pfnWriteString` path. |
-> | Both fire, still no `ca_connected` | Handshake completes server-side; client rejects the response | `svc_setview` / serverinfo payload. Now `GetWeaponData` + `PlayerPreThink`/`PostThink` become prime suspects. |
-> | All four fire, `Setting up renderer...` appears | **R1 is done** | Move to R2. |
+> | **No `[HS]` lines + engine crash at library init** | WASM never reaches runtime — GOT.func pool unpopulated, `call_indirect` traps during early C runtime init | Get the shim to the 52-import / 0-GOT.func shape that the working baselines (c91698be, `ts_shim_v3k_sv_gate`) have. Then re-run R1 step 1 to actually see which hooks fire. |
+>
+> ### How to close step 2
+>
+> 1. **Try `--with-rewrite`** (opt-in flag passed to `build-ts-dll.sh`).
+>    Activates `tools/port/ts-server-dll/rewrite-got.py` which
+>    converts each `GOT.func <funcname>` import into
+>    `(global i32 (i32.const D))` where D is the function's
+>    declaration index. The c91698be WASM is exactly this shape
+>    and works. We have a 16+ artifact history in `shim/build/`
+>    showing past attempts — `ts_shim_v3k_sv_gate.wasm` is
+>    the most recent rewrite-passed artifact and likely
+>    boots.
+> 2. **If the rewrite path is still broken** (D.7.19: it trapped
+>    on `call_indirect` "function signature mismatch" the last
+>    time), investigate the signature-mismatch fix — likely an
+>    `__indirect_function_table` element-type mismatch (the
+>    side module declared `funcref` with one canonical type,
+>    while the runtime base module expected `i32`/typed-funcref
+>    with a different declaration).
+> 3. **Once the WASM boots**, re-run `side-by-side.js` against the
+>    deployed experimental WASM and read which of the four
+>    `[HS] ...` lines land in the console. Use the next three
+>    rows of the "Read the result" table from the previous
+>    NEXT TASK to triage (`CL_CheckForResend` /
+>    `pfnClientConnect` / `pfnClientPutInServer`).
+>
+> ### Archive
+>
+> - Code change: `ts_shim_v3.c` (4 hook call sites +
+>   `bridge_diagLog` EM_JS).
+> - Test harness update: `side-by-side.js` (regex now matches
+>   `[HS] ` so the new hook logs show up in the milestone dump).
+> - Experimental artifact: `shim/build/ts_shim_v3_w7_handshake_logs.wasm`
+>   (1,361,440 bytes, 283 imports / 229 GOT.func — fails
+>   safety gate, see above).
+> - `side-by-side.js` run against the deployed experimental
+>   WASM produced:
+>   ```
+>   0 [zip-helpers] cache write failed: UnknownError: Failed to execute 'put' on 'Cache': Unexpected internal error.
+>   1 [xash-alert] Xash Error
+>      _Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)
+>   2 [xash-exec] failed: hostmap Infinity
+>   ```
+>   No `[HS]` lines observed — confirming the WASM never reached
+>   hook code.
 >
 > ### Already ruled out — do not re-investigate
+
+
 >
 > **`cl->pViewEntity == NULL` is NOT the bug.** `sv_client.c:1468` sets it
 > to NULL right after `pfnClientPutInServer` returns, which looks alarming.
