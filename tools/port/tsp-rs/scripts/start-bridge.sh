@@ -29,6 +29,7 @@ fi
 cd "$WD"
 nohup node --unhandled-rejections=warn "$BRIDGE" \
     --listen 27017 --target 127.0.0.1:27015 \
+    --debug \
     > "$LOG" 2>&1 &
 BPID=$!
 echo $BPID > "$PIDFILE"
