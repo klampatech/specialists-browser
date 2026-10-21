@@ -41,7 +41,29 @@ const CHROME_PATH = resolveChromium();
   const lines = [];
   page.on('console', m => { const t=m.text().replace(/\[\d\d:\d\d:\d\d\]\s*/,''); lines.push(t); });
   page.on('pageerror', e => lines.push('[PE] '+e.message.slice(0,80)));
+
+  // First load: just to get localStorage seeded by any app init code.
   await page.goto('https://100.95.111.112:5174/webXash/', {waitUntil:'domcontentloaded'});
+  await page.evaluate(() => {
+    // Force the launchOptions the TS-overlay tests want. This bypasses
+    // the URL-parameter routing (which Vivaldi doesn't always plumb
+    // through to pinia) and the launch-options UI panel hunt.
+    const KEY = 'pinia';
+    let cur = {};
+    try { cur = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch {}
+    const stored = (cur.launchOptions && cur.launchOptions.options)
+      ? cur.launchOptions.options
+      : (cur.launchOptions || {});
+    const newOpts = {
+      ...stored,
+      // Match the default we set in src/stores/store.ts:36 — boot
+      // straight into -game ts +sv_lan 1 +map ts_lobby.
+      launchOptions: '-noip -noip6 -game ts +sv_lan 1 +maxplayers 4 +mp_game_start 1 +map ts_lobby',
+    };
+    cur.launchOptions = newOpts;
+    localStorage.setItem(KEY, JSON.stringify(cur));
+  });
+  await page.reload({waitUntil:'domcontentloaded'});
   await page.waitForSelector('#canvas',{timeout:30000,state:'attached'});
   await page.click('button.start-button, .start-button, button');
   await page.waitForSelector('.ts-hud',{state:'visible',timeout:60000});
