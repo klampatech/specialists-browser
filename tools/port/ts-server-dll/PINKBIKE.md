@@ -263,15 +263,37 @@ bridge through the HUD was reading garbage from a neighbour. With
 view_ofs reading from neighbour data, the renderer never had a
 sensible eye position to draw from.
 
-Visible symptoms that disappeared once the correct layout landed:
+**CORRECTION (D.7.52).** An earlier revision of this entry claimed the
+HUD started populating once `entvars_t` was fixed. **That was wrong**,
+and it was worth catching before it turned into a wasted debugging
+session.
 
-  - HUD overlays rendering correctly: cash, round timer, scoreboard,
-    map name, weapon slots, player roster — *all of them* populating.
-  - Previously: HUD blank or with foreign values from misaligned field
-    reads.
+`webxash/src/components/TSHud.vue:145-151` initialises its reactive
+state with literals:
 
-It is still on the loading screen, but every bridge now resolves to
-real field values, not neighbouring garbage.
+    const cash = ref(850)
+    const roundTimeRemaining = ref(178)
+    const roundCount = ref(1)
+    const currentWeapon = ref('Desert Eagle')
+    const className = ref('Soldier')
+
+and the player roster is likewise static. Only 2 bindings in the whole
+component are actually bridge-fed. So the HUD renders identically with
+**no DLL of ours loaded at all** — including on the c91698be baseline.
+Its appearance is not evidence that anything server-side works.
+
+The `entvars_t` fix is still correct and still worth having; it just is
+not observable through the HUD. **Do not use the HUD as a progress
+signal.** Use engine stdout and the network protocol instead — those
+come from the actual server.
+
+The real visible-milestone sequence, once it starts, is:
+1. Client leaves the loading screen (`ca_connected`).
+2. BSP geometry renders — camera at the spawn point, walls visible.
+3. Player model and viewmodel appear.
+4. Movement: `+forward` / `+moveleft` move the camera.
+5. HUD values become live (cash actually changes, roster populates
+   from real client data rather than literals).
 
 See `tools/port/ts-server-dll/build-matrix/entvars.h` and the
 `D.7.51` commit message; the addendum in this PINKBIKE entry above
