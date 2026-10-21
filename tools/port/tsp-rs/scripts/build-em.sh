@@ -1,21 +1,22 @@
-// build-em.sh — environment setup for compiling tsp-rs to wasm32.
-//
-// WHAT THIS DOES:
-//   1. Puts emcc on PATH.
-//   2. Sets FWGS_DIR to a xash3d-fwgs source checkout (must include
-//      a generated public/build.h — see scripts/gen-fwgs-stub.sh).
-//   3. Sets LIBCLANG_PATH so bindgen can find libclang (system
-//      libclang-dev isn't installed; we use a local symlink).
-//   4. Sets BINDGEN_EXTRA_CLANG_ARGS to add -isystem for clang's
-//      bundled stddef.h (no system glibc-dev installed).
-//   5. Exports everything as `sourceable` environment for cargo.
-//
-// USAGE:
-//
-//   source tools/port/tsp-rs/scripts/build-em.sh
-//   # Now the env is correct; the actual build command:
-//   cargo build --target wasm32-unknown-emscripten --release \
-//       -p ts-client-dll --no-default-features --features ts30
+#!/usr/bin/env bash
+# build-em.sh — environment setup for compiling tsp-rs to wasm32.
+# 
+# WHAT THIS DOES:
+# 1. Puts emcc on PATH.
+# 2. Sets FWGS_DIR to a xash3d-fwgs source checkout (must include
+# a generated public/build.h — see scripts/gen-fwgs-stub.sh).
+# 3. Sets LIBCLANG_PATH so bindgen can find libclang (system
+# libclang-dev isn't installed; we use a local symlink).
+# 4. Sets BINDGEN_EXTRA_CLANG_ARGS to add -isystem for clang's
+# bundled stddef.h (no system glibc-dev installed).
+# 5. Exports everything as `sourceable` environment for cargo.
+# 
+# USAGE:
+# 
+# source tools/port/tsp-rs/scripts/build-em.sh
+# # Now the env is correct; the actual build command:
+# cargo build --target wasm32-unknown-emscripten --release \
+# -p ts-client-dll --no-default-features --features ts30
 
 # --- 1. emscripten toolchain on PATH ---
 : "${EMSDK_ROOT:=/home/kyle/emsdk}"

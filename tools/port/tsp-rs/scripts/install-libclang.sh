@@ -1,15 +1,16 @@
-// install-libclang.sh — installs libclang.so into ~/.local/lib so
-// bindgen can find it. We need this because libclang-dev (the apt
-// package providing libclang.so) isn't installed on this host.
-//
-// On a fresh Debian/Ubuntu, the standard install is
-//   apt install libclang-dev clang
-// That gives you /usr/lib/llvm-*/lib/libclang.so.{19}.
-//
-// When apt isn't available (no root, locked-down CI, etc.) we
-// fall back to downloading the libclang1-19 .deb directly and
-// symlinking:
-//   /home/kyle/.local/lib/libclang.so → libclang-19.so.19 (real file)
+#!/usr/bin/env bash
+# install-libclang.sh — installs libclang.so into ~/.local/lib so
+# bindgen can find it. We need this because libclang-dev (the apt
+# package providing libclang.so) isn't installed on this host.
+# 
+# On a fresh Debian/Ubuntu, the standard install is
+# apt install libclang-dev clang
+# That gives you /usr/lib/llvm-*/lib/libclang.so.{19}.
+# 
+# When apt isn't available (no root, locked-down CI, etc.) we
+# fall back to downloading the libclang1-19 .deb directly and
+# symlinking:
+# /home/kyle/.local/lib/libclang.so → libclang-19.so.19 (real file)
 
 set -e
 
