@@ -1,35 +1,322 @@
 # HANDOFF — specialists-browser
 
 > ╔══════════════════════════════════════════════════════════════════╗
-> ║  EVERY WORK SESSION (T3 thread, Claude Code, Codex, manual edit): ║
-> ║                                                                  ║
-> ║  1. READ this file + `SPEC.md` FIRST                              ║
-> ║  2. DO the work for the current "Next task" below                 ║
-> ║  3. UPDATE this file + `SPEC.md` (if design changed) BEFORE      ║
-> ║     COMMITTING                                                    ║
-> ║  4. THEN `git commit` + push                                     ║
-> ║                                                                  ║
-> ║  New T3 thread? Point it at this file. It will know what to do.   ║
+> **EVERY WORK SESSION — read this top section FIRST.**          ║
+>                                                                  ║
+> **1. Read § CURRENT STATE and § ROADMAP below.**               ║
+> **2. Do the ONE task listed in § NEXT TASK.**                    ║
+> **3. Update § CURRENT STATE before committing.**                 ║
+> **4. Commit + push.**                                           ║
+>                                                                  ║
+> ⚠️ Everything past the `━━━ HISTORICAL RECORD ━━━` divider is  ║
+> **parked or abandoned**. Do not follow it as live state.        ║
 > ╚══════════════════════════════════════════════════════════════════╝
 
-## ⚡ CHECKPOINT SUMMARY (read this first in next session) — UPDATED 2026-10-16 (D.5.5 COMPLETE)
+---
 
-| ⚠️ Previous banner is STALE. **We are past D.5.6.** The full
-| engine simulator + decomp wrapper + class shims + runtime shims +
-| **entity pool** are installed. The decompiled `CTSGun::PrimaryAttack`
-| runs against a real `weapon_tsgun` entity from the pool (stable
-| `pev.index` + `classname`), and the trace handler resolves hits to
-| real bot entities via mesh identity. `__botRegistry` global is gone.
+# § CURRENT STATE
 
-**Status as of 2026-10-18 (end of session):** D.4 (decomp) and
-D.5.1 → D.5.6 are DONE. D.5.7 v2 is in progress: the **shim layer
-that all 8 Fire* methods need is built** (CVars module + bare top-level
-cvar identifiers + helper functions + class method stubs + engine
-singleton vfunc), and **CCombatBlock (the smallest method) is wired
-end-to-end** — confirmed via headless smoke that pressing B runs the
-decompiled body through guards + engine dispatch + Animate + UpdateMeleeBar
-without crashing.
+**As of:** 2026-10-20, commit `852f53e`
+**Active path:** webXash (Xash3D-fwgs WASM) + custom TS server DLL
+**Goal:** playable The Specialists in the browser, real assets, real gameplay.
 
+## The one-line version
+
+The server side boots cleanly and the client **never finishes its handshake**,
+so we sit on the loading screen forever. Everything below the handshake is
+unreachable and has therefore never been tested. **The handshake is the whole
+project right now.**
+
+## What is DONE and verified
+
+Server-side, measured — not inferred:
+
+- Custom TS server DLL loads: `Dll loaded for game "The Specialists"`
+- `4 player server started`, BSP loads, `TCP/IP Disabled`, precaches fire
+  (`v_sealknife`, `player/agent`, `player/seal`, `player/gordon`, weapon WAVs)
+- **`DLL_FUNCTIONS` is exactly 50 fields.** Proven twice: c91698be's
+  `GetEntityAPI` does `memory.copy(p, __memory_base+77436, 200)` (200/4=50),
+  and xash3d-fwgs `engine/eiface.h` lists 50 fields. We fill **50/50, zero
+  NULL.**
+- **`g_engfuncs` slot table** taken from the engine's own
+  `static enginefuncs_t g_engfuncs = {...}` initialiser in `sv_game.c`,
+  **not** from `eiface.h`. The two disagree past ~slot 50.
+- **`entvars_t` matches HLSDK's real layout** (verbatim from `progdefs.h`),
+  guarded by `_Static_assert` on every offset we read. Caught two real bugs
+  on first build.
+- **`Server_GetPhysicsInterface`** returns a real interface (was returning 0,
+  causing a `SV_LoadProgs: couldn't get physics API` warning every boot).
+- **`pfnClientConnect` accepts** (was returning 0 = "connection refused" —
+  we were turning away the local client at the door).
+- **`gpGlobals` is maintained every tick** by `pfnStartFrame` (time,
+  frametime, force_retouch, startspot). A frozen clock stops think
+  scheduling entirely.
+- **~250 entity-class exports** resolve via
+  `__attribute__((export_name("...")))`.
+- **Player spawn scaffold** (`ts_ClientPutInServer`) sets origin, view_ofs,
+  health, flags, solid, movetype, modelindex.
+
+## What is NOT working
+
+**The client never reaches `ca_connected`.** `cl_main.c:1394 → :1753` is the
+loopback-connect branch; we don't get past it. c91698be does, under identical
+launch flags. Engine never prints `Setting up renderer...`.
+
+World geometry is therefore black. Nothing past the handshake has ever been
+observed working.
+
+## ⚠️ DO NOT use the HUD as a progress signal
+
+`webxash/src/components/TSHud.vue:145-151` initialises every visible value as
+a **literal**:
+
+```js
+const cash = ref(850)
+const roundTimeRemaining = ref(178)
+const roundCount = ref(1)
+const currentWeapon = ref('Desert Eagle')
+const className = ref('Soldier')
+```
+
+The player roster is static too. Only **2** bindings in the whole component are
+bridge-fed. **The HUD renders identically with none of our code loaded**,
+including on the c91698be baseline. We claimed otherwise once and had to walk
+it back — see PINKBIKE D.7.52.
+
+**Real signals:** engine stdout, `cls.state` transitions, network messages.
+The only genuinely live HUD-ish value today is the round timer, because
+`gpGlobals->time` is real.
+
+---
+
+# § ROADMAP
+
+Dependency-ordered. Do not skip ahead — each step is untestable without the
+one above it.
+
+### R1. 🔴 THE BLOCKER — finish the client handshake
+
+**Exit criterion:** `cls.state` reaches `ca_connected` and stdout prints
+`Setting up renderer...`.
+
+**First move: instrument, don't guess.** We have inferred this blocker for
+several rounds. Add stdout instrumentation on `cls.state` transitions in
+`cl_main.c`'s state machine so we *read* which state we reach instead of
+inferring from "nothing renders." This turns guessing into measurement and
+should be step one.
+
+**Then, in likelihood order,** the three hooks we stub that the baseline
+implements substantially (measured instruction counts from c91698be):
+
+| Hook | Baseline instrs | Our state |
+|---|---|---|
+| `PlayerPostThink` (func[497]) | 505 | stub |
+| `GetWeaponData` (func[515]) | 207 | returns 0 |
+| `PlayerPreThink` (func[496]) | 120 | stub |
+| `CmdStart` | 61 | stub |
+
+The baseline's `ClientConnect` is **1 instruction** and `Spawn`/`Think` are
+**3 each** — and it still renders. So entity behaviour is NOT the gate, and
+table coverage is NOT the gap (we fill all 50). Look at the four above.
+
+### R2. Spawn at a real `info_player_start`
+
+Currently hardcoded `(0,0,32)`. If the camera is inside a wall the world is
+black regardless of R1. Walk the entity list at `ServerActivate` time,
+remember the first `info_player_start` origin, spawn there.
+
+`player` and `info_player_start` are already exported and resolve.
+
+### R3. `AddToFullPack` real payloads
+
+Entity snapshots so the client sees a world at all. Baseline is a 36-instr
+pass-through; ours is a stub.
+
+### R4. Movement — `PM_Move`
+
+Baseline is 4 instructions. Then `+forward` should move the camera.
+**This is the "it's a game" milestone.**
+
+### R5. Non-player entities (the 207 errors)
+
+`No spawn function for ""` — 207 of them, server-side during
+`SV_LoadFromFile`. **Known NOT to be the handshake cause** (they predate
+client connect). They do gate lights/doors/triggers and all TS gameplay.
+Probably needs `physFuncs.pfnAllocString` / `pfnGetString` so the DLL owns
+string representation. String-index behaviour is already understood — see
+PINKBIKE D.7.49, and **do not re-attempt that dead end.**
+
+### R6. Live HUD
+
+Last, because it's cosmetic. Wire `TSHud.vue` to real bridge data so it stops
+showing literals.
+
+### R7. TS gameplay
+
+Only meaningful after R4. `src/mod/` is the decompiled gameplay spec
+(`CTSGameRules`, `CTSBriefcase`, `CTSBulletManager`). Weapons, fire modes,
+scoring, rounds, briefcase.
+
+---
+
+# § NEXT TASK
+
+> **R1 step 1: instrument `cls.state`.**
+>
+> Get stdout to report every `cls.state` transition during the listen-server
+> handshake so we know precisely where it stops. Build the shim, run
+> `side-by-side.js`, capture the transition sequence for **both** c91698be
+> (works) and our shim (fails), and diff them. That diff *is* the answer.
+
+Do NOT: retry CheerpX, propose pure Babylon, deploy an experimental shim to
+live webXash, or trust the HUD.
+
+---
+
+# § GROUND RULES (learned the hard way)
+
+1. **Never deploy an experimental shim to live webXash.** `c91698be` stays
+   live as the rollback baseline. Copy experimental builds to
+   `shim/build/ts_shim_v3_w*.wasm` and test via Playwright.
+2. **`-noip -noip6` is mandatory** — otherwise `NET_Init` fails with
+   `Couldn't allocate IPv4 and IPv6 server ports` (WASM-Sockets can't bind
+   under headless Chromium).
+3. **Count engine slots from `sv_game.c`'s `g_engfuncs` initialiser**, never
+   from `eiface.h`. A wrong slot is a silent call into the wrong function.
+   We shipped `SLOT_ALLOC_STRING 64`; 64 is `pfnPvEntPrivateData` and
+   `pfnAllocString` is **67**. It produced
+   `invalid entnumber 31529152` (`0x01E10000` — a string pointer range-checked
+   as an edict number).
+4. **Structs must mirror HLSDK headers verbatim.** Field order is load-bearing
+   because the engine `memcpy`s and walks offsets. `KeyValueData_s`,
+   `clientdata_t` (server-side, NOT `cdll_int.h`'s `client_data_t`),
+   `entity_state_t`, `entvars_t`, `globalvars_t`.
+5. **Guard struct layouts with `_Static_assert`.** They caught two real bugs
+   the moment they were added. `shim/probe_entvars.c` re-prints them for
+   re-baselining after any HLSDK update.
+6. **An empty PVS does NOT stop the renderer.** We memset `0xFF` over 64
+   bytes of engine memory on that theory. c91698be's `SetupVisibility` is ONE
+   instruction touching neither buffer. Reverted. The overreach also
+   overwrote an allocation whose size we don't know.
+7. **A frozen `gpGlobals->time` stops think scheduling.** The baseline copies
+   engine values into gpGlobals every tick; ours didn't.
+8. **Tools that emit confident nonsense are the real derailer.** Watch for:
+   regexes that span adjacent structs (bit us **three times** — `g_engfuncs`
+   vs `DLL_FUNCTIONS`, then `globalvars_t` vs `entvars_t` twice); naive
+   data-segment locators that desync on custom sections; range checks that
+   pass constant rodata tables. `dllfunc-diff.py` needed three guardrails
+   (range + **distinctness** + **function-existence**) before its output was
+   trustworthy. **Prefer compiling the real header over parsing it** — that's
+   what finally gave us true `entvars_t` offsets.
+9. **Measure, don't assume.** We asserted x86-gcc offsets into a wasm build;
+   the `_Static_assert` failed immediately. wasm32 lays trailing fields
+   differently (`flags@420` vs x86 `444`; `sizeof` 676 vs 720).
+
+---
+
+# § DEAD ENDS — do not retry
+
+| Path | Why it's dead |
+|---|---|
+| **CheerpX** | Permanently closed at `_dl_check_map_versions`; cascading linker bugs. |
+| **Pure Babylon rebuild** | Kyle rejected it — model/polygon/animation quality. Parked at tag `babylon-port-frozen`. |
+| **String-index conversion** | Engine is self-consistent; *our* conversion was the bug. D.7.49. |
+| **`SetupVisibility` memset** | Theory disproved by baseline disassembly. |
+| **Full HLSDK C++ build** | 283 imports / 229 `GOT.func`. Thin C shim is the chosen route. |
+| **`-noip` via memory poke** | Superseded by the official `-noip -noip6` flags. |
+
+---
+
+# § KEY FILES
+
+**Shim (our TS server DLL):**
+- `tools/port/ts-server-dll/shim/ts_shim_v3.c` — active implementation
+- `tools/port/ts-server-dll/shim/ts_class_stubs.inc` — 249 entity-class exports
+- `tools/port/ts-server-dll/build-matrix/entvars.h` — verbatim HLSDK `entvars_t`
+  + `_Static_assert` layout guards
+- `tools/port/ts-server-dll/shim/probe_entvars.c` — standalone offsetof probe
+
+**Tooling:**
+- `tools/port/ts-server-dll/dllfunc-diff.py` — structural DLL_FUNCTIONS diff
+  vs the baseline wasm
+- `tools/port/ts-server-dll/build-ts-dll.sh` — build + F1 safety gate
+  (refuses >60 imports or any `GOT.func`)
+
+**Docs:**
+- `tools/port/ts-server-dll/PINKBIKE.md` — findings, dead ends, corrections
+- `tools/port/ts-server-dll/WAY-FORWARD.md` — architecture + gotchas
+- `tools/port/ts-server-dll/D.7.38-got-root-cause.md` — the 229 GOT.func story
+
+**Runtime:**
+- `webxash/src/stores/store.ts` — launch args:
+  `-noip -noip6 bot_quota 2 -game ts +map ts_apartments`
+- `webxash/src/components/TSHud.vue` — ⚠️ literals, see above
+- `webxash/src/services/ts-bridge.ts` — ⚠️ still targets `Module.ctsBridge`;
+  the shim reads `globalThis.__ctsBridge`. Unresolved contract mismatch.
+
+**Assets / rollback:**
+- `webxash/public/dlls/hl_emscripten_wasm32.wasm` — **live, c91698be**
+- `/tmp/hl_emscripten_wasm32.wasm.bak` — known-good rollback
+- `shim/build/ts_shim_v3_w*.wasm` — 16+ preserved experiment artifacts
+- Live: `https://100.95.111.112:5174/webXash/`
+- Diagnostics: `?nohud=1`, `?xashnoise=1`; Playwright scripts in `/tmp/smoke-test/`
+
+---
+
+# § VERIFICATION
+
+```bash
+# build the shim (must print 0 GOT.func)
+cd tools/port/ts-server-dll && ./build-ts-dll.sh
+
+# differential test — baseline vs our shim, same flags
+cd /tmp/smoke-test && node side-by-side.js
+
+# roll back live webXash
+cp /tmp/hl_emscripten_wasm32.wasm.bak \
+   webxash/public/dlls/hl_emscripten_wasm32.wasm
+cp /tmp/hl_emscripten_wasm32.wasm.bak \
+   webxash/public/xash3d-fwgs/dist/dlls/ts_emscripten_wasm32.wasm
+```
+
+Record on every build attempt: file size, import count, `GOT.func` count, SHA,
+browser result, page errors, and whether TS assets/commands register.
+
+---
+
+# § USERS' WORKING STYLE (Kyle)
+
+- Prefers **"do it right" over "do it fast"** — *"I want this done correctly
+  before we get too lost in the sauce."*
+- Parallelism is welcome for isolated work; keep core lifecycle changes
+  sequential. *"if it's work suited for that, don't break anything just
+  trying to go faster."*
+- **Regression transparency:** *"I guess i wanted to just make sure you didn't
+  sneak any bad commits in."* Surface regressions explicitly.
+- **No direct-to-main pushes** — universal, every project. (This repo is a
+  private solo repo where commits to main were previously confirmed OK;
+  confirm if unsure.)
+- Catches **behaviour-vs-claim gaps** — if I say I query something, actually
+  query it.
+- Debug style: reframe the category rather than give the answer
+  (*"we don't use any anthropic models"* → *"we run minimax through their
+  provider"*).
+- Wants notification when there's a **stable build worth testing**.
+- Watches for tools producing confident nonsense — *"that could be a real
+  derailer."* Respect the signal.
+
+---
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# ━━━ HISTORICAL RECORD ━━━
+# Everything below predates the webXash pivot and is PARKED or ABANDONED.
+# Kept for provenance only. Do not treat as live state, do not re-attempt
+# without a new reason, and do not update it.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+> Historical Babylon-era record continues below. The current
+> design doc is `SPEC.md`; the current findings log is
+> `tools/port/ts-server-dll/PINKBIKE.md`.
 ### D.5.5 done — decompiled code runs end-to-end
 
 The full call chain is real (not a stub):
