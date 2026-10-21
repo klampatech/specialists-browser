@@ -212,11 +212,140 @@ TS_EXPORT void ts_pump(void) {
 //
 // Throttled inside ts_pump_think so a 60fps pump doesn't flood the
 // console; we emit one [HS] line per 64 calls.
+// === Local player spawner ===
+//
+// Nothing calls ClientPutInServer because no client ever connects
+// (loopback connect stalls). So we create the player edict
+// ourselves: UTIL_PlayerSpawn equivalent via g_engfuncs, then
+// run the same HLSDK path the engine would.
+//
+// g_engfuncs.pfnSpawnPlayer is what ClientConnect uses internally —
+// it allocs an edict, sets classname "player", and hands it back.
+// Then we call HLSDK's ClientPutInServer (which does Spawn() +
+// prefs) and our CTSGameRules::PlayerSpawn on top.
+//
+// This is the minimum needed for the client renderer to see a
+// player: the client draws whatever AddToFullPack sends, and the
+// player's model index comes from PlayerSpawn's HL1 default.
+static edict_t *ts_local_player = NULL;
+static int     ts_spawn_attempts = 0;
+
+// ClientPutInServer lives in HLSDK's client.cpp; declared here rather
+// than included so we don't drag that whole TU into ours.
+extern void ClientPutInServer( edict_t *pEntity );
+
+// MAKE_STRING is pointer arithmetic against the DLL's own rodata
+// (works only for string literals the compiler can see). For a
+// runtime-built name we must use the engine's allocator, which is
+// what ALLOC_STRING / g_engfuncs.pfnAllocString exist for.
+static int ts_alloc_string(const char *s) {
+    if (!g_engfuncs.pfnAllocString) return 0;
+    return g_engfuncs.pfnAllocString(s);
+}
+
+extern "C" void ts_spawn_local_player(void) {
+    // Already have one — just respawn it.
+    if (ts_local_player && !ts_local_player->free) {
+        CBasePlayer *p = (CBasePlayer *)ts_local_player->pvPrivateData;
+        if (p && g_pGameRules) g_pGameRules->PlayerSpawn(p);
+        return;
+    }
+    if (++ts_spawn_attempts > 30) {
+        // The world isn't ready (map still loading). Stop trying so
+        // we don't spam the console.
+        return;
+    }
+
+    // How to make a player edict without a connected client:
+    //
+    //  - pfnSpawnPlayer / pfnCreateFakeClient are SDK2-era names.
+    //    Xash3D-FWGS declares pfnCreateFakeClient in eiface.h but
+    //    never implements it — the slot is NULL (verified: the
+    //    engine has no SV_CreateFakeClient symbol). So we do it by
+    //    hand using the two primitives the engine DOES provide:
+    //
+    //    1. pfnCreateEntity()      → allocs a free edict
+    //    2. pfnSpawn(pev)          → engine looks up our "player"
+    //                                 export by classname, allocates
+    //                                 private data, calls Spawn()
+    //
+    //  That's the same two-step SV_SpawnPlayer does, minus the
+    //  sv_client_t bookkeeping (netchan, userinfo, etc.) that only
+    //  matters for a real networked client. For our purposes — the
+    //  client renderer needs a player entity in the snapshot, and
+    //  the DLL needs a CBasePlayer to run PlayerSpawn against —
+    //  this is sufficient.
+
+    edict_t *pev = g_engfuncs.pfnCreateEntity();
+    if (!pev) {
+        bridge_diagLog(HS_MISC, 0, -1, 21);   // -1 = CreateEntity failed
+        return;
+    }
+    pev->v.classname = ts_alloc_string("player");
+
+    // DispatchSpawn is HLSDK's own entry point for this (it IS what
+    // gFunctionTable.pfnSpawn points at). Calling it directly gives
+    // us the same behaviour the engine would: look up our "player"
+    // export by classname, allocate private data, run Spawn().
+    // Declared here rather than included to keep client.cpp out of
+    // this TU's build.
+    extern int DispatchSpawn( edict_t *pent );
+    if (!DispatchSpawn(pev)) {
+        bridge_diagLog(HS_MISC, ENTINDEX(pev), -1, 22);  // -1 = DispatchSpawn failed
+        g_engfuncs.pfnRemoveEntity(pev);
+        return;
+    }
+
+    ts_local_player = pev;
+    bridge_diagLog(HS_PLAYER_SPAWN, ENTINDEX(pev), ts_spawn_attempts, 0);
+
+    CBasePlayer *pPlayer = (CBasePlayer *)pev->pvPrivateData;
+    if (!pPlayer) return;
+
+    // Give the player a spawn point. Prefer the game's own spawn
+    // logic (GetPlayerSpawnSpot walks info_player_start /
+    // info_player_deathmatch entities in the loaded map).
+    edict_t *pSpot = NULL;
+    if (g_pGameRules) pSpot = g_pGameRules->GetPlayerSpawnSpot(pPlayer);
+    if (pSpot) {
+        pev->v.origin      = pSpot->v.origin;
+        pev->v.angles      = pSpot->v.angles;
+        pev->v.v_angle     = pSpot->v.v_angle;
+    }
+
+    // Mark as a client so HLSDK's Think paths treat this as a live
+    // player (spectator checks, score accounting, etc).
+    pev->v.flags |= FL_CLIENT;
+
+    // Run our TS overrides on top of the spawn pfnSpawn() already did.
+    if (g_pGameRules) g_pGameRules->InitHUD(pPlayer);
+    if (g_pGameRules) g_pGameRules->PlayerSpawn(pPlayer);
+
+    g_engfuncs.pfnServerPrint("[TS] ts_spawn_local_player: local player in server\n");
+}
+
 extern "C" void ts_cmd_pump(void) {
     bridge_diagLog(HS_MISC, 0, 0, 1);
     ts_pump_init_hud();
     ts_pump_player_spawn();
     ts_pump_think();
+}
+
+// Dedicated spawn command so JS can create the player on demand
+// (after the map finishes loading, which is when spawn points exist).
+//
+// Deliberately NOT part of ts_pump: pfnCreateEntity + DispatchSpawn
+// can trap in this engine (no connected client ⇒ incomplete edict
+// state), and a WASM trap kills the whole command including the
+// Think() we know works. Keeping spawn behind its own command means
+// a spawn failure costs us the player, not the game loop.
+//
+// Also resets the retry budget — the map only has spawn points once
+// it's finished loading, so a failed early attempt shouldn't
+// permanently poison later ones.
+extern "C" void ts_cmd_spawn_player(void) {
+    ts_spawn_attempts = 0;
+    ts_spawn_local_player();
 }
 
 extern "C" void ts_cmd_pump_think(void) {
@@ -232,6 +361,7 @@ extern "C" void ts_post_init(void) {
     if (g_engfuncs.pfnAddServerCommand) {
         g_engfuncs.pfnAddServerCommand("ts_pump", ts_cmd_pump);
         g_engfuncs.pfnAddServerCommand("ts_pump_think", ts_cmd_pump_think);
+        g_engfuncs.pfnAddServerCommand("ts_spawn_player", ts_cmd_spawn_player);
         g_engfuncs.pfnServerPrint("[TS] ts_post_init: ts_pump commands registered\n");
     } else {
         g_engfuncs.pfnServerPrint("[TS] ts_post_init: pfnAddServerCommand is NULL\n");

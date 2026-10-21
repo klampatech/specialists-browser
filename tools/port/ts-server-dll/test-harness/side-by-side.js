@@ -87,10 +87,15 @@ const CHROME_PATH = resolveChromium();
     const orig = console.log.bind(console);
     console.log = (...a) => { log.push(a.join(' ')); orig(...a); };
     try {
-      // One full pump first — should fire HS_MISC + InitHUD + PlayerSpawn + Think
+      // One full pump first — should fire HS_MISC + spawn + InitHUD + PlayerSpawn + Think
       xash.Cmd_ExecuteString('ts_pump');
-      await new Promise(r => setTimeout(r, 400));
+      await new Promise(r => setTimeout(r, 600));
       const firstCall = log.slice();
+      log.length = 0;
+      // Explicit spawn retry (spawn points only exist after map load)
+      xash.Cmd_ExecuteString('ts_spawn_player');
+      await new Promise(r => setTimeout(r, 400));
+      const spawnLog = log.slice();
       log.length = 0;
       // Now hammer the think-only path ~120x over 2 seconds
       for (let i = 0; i < 120; i++) {
@@ -98,7 +103,7 @@ const CHROME_PATH = resolveChromium();
         await new Promise(r => setTimeout(r, 16));
       }
       const hammer = log.slice();
-      return { ok:true, firstCall, hammerCount: hammer.length, hammerSample: hammer.slice(0,6) };
+      return { ok:true, firstCall, spawnLog, hammerCount: hammer.length, hammerSample: hammer.slice(0,6) };
     } catch (e) {
       return { ok:false, err: e.message.slice(0, 200) };
     } finally {
