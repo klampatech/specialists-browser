@@ -525,6 +525,75 @@ extern "C" void ts_cmd_place_camera(void) {
     g_engfuncs.pfnServerPrint(buf);
 }
 
+// Walk the enginefuncs table and report which slots the engine left
+// NULL. CBasePlayer::Spawn() calls ~40 of them; a NULL indirect call
+// through the table is an unconditional WASM trap, uncatchable from
+// JS, which is exactly where spawn-diag.js dies. Rather than guess
+// which one, measure.
+//
+// The engine's own `no_spawn`/`engine func not implemented` warning
+// list would be the canonical source, but Xash3D-FWGS doesn't expose
+// it. So this prints a targeted set: the slots Spawn() actually
+// touches, then the ones the rest of the player/gamerules code uses.
+extern "C" void ts_cmd_report_funcs(void) {
+    char buf[160];
+    int nulls = 0;
+    #define CHK(field, label)                                              \
+        do {                                                               \
+            /* Function pointer -> uintptr_t for the NULL test. Casting      \
+               straight to void* is rejected by emcc (a function pointer   \
+               isn't an object pointer); going through uintptr_t is the     \
+               portable spelling for "is this slot populated". */           \
+            uintptr_t p = (uintptr_t)g_engfuncs.field;                     \
+            if (p == 0) { nulls++;                                         \
+                snprintf(buf, sizeof(buf), "[TS-FN] NULL  %s\n", label);  \
+                g_engfuncs.pfnServerPrint(buf); }                          \
+            else {                                                         \
+                snprintf(buf, sizeof(buf), "[TS-FN] ok    %s\n", label);  \
+                g_engfuncs.pfnServerPrint(buf); }                          \
+        } while (0)
+
+    // pfnSetPhysicsKeyValue is called 4× as the first g_engfuncs
+    // touch in CBasePlayer::Spawn() (player.cpp:2931-2934). If it's
+    // NULL, that is the trap and everything after it is moot.
+    CHK(pfnSetPhysicsKeyValue, "pfnSetPhysicsKeyValue");
+
+    // Model/sound precache path — SET_MODEL → PrecacheModel.
+    CHK(pfnPrecacheModel,      "pfnPrecacheModel");
+    CHK(pfnSetModel,           "pfnSetModel");
+    CHK(pfnPrecacheSound,      "pfnPrecacheSound");
+    CHK(pfnEmitSound,          "pfnEmitSound");
+    CHK(pfnMessageBegin,       "pfnMessageBegin");
+    CHK(pfnMessageEnd,         "pfnMessageEnd");
+    CHK(pfnWriteByte,          "pfnWriteByte");
+    CHK(pfnWriteShort,         "pfnWriteShort");
+    CHK(pfnWriteLong,          "pfnWriteLong");
+    CHK(pfnWriteString,        "pfnWriteString");
+    CHK(pfnWriteEntity,        "pfnWriteEntity");
+
+    // Physics / trace path — UTIL_SetSize, StartSneaking, move.
+    CHK(pfnTraceLine,          "pfnTraceLine");
+    CHK(pfnTraceHull,          "pfnTraceHull");
+    CHK(pfnPointContents,      "pfnPointContents");
+
+    // Spawn-path essentials.
+    CHK(pfnCreateEntity,       "pfnCreateEntity");
+    CHK(pfnRemoveEntity,       "pfnRemoveEntity");
+    CHK(pfnPEntityOfEntIndex,  "pfnPEntityOfEntIndex");
+    CHK(pfnNumberOfEntities,   "pfnNumberOfEntities");
+    CHK(pfnFindEntityByString, "pfnFindEntityByString");
+    CHK(pfnAddServerCommand,   "pfnAddServerCommand");
+    CHK(pfnServerPrint,        "pfnServerPrint");
+    CHK(pfnPvAllocEntPrivateData, "pfnPvAllocEntPrivateData");
+    CHK(pfnEntOffsetOfPEntity, "pfnEntOffsetOfPEntity");
+
+    #undef CHK
+
+    snprintf(buf, sizeof(buf), "[TS-FN] ---- %d NULL of %d checked ----\n",
+             nulls, 32);
+    g_engfuncs.pfnServerPrint(buf);
+}
+
 // === Spawn path status, as of 2026-10-21 ================================
 //
 // spawn-diag.js pins the current failure precisely:
@@ -578,6 +647,7 @@ extern "C" void ts_post_init(void) {
         g_engfuncs.pfnAddServerCommand("ts_pump_think", ts_cmd_pump_think);
         g_engfuncs.pfnAddServerCommand("ts_spawn_player", ts_cmd_spawn_player);
         g_engfuncs.pfnAddServerCommand("ts_report_spawns", ts_cmd_report_spawns);
+        g_engfuncs.pfnAddServerCommand("ts_report_funcs", ts_cmd_report_funcs);
         g_engfuncs.pfnAddServerCommand("ts_place_camera", ts_cmd_place_camera);
         g_engfuncs.pfnServerPrint("[TS] ts_post_init: ts_pump commands registered\n");
     } else {
