@@ -233,7 +233,18 @@ pub fn gate_open() -> bool {
 /// `ts_dev_scriptinput 1` with `sv_cheats 1`: scripted input may stand in for a player's (the
 /// gate above, and the dev aids `ts_dev_key` and `ts_dev_extsuspend`, `crate::ext`).
 pub fn dev_input_allowed() -> bool {
-    DEV_SCRIPT_INPUT.0.get().value() != 0.0 && cvar_ptr_value(c"sv_cheats") != 0.0
+    dev_script_input_enabled() && cvar_ptr_value(c"sv_cheats") != 0.0
+}
+
+/// `ts_dev_scriptinput 1` on its own, without the `sv_cheats` half of [`dev_input_allowed`].
+///
+/// For commands that have no other route in the environment they serve. The WebAssembly engine
+/// build cannot deliver keyboard input at all (nothing drains its SDL event queue), so a browser
+/// client has no way to reach `HUD_Key_Event` except through such a command. `sv_cheats` is
+/// server-controlled and read-only on the client, so gating on [`dev_input_allowed`] would make
+/// these unusable exactly where they are needed; the cvar is still the deliberate opt-in.
+pub fn dev_script_input_enabled() -> bool {
+    DEV_SCRIPT_INPUT.0.get().value() != 0.0
 }
 
 /// A menu or a client extension (`crate::ext::cursor_wanted`) owns the mouse: the view holds

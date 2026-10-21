@@ -116,6 +116,125 @@ pub fn init() {
     // `Scheme_Init` (1005c2a0), right after CHud::Init: the scheme manager (`hud::vgui`) picks
     // bitmap fonts by it.
     Cvar::register(c"bitmapfonts", c"1", 0);
+    engine().add_command(c"ts_menu_open", cmd_menu_open);
+    engine().add_command(c"ts_menu_slot", cmd_menu_slot);
+    engine().add_command(c"ts_menu_close", cmd_menu_close);
+    engine().add_command(c"ts_join_team", cmd_join_team);
+    engine().add_command(c"ts_key", cmd_key);
+}
+
+/// ---- the menu commands (port addition, issue #352) ----------------------------------------------
+///
+/// The published Xash3D-FWGS **WebAssembly** build cannot deliver keyboard input at all: nothing
+/// drains its SDL event queue (not even the engine's own window/text events), so `Key_Event` never
+/// runs and `HUD_Key_Event` is never reached. The team's VGUI menu therefore cannot be opened or
+/// dismissed, and a client stuck in spectator cannot spawn.
+///
+/// These commands drive the same menu code a key would, so the browser build stays playable while
+/// the engine defect is fixed upstream. They add no new behaviour: each is a thin call into the
+/// functions [`key_event`] would have reached.
+///
+/// They are deliberately gated on `ts_dev_scriptinput 1` (the port's existing scripted-input
+/// switch) so they cannot silently change behaviour in a normal desktop game. Unlike
+/// `ts_dev_key` they do **not** need `sv_cheats`, which is server-controlled and read-only on the
+/// client.
+
+/// `ts_menu_open [id]`: show a menu the way `ShowVGUIMenu` does. Default 2, the team menu.
+extern "C" fn cmd_menu_open() {
+    if !crate::input::dev_script_input_enabled() {
+        engine().print("ts_menu_open: needs ts_dev_scriptinput 1\n");
+        return;
+    }
+    let e = engine();
+    let id = match e.cmd_argc() {
+        1 => 2,
+        2 => match e.cmd_argv(1).to_string_lossy().parse::<i32>() {
+            Ok(v) => v,
+            Err(_) => {
+                e.print("usage: ts_menu_open [2|4|5]\n");
+                return;
+            }
+        },
+        _ => {
+            e.print("usage: ts_menu_open [2|4|5]\n");
+            return;
+        }
+    };
+    // Report the gate, so a menu that will not open says why rather than
+    // appearing to do nothing. `show_vgui_menu` returns early on a demo,
+    // during intermission, on a duplicate, or - for the team menu - while
+    // the HUD has no gamemode yet.
+    let before = current_menu();
+    let gm = hud::with(|h| h.gamemode);
+    let dup = with(|m| m.queue.iter().any(|q| q.id() == id));
+    let inter = hud::intermission();
+    show_vgui_menu(id);
+    let after = current_menu();
+    e.print(&format!(
+        "ts_menu_open: id={id} gamemode={gm} intermission={inter} already_queued={dup} \
+         current {:?} -> {:?}{}\n",
+        before,
+        after,
+        if after == Some(id) { "" } else { "  [REFUSED]" }
+    ));
+}
+
+/// `ts_menu_slot <n>`: the team menu's digit buttons, as [`team_menu_key`] takes them.
+extern "C" fn cmd_menu_slot() {
+    if !crate::input::dev_script_input_enabled() {
+        engine().print("ts_menu_slot: needs ts_dev_scriptinput 1\n");
+        return;
+    }
+    let e = engine();
+    let Ok(n) = e.cmd_argv(1).to_string_lossy().parse::<i32>() else {
+        e.print("usage: ts_menu_slot <0-5>\n");
+        return;
+    };
+    let took = team_menu_key(n);
+    e.print(&format!("ts_menu_slot {n}: {}\n", if took { "sent" } else { "no team menu open" }));
+}
+
+/// `ts_menu_close`: the menu close a key or Escape would do.
+extern "C" fn cmd_menu_close() {
+    if !crate::input::dev_script_input_enabled() {
+        engine().print("ts_menu_close: needs ts_dev_scriptinput 1\n");
+        return;
+    }
+    hide_top_menu();
+    engine().print("ts_menu_close: closed\n");
+}
+
+/// `ts_join_team <n>`: join a team without the menu ([`join_team`], the port's own extension).
+extern "C" fn cmd_join_team() {
+    if !crate::input::dev_script_input_enabled() {
+        engine().print("ts_join_team: needs ts_dev_scriptinput 1\n");
+        return;
+    }
+    let e = engine();
+    let Ok(n) = e.cmd_argv(1).to_string_lossy().parse::<i32>() else {
+        e.print("usage: ts_join_team <1-5>\n");
+        return;
+    };
+    join_team(n);
+    e.print(&format!("ts_join_team: jointeam {n}\n"));
+}
+
+/// `ts_key <key> <1|0>`: `Key_Event` as a key press or release would, reaching `HUD_Key_Event`.
+///
+/// Unlike the dev-only `ts_dev_key` this needs only `ts_dev_scriptinput 1`, because a browser
+/// client has no other way to press a key at all. `key` is the engine's key number (ASCII for
+/// printable keys, `K_*` otherwise).
+extern "C" fn cmd_key() {
+    if !crate::input::dev_script_input_enabled() {
+        engine().print("ts_key: needs ts_dev_scriptinput 1\n");
+        return;
+    }
+    let e = engine();
+    let Ok(key) = e.cmd_argv(1).to_string_lossy().parse::<i32>() else {
+        e.print("usage: ts_key <key number> <1|0>\n");
+        return;
+    };
+    e.key_event(key, e.cmd_argv(2).to_bytes() != b"0");
 }
 
 /// `FUN_10036480`: the nine saved configs from `path` (`<gamedir>/tsbuylist.tsa`). When it can't
