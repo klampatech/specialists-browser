@@ -1,0 +1,857 @@
+//! Rust objects attached to engine edicts.
+//!
+//! Each game-owned edict's private data holds a generational [`Handle`] into a slab of
+//! `Box<dyn Entity>`. Callbacks use take-out dispatch: the object is moved out of its slot
+//! for the duration of the call, so engine calls that re-enter the game (touch, remove,
+//! create) never hit a live `RefCell` borrow.
+//!
+//! An object that is out stays unreachable to other callbacks until its dispatch returns: they
+//! skip it, or [`defer`] work on it until then. A callback that holds the object as `&mut T` can
+//! [`lend`] it back to its slot around a call that must reach it at once, the way TS calls into
+//! the player inside its own think (`game_player_team` changing the team of the player whose
+//! +use fired it, or shot the button that fired it). The lent object stays closed to ordinary
+//! dispatch and `defer` still queues; only [`run_now_or_defer`] and [`run_now`] open it.
+
+use goldsrc::Global;
+use goldsrc::edict::{EdictPtr, private_tag, set_private_tag};
+use goldsrc::server::engine;
+use goldsrc::sys::*;
+use std::any::{Any, TypeId};
+use std::cell::RefCell;
+use std::ffi::CStr;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Handle {
+    index: u32,
+    serial: u32,
+}
+
+/// Per-callback context: the edict being dispatched to.
+pub struct Cx {
+    pub edict: *mut edict_t,
+}
+
+impl Cx {
+    pub fn pev(&mut self) -> &mut entvars_t {
+        self.edict.v()
+    }
+    pub fn index(&self) -> i32 {
+        engine().index_of(self.edict)
+    }
+    pub fn time(&self) -> f32 {
+        engine().time()
+    }
+    /// Schedule `think` after `delay` seconds. For MOVETYPE_PUSH entities the engine compares
+    /// `nextthink` against `ltime` instead of the global time (see entities::stock).
+    ///
+    /// TS writes these as `gpGlobals->time + 0.1`: the C literal is a `double`, which the x87 adds
+    /// to the `float` time and rounds once (`fld qword 0.1; fadd dword time; fstp dword`,
+    /// `ts_i386.so` e.g. 0x88390, mp.dll 0x10066b8d), so the delay is an `f64` (issue #168). A
+    /// `float` delay passed as `f64` gives the same sum.
+    pub fn think_in(&mut self, delay: f64) {
+        let now = engine().time();
+        self.pev().nextthink = next_think_at(now, delay);
+    }
+}
+
+/// [`Cx::think_in`]'s `nextthink`: `now + delay` rounded once to a `float`.
+pub fn next_think_at(now: f32, delay: f64) -> f32 {
+    shared::pm::plus_double(now, delay)
+}
+
+/// A linked classname and a constructor for its class (the save-table tests).
+#[cfg(test)]
+pub type Linked = (&'static str, fn() -> Box<dyn Entity>);
+
+/// `USE_TYPE` from the SDK.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UseType {
+    Off = 0,
+    On = 1,
+    Set = 2,
+    Toggle = 3,
+}
+
+pub use crate::damage::DamageInfo;
+
+/// Behaviour attached to an edict. Every method has a no-op default; implement what the class
+/// needs. Methods receive a `Cx` for their own edict and must not hold borrows of other entities
+/// across engine calls (see world dispatch notes above).
+pub trait Entity: Any {
+    /// Class-specific keyvalue. Return true if handled; otherwise the generic entvars parser runs.
+    fn key_value(&mut self, _cx: &mut Cx, _key: &CStr, _value: &CStr) -> bool {
+        false
+    }
+    fn spawn(&mut self, _cx: &mut Cx) {}
+    fn think(&mut self, _cx: &mut Cx) {}
+    fn touch(&mut self, _cx: &mut Cx, _other: *mut edict_t) {}
+    fn use_(&mut self, _cx: &mut Cx, _activator: *mut edict_t, _caller: *mut edict_t, _kind: UseType, _value: f32) {}
+    fn blocked(&mut self, _cx: &mut Cx, _other: *mut edict_t) {}
+    /// `TraceAttack` (vtable +0x54): the hit's effects, then whatever damage the entity takes goes
+    /// into the multi-damage (`crate::damage::multi`) for one `take_damage` from
+    /// `ApplyMultiDamage`. The default is `CBaseEntity::TraceAttack` (0xb3740): add the damage if
+    /// `takedamage` is on (no blood: the port's entities don't bleed).
+    fn trace_attack(&mut self, cx: &mut Cx, dmg: &DamageInfo) {
+        if cx.pev().takedamage != 0.0 {
+            crate::damage::multi::add(dmg.attacker, cx.edict, dmg.damage, dmg.bits);
+        }
+    }
+    /// Apply damage (`TakeDamage`, vtable +0x58). Return true if the entity took it. The default
+    /// is `CBaseEntity::TakeDamage` (0xab994, `entities::base_take_damage`), which every TS class
+    /// without its own inherits.
+    fn take_damage(&mut self, cx: &mut Cx, dmg: &DamageInfo) -> bool {
+        crate::entities::base_take_damage(cx, dmg)
+    }
+    /// `pfnShouldCollide` (NEW_DLL_FUNCTIONS): return false to let `other` pass through.
+    fn should_collide(&mut self, _cx: &mut Cx, _other: *mut edict_t) -> bool {
+        true
+    }
+    /// `Save` / `Restore` (vtable +0x30 / +0x34): the class's TS field chain, walked with the
+    /// visitor in both directions (`crate::save`). The default is `CBaseEntity`'s part alone.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        crate::save::base_only(cx, f);
+    }
+    /// What `DispatchRestore` runs after the restore: the class's `Precache` (vtable +0x28; no TS
+    /// class has `FCAP_MUST_SPAWN`, which would run `Spawn`).
+    fn restored(&mut self, _cx: &mut Cx) {}
+    /// `OverrideReset` (vtable +0x98): after a global entity was restored over this one.
+    fn override_reset(&mut self, _cx: &mut Cx) {}
+    /// `Activate` (vtable +0x3c): `ServerActivate` runs it on every entity once the map has
+    /// spawned, and again after a restore (`entities::server_activate`). The default is
+    /// `CBaseEntity::Activate` (0xac64c), which does nothing.
+    fn activate(&mut self, _cx: &mut Cx) {}
+    /// `GetDelay` (vtable +0x90): how long a train, camera or gun target waits at this entity
+    /// when its path runs through it. `CBaseEntity::GetDelay` (0xac6b0) is 0; every
+    /// `CBaseToggle` class returns its `m_flWait` (`CBaseToggle::GetDelay` 0xe3dac), and
+    /// `path_corner` its own `m_flWait` (`CPathCorner::GetDelay` 0xd1e40). Read it through
+    /// [`delay_of`].
+    fn get_delay(&self) -> f32 {
+        0.0
+    }
+}
+
+/// `pEntity->GetDelay()` for the path entity `e` ([`Entity::get_delay`]), also while its object
+/// is lent back to its slot ([`lend`]). 0 for an edict without a game object, as for one whose
+/// object a dispatch further up the stack holds without lending it: TS would read that
+/// object's `m_flWait`, which the port can't reach then (a caller whose own object is the path
+/// entry handles that case itself).
+pub fn delay_of(e: *const edict_t) -> f32 {
+    handle_of(e).and_then(|h| STORE.0.read_lent(h, |ent| ent.get_delay())).unwrap_or(0.0)
+}
+
+enum State {
+    Empty,
+    Present(Box<dyn Entity>),
+    TakenOut,
+    FreedWhileOut,
+    /// Taken out, then put back by [`lend`] while its dispatch is suspended: still out to
+    /// everyone but [`run_now_or_defer`].
+    Parked(Box<dyn Entity>),
+}
+
+struct Slot {
+    serial: u32,
+    state: State,
+    /// The dispatch that took the object out is suspended in [`lend`]. While set, only that
+    /// dispatch releases the slot, and the object's deferred work waits for it.
+    lent: bool,
+    /// The object's Rust type, readable while it is out (`crate::ham`'s classes).
+    ty: TypeId,
+}
+
+struct World {
+    slots: Vec<Slot>,
+    free: Vec<u32>,
+}
+
+/// Work waiting for a taken-out object to be returned to its slot (see [`defer`]).
+type Deferred = (Handle, Box<dyn FnOnce()>);
+
+/// The slab and the deferred work. The game has one ([`STORE`]); tests make their own.
+struct Store {
+    world: RefCell<World>,
+    deferred: RefCell<Vec<Deferred>>,
+}
+
+static STORE: Global<Store> = Global(Store::new());
+
+impl World {
+    fn insert(&mut self, ent: Box<dyn Entity>) -> Handle {
+        let index = match self.free.pop() {
+            Some(i) => i,
+            None => {
+                self.slots.push(Slot { serial: 0, state: State::Empty, lent: false, ty: TypeId::of::<()>() });
+                self.slots.len() as u32 - 1
+            }
+        };
+        let slot = &mut self.slots[index as usize];
+        slot.serial = slot.serial.wrapping_add(1);
+        slot.ty = (&*ent as &dyn Any).type_id();
+        slot.state = State::Present(ent);
+        Handle { index, serial: slot.serial }
+    }
+
+    fn slot(&mut self, h: Handle) -> Option<&mut Slot> {
+        self.slots.get_mut(h.index as usize).filter(|s| s.serial == h.serial)
+    }
+
+    fn release(&mut self, h: Handle) {
+        self.slots[h.index as usize].state = State::Empty;
+        self.free.push(h.index);
+    }
+}
+
+impl Store {
+    const fn new() -> Self {
+        Store { world: RefCell::new(World { slots: Vec::new(), free: Vec::new() }), deferred: RefCell::new(Vec::new()) }
+    }
+
+    fn insert(&self, ent: Box<dyn Entity>) -> Handle {
+        self.world.borrow_mut().insert(ent)
+    }
+
+    fn dispatch<R>(&self, h: Handle, e: *mut edict_t, f: impl FnOnce(&mut dyn Entity, &mut Cx) -> R) -> Option<R> {
+        let mut ent = {
+            let mut w = self.world.borrow_mut();
+            let slot = w.slot(h)?;
+            match std::mem::replace(&mut slot.state, State::TakenOut) {
+                State::Present(ent) => ent,
+                other => {
+                    slot.state = other; // re-entrant dispatch to the same entity: skip
+                    return None;
+                }
+            }
+        };
+        let r = f(&mut *ent, &mut Cx { edict: e });
+        // `None`: the object is lent, and its deferred work waits for the dispatch that lent it.
+        let back = {
+            let mut w = self.world.borrow_mut();
+            match w.slot(h) {
+                // Opened by `run_now_or_defer`: the suspended dispatch that lent it frees the slot.
+                Some(slot) if slot.lent => {
+                    if !matches!(slot.state, State::FreedWhileOut) {
+                        slot.state = State::Present(ent);
+                    }
+                    None
+                }
+                Some(slot) if matches!(slot.state, State::FreedWhileOut) => {
+                    w.release(h);
+                    Some(false)
+                }
+                Some(slot) => {
+                    slot.state = State::Present(ent);
+                    Some(true)
+                }
+                None => Some(false),
+            }
+        };
+        let Some(back) = back else { return Some(r) };
+        // Run what other callbacks deferred until this object was back (or drop it if freed).
+        let pending: Vec<Deferred> = {
+            let mut d = self.deferred.borrow_mut();
+            if d.iter().any(|(dh, _)| *dh == h) {
+                let (mine, rest): (Vec<_>, Vec<_>) = d.drain(..).partition(|(dh, _)| *dh == h);
+                *d = rest;
+                mine
+            } else {
+                Vec::new()
+            }
+        };
+        if back {
+            for (_, job) in pending {
+                job();
+            }
+        }
+        Some(r)
+    }
+
+    /// In its slot: ordinary dispatch reaches it.
+    fn is_present(&self, h: Handle) -> bool {
+        self.world.borrow_mut().slot(h).is_some_and(|s| matches!(s.state, State::Present(_)))
+    }
+
+    /// Taken out by a dispatch that hasn't lent it: [`lend`] would park it.
+    fn can_lend(&self, h: Handle) -> bool {
+        self.world.borrow_mut().slot(h).is_some_and(|s| !s.lent && matches!(s.state, State::TakenOut))
+    }
+
+    fn type_of(&self, h: Handle) -> Option<TypeId> {
+        self.world.borrow_mut().slot(h).filter(|s| !matches!(s.state, State::Empty | State::FreedWhileOut)).map(|s| s.ty)
+    }
+
+    fn is_taken_out(&self, h: Handle) -> bool {
+        self.world.borrow_mut().slot(h).is_some_and(|s| matches!(s.state, State::TakenOut | State::Parked(_)))
+    }
+
+    fn defer(&self, h: Handle, job: impl FnOnce() + 'static) {
+        if self.is_taken_out(h) {
+            self.deferred.borrow_mut().push((h, Box::new(job)));
+        } else {
+            job();
+        }
+    }
+
+    fn lend<T: Entity + Default, R>(&self, h: Option<Handle>, obj: &mut T, f: impl FnOnce() -> R) -> R {
+        let parked = h.filter(|&h| {
+            let mut w = self.world.borrow_mut();
+            match w.slot(h) {
+                Some(slot) if !slot.lent && matches!(slot.state, State::TakenOut) => {
+                    slot.state = State::Parked(Box::new(std::mem::take(obj)));
+                    slot.lent = true;
+                    true
+                }
+                _ => false,
+            }
+        });
+        let r = f();
+        if let Some(h) = parked {
+            let back = {
+                let mut w = self.world.borrow_mut();
+                w.slot(h).and_then(|slot| {
+                    slot.lent = false;
+                    // Freed meanwhile: leave `FreedWhileOut` for the dispatch that holds the slot.
+                    match std::mem::replace(&mut slot.state, State::TakenOut) {
+                        State::Parked(ent) => Some(ent),
+                        other => {
+                            slot.state = other;
+                            None
+                        }
+                    }
+                })
+            };
+            if let Some(mut ent) = back
+                && let Some(o) = (&mut *ent as &mut dyn Any).downcast_mut::<T>()
+            {
+                *obj = std::mem::take(o);
+            }
+        }
+        r
+    }
+
+    /// Opens a lent object for ordinary access: `None` when it isn't lent, else whether this call
+    /// opened it (it may be open already, or freed).
+    fn open_lent(&self, h: Handle) -> Option<bool> {
+        let mut w = self.world.borrow_mut();
+        let slot = w.slot(h).filter(|s| s.lent)?;
+        match std::mem::replace(&mut slot.state, State::TakenOut) {
+            State::Parked(ent) => {
+                slot.state = State::Present(ent);
+                Some(true)
+            }
+            other => {
+                slot.state = other;
+                Some(false)
+            }
+        }
+    }
+
+    /// Closes a lent object that `open_lent` opened (a freed one stays `FreedWhileOut`).
+    fn close_lent(&self, h: Handle) {
+        let mut w = self.world.borrow_mut();
+        let Some(slot) = w.slot(h).filter(|s| s.lent) else { return };
+        match std::mem::replace(&mut slot.state, State::TakenOut) {
+            State::Present(ent) => slot.state = State::Parked(ent),
+            other => slot.state = other,
+        }
+    }
+
+    fn run_now_or_defer(&self, h: Handle, job: impl FnOnce() + 'static) {
+        match self.open_lent(h) {
+            Some(opened) => {
+                job();
+                if opened {
+                    self.close_lent(h);
+                }
+            }
+            None => self.defer(h, job),
+        }
+    }
+
+    fn run_now<R>(&self, h: Handle, job: impl FnOnce() -> R) -> Option<R> {
+        match self.open_lent(h) {
+            Some(opened) => {
+                let r = job();
+                if opened {
+                    self.close_lent(h);
+                }
+                Some(r)
+            }
+            None if self.is_taken_out(h) => None,
+            None => Some(job()),
+        }
+    }
+
+    fn with<T: Entity, R>(&self, h: Handle, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+        let mut w = self.world.borrow_mut();
+        match &mut w.slot(h)?.state {
+            State::Present(ent) => (&mut **ent as &mut dyn Any).downcast_mut::<T>().map(f),
+            _ => None,
+        }
+    }
+
+    fn with_lent<T: Entity, R>(&self, h: Handle, f: impl FnOnce(&T) -> R) -> Option<R> {
+        let mut w = self.world.borrow_mut();
+        match &w.slot(h)?.state {
+            State::Present(ent) | State::Parked(ent) => (&**ent as &dyn Any).downcast_ref::<T>().map(f),
+            _ => None,
+        }
+    }
+
+    fn read_lent<R>(&self, h: Handle, f: impl FnOnce(&dyn Entity) -> R) -> Option<R> {
+        let mut w = self.world.borrow_mut();
+        match &w.slot(h)?.state {
+            State::Present(ent) | State::Parked(ent) => Some(f(&**ent)),
+            _ => None,
+        }
+    }
+
+    fn free(&self, h: Handle) {
+        let dropped = {
+            let mut w = self.world.borrow_mut();
+            let Some(slot) = w.slot(h) else { return };
+            match std::mem::replace(&mut slot.state, State::Empty) {
+                // Lent: the suspended dispatch releases the slot when it returns.
+                State::Present(ent) | State::Parked(ent) if slot.lent => {
+                    slot.state = State::FreedWhileOut;
+                    Some(ent)
+                }
+                State::Present(ent) => {
+                    w.release(h);
+                    Some(ent)
+                }
+                State::TakenOut => {
+                    slot.state = State::FreedWhileOut;
+                    None
+                }
+                other => {
+                    slot.state = other;
+                    None
+                }
+            }
+        };
+        drop(dropped); // outside the borrow, in case a destructor calls the engine
+    }
+}
+
+/// The slab handle stored in a game-owned edict's private data.
+fn handle_of(e: *const edict_t) -> Option<Handle> {
+    private_tag(e).map(|[index, serial]| Handle { index, serial })
+}
+
+/// Classname export body: attaches a new `T` to the edict that owns `pev`.
+pub fn create<T: Entity + Default>(pev: *mut entvars_t) {
+    attach::<T>(pev, || Box::new(T::default()));
+}
+
+/// A linked classname's export body (`entities::link_entities!`): attaches the active ruleset's
+/// own object for `class` ([`ServerRules::entity_object`](crate::gameplay::ServerRules::entity_object)),
+/// else a new `T`, to the edict that owns `pev`.
+pub fn create_linked<T: Entity + Default>(pev: *mut entvars_t, class: &CStr) {
+    attach::<T>(pev, || crate::gameplay::active().server.entity_object(class).unwrap_or_else(|| Box::new(T::default())));
+}
+
+/// The private data of `pev`'s edict, made by `make`, sized for `T`.
+fn attach<T: Entity + Default>(pev: *mut entvars_t, make: impl FnOnce() -> Box<dyn Entity>) {
+    let e = engine().edict_of_vars(pev);
+    if e.is_null() || handle_of(e).is_some() {
+        return; // already game-owned (e.g. a client edict reused across maps)
+    }
+    let h = STORE.0.insert(make());
+    set_private_tag(e, [h.index, h.serial], private_size::<T>());
+}
+
+/// Port addition (private-data guard): the private block of a player. TS's object is
+/// `CBasePlayer` (`sizeof` 0xb8c in `ts_i386.so`, 0xb78 in `mp.dll`; player-movement.md §8,
+/// bots.md §1) or, for `mp.dll`'s bots, `CBot` (0x25f0 bytes, `GetClassPtr<CBot>` 0x1006c240), so
+/// AMX Mod X plugins read and write TS offsets up to there through fakemeta's `get_pdata_*` /
+/// `set_pdata_*` (5 ints further on Linux). The port's object lives in the slab, so the block holds
+/// only the tag and zeroed padding the game never reads: the writes land harmlessly instead of
+/// past the end of a small allocation. Rounded up from 0x2604 (`CBot` plus the Linux shift).
+pub const PLAYER_PRIVATE_SIZE: usize = 0x3000;
+/// Port addition (private-data guard): `weapon_tsgun` (`CTSGun`, `sizeof` 0xa10 in `ts_i386.so`;
+/// weapons.md §4). Old plugins (`tsxaddon.inc`'s `ts_setuserammo`) write ints 41, 50-62, 839 and
+/// 850 of it (up to byte 3420 with the Linux shift), so it gets a whole 4 KiB.
+pub const TSGUN_PRIVATE_SIZE: usize = 0x1000;
+/// Port addition (private-data guard): a thrown `knife` (`CTSKnife`, `sizeof` 0xa4; weapons.md
+/// §5). AMX Mod X's stock `tsx` module read its thrower at int 31 (35 on Linux).
+pub const KNIFE_PRIVATE_SIZE: usize = 0x100;
+
+/// The private-data size [`create`] allocates for `T`: the smallest block
+/// (`goldsrc::edict::MIN_PRIVATE_SIZE`, zero where hamsandwich looks for a vtable), or a TS-sized
+/// one for the classes plugins poke at (see [`PLAYER_PRIVATE_SIZE`]).
+fn private_size<T: 'static>() -> usize {
+    use std::any::TypeId;
+    let t = TypeId::of::<T>();
+    if t == TypeId::of::<crate::player::Player>() {
+        PLAYER_PRIVATE_SIZE
+    } else if t == TypeId::of::<crate::entities::stock::playeritem::WorldTsGun>() {
+        TSGUN_PRIVATE_SIZE
+    } else if t == TypeId::of::<crate::weapons::projectiles::Knife>() {
+        KNIFE_PRIVATE_SIZE
+    } else {
+        goldsrc::edict::MIN_PRIVATE_SIZE
+    }
+}
+
+/// Runs `f` on the edict's object, with the object taken out of the slab during the call.
+/// Returns `None` if the edict isn't game-owned.
+pub fn dispatch<R>(e: *mut edict_t, f: impl FnOnce(&mut dyn Entity, &mut Cx) -> R) -> Option<R> {
+    STORE.0.dispatch(handle_of(e)?, e, f)
+}
+
+/// True while `e`'s object is taken out for a dispatch further up the stack (so [`with`] and
+/// [`dispatch`] can't reach it), lent back or not.
+pub fn is_taken_out(e: *const edict_t) -> bool {
+    handle_of(e).is_some_and(|h| STORE.0.is_taken_out(h))
+}
+
+/// Runs `job` as soon as `e`'s object is back in its slot: immediately if it isn't taken out,
+/// otherwise when the dispatch that holds it returns. Used when a callback needs to update an
+/// entity that is busy further up the stack (a player's weapon frame killing someone).
+pub fn defer(e: *const edict_t, job: impl FnOnce() + 'static) {
+    if let Some(h) = handle_of(e) {
+        STORE.0.defer(h, job);
+    }
+}
+
+/// Puts `obj`, the object of `e` that a dispatch further up the stack took out, back in its
+/// slot for the duration of `f`, so [`run_now_or_defer`] can reach it. Until `f` returns, `obj`
+/// holds `T::default()`. Runs `f` alone when `e`'s object isn't out (or is already lent).
+pub fn lend<T: Entity + Default, R>(e: *const edict_t, obj: &mut T, f: impl FnOnce() -> R) -> R {
+    STORE.0.lend(handle_of(e), obj, f)
+}
+
+/// Runs `job` now when `e`'s object is lent ([`lend`]), with the object reachable through
+/// [`dispatch`] and [`with`] meanwhile; otherwise as [`defer`] does.
+pub fn run_now_or_defer(e: *const edict_t, job: impl FnOnce() + 'static) {
+    if let Some(h) = handle_of(e) {
+        STORE.0.run_now_or_defer(h, job);
+    }
+}
+
+/// Runs `job` now when `e`'s object can be reached meanwhile: it is in its slot, or lent
+/// ([`lend`], opened for the call as [`run_now_or_defer`] does). `None`, without running `job`,
+/// while a dispatch further up the stack holds it without lending it (or `e` isn't game-owned).
+/// For callers that need the answer at once, as TS gets it (`GiveNamedItem`'s item touching a
+/// player whose own `Use` is on the stack).
+pub fn run_now<R>(e: *const edict_t, job: impl FnOnce() -> R) -> Option<R> {
+    STORE.0.run_now(handle_of(e)?, job)
+}
+
+/// True while `e`'s object is in its slot, so [`dispatch`] reaches it (not taken out, not lent).
+pub fn is_present(e: *const edict_t) -> bool {
+    handle_of(e).is_some_and(|h| STORE.0.is_present(h))
+}
+
+/// True while a dispatch further up the stack holds `e`'s object without having lent it: the
+/// holder can [`lend`] it.
+pub fn can_lend(e: *const edict_t) -> bool {
+    handle_of(e).is_some_and(|h| STORE.0.can_lend(h))
+}
+
+/// The Rust type of `e`'s object, also while it is out. `None` if `e` isn't game-owned (or its
+/// object was freed).
+pub fn type_of(e: *const edict_t) -> Option<TypeId> {
+    STORE.0.type_of(handle_of(e)?)
+}
+
+/// Runs `f` once with `obj`, the object of `e` that the caller's dispatch holds, back in its slot
+/// and open to ordinary dispatch ([`lend`], then [`run_now`]): a plugin's entity hook reaching the
+/// entity whose function is running (`crate::ham`). `f` still runs, with the object out of reach,
+/// when it can't be put back (lent further up the stack, or freed).
+pub fn lend_open<T: Entity + Default>(e: *const edict_t, obj: &mut T, f: &mut dyn FnMut()) {
+    let mut ran = false;
+    lend(e, obj, || {
+        run_now(e, || {
+            ran = true;
+            f();
+        });
+    });
+    if !ran {
+        f();
+    }
+}
+
+/// Short, non-reentrant access to a concrete entity type. Never call the engine inside `f`.
+pub fn with<T: Entity, R>(e: *const edict_t, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+    STORE.0.with(handle_of(e)?, f)
+}
+
+/// Read-only [`with`] that also reaches an object lent back to its slot by [`lend`]: TS reads
+/// the private data of an object whose own call is further up the stack (`PlayerKilled` naming
+/// the thrown knife that is inside its touch). Never call the engine inside `f`.
+pub fn with_lent<T: Entity, R>(e: *const edict_t, f: impl FnOnce(&T) -> R) -> Option<R> {
+    STORE.0.with_lent(handle_of(e)?, f)
+}
+
+/// `pfnOnFreeEntPrivateData`: the engine is about to free the edict's private data.
+pub fn free(e: *mut edict_t) {
+    if let Some(h) = handle_of(e) {
+        STORE.0.free(h);
+    }
+    goldsrc::edict::forget_private(e);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::rc::Rc;
+
+    #[derive(Default)]
+    struct Thing {
+        value: i32,
+    }
+    impl Entity for Thing {}
+
+    fn store() -> Rc<Store> {
+        Rc::new(Store::new())
+    }
+
+    fn value(s: &Store, h: Handle) -> Option<i32> {
+        s.with::<Thing, _>(h, |t| t.value)
+    }
+
+    /// Issue #168: `time + 0.1` / `time + 0.01` with the `double` constant, rounded once. Early in
+    /// a map these times round the other way from the `float` constant's sum.
+    #[test]
+    fn think_delays_add_a_double() {
+        let t = f32::from_bits(0x3e00_0001);
+        assert_eq!(next_think_at(t, 0.1).to_bits(), 0x3e66_6667);
+        assert_eq!((t + 0.1f32).to_bits(), 0x3e66_6668, "the float 0.1");
+        let t = 0.03125f32;
+        assert_eq!(next_think_at(t, 0.01).to_bits(), 0x3d28_f5c3);
+        assert_eq!((t + 0.01f32).to_bits(), 0x3d28_f5c2, "the float 0.01");
+        // A `float` delay sums as before.
+        assert_eq!(next_think_at(1.5, 0.5f32.into()), 2.0);
+    }
+
+    #[test]
+    fn taken_out_objects_are_skipped_and_deferred() {
+        let s = store();
+        let h = s.insert(Box::new(Thing { value: 1 }));
+        let s2 = s.clone();
+        s.dispatch(h, std::ptr::null_mut(), |_, _| {
+            assert!(s2.is_taken_out(h));
+            assert!(s2.dispatch(h, std::ptr::null_mut(), |_, _| ()).is_none(), "re-entrant dispatch skips");
+            let s3 = s2.clone();
+            s2.defer(h, move || s3.with::<Thing, _>(h, |t| t.value = 2).unwrap());
+            assert_eq!(value(&s2, h), None);
+        });
+        assert_eq!(value(&s, h), Some(2), "deferred work ran once the object was back");
+    }
+
+    #[test]
+    fn lent_object_is_reachable_only_through_run_now_or_defer() {
+        let s = store();
+        let h = s.insert(Box::new(Thing { value: 1 }));
+        let s2 = s.clone();
+        s.dispatch(h, std::ptr::null_mut(), |ent, _| {
+            let me = (ent as &mut dyn Any).downcast_mut::<Thing>().unwrap();
+            // Queued before the lend: still waits for this dispatch.
+            let s3 = s2.clone();
+            s2.defer(h, move || s3.with::<Thing, _>(h, |t| t.value *= 10).unwrap());
+            s2.lend(Some(h), me, || {
+                assert!(s2.is_taken_out(h), "a lent object is still out");
+                assert!(s2.dispatch(h, std::ptr::null_mut(), |_, _| ()).is_none());
+                assert_eq!(value(&s2, h), None);
+                let s3 = s2.clone();
+                s2.run_now_or_defer(h, move || {
+                    // Open: ordinary dispatch reaches it, and new deferred work runs at once.
+                    s3.dispatch(h, std::ptr::null_mut(), |e, _| (e as &mut dyn Any).downcast_mut::<Thing>().unwrap().value += 4).unwrap();
+                    let s4 = s3.clone();
+                    s3.defer(h, move || s4.with::<Thing, _>(h, |t| t.value += 1).unwrap());
+                    assert_eq!(value(&s3, h), Some(6));
+                });
+                assert!(s2.is_taken_out(h), "closed again");
+            });
+            assert_eq!(me.value, 6, "the lender gets the object back with the changes");
+            me.value += 1;
+        });
+        assert_eq!(value(&s, h), Some(70), "the earlier deferred job ran after the dispatch");
+    }
+
+    /// Issue #70: `delay_of`'s read sees an object in its slot or lent back, not one a dispatch
+    /// holds.
+    #[test]
+    fn get_delay_reads_present_and_lent_objects() {
+        #[derive(Default)]
+        struct Waits(f32);
+        impl Entity for Waits {
+            fn get_delay(&self) -> f32 {
+                self.0
+            }
+        }
+        let s = store();
+        let h = s.insert(Box::new(Waits(1.5)));
+        let t = s.insert(Box::new(Thing { value: 1 }));
+        assert_eq!(s.read_lent(h, |e| e.get_delay()), Some(1.5));
+        assert_eq!(s.read_lent(t, |e| e.get_delay()), Some(0.0), "CBaseEntity::GetDelay");
+        let s2 = s.clone();
+        s.dispatch(h, std::ptr::null_mut(), |ent, _| {
+            assert_eq!(s2.read_lent(h, |e| e.get_delay()), None, "taken out");
+            let me = (ent as &mut dyn Any).downcast_mut::<Waits>().unwrap();
+            s2.lend(Some(h), me, || assert_eq!(s2.read_lent(h, |e| e.get_delay()), Some(1.5), "lent"));
+        });
+    }
+
+    #[test]
+    fn run_now_or_defer_defers_without_a_lend() {
+        let s = store();
+        let h = s.insert(Box::new(Thing { value: 1 }));
+        let s2 = s.clone();
+        s.dispatch(h, std::ptr::null_mut(), |_, _| {
+            let s3 = s2.clone();
+            s2.run_now_or_defer(h, move || s3.with::<Thing, _>(h, |t| t.value = 5).unwrap());
+            assert_eq!(value(&s2, h), None);
+        });
+        assert_eq!(value(&s, h), Some(5));
+        // Not taken out at all: runs at once.
+        let s2 = s.clone();
+        s.run_now_or_defer(h, move || s2.with::<Thing, _>(h, |t| t.value = 6).unwrap());
+        assert_eq!(value(&s, h), Some(6));
+    }
+
+    #[test]
+    fn run_now_reaches_free_and_lent_objects_only() {
+        let s = store();
+        let h = s.insert(Box::new(Thing { value: 1 }));
+        let s2 = s.clone();
+        assert_eq!(s.run_now(h, || s2.with::<Thing, _>(h, |t| t.value)), Some(Some(1)), "in its slot");
+        let s2 = s.clone();
+        s.dispatch(h, std::ptr::null_mut(), |ent, _| {
+            let me = (ent as &mut dyn Any).downcast_mut::<Thing>().unwrap();
+            assert_eq!(s2.run_now(h, || 9), None, "taken out and not lent: nothing runs");
+            s2.lend(Some(h), me, || {
+                let s3 = s2.clone();
+                assert_eq!(s2.run_now(h, || s3.with::<Thing, _>(h, |t| std::mem::replace(&mut t.value, 3))), Some(Some(1)));
+                assert!(s2.is_taken_out(h), "closed again");
+                // Already open (nested): stays open for the outer call.
+                let s3 = s2.clone();
+                s2.run_now_or_defer(h, move || {
+                    let s4 = s3.clone();
+                    assert_eq!(s3.run_now(h, || s4.with::<Thing, _>(h, |t| t.value)), Some(Some(3)));
+                    assert_eq!(s3.with::<Thing, _>(h, |t| t.value), Some(3), "still open");
+                });
+            });
+            assert_eq!(me.value, 3);
+        });
+        assert_eq!(value(&s, h), Some(3));
+    }
+
+    #[test]
+    fn freed_while_lent_is_released_once_by_the_dispatch() {
+        let s = store();
+        let h = s.insert(Box::new(Thing { value: 1 }));
+        let s2 = s.clone();
+        s.dispatch(h, std::ptr::null_mut(), |ent, _| {
+            let me = (ent as &mut dyn Any).downcast_mut::<Thing>().unwrap();
+            s2.lend(Some(h), me, || {
+                let s3 = s2.clone();
+                s2.run_now_or_defer(h, move || s3.free(h));
+                assert!(s2.world.borrow().free.is_empty(), "not released while the dispatch is out");
+            });
+            assert_eq!(me.value, 0, "a freed object isn't handed back");
+        });
+        assert_eq!(value(&s, h), None);
+        assert_eq!(s.world.borrow().free, vec![h.index], "released exactly once");
+        let h2 = s.insert(Box::new(Thing { value: 9 }));
+        assert_eq!(h2.index, h.index);
+        assert_eq!(value(&s, h2), Some(9));
+    }
+
+    #[test]
+    fn with_lent_reads_a_lent_object_only() {
+        let s = store();
+        let h = s.insert(Box::new(Thing { value: 4 }));
+        let read = |s: &Store| s.with_lent::<Thing, _>(h, |t| t.value);
+        assert_eq!(read(&s), Some(4), "in its slot");
+        let s2 = s.clone();
+        s.dispatch(h, std::ptr::null_mut(), |ent, _| {
+            let me = (ent as &mut dyn Any).downcast_mut::<Thing>().unwrap();
+            assert_eq!(read(&s2), None, "taken out and not lent");
+            me.value = 5;
+            s2.lend(Some(h), me, || {
+                assert_eq!(read(&s2), Some(5), "lent back");
+                assert_eq!(value(&s2, h), None, "still closed to `with`");
+            });
+        });
+        assert_eq!(read(&s), Some(5));
+    }
+
+    /// The `game_player_hurt` / `player_weaponstrip` shape: a player's +use (its dispatch, lending
+    /// it) fires another entity, whose `Use` changes the player before it goes on, as TS's direct
+    /// `TakeDamage` / `RemoveAllItems` calls do. The scoring shape: inside a third dispatch (the
+    /// victim's `Killed`) `run_now` reaches the lent killer for the rest of the call.
+    #[test]
+    fn a_lent_player_is_changed_inside_another_entitys_call() {
+        let s = store();
+        let player = s.insert(Box::new(Thing { value: 100 }));
+        let rule = s.insert(Box::new(Thing { value: 0 }));
+        let victim = s.insert(Box::new(Thing { value: 0 }));
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let (s2, log2) = (s.clone(), log.clone());
+        s.dispatch(player, std::ptr::null_mut(), |ent, _| {
+            let me = (ent as &mut dyn Any).downcast_mut::<Thing>().unwrap();
+            s2.lend(Some(player), me, || {
+                let (s3, log3) = (s2.clone(), log2.clone());
+                s2.dispatch(rule, std::ptr::null_mut(), |_, _| {
+                    let (s4, log4) = (s3.clone(), log3.clone());
+                    s3.run_now_or_defer(player, move || {
+                        s4.with::<Thing, _>(player, |t| t.value -= 30).unwrap();
+                        log4.borrow_mut().push("hurt");
+                    });
+                    log3.borrow_mut().push("targets");
+                    let s4 = s3.clone();
+                    s3.dispatch(victim, std::ptr::null_mut(), |_, _| {
+                        let s5 = s4.clone();
+                        let scored = s4.run_now(player, || s5.with::<Thing, _>(player, |t| t.value += 1));
+                        assert_eq!(scored, Some(Some(())), "the lent killer is reached inside the victim's call");
+                    });
+                });
+            });
+            assert_eq!(me.value, 71, "both changes came back with the lent object");
+        });
+        assert_eq!(*log.borrow(), vec!["hurt", "targets"], "the damage lands before the targets fire");
+        assert_eq!(value(&s, player), Some(71));
+    }
+
+    #[derive(Default)]
+    struct Other;
+    impl Entity for Other {}
+
+    /// What `crate::ham` asks before running a hook: the type is known in every state, and only a
+    /// present object is reachable by dispatch, only a held and unlent one can be lent.
+    #[test]
+    fn type_presence_and_lendability_follow_the_slot() {
+        let s = store();
+        let h = s.insert(Box::new(Thing { value: 1 }));
+        let o = s.insert(Box::new(Other));
+        assert_eq!(s.type_of(h), Some(TypeId::of::<Thing>()));
+        assert_eq!(s.type_of(o), Some(TypeId::of::<Other>()));
+        assert!(s.is_present(h) && !s.can_lend(h));
+        let s2 = s.clone();
+        s.dispatch(h, std::ptr::null_mut(), |ent, _| {
+            assert_eq!(s2.type_of(h), Some(TypeId::of::<Thing>()), "known while out");
+            assert!(!s2.is_present(h) && s2.can_lend(h));
+            let me = (ent as &mut dyn Any).downcast_mut::<Thing>().unwrap();
+            s2.lend(Some(h), me, || {
+                assert!(!s2.is_present(h) && !s2.can_lend(h), "lent: closed, and not lent twice");
+                s2.run_now(h, || assert!(s2.is_present(h), "opened"));
+            });
+        });
+        s.free(h);
+        assert_eq!(s.type_of(h), None);
+        assert!(!s.is_present(h));
+    }
+
+    #[test]
+    fn lend_without_dispatch_just_runs() {
+        let s = store();
+        let h = s.insert(Box::new(Thing { value: 1 }));
+        let mut other = Thing { value: 3 };
+        assert_eq!(s.lend(Some(h), &mut other, || 7), 7);
+        assert_eq!(other.value, 3);
+        assert_eq!(value(&s, h), Some(1));
+        assert_eq!(s.lend(None, &mut other, || 8), 8);
+    }
+}

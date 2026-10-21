@@ -1,0 +1,19 @@
+[package]
+name = "ts21-server"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# The server half of the TS 2.1 gameplay plugin (docs/implementation/ts21.md): `ServerRules` and
+# the server's plugin object. Only `server-dll` links it, behind its `ts21` feature.
+[dependencies]
+ts21-gameplay = { path = ".." }
+ts-server     = { path = "../../server" }
+goldsrc       = { path = "../../goldsrc", features = ["server"] }
+shared        = { path = "../../shared" }
+
+# Tests only (see ../Cargo.toml).
+[dev-dependencies]
+ts30-gameplay = { path = "../../ts30" }
+ts30-server   = { path = "../../ts30/server" }
+ts-plugin-api = { path = "../../plugin-api" }

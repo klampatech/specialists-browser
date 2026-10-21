@@ -1,0 +1,31 @@
+[package]
+name = "ts-server-dll"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# The engine-facing half of the server library: every exported symbol and engine callback, and
+# the only place (with goldsrc) where `unsafe` is allowed. Game logic lives in `ts-server`.
+[lib]
+name = "ts"                # -> libts.so / ts.dll; xtask installs dlls/ts_i386.so, ts_amd64.so, mp.dll
+crate-type = ["cdylib"]
+
+[dependencies]
+goldsrc   = { path = "../goldsrc", features = ["server"] }
+shared    = { path = "../shared" }
+ts-server = { path = "../server" }
+ts-plugin-api = { path = "../plugin-api" }
+# Loads the `tsmod_*` plugins (`plugins.rs`); already in the build through bindgen's clang-sys.
+libloading = "0.8"
+# The gameplay plugins (docs/implementation/gameplay-plugins.md), registered at `GameDLLInit`, each
+# behind its default-on feature: TS 3.0 (`ts30`) and TS 2.1 (`ts21`, docs/implementation/ts21.md).
+# At least one is required; the first registered (3.0 when both are on) is the default ruleset.
+ts30-gameplay = { path = "../ts30", optional = true }
+ts30-server = { path = "../ts30/server", optional = true }
+ts21-gameplay = { path = "../ts21", optional = true }
+ts21-server = { path = "../ts21/server", optional = true }
+
+[features]
+default = ["ts30", "ts21"]
+ts30 = ["dep:ts30-gameplay", "dep:ts30-server"]
+ts21 = ["dep:ts21-gameplay", "dep:ts21-server"]

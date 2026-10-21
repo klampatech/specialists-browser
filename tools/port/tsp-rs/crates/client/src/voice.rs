@@ -1,0 +1,793 @@
+//! Voice status and voice banning: TS's `CVoiceStatus` (SDK 2.x game_shared/voice_status.cpp,
+//! `GetClientVoiceMgr` 10017570) and `CVoiceBanMgr` (`voice_ban.dt`). Reference: decomp
+//! docs/client/architecture-hud.md §1-3.
+//!
+//! * The engine reports who is talking through `HUD_VoiceStatus` ([`update_speaker_status`]).
+//! * Talking players get a `sprites/voiceicon.spr` over their head ([`create_entities`]) and a
+//!   name label on the right of the screen; the local player gets a talk icon ([`redraw`]).
+//! * The scoreboard shows each audible player's voice state, and clicking it enters squelch mode,
+//!   where a click on a player row mutes or unmutes them ([`toggle_block`]). Bans persist in
+//!   `<gamedir>/voice_ban.dt` and go to the server as `vban <mask>`, which stops it relaying
+//!   that player's voice (`CVoiceGameMgr` in the server's `rules::voice`).
+//!
+//! TS draws the labels and icons as VGUI1 panels with `gfx/vgui/*.tga` images; the port paints
+//! the same panels with engine fills ([`crate::hud::vgui`]).
+
+use crate::hud;
+use crate::hud::vgui::{self, Align, Color, Image, Panel};
+use goldsrc::Global;
+use goldsrc::client::{Cvar, engine};
+use goldsrc::ext::voice::{SpriteEntity, add_sprite_entity};
+use goldsrc::sys::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+/// `MAX_VOICE_SPEAKERS`: speaker labels on screen at once.
+pub const MAX_SPEAKERS: usize = 7;
+/// `VOICE_MAX_PLAYERS`.
+pub const MAX_PLAYERS: usize = 32;
+/// `SCOREBOARD_BLINK_FREQUENCY`: talking icons alternate every 0.3 s.
+pub const BLINK_FREQUENCY: f64 = 0.3;
+/// `CreateEntities` puts the head icon this far above the player's origin.
+pub const HEAD_ICON_HEIGHT: f32 = 45.0;
+/// `BANMGR_FILEVERSION`.
+pub const BAN_FILE_VERSION: i32 = 1;
+const BAN_FILE: &str = "voice_ban.dt";
+/// `HUD_PRINTTALK`.
+const PRINT_TALK: u8 = 3;
+const EF_NODRAW_BIT: i32 = EF_NODRAW as i32;
+
+// ---------------------------------------------------------------------------------------------
+// Ban list (`CVoiceBanMgr`)
+
+/// `HashPlayerID`: the byte sum the SDK buckets ids by (the file is written bucket by bucket).
+pub fn hash_player_id(id: &[u8; 16]) -> u8 {
+    id.iter().fold(0u8, |h, &b| h.wrapping_add(b))
+}
+
+/// The banned unique ids, kept in the order the SDK's hash table would list them.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct BanList {
+    ids: Vec<[u8; 16]>,
+}
+
+impl BanList {
+    /// `CVoiceBanMgr::Init`: a little-endian version int, then 16-byte ids. Wrong versions are
+    /// ignored; a trailing partial id is dropped.
+    pub fn parse(bytes: &[u8]) -> Self {
+        let mut list = BanList::default();
+        let Some(v) = bytes.get(..4) else { return list };
+        if i32::from_le_bytes([v[0], v[1], v[2], v[3]]) != BAN_FILE_VERSION {
+            return list;
+        }
+        // Deduplicated through a set, as `set` would: `set`'s linear search is quadratic, and the
+        // file can be any size.
+        let mut seen = std::collections::HashSet::new();
+        for id in bytes.get(4..).unwrap_or_default().as_chunks::<16>().0 {
+            if seen.insert(*id) {
+                list.ids.push(*id);
+            }
+        }
+        list
+    }
+
+    /// `CVoiceBanMgr::SaveState`.
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut out = BAN_FILE_VERSION.to_le_bytes().to_vec();
+        for id in self.iter() {
+            out.extend_from_slice(id);
+        }
+        out
+    }
+
+    /// Ids in hash-bucket order, then insertion order (`ForEachBannedPlayer`).
+    pub fn iter(&self) -> impl Iterator<Item = &[u8; 16]> {
+        (0..=255u8).flat_map(move |b| self.ids.iter().filter(move |id| hash_player_id(id) == b))
+    }
+
+    pub fn contains(&self, id: &[u8; 16]) -> bool {
+        self.ids.contains(id)
+    }
+
+    /// `SetPlayerBan`.
+    pub fn set(&mut self, id: &[u8; 16], banned: bool) {
+        match (banned, self.contains(id)) {
+            (true, false) => self.ids.push(*id),
+            (false, true) => self.ids.retain(|x| x != id),
+            _ => {}
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+}
+
+/// `ForEachBannedPlayer`'s line. The SDK prints each id byte with `%2x` from a signed `char`, so
+/// bytes from 0x80 come out sign-extended (`ffffff80`); on Windows the line is upper-cased.
+pub fn ban_line(n: usize, id: &[u8; 16], upper: bool) -> String {
+    let hex: String = id.iter().map(|&b| format!("{:2x}", b as i8 as i32 as u32)).collect();
+    let s = format!("Ban {n}: {hex}\n");
+    if upper { s.to_uppercase() } else { s }
+}
+
+// ---------------------------------------------------------------------------------------------
+// State
+
+/// Scoreboard voice icon for one player (`UpdateBanButton` 100185f0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpeakerIcon {
+    /// Not audible under the server's rules: no icon.
+    None,
+    Banned,
+    /// Talking; `bright` alternates every [`BLINK_FREQUENCY`] (`640_speaker4`/`640_speaker3`).
+    Talking {
+        bright: bool,
+    },
+    NeverSpoken,
+    NotTalking,
+}
+
+#[derive(Default)]
+struct Voice {
+    /// `m_VoicePlayers`: talking now (bit = client index - 1).
+    talking: u32,
+    /// `m_VoiceEnabledPlayers`: has talked since the client started.
+    spoken: u32,
+    /// `m_AudiblePlayers` and `m_ServerBannedPlayers` from `VoiceMask`.
+    audible: u32,
+    server_banned: u32,
+    /// `m_bServerModEnable`: what the server was last told (-1 = unknown).
+    server_mod_enable: i32,
+    last_update_server_state: f32,
+    blink_timer: f64,
+    /// `m_Labels[i].m_clientindex` (0-based client, `None` = free).
+    labels: [Option<usize>; MAX_SPEAKERS],
+    /// The label's text (`"%s   "` of the name) and background colour, set when it was given out.
+    label_text: [(Vec<u8>, [i32; 3]); MAX_SPEAKERS],
+    /// The label's background (and with it the speaker icon, its child) visibility, set once
+    /// when the label is given out (`0x10018240`: `setVisible(CanShowSpeakerLabels())`).
+    label_bg: [bool; MAX_SPEAKERS],
+    /// When each label was given out ([`vgui::raise`]: `0x10018271` parents its background to the
+    /// viewport then).
+    label_z: [u64; MAX_SPEAKERS],
+    /// `m_bTalking`, `m_bServerAcked`.
+    local_talking: bool,
+    server_acked: bool,
+    /// The talk icon as `RepositionLabels` (`0x10018900`) last left it: parented to the viewport
+    /// (raised) when shown, and `icntlk_sv.tga` rather than `icntlk_pl.tga` when the server
+    /// acknowledged with `voice_clientdebug` on at that moment.
+    icon_z: u64,
+    icon_sv: bool,
+    squelch: bool,
+    bans: BanList,
+    ban_path: String,
+    head_sprite: HSPRITE,
+    modenable: Option<Cvar>,
+    clientdebug: Option<Cvar>,
+}
+
+static VOICE: Global<RefCell<Option<Voice>>> = Global(RefCell::new(None));
+
+/// The closure must not call back into this module.
+fn with<R>(f: impl FnOnce(&mut Voice) -> R) -> R {
+    let mut v = VOICE.0.borrow_mut();
+    f(v.get_or_insert_with(|| Voice { server_mod_enable: -1, ..Voice::default() }))
+}
+
+fn debug() -> bool {
+    with(|v| v.clientdebug.is_some_and(|c| c.value() != 0.0))
+}
+
+fn bit(i: usize) -> u32 {
+    if i < MAX_PLAYERS { 1 << i } else { 0 }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Init / frame
+
+/// `CVoiceStatus::Init` (100178c0): cvars, `voice_showbanned`, the ban file, `VoiceMask` and
+/// `ReqState` hooks.
+pub fn init() {
+    let e = engine();
+    let modenable = Cvar::register(c"voice_modenable", c"1", 1);
+    let clientdebug = Cvar::register(c"voice_clientdebug", c"0", 0);
+    e.add_command(c"voice_showbanned", show_banned);
+    let path = format!("{}/{BAN_FILE}", e.game_directory());
+    let bans = std::fs::read(&path).map(|b| BanList::parse(&b)).unwrap_or_default();
+    with(|v| {
+        *v = Voice {
+            server_mod_enable: -1,
+            modenable: Some(modenable),
+            clientdebug: Some(clientdebug),
+            bans,
+            ban_path: path,
+            ..Voice::default()
+        };
+    });
+    e.hook_user_msg(c"VoiceMask", msg_voice_mask);
+    e.hook_user_msg(c"ReqState", msg_req_state);
+}
+
+/// `CVoiceStatus::VidInit` (10017af0): the head icon sprite. TS also reads
+/// `scripts/voicemodel.txt` into `m_VoiceHeadModelHeight` (`+0x177e0`), which nothing reads:
+/// `CreateEntities` (`0x10018053`) places the icon at a constant 45 units. The read has no
+/// effect, so the port skips it.
+pub fn vid_init() {
+    let h = engine().spr_load("sprites/voiceicon.spr");
+    with(|v| v.head_sprite = h);
+}
+
+/// `CVoiceStatus::Frame` (10017ea0), from `HUD_Frame`: tell the server about ban changes once a
+/// second, and run the scoreboard blink timer.
+pub fn frame(frametime: f64) {
+    let now = engine().client_time();
+    if now - with(|v| v.last_update_server_state) > 1.0 {
+        update_server_state(false);
+    }
+    with(|v| v.blink_timer += frametime);
+}
+
+extern "C" fn show_banned() {
+    let e = engine();
+    e.print("------- BANNED PLAYERS -------\n");
+    let lines: Vec<String> = with(|v| v.bans.iter().enumerate().map(|(n, id)| ban_line(n, id, cfg!(windows))).collect());
+    for l in lines {
+        e.print(&l);
+    }
+    e.print("------------------------------\n");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Messages
+
+/// `VoiceMask` (`HandleVoiceMaskMsg` 10018780): audible and server-banned masks. TS then reads a
+/// byte the 8-byte message doesn't have; the failed read (-1) makes the next state update resend
+/// `VModEnable`, which the port keeps.
+pub fn on_voice_mask(buf: &[u8]) -> Option<(u32, u32, i32)> {
+    let long = |o: usize| buf.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    Some((long(0)?, long(4)?, buf.get(8).map_or(-1, |&b| b as i32)))
+}
+
+fn msg_voice_mask(buf: &[u8]) {
+    let Some((audible, banned, mod_enable)) = on_voice_mask(buf) else { return };
+    with(|v| {
+        v.audible = audible;
+        v.server_banned = banned;
+        v.server_mod_enable = mod_enable;
+    });
+    if debug() {
+        let e = engine();
+        e.print("CVoiceStatus::HandleVoiceMaskMsg\n");
+        e.print(&format!("    - m_AudiblePlayers[0] = {audible}\n"));
+        e.print(&format!("    - m_ServerBannedPlayers[0] = {banned}\n"));
+    }
+}
+
+/// `ReqState` (`HandleReqStateMsg` 10018830): resend everything.
+fn msg_req_state(_buf: &[u8]) {
+    if debug() {
+        engine().print("CVoiceStatus::HandleReqStateMsg\n");
+    }
+    update_server_state(true);
+}
+
+/// The `vban` command for a ban mask (one 32-player dword).
+pub fn vban_command(mask: u32) -> String {
+    format!("vban {mask:x}")
+}
+
+/// `CVoiceStatus::UpdateServerState` (10018360): `VModEnable` when `voice_modenable` changed (or
+/// `force`), `vban` when the local ban mask differs from the server's (or `force`).
+pub fn update_server_state(force: bool) {
+    let e = engine();
+    if goldsrc::ext::render::level_name().is_empty() {
+        if debug() {
+            e.print("CVoiceStatus::UpdateServerState: pLevelName[0]==0\n");
+        }
+        return;
+    }
+    let dbg = debug();
+    let enable = with(|v| v.modenable.is_some_and(|c| c.value() != 0.0)) as i32;
+    if force || with(|v| v.server_mod_enable) != enable {
+        with(|v| v.server_mod_enable = enable);
+        let cmd = format!("VModEnable {enable}");
+        e.server_cmd(&cmd);
+        if dbg {
+            e.print(&format!("CVoiceStatus::UpdateServerState: Sending '{cmd}'\n"));
+        }
+    }
+    let ids: Vec<Option<[u8; 16]>> = (1..=MAX_PLAYERS as i32).map(|i| e.player_unique_id(i)).collect();
+    let (ban_mask, server_mask) = with(|v| {
+        let (mut ban, mut server) = (0u32, 0u32);
+        for (i, id) in ids.iter().enumerate() {
+            let Some(id) = id else { continue };
+            if v.bans.contains(id) {
+                ban |= bit(i);
+            }
+            server |= v.server_banned & bit(i);
+        }
+        (ban, server)
+    });
+    let cmd = vban_command(ban_mask);
+    if force || ban_mask != server_mask {
+        if dbg {
+            e.print(&format!("CVoiceStatus::UpdateServerState: Sending '{cmd}'\n"));
+        }
+        e.server_cmd_unreliable(&cmd);
+    } else if dbg {
+        e.print("CVoiceStatus::UpdateServerState: no change\n");
+    }
+    with(|v| v.last_update_server_state = e.client_time());
+}
+
+// ---------------------------------------------------------------------------------------------
+// Speakers
+
+/// Pure part of `UpdateSpeakerStatus`. Returns the client that just got a speaker label.
+fn speaker_status(v: &mut Voice, entindex: i32, talking: bool) -> Option<usize> {
+    match entindex {
+        // The local player (only the HUD talk icon).
+        -1 => v.local_talking = talking,
+        // The server acknowledged our voice data.
+        -2 => v.server_acked = talking,
+        // TS checks `entindex < 32` (the SDK `<= VOICE_MAX_PLAYERS`), so player 32 never shows.
+        1..=31 => {
+            let c = entindex as usize - 1;
+            let label = v.labels.iter().position(|l| *l == Some(c));
+            if talking {
+                v.talking |= bit(c);
+                v.spoken |= bit(c);
+                if label.is_none()
+                    && let Some(free) = v.labels.iter().position(|l| l.is_none())
+                {
+                    v.labels[free] = Some(c);
+                    return Some(c);
+                }
+            } else {
+                v.talking &= !bit(c);
+                if let Some(l) = label {
+                    v.labels[l] = None;
+                }
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+/// `HUD_VoiceStatus` → `CVoiceStatus::UpdateSpeakerStatus` (100180c0). `entindex` -1 is the local
+/// player, -2 the server's acknowledgement, otherwise a player index.
+pub fn update_speaker_status(entindex: i32, talking: bool) {
+    let e = engine();
+    if debug() {
+        e.print(&format!("CVoiceStatus::UpdateSpeakerStatus: ent {entindex} talking = {}\n", talking as i32));
+    }
+    if entindex == -1 && talking {
+        // Talking turns voice on for this mod.
+        e.client_cmd("voice_modenable 1");
+    }
+    if let Some(c) = with(|v| speaker_status(v, entindex, talking)) {
+        // The label's text and colour (`0x100181e0`: `"%s   "` and `GetPlayerTextColor`).
+        let mut text = e.player_info(c as i32 + 1).name_bytes;
+        text.extend_from_slice(b"   ");
+        let color = player_color(c as i32 + 1);
+        let bg = !crate::menus::scores_visible();
+        with(|v| {
+            if let Some(i) = v.labels.iter().position(|l| *l == Some(c)) {
+                v.label_text[i] = (text, color);
+                v.label_bg[i] = bg;
+                v.label_z[i] = vgui::raise();
+            }
+        });
+    }
+    // `RepositionLabels` ends every update but player 0's (`0x10018117`): a shown talk icon is
+    // parented again and gets its image for `voice_clientdebug` now.
+    if entindex != 0 {
+        let dbg = debug();
+        with(|v| {
+            if v.local_talking || v.server_acked {
+                v.icon_z = vgui::raise();
+                v.icon_sv = v.server_acked && dbg;
+            }
+        });
+    }
+}
+
+/// `CVoiceStatus::IsInSquelchMode` (100188b0): the scoreboard has the cursor for muting.
+pub fn in_squelch_mode() -> bool {
+    with(|v| v.squelch)
+}
+
+/// `StartSquelchMode` (10018870).
+pub fn start_squelch_mode() {
+    with(|v| v.squelch = true);
+}
+
+/// `StopSquelchMode` (10018890), when the scoreboard hides.
+pub fn stop_squelch_mode() {
+    with(|v| v.squelch = false);
+}
+
+/// `IsPlayerBlocked` (10018c80): the player's unique id is in the ban list.
+pub fn is_player_blocked(player: i32) -> bool {
+    engine().player_unique_id(player).is_some_and(|id| with(|v| v.bans.contains(&id)))
+}
+
+/// `IsPlayerAudible` (10018cc0): the server's rules let us hear the player.
+pub fn is_player_audible(player: i32) -> bool {
+    player >= 1 && with(|v| v.audible & bit(player as usize - 1) != 0)
+}
+
+/// Icon state for a scoreboard row (`UpdateBanButton` 100185f0); `None` while the engine has no
+/// unique id for the player (TS then leaves the row's image as it was).
+pub fn speaker_icon(player: i32) -> Option<SpeakerIcon> {
+    let id = (player >= 1).then(|| engine().player_unique_id(player)).flatten()?;
+    let c = player as usize - 1;
+    Some(with(|v| {
+        if v.audible & bit(c) == 0 {
+            SpeakerIcon::None
+        } else if v.bans.contains(&id) {
+            SpeakerIcon::Banned
+        } else if v.talking & bit(c) != 0 {
+            SpeakerIcon::Talking { bright: v.blink_timer % (BLINK_FREQUENCY * 2.0) < BLINK_FREQUENCY }
+        } else if v.spoken & bit(c) == 0 {
+            SpeakerIcon::NeverSpoken
+        } else {
+            SpeakerIcon::NotTalking
+        }
+    }))
+}
+
+/// `UpdateBanButton`'s image (`VidInit` `0x10017af0`: `640_voiceblocked` through `vgui_LoadTGA`,
+/// the `640_speaker*` through `vgui_LoadTGANoInvertAlpha`) and the label foreground it sets:
+/// orange while talking (blinking between `640_speaker4` and `640_speaker3`), grey for a player
+/// never heard. The scoreboard draws the image in the label's foreground.
+pub fn icon_image(icon: SpeakerIcon) -> (Option<Rc<Image>>, Option<Color>) {
+    match icon {
+        SpeakerIcon::None => (None, None),
+        SpeakerIcon::Banned => (vgui::image("gfx/vgui/640_voiceblocked.tga", true), None),
+        SpeakerIcon::Talking { bright } => {
+            let path = if bright { "gfx/vgui/640_speaker4.tga" } else { "gfx/vgui/640_speaker3.tga" };
+            (vgui::image(path, false), Some(Color::new(255, 170, 0, 1)))
+        }
+        SpeakerIcon::NeverSpoken => (vgui::image("gfx/vgui/640_speaker1.tga", false), Some(Color::new(100, 100, 100, 1))),
+        SpeakerIcon::NotTalking => (vgui::image("gfx/vgui/640_speaker2.tga", false), None),
+    }
+}
+
+/// The scoreboard's voice column for `player` (see [`speaker_icon`], [`icon_image`]).
+pub fn scoreboard_icon(player: i32) -> Option<(Option<Rc<Image>>, Option<Color>)> {
+    speaker_icon(player).map(icon_image)
+}
+
+/// `CVoiceStatus::~CVoiceStatus` (`0x100177e0`, the static `g_VoiceStatus` torn down when the
+/// library unloads) saves the bans (`CVoiceBanMgr::SaveState` `0x10017300`). The port has no
+/// static destructors and does it from `HUD_Shutdown`, which the engine calls just before
+/// unloading the library.
+pub fn shutdown() {
+    save_bans();
+}
+
+fn save_bans() {
+    let (path, bytes) = with(|v| (v.ban_path.clone(), v.bans.serialize()));
+    let tmp = format!("{path}.tmp");
+    if std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, &path)).is_err() {
+        engine().print(&format!("[ts] couldn't write {path}\n"));
+    }
+}
+
+/// `SetPlayerBlockedState` (10018cf0): TS toggles the ban, and only for audible players.
+/// `voice_ban.dt` is written when the library shuts down ([`shutdown`]).
+pub fn toggle_block(player: i32) {
+    let e = engine();
+    let dbg = debug();
+    if dbg {
+        e.print("CVoiceStatus::SetPlayerBlockedState part 1\n");
+    }
+    let Some(id) = e.player_unique_id(player) else { return };
+    if dbg {
+        e.print("CVoiceStatus::SetPlayerBlockedState part 2\n");
+    }
+    if !is_player_audible(player) {
+        return;
+    }
+    let banned = with(|v| {
+        let now = !v.bans.contains(&id);
+        v.bans.set(&id, now);
+        now
+    });
+    if dbg {
+        e.print(&format!("CVoiceStatus::SetPlayerBlockedState: setting player {player} ban to {}\n", banned as i32));
+    }
+    update_server_state(false);
+}
+
+/// `ScorePanel::mousePressed` (1005e660) on a player row in squelch mode: toggle the mute and say
+/// so in the chat area (`"%c** %s\n"` through `CHudTextMessage`).
+pub fn scoreboard_toggle(player: i32) {
+    let e = engine();
+    let name = hud::saytext::string(&e.player_info(player).name_bytes);
+    if name.is_empty() {
+        return;
+    }
+    let was_blocked = is_player_blocked(player);
+    toggle_block(player);
+    let fmt = |key: &str| hud::text::format(&hud::text::localise(key), &[hud::text::Arg::S(&name)]);
+    let line = if was_blocked {
+        format!("** {}\n", fmt("#Unmuted"))
+    } else {
+        format!("** {} {}\n", fmt("#Muted"), hud::text::localise("#No_longer_hear_that_player"))
+    };
+    hud::print_text_message(PRINT_TALK, &line);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Drawing
+
+/// `CVoiceStatus::CreateEntities` (10017f30), from `HUD_CreateEntities`: a voice icon above each
+/// talking player in the PVS who is drawn, and above the local player only in third person.
+pub fn create_entities() {
+    let (sprite, talking) = with(|v| (v.head_sprite, v.talking));
+    if sprite == 0 {
+        return;
+    }
+    let e = engine();
+    let Some(local) = e.local_player() else { return };
+    let third = crate::view::is_third_person();
+    let mut slot = 0;
+    for i in 0..MAX_PLAYERS {
+        if talking & bit(i) == 0 {
+            continue;
+        }
+        let Some(p) = e.entity(i as i32 + 1) else { continue };
+        if p.curstate.messagenum < local.curstate.messagenum || p.curstate.effects & EF_NODRAW_BIT != 0 {
+            continue;
+        }
+        if p.index == local.index && !third {
+            continue;
+        }
+        let origin = [p.origin[0], p.origin[1], p.origin[2] + HEAD_ICON_HEIGHT];
+        add_sprite_entity(
+            slot,
+            &SpriteEntity {
+                sprite,
+                origin,
+                scale: 0.5,
+                rendermode: kRenderTransAdd as i32,
+                renderfx: kRenderFxNoDissipation as i32,
+                renderamt: 255,
+            },
+        );
+        slot += 1;
+    }
+}
+
+/// One speaker label's geometry (`RepositionLabels` 10018900): the background label's bounds,
+/// then the text label's and the icon's inside it, each (x, y, w, h).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelRects {
+    pub bg: (i32, i32, i32, i32),
+    pub text: (i32, i32, i32, i32),
+    pub icon: (i32, i32, i32, i32),
+}
+
+/// `RepositionLabels`: from mid-screen down the right edge, each label's text label sized to its
+/// content (`getContentSize`: the text plus 4 pixels of VGUI padding each side), capped at 2/3 of
+/// the screen width, with the icon after it, 2 pixels of border and 2 between labels. `icon` is
+/// `speaker4.tga`'s size (8×8 without it).
+pub fn label_rects(screen_w: i32, screen_h: i32, text_sizes: &[(i32, i32)], icon: (i32, i32)) -> Vec<LabelRects> {
+    let border = 2;
+    let mut y = screen_h / 2;
+    text_sizes
+        .iter()
+        .map(|&(tw, th)| {
+            let (cw, ch) = vgui::label_content_size(tw, th);
+            let cw = cw.min(screen_w * 2 / 3);
+            let bw = cw + icon.0 + border * 3;
+            let bh = ch.max(icon.1) + border * 2;
+            let r = LabelRects {
+                bg: (screen_w - bw - 8, y, bw, bh),
+                text: (border, (bh - ch) / 2, cw, ch),
+                icon: (border + cw + border, (bh - icon.1) / 2, icon.0, icon.1),
+            };
+            y += bh + 2;
+            r
+        })
+        .collect()
+}
+
+/// TS `GetPlayerTextColor` (helper 1001fcd0): the team colour table by team number.
+fn player_color(player: i32) -> [i32; 3] {
+    let team = hud::with(|h| h.players.get(player as usize).map_or(0, |p| p.team));
+    hud::team_color(team)
+}
+
+/// The VGUI-panel part of `CVoiceStatus`, painted after the HUD: the speaker labels (names hidden
+/// while the scoreboard is up, `CanShowSpeakerLabels` 1001fd60, applied by `Frame`; box and icon as given out) and the local talk
+/// icon. A label is a `Label` in the player's team colour at VGUI alpha 100, holding the name in
+/// white "Scoreboard Text" (`Scheme::sf_primary2`), east-aligned, and `speaker4.tga` (loaded
+/// without alpha inversion, drawn in white at VGUI alpha 1). The talk icon is `icntlk_pl.tga`
+/// (`icntlk_sv.tga` once the server acknowledged, with `voice_clientdebug` on), white at VGUI
+/// alpha 1, right-aligned 10 pixels from the edge above `GetAckIconHeight` (1001fd40: screen
+/// height − 3 font heights − 6).
+///
+/// They are VGUI panels parented to the viewport when shown, so they paint over the viewport's
+/// own panels; `raised` picks the ones parented in the range being painted ([`vgui::raise`]),
+/// for a message window parented in between.
+pub fn redraw(scores_visible: bool, raised: impl Fn(u64) -> bool) {
+    let (labels, texts, bgs, zs, local, acked, icon_z, sv) =
+        with(|v| (v.labels, v.label_text.clone(), v.label_bg, v.label_z, v.local_talking, v.server_acked, v.icon_z, v.icon_sv));
+    // `Frame` (`0x10017ea0`) shows or hides only the names with the scoreboard; the background
+    // and icon keep the visibility they got when the label was given out, so a label handed
+    // out under the scoreboard stays hidden, and one already up keeps its box and icon there.
+    let show_labels = !scores_visible;
+    let screen = hud::screen();
+    let (w, h) = (screen.width, screen.height);
+    let root = Panel::root(w, h);
+    let s = &mut vgui::EngineSurface;
+    let icon = vgui::image("gfx/vgui/speaker4.tga", false);
+    vgui::with_schemes(|sb| {
+        let font = sb.font_of("Scoreboard Text");
+        let shown: Vec<usize> = (0..MAX_SPEAKERS).filter(|&i| labels[i].is_some()).collect();
+        let sizes: Vec<(i32, i32)> = shown.iter().map(|&i| font.map_or((0, 0), |f| f.text_size(&texts[i].0))).collect();
+        let isize = icon.as_ref().map_or((8, 8), |i| (i.wide, i.tall));
+        for (r, &i) in label_rects(w, h, &sizes, isize).iter().zip(&shown) {
+            if !bgs[i] || !raised(zs[i]) {
+                continue;
+            }
+            let c = texts[i].1;
+            let bg = root.child(r.bg.0, r.bg.1, r.bg.2, r.bg.3);
+            bg.paint_background(s, Color::new(c[0] as u8, c[1] as u8, c[2] as u8, 100));
+            if show_labels && let Some(f) = font {
+                let t = bg.child(r.text.0, r.text.1, r.text.2, r.text.3);
+                let (tw, th) = f.text_size(&texts[i].0);
+                let (x, y) = vgui::label_text_pos(Align::East, t.w, t.h, tw, th);
+                t.text(s, f, x, y, Color::new(255, 255, 255, 0), &texts[i].0, tw);
+            }
+            if let Some(img) = &icon {
+                bg.child(r.icon.0, r.icon.1, r.icon.2, r.icon.3).image(s, img, 0, 0, Color::new(255, 255, 255, 1));
+            }
+        }
+    });
+    let (pl, sv_img) = (vgui::image("gfx/vgui/icntlk_pl.tga", true), vgui::image("gfx/vgui/icntlk_sv.tga", true));
+    if let (Some(pl), Some(sv_img)) = (pl, sv_img)
+        && (local || acked)
+        && raised(icon_z)
+    {
+        let img = if sv { &sv_img } else { &pl };
+        // `GetAckIconHeight` uses `m_iFontHeight`, the `number_0` height.
+        let ack_height = h - (hud::font_height() * 3 + 6);
+        root.image(s, img, w - pl.wide - 10, ack_height - pl.tall, Color::new(255, 255, 255, 1));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tiny xorshift for the fuzz tests.
+    fn xorshift(s: &mut u64) -> u64 {
+        *s ^= *s << 13;
+        *s ^= *s >> 7;
+        *s ^= *s << 17;
+        *s
+    }
+
+    /// Ban files of any size and content, voice masks of any length and any entity index.
+    #[test]
+    fn garbage_voice_input() {
+        let mut s = 0x1234_5678_9abc_def1u64;
+        for n in [0usize, 1, 3, 4, 5, 19, 20, 21, 4 + 16 * 300 + 9] {
+            let mut b: Vec<u8> = (0..n).map(|_| xorshift(&mut s) as u8).collect();
+            if b.len() >= 4 {
+                b[..4].copy_from_slice(&BAN_FILE_VERSION.to_le_bytes());
+            }
+            let l = BanList::parse(&b);
+            assert!(l.len() <= n.saturating_sub(4) / 16);
+            assert_eq!(BanList::parse(&l.serialize()).len(), l.len());
+            assert!(BanList::parse(&vec![0xff; n]).is_empty());
+            let _ = on_voice_mask(&b);
+        }
+        // Many duplicate ids parse once.
+        let mut b = BAN_FILE_VERSION.to_le_bytes().to_vec();
+        for _ in 0..10_000 {
+            b.extend_from_slice(&id(7));
+        }
+        assert_eq!(BanList::parse(&b).len(), 1);
+        let mut v = Voice::default();
+        for e in [i32::MIN, -3, -2, -1, 0, 1, 31, 32, 33, 64, 65, i32::MAX] {
+            speaker_status(&mut v, e, true);
+            speaker_status(&mut v, e, false);
+        }
+        for _ in 0..1000 {
+            speaker_status(&mut v, xorshift(&mut s) as i32 % 40, xorshift(&mut s) & 1 != 0);
+        }
+        assert!(bit(usize::MAX) == 0 && bit(32) == 0);
+    }
+
+    fn id(b: u8) -> [u8; 16] {
+        let mut id = [0u8; 16];
+        id[0] = b;
+        id
+    }
+
+    #[test]
+    fn ban_file_round_trip_and_version() {
+        let mut l = BanList::default();
+        l.set(&id(3), true);
+        l.set(&id(1), true);
+        l.set(&id(1), true);
+        assert_eq!(l.len(), 2);
+        let bytes = l.serialize();
+        assert_eq!(&bytes[..4], &1i32.to_le_bytes());
+        assert_eq!(bytes.len(), 4 + 32);
+        // Written bucket by bucket (hash = byte sum): id(1) before id(3).
+        assert_eq!(bytes[4], 1);
+        let back = BanList::parse(&bytes);
+        assert!(back.contains(&id(1)) && back.contains(&id(3)));
+        let mut wrong = bytes.clone();
+        wrong[0] = 2;
+        assert!(BanList::parse(&wrong).is_empty());
+        assert!(BanList::parse(&bytes[..20]).len() == 1, "partial trailing id dropped");
+        l.set(&id(3), false);
+        assert!(!l.contains(&id(3)));
+    }
+
+    #[test]
+    fn showbanned_line_matches_sdk_printf() {
+        let mut x = [0u8; 16];
+        x[0] = 0x0a;
+        x[1] = 0x80;
+        let l = ban_line(0, &x, false);
+        assert!(l.starts_with("Ban 0:  affffff80 0 0"), "{l}");
+        assert!(ban_line(1, &x, true).starts_with("BAN 1:  AFFFFFF80"));
+    }
+
+    #[test]
+    fn voice_mask_message() {
+        let mut b = 5u32.to_le_bytes().to_vec();
+        b.extend_from_slice(&2u32.to_le_bytes());
+        assert_eq!(on_voice_mask(&b), Some((5, 2, -1)));
+        b.push(1);
+        assert_eq!(on_voice_mask(&b), Some((5, 2, 1)));
+        assert_eq!(on_voice_mask(&b[..6]), None);
+        assert_eq!(vban_command(0x1f), "vban 1f");
+    }
+
+    #[test]
+    fn speaker_labels_follow_talkers() {
+        let mut v = Voice { server_mod_enable: -1, ..Voice::default() };
+        assert_eq!(speaker_status(&mut v, 3, true), Some(2));
+        assert_eq!(v.talking, 0b100);
+        assert_eq!(v.spoken, 0b100);
+        assert_eq!(v.labels[0], Some(2));
+        assert_eq!(speaker_status(&mut v, 3, true), None, "already labelled");
+        speaker_status(&mut v, 3, false);
+        assert_eq!(v.talking, 0);
+        assert_eq!(v.spoken, 0b100, "keeps 'has spoken'");
+        assert_eq!(v.labels[0], None);
+        speaker_status(&mut v, 32, true);
+        assert_eq!(v.talking, 0, "TS ignores player 32");
+        speaker_status(&mut v, -1, true);
+        assert!(v.local_talking && v.talking == 0);
+        for i in 1..=8 {
+            speaker_status(&mut v, i, true);
+        }
+        assert_eq!(v.labels.iter().flatten().count(), MAX_SPEAKERS);
+        assert_eq!(v.talking, 0xff, "talking is tracked even without a free label");
+    }
+
+    #[test]
+    fn label_layout() {
+        let r = label_rects(640, 480, &[(100, 12), (900, 12)], (16, 16));
+        assert_eq!(r[0].bg, (640 - (108 + 16 + 6) - 8, 240, 130, 24));
+        assert_eq!((r[0].text, r[0].icon), ((2, 2, 108, 20), (112, 4, 16, 16)));
+        assert_eq!(r[1].bg.1, 240 + 24 + 2);
+        assert_eq!(r[1].bg.2, 426 + 16 + 6, "text capped at 2/3 of the screen");
+    }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+# The `tsmod_*` library suffixes (`library_suffix`), for the plugin fixtures.
+ts-plugin-api = { path = "../crates/plugin-api" }
+# The client extension suffixes, and the stub extension's checks (`cargo xtask client-plugins`).
+ts-client-ext-api = { path = "../crates/client-ext-api" }
+tsmod-client-test = { path = "../crates/tsmod-client-test" }
+# `plugin-offer`, `plugin-approve`, and the `tspkg` and client-plugins checks' packages.
+plugin-pkg = { path = "../crates/plugin-pkg" }

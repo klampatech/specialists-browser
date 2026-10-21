@@ -1,0 +1,18 @@
+[alias]
+xtask = "run -q -p xtask --"
+
+# WASM build settings — see companion vault doc
+# ~/Obsidian/projects/specialists-browser-rust-port.md
+#
+# Why these:
+# - linker = "emcc" lets the WASM module emit the dylink.0 custom section
+#   in the format that Xash3D FWGS' WASM engine expects to load.
+# - rustflags features = "+multivalue" is required for emcc's side-module
+#   linking (rustc-side multivalue returns must be on for the linker
+#   handshake).
+#
+# Used at Milestone 1+; safe to commit.
+
+[target.wasm32-unknown-emscripten]
+linker = "emcc"
+rustflags = ["-C", "target-feature=+multivalue,+reference-types", "-C", "link-arg=-sSIDE_MODULE=1"]

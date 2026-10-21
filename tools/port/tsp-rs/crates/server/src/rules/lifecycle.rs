@@ -1,0 +1,1254 @@
+//! Player lifecycle under the TS rules: connect, put-in-server, InitHUD, spawn (`TSInit`),
+//! death (`CBasePlayer::Killed`, `PlayerDeathThink`), observer and respawn, delayed suicide,
+//! disconnect, userinfo. Decomp: CBasePlayer.c (Spawn 0x8f..., TSInit 0x92a4c, Killed 0x8ed5c,
+//! PreThink 0x908cc, StartObserver 0x99634, StopObserver 0x99a14), global_000ab05c.c (client.cpp),
+//! CHalfLifeMultiplay.c (InitHUD 0xcf618), CTSGameRules.c (InitHUD 0x79134).
+
+use super::msg::{self, ts_message_one};
+use super::{PlayerRules, cvars, netname, other, powerup, scoring, spawnpoint, state, teams};
+use crate::damage::{DamageInfo, hitgroup};
+use crate::messages::{self, Msg};
+use crate::player::Player;
+use crate::world::Cx;
+use goldsrc::edict::EdictPtr;
+use goldsrc::server::{MsgWriter, engine};
+use goldsrc::sys::*;
+use shared::pm::{Arith, Fpu, FpuMath, Num, ORDER_XYZ, ORDER_ZYX};
+use shared::protocol::hud_wire::TsPAward;
+use shared::protocol::hud_wire::{ActItems, SetFov, Spectator, TsHealth, TsMBlur};
+use shared::protocol::rules::{GameMode, Motd, ScoreInfo, ServerName, SrvSett, hud_dest};
+use shared::protocol::rules::{RoundTime, TeamInfo};
+use shared::ts::{obs, powerup as pw, stunt};
+use std::ffi::CStr;
+
+const SVC_TEMPENTITY: i32 = 23;
+const TE_KILLPLAYERATTACHMENTS: i32 = 125;
+const EF_NOINTERP: i32 = 32;
+
+/// HLDM models TS refuses (`IsValidTeam(char*)` 0x8b140).
+const HLDM_MODELS: [&str; 9] = ["barney", "gina", "gman", "helmet", "hgrunt", "recon", "robo", "scientist", "zombie"];
+
+// ---- connection ----------------------------------------------------------------------------------
+
+/// `ClientConnect`: notify `ts_playeramount`, `CHalfLifeMultiplay::ClientConnected` (0xcf59c:
+/// the voice manager), then accept. `CHalfLifeRules::ClientConnected` (0xde794) only accepts.
+pub fn client_connect(e: *mut edict_t, _name: &CStr, _addr: &CStr) -> bool {
+    crate::entities::ts::player_amount_changed(true);
+    if !state::single_player() {
+        super::voice::client_connected(e);
+    }
+    true
+}
+
+/// `ClientDisconnect` (0xacd4c): `ts_playeramount`, then, unless the game is over, the leave
+/// notice and `CHalfLifeMultiplay::ClientDisconnected` (0xcf960). The engine keeps the edict and
+/// its `Player` until the slot's next client spawns, so the rules keep seeing the player through
+/// `slot_players()` (`UTIL_PlayerByIndex`) with what `TSPlayerDisconnect` left.
+pub fn client_disconnect(e: *mut edict_t) {
+    crate::entities::ts::player_amount_changed(false);
+    let game_over = state::with(|g| g.game_over);
+    let eng = engine();
+    let idx = eng.index_of(e);
+    if !game_over {
+        let name = netname(e);
+        msg::say_all(idx, &shared::bformat!("- {} has left the game\n", name));
+        let v = e.v();
+        v.takedamage = DAMAGE_NO as f32;
+        v.solid = SOLID_NOT as i32;
+        eng.set_origin(e, v.origin);
+        // `CHalfLifeRules::ClientDisconnected` (0xde7a0) is empty.
+        if !state::single_player() {
+            client_disconnected(e, idx);
+        }
+    }
+    // Port addition (engine safety): the engines leave FL_CLIENT on a dropped client's edict, and
+    // FWGS still maps it to the freed slot: pfnGetPlayerUserId returns the old id, and
+    // pfnSetClientMaxspeed then dereferences the slot's NULL edict (the "kick a bot" crash).
+    // The cleared flag is the port's liveness test (`rules::set_client_maxspeed`, players(),
+    // is_player(), the bot list) until a client spawns in the slot. TS's own tests don't see it:
+    // `has_player`, `slot_players()` and `ts_flags` (which puts FL_CLIENT back) still find the
+    // player, as `IsPlayer()`, `UTIL_PlayerByIndex` and `pev->flags & FL_CLIENT` do in TS.
+    (e.v().flags &= !((FL_CLIENT | FL_FAKECLIENT) as i32));
+}
+
+/// `CHalfLifeMultiplay::ClientDisconnected` (0xcf960): `game_playerleave`, the log line,
+/// `RemoveAllItems(TRUE)`, `TSPlayerDisconnect` (0x9f94c), and the next The One check at once
+/// (`+0x587c = 0`). TS neither stops the player's slow-motion flow nor frees the players it slowed.
+fn client_disconnected(e: *mut edict_t, idx: i32) {
+    if !e.has_private_data() {
+        return;
+    }
+    crate::entities::fire_targets(c"game_playerleave", e, e, crate::world::UseType::Toggle, 0.0);
+    let eng = engine();
+    // The fourth field is the user id again outside teamplay, the `model` key in teamplay.
+    msg::log(&shared::bformat!("{} disconnected\n", super::scoring::log_player(e)));
+    crate::player::with_player(e, |p, cx| {
+        // `RemoveAllItems(TRUE)`, `UpdateClientData` inline included.
+        crate::weapons::remove_all_items(p, cx);
+        // TSPlayerDisconnect.
+        crate::entities::ts::drop_flag(p, cx, false);
+        if (idx as u32) < 0x20 {
+            state::with(|g| g.votes.reset(idx as usize));
+        }
+        {
+            let v = cx.pev();
+            v.solid = SOLID_NOT as i32;
+            v.deadflag = DEAD_DEAD as i32;
+            v.takedamage = DAMAGE_NO as f32;
+            v.flags &= !(FL_FAKECLIENT as i32);
+            v.flags |= FL_DORMANT as i32;
+            v.frags = 0.0;
+            v.effects = EF_NODRAW as i32;
+            v.health = 0.0;
+        }
+        p.frags = 0;
+        p.deaths = 0;
+        p.respawn_at = -1.0;
+        teams::clear_team(p, cx.edict);
+        p.ts.is_the_one = false;
+        // `m_fGameHUDInitialized` (`+0x9b8`) off, and `UpdateClientData` off for good (`+0x534`
+        // = -1).
+        p.ts.game_hud_initialized = false;
+        p.hud.next_update = -1.0;
+        // `m_bIsBot` off (the object stays a `CBot`, so its brain and `IsNetClient` are kept).
+        p.is_bot = 0;
+        p.joined = false;
+    });
+    state::with(|g| {
+        g.call_check_deads(eng.time());
+        g.next_the_one_check = 0.0;
+    });
+}
+
+/// `ClientKill` (the engine's `pfnClientKill`): the ruleset's
+/// [`client_kill`](crate::gameplay::ServerRules::client_kill).
+pub fn client_kill(e: *mut edict_t) {
+    crate::player::with_player(e, |p, cx| crate::gameplay::active().server.client_kill(p, cx));
+}
+
+/// The `kill` command's `Killed(pev, GIB_NEVER)`, outside `TakeDamage` (so with no inflictor:
+/// `g_pevLastInflictor` is NULL), at once: `pev->health = 0` first.
+pub fn suicide(p: &mut Player, cx: &mut Cx) {
+    cx.pev().health = 0.0;
+    let me = cx.edict;
+    let info = DamageInfo::new(std::ptr::null_mut(), me, 0.0, crate::damage::bits::NEVERGIB);
+    killed(p, cx, &info);
+}
+
+/// `ClientUserInfoChanged` (0xae638): a name change (`%` turned into spaces, announced, logged),
+/// then the rules' `ClientUserInfoChanged`.
+pub fn userinfo_changed(e: *mut edict_t) {
+    if e.is_null() || !e.has_private_data() {
+        return;
+    }
+    let eng = engine();
+    let old = netname(e);
+    if !old.is_empty() && eng.string(e.v().netname).to_bytes() != eng.info_key(e, c"name").to_bytes() {
+        let clean = clean_name(eng.info_key(e, c"name").to_bytes());
+        let idx = eng.index_of(e);
+        eng.set_client_key(e, "name", &clean);
+        let new = eng.info_key(e, c"name").to_bytes().to_vec();
+        msg::say_all(idx, &name_change_notice(&old, &new));
+        // `"old<uid><authid><x>"`: the fourth field is the user id outside teamplay and the
+        // `model` key in teamplay; `pev->netname` is still the old name here.
+        msg::log(&shared::bformat!("{} changed name to \"{}\"\n", super::scoring::log_player(e), new));
+    }
+    // `CHalfLifeRules` keeps `CGameRules::ClientUserInfoChanged` (empty).
+    if state::single_player() {
+        return;
+    }
+    crate::player::with_player(e, |p, cx| {
+        multiplay_userinfo_changed(p, cx);
+        if state::teamplay() {
+            teams::userinfo_changed(p, cx);
+        }
+    });
+}
+
+/// `ClientUserInfoChanged`'s new name: `strncpy` into a 255-byte buffer, every `%` made a space.
+/// The other bytes are kept as the client sent them (a CP1252 `é` stays 0xE9, issue #81).
+pub fn clean_name(raw: &[u8]) -> Vec<u8> {
+    raw.iter().take(255).map(|&b| if b == b'%' { b' ' } else { b }).collect()
+}
+
+/// `ClientUserInfoChanged`'s `SayText` to all: `"* %s changed name to %s\n"` with both names'
+/// bytes. Guard (stack overflow in TS): TS `sprintf`s into a 256-byte stack buffer, which two
+/// 255-byte names overrun; the port cuts the line at 255 bytes. The engines keep names far
+/// shorter, so a real line is never cut.
+pub fn name_change_notice(old: &[u8], new: &[u8]) -> Vec<u8> {
+    let mut line = shared::bformat!("* {} changed name to {}\n", old, new);
+    line.truncate(255);
+    line
+}
+
+/// `CHalfLifeMultiplay::ClientUserInfoChanged` (0x8b244): a client not running weapon prediction
+/// gets `cl_lw 1` (`PlayerIsCheating`); otherwise a `model` key that differs from the team name
+/// (`""` outside teamplay) is put back to the team name when it is an HLDM model or
+/// `mp_defaultteam` is on.
+fn multiplay_userinfo_changed(p: &mut Player, cx: &mut Cx) {
+    let e = cx.edict;
+    let eng = engine();
+    if player_is_cheating(&eng.info_key(e, c"cl_lw").to_string_lossy()) {
+        eng.set_client_key(e, "cl_lw", "1");
+        return;
+    }
+    // The key's bytes: TS echoes them unconverted.
+    let model = eng.info_key(e, c"model").to_bytes().to_vec();
+    let team = p.ts.team_name.clone();
+    if super::state::team_eq(&model, &team) {
+        return;
+    }
+    if !cvars::on(c"mp_defaultteam") && !HLDM_MODELS.iter().any(|m| m.as_bytes().eq_ignore_ascii_case(&model)) {
+        return;
+    }
+    eng.set_client_key(e, "model", &team);
+    let idx = cx.index();
+    msg::say_one(e, idx, &shared::bformat!("* Can't change team to '{}'\n", model));
+    msg::say_one(e, idx, "* HLDM models not allowed.\n");
+}
+
+/// `PlayerIsCheating` (0x9fae0): `sscanf(cl_lw, "%i") != 1` (its bot flag `+0x160` is never set).
+/// A value `%i` can't read leaves TS comparing an uninitialised stack word; the port treats it as
+/// not 1.
+fn player_is_cheating(cl_lw: &str) -> bool {
+    scan_c_int(cl_lw) != Some(1)
+}
+
+/// `sscanf("%i")`: optional whitespace and sign, then a hex (`0x`), octal (leading `0`) or decimal
+/// number, read up to the first character that doesn't fit.
+fn scan_c_int(s: &str) -> Option<i64> {
+    let s = s.trim_start();
+    let (neg, s) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let (radix, digits) = if (s.starts_with("0x") || s.starts_with("0X")) && s[2..].starts_with(|c: char| c.is_ascii_hexdigit()) {
+        (16, &s[2..])
+    } else if s.starts_with('0') {
+        (8, s)
+    } else {
+        (10, s)
+    };
+    let end = digits.find(|c: char| !c.is_digit(radix)).unwrap_or(digits.len());
+    if end == 0 {
+        return None;
+    }
+    let v = i64::from_str_radix(&digits[..end], radix).ok()?;
+    Some(if neg { -v } else { v })
+}
+
+// ---- spawn -------------------------------------------------------------------------------------
+
+/// `CBasePlayer::Spawn` TS parts (`TSInit`, rules `PlayerSpawn`, spawn spot). Runs after the base
+/// player setup in `Player::spawn` and before weapons/stunt `on_spawn`.
+pub fn on_spawn(p: &mut Player, cx: &mut Cx) {
+    let e = engine();
+    let now = cx.time();
+    let first = !p.ts.put_in_server;
+    let superjump_map = state::with(|g| g.superjump_map);
+
+    // TSInit
+    if p.ts.is_the_one {
+        state::with(|g| g.the_one_exists = false);
+    }
+    let was_observer = {
+        let v = cx.pev();
+        v.iuser1 != 0 || v.iuser2 != 0
+    };
+    // TSInit resets the per-life state; these survive a respawn.
+    let old = std::mem::take(&mut p.ts);
+    p.ts = PlayerRules {
+        put_in_server: old.put_in_server,
+        game_hud_initialized: old.game_hud_initialized,
+        obs_mode: old.obs_mode,
+        obs_target: old.obs_target,
+        tk_until: old.tk_until,
+        tk_count: old.tk_count,
+        next_suicide: old.next_suicide,
+        respawns_used: old.respawns_used,
+        team_name: old.team_name,
+        flag: old.flag,
+        ..PlayerRules::default()
+    };
+    p.slow_target = 1.0;
+    p.ts.slow_display = 1.0;
+    p.active_powerup = 0;
+    p.powerup_until = 0.0;
+    p.kungfu = false;
+    p.superjump = superjump_map;
+    p.respawn_at = 0.0;
+    p.slots_used = 0;
+    p.next_node_learn = 0.0;
+    // `SetPlayerSpeed(330)` (the gameplay rules' `PmRules::max_player_speed`).
+    let speed = crate::gameplay::active().pm.max_player_speed();
+    p.player_speed = speed;
+    crate::weapons::ts_init(p);
+    p.ts.protect_until = now + 1.0;
+    p.ts.init_hud = true;
+    // `CBasePlayer::Spawn` (0x8f568) zeroes `m_fLongJump` (+0x9d4) before the key.
+    p.long_jump = false;
+    e.set_physics_key(cx.edict, c"slj", c"0");
+    e.set_physics_key(cx.edict, c"hl", c"1");
+    e.set_physics_key(cx.edict, c"mj", if superjump_map { c"1" } else { c"0" });
+    // Port addition: the gameplay ruleset both sides' movement and guns run.
+    crate::gameplay::set_physinfo(cx.edict);
+    super::set_client_maxspeed(cx.edict, speed);
+    crate::entities::stock::triggers::geiger_spawn(cx.edict);
+    {
+        let v = cx.pev();
+        v.maxspeed = speed;
+        v.fuser1 = 1.0;
+        v.iuser4 = 0;
+        v.renderamt = 125.0;
+        v.rendermode = kRenderTransColor as i32;
+        v.rendercolor = [0.0; 3];
+        v.renderfx = kRenderFxNoDissipation as i32;
+        v.sequence = 0;
+        v.gaitsequence = 0;
+        v.frame = 0.0;
+        // The suit bit, from `CHalfLifeMultiplay::PlayerSpawn` (`CHalfLifeRules::PlayerSpawn`
+        // 0xde7d8 is empty).
+        if !state::single_player() {
+            v.weapons |= 0x8000_0000u32 as i32;
+        }
+        v.air_finished = now + 12.0;
+        v.dmg = 2.0;
+        v.velocity = [0.0; 3];
+        v.punchangle = [0.0; 3];
+    }
+    // `UTIL_ScreenFade(this, (200, 200, 250), 0.2, m_flProtect - time, 0x19, 0)` (3.0 0x92a4c, 2.1
+    // 0x10055414: the spawn protection's end less the time, a `float` difference; issue #216).
+    let hold = p.ts.protect_until - now;
+    crate::entities::stock::explode::screen_fade(cx.edict, [200.0, 200.0, 250.0], 0.2, hold, 0x19, 0);
+    if was_observer {
+        let s = Spectator { entindex: cx.index() as u8, observer: 0 };
+        msg::all(Msg::Spectator, |w| s.write(w));
+        let v = cx.pev();
+        v.iuser1 = 0;
+        v.iuser2 = 0;
+    }
+
+    if first {
+        // ClientPutInServer: GiveCash(atoi(initial_cash.string)), EF_NOINTERP.
+        p.ts.put_in_server = true;
+        // `BotSetup` (0x1006b3b0), TS's put-in-server for bots, gives neither.
+        if !p.cbot {
+            give_cash(p, crate::gameplay::active().server.put_in_server_cash());
+            cx.pev().effects |= EF_NOINTERP;
+        }
+    }
+
+    crate::gameplay::active().server.on_spawn(p, cx);
+    if state::teamplay() {
+        teams::set_default_team(p, cx);
+    }
+    spawnpoint::place(p, cx);
+}
+
+/// `CBasePlayer::GiveCash`: clamped to 0..30000 (the sum wraps like TS's C int first: a map's
+/// `buy_price` can be anything).
+pub fn give_cash(p: &mut Player, n: i32) {
+    p.cash = p.cash.wrapping_add(n).clamp(0, 30000);
+}
+
+// ---- think --------------------------------------------------------------------------------------
+
+/// Buttons that end the intermission once `mp_chattime` is up (`PlayerThink`'s mask 0x827).
+const END_INTERMISSION_BUTTONS: i32 = (IN_ATTACK | IN_JUMP | IN_DUCK | IN_USE | IN_ATTACK2) as i32;
+
+/// The head of `CBasePlayer::PreThink` (0x908cc): the button edges, then
+/// `g_pGameRules->PlayerThink` (`CHalfLifeMultiplay::PlayerThink` 0xcfb60). Returns true while
+/// the game is over: PreThink returns right here then, so the rest of the player's PreThink
+/// (water, time-based damage, stunts, weapon timers, trains, …) doesn't run in intermission.
+pub fn player_think(p: &mut Player, cx: &mut Cx) -> bool {
+    let buttons = cx.pev().button;
+    p.ts.buttons_pressed = buttons & (p.ts.buttons_last ^ buttons);
+    p.ts.buttons_last = buttons;
+    if !state::with(|g| g.game_over) {
+        return false;
+    }
+    // `m_afButtonPressed` is against `m_afButtonLast`, which PostThink stops updating at
+    // intermission (the stunt package's copy, see `stunt::post_think`).
+    let pressed = buttons & (p.stunt.button_last ^ buttons);
+    if pressed & END_INTERMISSION_BUTTONS != 0 {
+        state::with(|g| g.end_intermission_button_hit = true);
+    }
+    p.ts.buttons_pressed = 0;
+    p.stunt.button_pressed = 0;
+    p.stunt.button_released = 0;
+    cx.pev().button = 0;
+    true
+}
+
+/// The rules part of `CBasePlayer::PreThink` (0x908cc) after `player_think`. True when
+/// [`pre_think_end`] is due this frame.
+pub fn pre_think(p: &mut Player, cx: &mut Cx, tail: bool) -> bool {
+    let now = cx.time();
+
+    // PreThink order: WaterMove, UpdateClientData (InitHUD), CheckTimeBasedDamage, CheckSuitUpdate.
+    crate::player::water::water_move(p, cx);
+    crate::player::hud::update_client_data(p, cx);
+    crate::player::water::check_time_based_damage(p, cx);
+
+    // CheckSuitUpdate (0xda2d0): the geiger counter, and the suit sentences in single player.
+    crate::player::suit::check_suit_update(p, cx);
+
+    // Time scale easing toward the target, and animation rate = time scale.
+    let ft = engine().globals().frametime;
+    {
+        let eases = crate::gameplay::active().server.time_scale_eases();
+        let v = cx.pev();
+        if eases {
+            powerup::interpolate(ft, &mut v.fuser1, p.slow_target);
+        } else {
+            v.fuser1 = p.slow_target;
+        }
+        v.framerate = crate::gameplay::active().server.anim_framerate(v.fuser1);
+    }
+
+    powerup::update_state(p, cx);
+    powerup::plugin_speed_think(p, cx);
+    powerup::slow_flow(p, cx);
+    crate::gameplay::active().server.health_regen(p, cx, now);
+
+    if cx.pev().iuser1 != 0 {
+        crate::gameplay::active().server.observer_think(p, cx, now);
+        cx.pev().impulse = 0;
+        return false;
+    }
+    if cx.pev().deadflag > DEAD_NO as i32 {
+        death_think(p, cx);
+        return false;
+    }
+
+    // No +use double tap here: TS's `CBasePlayer::TSUse` (0x956e0) is never called. The client
+    // sends `usepowerup` for a double tap when `cl_usepowerup` is on (issue #49). Using objects
+    // is `player::player_use`, from the weapons' PostThink.
+
+    // TS's PreThink has returned already on the frame the train is lost (issue #60).
+    tail
+}
+
+/// The end of `CBasePlayer::PreThink` (mp.dll 0x1005ff2b..0x1006002e): the end of spawn
+/// protection and, as PreThink's very last step, the delayed suicide of `kill`. It runs after
+/// the node learning and the weapon timers (issue #155), only when [`pre_think`] returned true
+/// (a living, non-observing player on a frame that kept its train).
+pub fn pre_think_end(p: &mut Player, cx: &mut Cx) {
+    let now = cx.time();
+    // End of spawn protection.
+    if p.ts.protect_until < now && cx.pev().rendermode != 0 {
+        let v = cx.pev();
+        v.rendermode = 0;
+        v.rendercolor = [0.0; 3];
+        v.renderamt = 0.0;
+        v.renderfx = 0;
+    }
+
+    // Delayed suicide (a ruleset's `kill` that schedules one).
+    if p.ts.suicide_at > 0.001 && p.ts.suicide_at < now {
+        p.ts.suicide_at = 0.0;
+        // `Killed(pev, GIB_NEVER)` straight from PreThink: no inflictor.
+        suicide(p, cx);
+    }
+}
+
+/// Rules part of `PostThink`. Fall damage (player-movement.md §6.6) is applied by the stunt
+/// module's PostThink together with the landing logic, so nothing to do here yet.
+pub fn post_think(_p: &mut Player, _cx: &mut Cx) {}
+
+/// `UpdateClientData`'s init block (0x91d40), inside its 0.1 s throttle: ResetHUD every spawn
+/// and observer start, InitHUD and the rules InitHUDs once. Nothing is reset for a resend here:
+/// the spawn already did that (`Spawn`/`TSInit`), and the values follow in the same update.
+pub fn init_hud_block(p: &mut Player, cx: &mut Cx) {
+    p.ts.init_hud = false;
+    // `gInitHUD = 0` (UpdateClientData 0x91d00).
+    crate::save::set_init_hud(false);
+    let e = cx.edict;
+    messages::one(Msg::ResetHUD, e).byte(0).end();
+    if !p.ts.game_hud_initialized {
+        messages::one(Msg::InitHUD, e).end();
+        // `CHalfLifeRules::InitHUD` (0xde79c) is empty; `game_playerjoin` only fires when
+        // `IsMultiplayer()`. `CTSGameRules::InitHUD` runs either way, unless the ruleset runs
+        // it from the multiplay `InitHUD` (`rules_init_hud`).
+        let single = state::single_player();
+        if !single {
+            rules_init_hud(p, cx);
+        }
+        if !crate::gameplay::active().server.init_hud().inside_multiplay {
+            ts_init_hud(p, cx);
+        }
+        p.ts.game_hud_initialized = true;
+        if !single {
+            crate::world::lend(e, p, || crate::entities::fire_targets(c"game_playerjoin", e, e, crate::world::UseType::Toggle, 0.0));
+        }
+    }
+    // Lent back to its slot for both, so a `game_player_team` they reach changes our team at
+    // once, as in TS.
+    crate::world::lend(e, p, || crate::entities::fire_targets(c"game_playerspawn", e, e, crate::world::UseType::Toggle, 0.0));
+    let (round_end, timer) = state::with(|g| (g.round_end, g.round_timer));
+    if round_end != 0.0 && timer {
+        // 0x79370: clamped at 0 and truncated.
+        let secs = super::frame::round_time_byte(super::frame::x87_max0(round_end as f64 - cx.time() as f64));
+        let rt = RoundTime { secs, state: 0 };
+        msg::one(Msg::RoundTime, e, |w| rt.write(w));
+    }
+    if state::with(|g| g.superjump_map) && p.superjump {
+        msg::one(Msg::PwUp, e, |w| shared::protocol::hud_wire::PwUp { bits: pw::SUPERJUMP as i16, secs: 0 }.write(w));
+    }
+}
+
+/// `CHalfLifeMultiplay::InitHUD` / `CHalfLifeTeamplay::InitHUD`.
+fn rules_init_hud(p: &mut Player, cx: &mut Cx) {
+    let e = cx.edict;
+    let eng = engine();
+    let teamplay = state::teamplay();
+    if teamplay {
+        teams::set_default_team(p, cx);
+    }
+    let raw = netname(e);
+    let name: &[u8] = if raw.is_empty() { b"unconnected" } else { &raw };
+    msg::text_all(hud_dest::NOTIFY, &shared::bformat!("{} has joined the game\n", name));
+    // The log has the raw `netname`, and the user id (DM) or the `model` key (teamplay) last.
+    msg::log(&shared::bformat!("{} entered the game\n", super::scoring::log_player(e)));
+    // UpdateGameMode
+    let gm = GameMode { teamplay: teamplay as u8 };
+    msg::one(Msg::GameMode, e, |w| gm.write(w));
+    // Our own (empty) score first, then everyone's.
+    let me = ScoreInfo { idx: cx.index() as u8, ..Default::default() };
+    msg::one(Msg::ScoreInfo, e, |w| me.write(w));
+    send_motd(e);
+    // `UTIL_PlayerByIndex`: players who left are listed too.
+    for i in 1..=eng.max_clients() {
+        let o = eng.player(i);
+        if !super::has_player(o) {
+            continue;
+        }
+        let s = if o == e { score_info_of(p, cx.pev(), i) } else { other(o, |q| score_info_of(q, o.v(), i)).unwrap_or_default() };
+        msg::one(Msg::ScoreInfo, e, |w| s.write(w));
+    }
+    // `if (g_fGameOver) { MESSAGE_BEGIN(MSG_ONE, SVC_INTERMISSION) }` (0xcf618 tail; 2.1
+    // 0x10023ec0): a joiner whose InitHUD runs during the intermission (`fullupdate`) gets the
+    // scoreboard. The Multiplay part ends here; Teamplay's goes on after it (0xe45d8).
+    if state::with(|g| g.game_over) {
+        MsgWriter::begin(MSG_ONE as i32, goldsrc::ext::rules::SVC_INTERMISSION, None, e).end();
+    }
+    // A ruleset whose multiplay `InitHUD` ends with `CTSGameRules::InitHUD` runs it here: before
+    // the teamplay part, whose team change has the last word ([`InitHudRules::inside_multiplay`](crate::gameplay::server::InitHudRules::inside_multiplay)).
+    if crate::gameplay::active().server.init_hud().inside_multiplay {
+        ts_init_hud(p, cx);
+    }
+    if teamplay {
+        teams::init_hud(p, cx);
+    }
+}
+
+/// The `ScoreInfo` TS sends for a player (`AddPoints` 0xd9e18, `PlayerKilled`, `InitHUD`, team
+/// changes): `WRITE_SHORT((int)pev->frags)`, `WRITE_SHORT(m_iDeaths)`, 0, team + 1.
+pub fn score_info_of(p: &Player, v: &entvars_t, idx: i32) -> ScoreInfo {
+    ScoreInfo { idx: idx as u8, frags: score_frags(v.frags), deaths: p.deaths as i16, class: 0, team: teams::score_team(idx) }
+}
+
+/// The frags short: a C `(int)` cast (`fistp` under a truncating control word, 0xd9e74..0xd9e8d;
+/// out of range gives 0x80000000), of which `WRITE_SHORT` keeps the low 16 bits, so a score past
+/// ±32767 wraps instead of sticking at the limit.
+pub fn score_frags(frags: f32) -> i16 {
+    crate::entities::stock::maprules::x87_int(frags) as i16
+}
+
+/// `CHalfLifeMultiplay::SendMOTDToClient` (0xd0ae4; 2.1 0x10024ee0): ServerName, then the
+/// `motdfile` in ≤60-byte chunks ([`motd_chunks`]). The cvar's name is loaded as it is: an empty
+/// one loads nothing (TS passes `""` to `LOAD_FILE_FOR_ME`), so no MOTD.
+pub fn send_motd(e: *mut edict_t) {
+    let eng = engine();
+    let file = eng.cvar_string(c"motdfile").to_string_lossy().into_owned();
+    let host = eng.cvar_string(c"hostname").to_bytes().to_vec();
+    msg::one(Msg::ServerName, e, |w| ServerName { name: host }.write(w));
+    let Some(data) = (!file.is_empty()).then(|| eng.load_file(&file)).flatten() else { return };
+    let text: Vec<u8> = data.into_iter().take_while(|&b| b != 0).collect();
+    for (chunk, last) in motd_chunks(&text) {
+        let m = Motd { last: last as u8, chunk };
+        msg::one(Msg::Motd, e, |w| m.write(w));
+    }
+}
+
+/// `SendMOTDToClient`'s loop (the SDK's): chunks of up to 60 bytes while fewer than 0x600 have
+/// been sent, so the chunk that takes the count past 0x600 still goes whole (a long file sends
+/// 26 × 60 = 1560 bytes); the last one carries the final flag (`*src == 0`, or the count reached
+/// 0x600, where TS writes the terminator itself).
+pub fn motd_chunks(text: &[u8]) -> Vec<(Vec<u8>, bool)> {
+    const MAX_MOTD_LENGTH: usize = 0x600;
+    let mut out = Vec::new();
+    let mut count = 0;
+    while count < text.len() && count < MAX_MOTD_LENGTH {
+        let chunk = &text[count..text.len().min(count + 60)];
+        count += chunk.len();
+        let last = count >= MAX_MOTD_LENGTH || count >= text.len();
+        out.push((chunk.to_vec(), last));
+    }
+    out
+}
+
+/// `CTSGameRules::InitHUD` (0x79134): cheat notice, custom weapons, SrvSett ×4, RoundTime, Spectator flags of
+/// everyone, then the joiner starts as an observer with a respawn delay. Where it runs, the
+/// `Spectator` list, the notices and `SrvSett` 0 are the ruleset's
+/// ([`InitHudRules`](crate::gameplay::server::InitHudRules)).
+fn ts_init_hud(p: &mut Player, cx: &mut Cx) {
+    let e = cx.edict;
+    let r = crate::gameplay::active().server.init_hud();
+    if cvars::cheats() {
+        ts_message_one(e, [45, 195, 45], r.notice_effect, 100, r.cheats_text);
+        let dm = cvars::f(c"damagemult");
+        if dm > 0.0 {
+            ts_message_one(e, [45, 195, 45], r.notice_effect, 100, &damages_notice(r.damages_text, dm));
+        }
+    }
+    // `+0x5884`, set by `loadweapons` on this map (`CTSGameRules::Init` clears it).
+    if state::with(|g| g.custom_weapons) {
+        crate::weapons::inform_custom_weapons(e);
+    }
+    // 0x79214..0x7930a: `realbullet` is Think's copy (-1 before the first Think), `usecash` the live
+    // cvar `!= 0` (`fldz; fcomp; sete`, so 0.5 sends 1 and a NaN 0), `ammocount` the live cvar
+    // truncated, and the weapon mask.
+    let (copy, mask, round_end, timer) = state::with(|g| (g.last_srvsett[0], g.allowed_weapons, g.round_end, g.round_timer));
+    let rb = srvsett_realbullet(r.realbullet_live, copy, cvars::f(c"realbullet"));
+    let cash = !super::frame::x87_eq(cvars::f(c"usecash") as f64, 0.0);
+    // Port additions: key 4, the gameplay ruleset for the HUD (`crate::gameplay`), and keys 5..7,
+    // the server library's version (`shared::protocol::port`). TS's client ignores keys past 3.
+    let ruleset = (ts_gameplay::SRVSETT_KEY, crate::gameplay::srvsett_value() as i32);
+    let [k5, k6, k7] = shared::protocol::port::SRVSETT_VERSION_KEYS;
+    let [major, minor, patch] = shared::protocol::port::version_numbers().map(i32::from);
+    let sets = [(0u8, rb), (1, cash as i32), (2, super::frame::ammocount()), (3, mask), ruleset, (k5, major), (k6, minor), (k7, patch)];
+    for (key, value) in sets {
+        let s = SrvSett { key, value: value as i16 };
+        msg::one(Msg::SrvSett, e, |w| s.write(w));
+    }
+    if round_end != 0.0 && timer {
+        // 0x79370: clamped at 0 and truncated.
+        let secs = super::frame::round_time_byte(super::frame::x87_max0(round_end as f64 - cx.time() as f64));
+        let rt = RoundTime { secs, state: 0 };
+        msg::one(Msg::RoundTime, e, |w| rt.write(w));
+    }
+    let eng = engine();
+    // `UTIL_PlayerByIndex` + `IsPlayer`: players who left are listed too.
+    for i in 1..=eng.max_clients() {
+        let o = eng.player(i);
+        if !r.spectator_list || !super::has_player(o) {
+            continue;
+        }
+        let s = Spectator { entindex: i as u8, observer: (o.v().iuser1 != 0) as u8 };
+        msg::one(Msg::Spectator, e, |w| s.write(w));
+    }
+    let (org, ang) = {
+        let v = cx.pev();
+        (v.origin, v.v_angle)
+    };
+    start_observer(p, cx, org, ang);
+    p.ts.respawns_used = 0;
+    // The grenades bought (3.0 `+0x714`, 2.1 `+0x68c`): only here and in `RestartRound`.
+    p.inv.sv.grenades_bought = 0;
+    p.ts.tk_until = 0.0;
+    p.ts.tk_count = 0;
+    set_respawn_time(p, cx, cvars::respawn_time());
+    // The fire-mode memory (3.0 `memset(pl + 0x49a, 0, 0x40)`, 2.1 0x10 dwords at `pl + 0x41e`),
+    // which nothing else clears, then `ResetArmament` (0x93e88, 2.1 `FUN_10055950`).
+    crate::weapons::init_hud_reset(p);
+    let idx = cx.index() as usize;
+    state::with(|g| g.votes.reset(idx));
+    // In the round modes the objective list again (`SendObjectiveList`).
+    crate::entities::ts::objective::resend_list(cx.edict);
+    crate::gameplay::active().server.on_init_hud(p, cx);
+}
+
+/// The custom-damage notice: the ruleset's text, then `(%.2f)` of `damagemult`.
+fn damages_notice(text: &str, damagemult: f32) -> String {
+    format!("{text} ({damagemult:.2})")
+}
+
+/// `SrvSett` 0 in `InitHUD`: Think's `(int)realbullet` copy, or with `live` the cvar's
+/// `value != 0` (`fcomp 0`: 0.5 gives 1, a NaN 0).
+fn srvsett_realbullet(live: bool, copy: i32, value: f32) -> i32 {
+    if live { !super::frame::x87_eq(value as f64, 0.0) as i32 } else { copy }
+}
+
+/// `SetPlayerRespawnTime` as the ruleset has it
+/// ([`ServerRules::set_respawn_time`](crate::gameplay::ServerRules::set_respawn_time)).
+pub fn set_respawn_time(p: &mut Player, cx: &mut Cx, secs: f32) {
+    crate::gameplay::active().server.set_respawn_time(p, cx, secs);
+}
+
+// ---- observer ------------------------------------------------------------------------------------
+
+/// `CBasePlayer::StartObserver` (0x99634).
+///
+/// TS leaves `pev->velocity` alone, clears the HEV suit bit through `RemoveAllItems(TRUE)` and
+/// sends `CurWeapon 0,0,0` from there.
+pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f32; 3]) {
+    crate::gameplay::active().server.on_start_observer(p, cx);
+    let e = cx.edict;
+    let idx = cx.index();
+    p.hud.cash = Some(p.cash);
+    messages::one(Msg::TsCash, e).short(p.cash).end();
+    p.ts.obs_next_idle = 0.0;
+    {
+        let v = cx.pev();
+        v.iuser4 = 0;
+        v.fuser1 = 1.0;
+    }
+    p.ts.slow_display = 1.0;
+    p.slow_target = 1.0;
+    // TS sends this from `pev->origin`, not the new position.
+    let here = cx.pev().origin;
+    MsgWriter::begin(MSG_PAS as i32, SVC_TEMPENTITY, Some(here), std::ptr::null_mut())
+        .byte(TE_KILLPLAYERATTACHMENTS)
+        .byte(idx & 0xff)
+        .end();
+    // The gun is emptied and holstered first (`CTSGun::Reset`, `HolsterWeapon`, then its
+    // `Holster`), the case dropped, then a tank let go (`Use(USE_OFF)`, which re-deploys the
+    // emptied gun: kung fu). `DropFlag(false)` (0x9975f) comes before `RemoveAllItems`
+    // (0x99986), which leaves `free_slots` alone, as it leaves the speed.
+    crate::weapons::observer_holster(p, cx);
+    crate::entities::ts::drop_flag(p, cx, false);
+    crate::entities::stock::drive::release_tank(p, cx);
+    // `SetSuitUpdate(NULL, FALSE, 0)` (0x997ac).
+    crate::player::suit::set_suit_update(p, cx, None, false, 0);
+    msg::all(Msg::ActItems, |w| ActItems { entindex: idx as u8, mask: 0 }.write(w));
+    msg::one(Msg::SetFov, e, |w| SetFov { fov: 0 }.write(w));
+    p.ts.ifov = 0;
+    {
+        let v = cx.pev();
+        v.fov = 0.0;
+        v.effects = EF_NODRAW as i32;
+        v.view_ofs = [0.0; 3];
+        v.v_angle = angles;
+        v.angles = angles;
+        v.fixangle = 1;
+        v.solid = SOLID_NOT as i32;
+        v.takedamage = DAMAGE_NO as f32;
+        v.movetype = MOVETYPE_NONE as i32;
+        v.flags &= !(FL_DUCKING as i32);
+        v.deadflag = DEAD_RESPAWNABLE as i32;
+        v.health = 1.0;
+    }
+    p.ts.init_hud = true;
+    let team = teams::team_name_of(e);
+    msg::all(Msg::TeamInfo, |w| TeamInfo { idx: idx as u8, team }.write(w));
+    // `RemoveAllItems(TRUE)`: the gun's `Holster` again, the items destroyed, then the tail
+    // (with `UpdateClientData` inline, which sends ResetHUD now if the throttle allows). The free
+    // slots, loadout items and speed stay as they were (`TSSpace` is not resent).
+    crate::weapons::remove_all_items(p, cx);
+    engine().set_origin(e, origin);
+    let mode = if p.ts.obs_mode == 0 { obs::CHASE_FREE } else { p.ts.obs_mode };
+    crate::gameplay::active().server.observer_set_mode(p, cx, mode);
+    msg::all(Msg::Spectator, |w| Spectator { entindex: idx as u8, observer: 1 }.write(w));
+}
+
+/// `ts_observe` (port-only development aid): puts an observing player in observer `mode` on
+/// player `target` (0 keeps the current one), as `Observer_SetMode` would after the observer's
+/// own `+jump` and `+attack`. Scripted tests use it for clients whose input can't be scripted (the
+/// original TS client's anti-script gate). Returns false for a player who isn't observing.
+pub fn dev_observe(p: &mut Player, cx: &mut Cx, mode: i32, target: i32) -> bool {
+    if cx.pev().iuser1 == 0 {
+        return false;
+    }
+    if target > 0 && obs_handle_valid(target) {
+        p.ts.obs_target = target;
+        if cx.pev().iuser1 == mode && mode != obs::ROAMING {
+            cx.pev().iuser2 = target;
+        }
+    }
+    crate::gameplay::active().server.observer_set_mode(p, cx, mode);
+    true
+}
+
+/// `m_hObserverTarget` (`+0x75c`) is a raw `CBasePlayer*` in TS: a player who left is still a
+/// target (dead, invisible, dormant) until `Observer_Idle` replaces it, as long as the slot keeps
+/// its player.
+pub fn obs_handle_valid(idx: i32) -> bool {
+    idx > 0 && super::has_player(engine().player(idx))
+}
+
+/// The `respawn` client command: leave observer mode once the respawn time has passed.
+pub fn respawn_command(p: &mut Player, cx: &mut Cx) {
+    let now = cx.time();
+    if cx.pev().iuser1 == 0 {
+        return;
+    }
+    if p.respawn_at < 0.0 && p.ts.next_hud_msg < now {
+        p.ts.next_hud_msg = now + 1.0;
+        ts_message_one(cx.edict, [195, 45, 45], 16, 20, "You have to wait until the next round.");
+    }
+    if p.respawn_at <= 0.0 || now <= p.respawn_at {
+        return;
+    }
+    p.respawn_at = 0.0;
+    stop_observer(p, cx);
+    cx.pev().impulse = 0;
+}
+
+/// True if the `respawn` command would succeed now (bots use this).
+pub fn can_respawn(p: &Player, cx: &mut Cx) -> bool {
+    cx.pev().iuser1 != 0 && p.respawn_at > 0.0 && cx.time() > p.respawn_at
+}
+
+/// `CBasePlayer::StopObserver` (0x99a14) → `respawn()` → `Spawn()`.
+pub fn stop_observer(p: &mut Player, cx: &mut Cx) {
+    if p.respawn_at > 0.0 && p.respawn_at > cx.time() {
+        return;
+    }
+    let idx = cx.index();
+    let (u1, u2) = (cx.pev().iuser1, cx.pev().iuser2);
+    if u1 != 0 || u2 != 0 {
+        p.ts.obs_mode = u1;
+        msg::all(Msg::Spectator, |w| Spectator { entindex: idx as u8, observer: 0 }.write(w));
+        let v = cx.pev();
+        v.iuser1 = 0;
+        v.iuser2 = 0;
+    }
+    cx.pev().button = 0;
+    p.joined = true;
+    // `respawn` (0xace58): with neither coop nor deathmatch the map reloads instead.
+    let g = engine().globals();
+    if g.coop == 0.0 && g.deathmatch == 0.0 {
+        engine().server_command("reload\n");
+    } else {
+        crate::ham::player_spawn(p, cx);
+    }
+    cx.pev().nextthink = -1.0;
+    if engine().cvar_float(c"developer") != 0.0 {
+        let owned: Vec<usize> = (1..p.inv.gun.status.len()).filter(|&i| p.inv.gun.status[i].owned).collect();
+        engine().print(&shared::bformat!("[ts] {} spawned (#{}) with {}\n", netname(cx.edict), idx, format!("{owned:?}")));
+    }
+}
+
+// ---- death --------------------------------------------------------------------------------------
+
+/// `CBasePlayer::Killed` (0x8ed5c) with `CHalfLifeMultiplay::PlayerKilled` in the middle.
+pub fn killed(p: &mut Player, cx: &mut Cx, dmg: &DamageInfo) {
+    let eng = engine();
+    let now = cx.time();
+    let e = cx.edict;
+    let idx = cx.index();
+    // The damage globals as this hit left them (`glast_closecombat`, `glast_coldcock`,
+    // `glast_weaponid`, `glast_headshot`), for the blur below and for PlayerKilled.
+    let globals = crate::damage::glast::snapshot();
+
+    // Motion blur trails on the killer and off on the victim (50 %). Guard: TS doesn't test
+    // for a NULL attacker.
+    let attacker = dmg.attacker;
+    let blur = crate::gameplay::active().server.motion_blur();
+    if blur && !attacker.is_null() && killer_blur(globals.close_combat, || eng.random_long(0, 100)) {
+        let org = attacker.v().origin;
+        let b = TsMBlur { entindex: eng.index_of(attacker) as u8, mode: 1 };
+        msg::pvs(Msg::TsMBlur, org, |w| b.write(w));
+    }
+    if blur && eng.random_long(0, 100) < 0x32 {
+        let b = TsMBlur { entindex: idx as u8, mode: 0 };
+        msg::pvs(Msg::TsMBlur, cx.pev().origin, |w| b.write(w));
+    }
+
+    p.ts.observer_at = now + 3.0;
+    p.hud.cash = None;
+    if crate::gameplay::active().server.killed_resets_view() {
+        eng.set_view(e, e);
+        // `EnableControl(TRUE)` (0x8eee0): a player frozen by a camera or trigger is let go.
+        cx.pev().flags &= !(FL_FROZEN as i32);
+    }
+    p.ts.respawns_used = p.ts.respawns_used.saturating_add(1);
+    p.ts.suicide_at = 0.0;
+    // `g_pevLastInflictor`, the inflictor while `TakeDamage` kills (NULL for the `kill` command's
+    // direct `Killed`): a player inflictor, the victim included, becomes `iuser2` and the
+    // spectator target; another one only clears `iuser2`; without one both are left alone.
+    let inflictor = dmg.inflictor;
+    if !inflictor.is_null() {
+        if super::has_player(inflictor) {
+            let k = eng.index_of(inflictor);
+            cx.pev().iuser2 = k;
+            p.ts.obs_target = k;
+        } else {
+            cx.pev().iuser2 = 0;
+        }
+    }
+    set_respawn_time(p, cx, cvars::respawn_time());
+    crate::gameplay::active().server.on_killed(p, cx);
+
+    // Headshot death: slow the victim a little unless `TSGameRules+0x18` is set (0x7f01e file
+    // address; 2.1's `+0x14`). Nothing sets it outside `Init`, so global slow motion doesn't stop it.
+    if headshot_death_slows(p.ts.last_hitgroup, state::with(|g| g.slow_blocked)) {
+        powerup::go_slow_self(p, cx, 0.33, false);
+    }
+    cx.pev().iuser4 = stunt::DEAD_LOCK;
+
+    // Holster, ammo pack, CTB case, every weapon (0x8f06c..0x8f185). A slow-motion power-up runs
+    // out on the next PreThink (`UpdatePowerUpState` while dead), not here.
+    crate::weapons::on_killed(p, cx);
+
+    if !state::single_player() {
+        scoring::player_killed(p, cx, dmg, globals); // 0x8f1b1 (`CHalfLifeRules::PlayerKilled` 0xde82c is empty)
+    }
+
+    // `m_pTank->Use(this, this, USE_OFF)` after PlayerKilled (0x8f1e1).
+    crate::entities::stock::drive::release_tank(p, cx);
+    // `CSound::Reset` on the player's `soundent` slot (0x8f1f0).
+    crate::entities::stock::soundent::reset_player_sound(idx);
+
+    // Death pose: CTSAnimation::Animate(7) (0x8f22e), after all of the above, reads the last
+    // damage, hitgroup and attack direction (`g_vecAttackDir`).
+    let attack_dir = crate::damage::attack_dir();
+    p.stunt.anim.last_damage = p.ts.last_damage;
+    p.stunt.anim.last_hitgroup = p.ts.last_hitgroup;
+    p.stunt.anim.attack_dir = attack_dir;
+    crate::stunt::animate(p, cx, 7);
+
+    // Dying: physics, knockback, HUD.
+    {
+        let v = cx.pev();
+        v.modelindex = eng.model_index(crate::player::PLAYER_MODEL);
+        v.deadflag = DEAD_DYING as i32;
+        v.movetype = MOVETYPE_TOSS as i32;
+        v.flags &= !(FL_ONGROUND as i32);
+        v.velocity = death_push(cvars::pm_arith(), v.velocity, v.size, p.ts.last_damage, attack_dir);
+        // TS also needs `pl+0x470 == 0` for the hop. No other instruction in `ts_i386.so`
+        // addresses that word (0x8f3c2 is the only one) and the engine zeroes private data, so
+        // it is always 0.
+        if crate::stunt::hspeed_cmp(v.velocity, 80.0, true) || p.ts.last_damage > 50 {
+            v.velocity[2] = 180.0;
+            v.gravity = 0.5;
+        }
+    }
+    // `SetSuitUpdate(NULL, FALSE, 0)` (0x8f3e9): the queued suit sentences are dropped.
+    crate::player::suit::set_suit_update(p, cx, None, false, 0);
+    p.hud.health = Some(0);
+    msg::one(Msg::TsHealth, e, |w| TsHealth { hp: 0 }.write(w));
+    msg::all(Msg::ActItems, |w| ActItems { entindex: idx as u8, mask: 0 }.write(w));
+    p.ts.ifov = 0;
+    cx.pev().fov = 0.0;
+    msg::one(Msg::SetFov, e, |w| SetFov { fov: 0 }.write(w));
+
+    let gib = dmg.bits & crate::damage::bits::ALWAYSGIB != 0 || (cx.pev().health < -40.0 && dmg.bits & crate::damage::bits::NEVERGIB == 0);
+    // `takedamage` stays on (TS's Killed never clears it; `StartObserver` does), so the body
+    // still takes TraceAttacks (the bullet dance twitch).
+    if gib {
+        cx.pev().solid = SOLID_NOT as i32;
+        // `GibMonster()` (0x8f501): the splat and the human gibs.
+        crate::entities::stock::monsters::gib_player(e);
+        cx.pev().effects |= EF_NODRAW as i32;
+    } else {
+        let v = cx.pev();
+        v.angles[0] = 0.0;
+        v.angles[2] = 0.0;
+        // `SetThink(&CBasePlayer::PlayerDeathThink)`, `nextthink = time + 0.1` (a double
+        // constant, 0x8f550): `Player::think` runs it once then, besides PreThink's calls.
+        p.death_think = true;
+        v.nextthink = (now as f64 + 0.1) as f32;
+    }
+    // `CBot::Killed` (0x1006ba00) after `CBasePlayer::Killed`: the bot's answer to its killer.
+    crate::bot_backend::killed(p, cx, dmg.attacker);
+    // Port addition: plugins hear of the death once the player is back in reach.
+    crate::plugins::player_killed(cx.edict, dmg);
+}
+
+/// `Killed`'s roll for the killer's TSMBlur (0x8ed73..0x8ede1): `RandomLong(0, 100) <= 0x31`;
+/// with `glast_closecombat` a first roll `<= 0x4f` wins, and a miss rolls again with the 0x31
+/// test (about 90 % in all).
+fn killer_blur(close_combat: bool, mut roll: impl FnMut() -> i32) -> bool {
+    (close_combat && roll() <= 0x4f) || roll() <= 0x31
+}
+
+/// `CBasePlayer::Killed`'s headshot slow (0x7f00f..0x7f032 file addresses): `m_LastHitGroup ==
+/// HITGROUP_HEAD` and `TSGameRules+0x18` clear (`GameRules::slow_blocked`). Global slow motion
+/// (`+0x560`) isn't read.
+fn headshot_death_slows(last_hitgroup: i32, slow_blocked: bool) -> bool {
+    last_hitgroup == hitgroup::HEAD && !slow_blocked
+}
+
+/// `CBaseMonster::DamageForce` (0xb2d08): `73728 / (size.x · size.y · size.z) · damage · 5`
+/// (the `double`s 73728 and 5), at most 1000, stored as a float by every caller. `ts_i386.so`
+/// multiplies the size `x · y · z` (0xb2d1e), mp.dll `z · y · x` (out of line at 0x100145b0,
+/// inline in `CBaseEntity::TakeDamage` at 0x1000e7b6), each on its own FPU. Testing the unrounded
+/// value against 1000 picks the same result as testing the stored one.
+pub fn damage_force(arith: Arith, size: [f32; 3], damage: f32) -> f32 {
+    fn go<F: Fpu>(size: [f32; 3], damage: f32) -> f32 {
+        let [i, j, k] = if F::MSVC { ORDER_ZYX } else { ORDER_XYZ };
+        let volume = F::x(size[i]) * F::x(size[j]) * F::x(size[k]);
+        let f = (F::xd(73728.0) / volume * F::x(damage) * F::xd(5.0)).f();
+        if f > 1000.0 { 1000.0 } else { f }
+    }
+    shared::by_arith!(arith, go(size, damage))
+}
+
+/// `Killed`'s push (0x8f2a0..0x8f391): `velocity += F · normalize(g_vecAttackDir)`, with
+/// `F = -DamageForce(m_lastDamageAmount)`, or -500 once that reaches 500. `g_vecAttackDir`
+/// points from the body towards the inflictor, so the body flies away from it.
+///
+/// The inline `Normalize` sums `x² + y² + z²` and keeps `1/len` on the FPU in both builds; the
+/// rest is per build (issue #150): `ts_i386.so` (0x8f28a..0x8f2fa) stores the length and all
+/// three components; mp.dll (0x1005e373..0x1005e3f6) keeps the length unrounded and the x
+/// component on the FPU through its product with `F` and the add. Both then keep the x product
+/// for its add (.so 0x8f352 `fsts`, mp.dll 0x1005e406) and store the y and z products first.
+fn death_push(arith: Arith, velocity: [f32; 3], size: [f32; 3], last_damage: i32, attack_dir: [f32; 3]) -> [f32; 3] {
+    fn go<F: Fpu>(velocity: [f32; 3], f: f32, a: [f32; 3]) -> [f32; 3] {
+        let [dx, dy, dz] = F::vec_normalize_n(a, ORDER_XYZ);
+        let dx = if F::MSVC { dx } else { F::x(dx.f()) };
+        let f = F::x(f);
+        [(f * dx + F::x(velocity[0])).f(), velocity[1] + (f * F::x(dy.f())).f(), velocity[2] + (f * F::x(dz.f())).f()]
+    }
+    let force = damage_force(arith, size, last_damage as f32);
+    let f = if force >= 500.0 { -500.0 } else { -force };
+    shared::by_arith!(arith, go(velocity, f, attack_dir))
+}
+
+/// `CBasePlayer::PlayerDeathThink` (0x8eaec): settle, play out the death animation, then become
+/// an observer after 3 s or on any button, leaving a corpse. Every PreThink of a dead player
+/// that isn't observing calls it, and so does the player's think (`Player::think`) that `Killed`
+/// schedules 0.1 s after the death.
+pub fn death_think(p: &mut Player, cx: &mut Cx) {
+    let now = cx.time();
+    {
+        let v = cx.pev();
+        if v.flags & FL_ONGROUND as i32 != 0 {
+            v.velocity = death_slowdown(v.velocity);
+        }
+    }
+    // `if (HasWeapons()) RemoveAllItems(TRUE)` (0x8ec15): the gun (and a picked-up
+    // `cycler_weapon`) goes on the first death think, with `CurWeapon 0,0,0`.
+    if crate::weapons::has_weapons(p) {
+        crate::weapons::remove_all_items(p, cx);
+    }
+    // Stay dying until the death animation finishes, advancing it at the animation rate
+    // (`framerate` is the player's time scale, so slow motion stretches it). A sequence with a
+    // frame rate of 0 never finishes, as in TS.
+    let anim = &p.stunt.anim;
+    if cx.pev().modelindex != 0 && !anim.seq_finished && cx.pev().deadflag == DEAD_DYING as i32 {
+        crate::stunt::anim::studio_frame_advance(p, cx);
+        return;
+    }
+    let v = cx.pev();
+    if v.movetype != MOVETYPE_NONE as i32 && v.flags & FL_ONGROUND as i32 != 0 {
+        v.movetype = MOVETYPE_NONE as i32;
+    }
+    if v.deadflag == DEAD_DYING as i32 {
+        v.deadflag = DEAD_DEAD as i32;
+    }
+    v.framerate = 0.0;
+    v.effects |= EF_NOINTERP;
+    if v.deadflag == DEAD_DEAD as i32 {
+        v.deadflag = DEAD_RESPAWNABLE as i32;
+    } else if (p.ts.observer_at < now || v.button & !(IN_SCORE as i32) != 0) && v.iuser1 == 0 {
+        let (org, ang) = (v.origin, v.v_angle);
+        crate::entities::ts::create_dead_corpse(cx.edict, 10.0);
+        start_observer(p, cx, org, ang);
+    }
+}
+
+/// `PlayerDeathThink`'s slowdown on the ground (mp.dll 0x1005dd78..0x1005deb5):
+/// `v = (v.Length() - 20) * v.Normalize()`, or zero when that isn't positive. mp.dll keeps the
+/// lengths on the x87 (53 bits, `(x² + y²) + z²`), stores `f = len - 20` as a `float`, takes
+/// `1 / len` unrounded, stores each `dir_i = inv * v_i` and then each `f * dir_i`.
+// The negated compare is the x87's: an unordered (NaN) `f` stops the body.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn death_slowdown(v: [f32; 3]) -> [f32; 3] {
+    use shared::pm::{FpuMath, Msvc};
+    let len = Msvc::length(v);
+    let f = len - 20.0;
+    // `fcomp 0.0; test ah,0x41; je`: only a positive `f` moves on (a NaN stops).
+    if !(f > 0.0) {
+        return [0.0; 3];
+    }
+    let (f, inv) = (f as f32, 1.0 / len);
+    v.map(|c| (inv * f64::from(c)) as f32 * f)
+}
+
+/// Broadcasts `TSPAward` for a player (used by scoring for the killer).
+pub fn send_award(idx: i32, award: u8) {
+    msg::all(Msg::TsPAward, |w| TsPAward { entindex: idx as u8, award }.write(w));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        clean_name, damage_force, death_push, death_slowdown, headshot_death_slows, killer_blur, motd_chunks, name_change_notice,
+        player_is_cheating, scan_c_int, score_frags,
+    };
+
+    /// Issue #81: `ClientUserInfoChanged` (0xae638) copies the `name` key's bytes (only `%`
+    /// becomes a space) and announces the change with both names unconverted.
+    #[test]
+    fn name_change_keeps_latin1_bytes() {
+        use shared::protocol::hud_wire::{Bytes, WireRead};
+        assert_eq!(clean_name(b"Ren\xe9 100%"), b"Ren\xe9 100 ");
+        assert_eq!(clean_name(&[b'x'; 300]).len(), 255, "strncpy into 255 bytes");
+        let line = name_change_notice(b"Bob", &clean_name(b"Ren\xe9"));
+        assert_eq!(line, b"* Bob changed name to Ren\xe9\n");
+        let mut w = Bytes::default();
+        crate::rules::msg::say_text(4, &line).write(&mut w);
+        assert_eq!(w.buf, b"\x04* Bob changed name to Ren\xe9\n\0");
+        assert_eq!((WireRead::byte(&mut w), WireRead::string(&mut w)), (4, line));
+        // Guard: TS's 256-byte `sprintf` buffer.
+        assert_eq!(name_change_notice(&[b'a'; 255], &[b'b'; 255]).len(), 255);
+    }
+
+    #[test]
+    fn motd_chunks_keep_bytes() {
+        let text: Vec<u8> = (1..=130u8).map(|i| i | 0x80).collect();
+        let chunks = motd_chunks(&text);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks.iter().flat_map(|(c, _)| c.clone()).collect::<Vec<u8>>(), text);
+        assert_eq!(chunks.iter().map(|(_, last)| *last).collect::<Vec<_>>(), [false, false, true]);
+        assert!(motd_chunks(b"").is_empty(), "an empty file sends no chunk");
+    }
+
+    /// `SendMOTDToClient` (0xd0ae4; 2.1 0x10024ee0): the chunk crossing 0x600 bytes goes whole, so
+    /// a long file shows 26 chunks of 60 (1560 bytes), the last one final.
+    #[test]
+    fn motd_sends_the_chunk_that_crosses_0x600_whole() {
+        let text = vec![b'm'; 4000];
+        let chunks = motd_chunks(&text);
+        assert_eq!(chunks.len(), 26);
+        assert!(chunks.iter().all(|(c, _)| c.len() == 60));
+        assert_eq!(chunks.iter().map(|(c, _)| c.len()).sum::<usize>(), 1560);
+        assert_eq!(chunks.iter().filter(|(_, last)| *last).count(), 1);
+        assert!(chunks[25].1);
+        // Exactly 0x600 bytes: 25 chunks of 60 and one of 36, the last final.
+        let chunks = motd_chunks(&[b'm'; 0x600]);
+        assert_eq!(chunks.len(), 26);
+        assert_eq!(chunks[25].0.len(), 36);
+        assert!(chunks[25].1 && !chunks[24].1);
+        // 0x5ff bytes then more: the 26th chunk (from 1500) still goes whole.
+        let chunks = motd_chunks(&[b'm'; 0x5ff + 100]);
+        assert_eq!(chunks.len(), 26);
+        assert_eq!(chunks[25].0.len(), 60);
+    }
+
+    #[test]
+    fn headshot_deaths_slow_during_global_slow_too() {
+        // Issue #139: only `TSGameRules+0x18` (never set) stops it.
+        use crate::damage::hitgroup;
+        assert!(headshot_death_slows(hitgroup::HEAD, false));
+        assert!(!headshot_death_slows(hitgroup::HEAD, true));
+        assert!(!headshot_death_slows(hitgroup::CHEST, false));
+    }
+
+    #[test]
+    fn cl_lw_is_read_like_sscanf_i() {
+        assert_eq!(scan_c_int("1"), Some(1));
+        assert_eq!(scan_c_int("  +1abc"), Some(1));
+        assert_eq!(scan_c_int("0x1"), Some(1));
+        assert_eq!(scan_c_int("01"), Some(1));
+        assert_eq!(scan_c_int("010"), Some(8));
+        assert_eq!(scan_c_int("-2"), Some(-2));
+        assert_eq!(scan_c_int(""), None);
+        assert_eq!(scan_c_int("x"), None);
+        // PlayerIsCheating (0x9fae0): anything but 1 forces cl_lw 1.
+        assert!(!player_is_cheating("1"));
+        assert!(player_is_cheating("0"));
+        assert!(player_is_cheating(""));
+    }
+
+    /// `PlayerDeathThink`'s slowdown (mp.dll 0x1005dd78..): the unrounded length and `1/len`
+    /// (#147). The `f32` steps gave x = 0x43445d1f.
+    #[test]
+    fn death_slowdown_like_mp_dll() {
+        let v = death_slowdown([211.019_7, -195.944_78, 0.0]);
+        assert_eq!(v.map(f32::to_bits), [0x4344_5d1e, 0xc336_55f9, 0]);
+        assert_eq!(death_slowdown([3.0, 4.0, 12.0]), [0.0; 3], "13 u/s: not above 20");
+        assert_eq!(death_slowdown([30.0, 0.0, 0.0]), [10.0, 0.0, 0.0]);
+        assert_eq!(death_slowdown([f32::NAN, 0.0, 0.0]), [0.0; 3]);
+    }
+
+    #[test]
+    fn score_frags_keep_the_low_16_bits() {
+        assert_eq!(score_frags(12.0), 12);
+        assert_eq!(score_frags(-3.9), -3, "truncated");
+        assert_eq!(score_frags(32767.0), 32767);
+        assert_eq!(score_frags(32768.0), -32768, "wraps instead of clamping");
+        assert_eq!(score_frags(70000.0), 70000i32 as i16);
+        assert_eq!(score_frags(-32769.0), 32767);
+        assert_eq!(score_frags(f32::NAN), 0, "0x80000000 keeps 0");
+    }
+
+    #[test]
+    fn killer_blur_rerolls_after_a_close_combat_miss() {
+        let rolls = |seq: &[i32], close: bool| {
+            let mut it = seq.iter().copied();
+            let mut n = 0;
+            let hit = killer_blur(close, || {
+                n += 1;
+                it.next().unwrap()
+            });
+            (hit, n)
+        };
+        assert_eq!(rolls(&[0x31], false), (true, 1));
+        assert_eq!(rolls(&[0x32], false), (false, 1));
+        assert_eq!(rolls(&[0x4f], true), (true, 1));
+        assert_eq!(rolls(&[0x50, 0x31], true), (true, 2), "a miss rolls the 50 % test");
+        assert_eq!(rolls(&[0x50, 0x32], true), (false, 2));
+    }
+
+    #[test]
+    fn death_push_is_away_from_the_inflictor() {
+        let stand = [32.0, 32.0, 72.0];
+        assert_eq!(damage_force(shared::pm::Arith::Msvc, stand, 30.0), 150.0);
+        assert_eq!(damage_force(shared::pm::Arith::Gcc, stand, 30.0), 150.0);
+        assert_eq!(damage_force(shared::pm::Arith::Msvc, [32.0, 32.0, 36.0], 30.0), 300.0, "a ducked body is lighter");
+        assert_eq!(damage_force(shared::pm::Arith::Msvc, stand, 300.0), 1000.0);
+        for arith in [shared::pm::Arith::Gcc, shared::pm::Arith::Msvc] {
+            // g_vecAttackDir points at the inflictor (+x): the body goes -x.
+            assert_eq!(death_push(arith, [10.0, 0.0, 0.0], stand, 30, [1.0, 0.0, 0.0]), [-140.0, 0.0, 0.0]);
+            // Capped at 500 from DamageForce 500 up.
+            assert_eq!(death_push(arith, [0.0; 3], stand, 100, [0.0, -2.0, 0.0]), [0.0, 500.0, 0.0]);
+            // A zero direction (no inflictor yet) normalises to straight up: pushed down.
+            assert_eq!(death_push(arith, [0.0; 3], stand, 10, [0.0; 3]), [0.0, 0.0, -50.0]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod precision_tests {
+    use super::*;
+    use shared::pm::Arith;
+
+    fn f(b: [u32; 3]) -> [f32; 3] {
+        b.map(f32::from_bits)
+    }
+
+    fn b(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+
+    /// mp.dll keeps the length unrounded (issue #150); the .so's stored length is what the port
+    /// computed before.
+    #[test]
+    fn death_push_per_build() {
+        let (v, a) = (f([0xc35b_8748, 0x410b_0360, 0x41eb_4ca0]), f([0xbee9_5d58, 0x3d9a_3e60, 0x3dbe_a7d0]));
+        let stand = [32.0, 32.0, 72.0];
+        assert_eq!(b(death_push(Arith::Msvc, v, stand, 37, a)), [0xc222_66ae, 0xc1a7_0543, 0xc0e4_41a8]);
+        assert_eq!(b(death_push(Arith::Gcc, v, stand, 37, a)), [0xc222_66ae, 0xc1a7_0543, 0xc0e4_41b0]);
+    }
+}
+
+// Audit round 2: B2
+#[cfg(test)]
+mod init_hud_tests {
+    use super::{damages_notice, srvsett_realbullet};
+
+    /// `SrvSett` 0: TS 3.0 sends Think's `(int)` copy (0x79214), TS 2.1 the live `realbullet != 0`
+    /// (0x10045278, `fcomp 0`).
+    #[test]
+    fn srvsett_realbullet_is_the_copy_or_the_live_test() {
+        assert_eq!(srvsett_realbullet(false, 2, 2.0), 2);
+        assert_eq!(srvsett_realbullet(false, 0, 0.5), 0);
+        assert_eq!(srvsett_realbullet(false, -1, 1.0), -1, "before the first Think");
+        assert_eq!(srvsett_realbullet(true, 2, 2.0), 1);
+        assert_eq!(srvsett_realbullet(true, 0, 0.5), 1);
+        assert_eq!(srvsett_realbullet(true, -1, 0.0), 0);
+        assert_eq!(srvsett_realbullet(true, 0, f32::NAN), 0);
+    }
+
+    /// `UTIL_VarArgs("... (%.2f)", damagemult)`.
+    #[test]
+    fn damages_notice_has_two_decimals() {
+        assert_eq!(damages_notice("This server has custom weapon damages", 1.5), "This server has custom weapon damages (1.50)");
+        assert_eq!(damages_notice("This server have custom weapon damages", 2.0), "This server have custom weapon damages (2.00)");
+    }
+}

@@ -1,0 +1,670 @@
+//! `item_healthkit`, `item_battery`, `item_antidote` (SDK items.cpp / healthkit.cpp with TS's
+//! player rules) and the player health/armour helpers they need.
+//!
+//! TS: a healthkit gives a fixed 50 health through `CBasePlayer::TakeHealth`, which only refuses
+//! when the player is above `max_health` and doesn't cap (the player's PreThink decays health
+//! above max by 1/s: rules package). A battery calls `TakeArmor(50)`: the first kevlar costs 10
+//! free inventory slots (no kevlar if there's no room, but the battery is still used up), armour
+//! is capped at 100 and the move speed is recomputed. An antidote adds one to the player's
+//! antidote count, which cures nerve gas or poison (`player::water`). Items respawn after 30 s
+//! unless spawnflag `SF_NORESPAWN` (1 << 30) is set.
+
+use super::base::*;
+use super::explode::emit_sound_slow;
+use crate::entities::remove;
+use crate::messages::{self, Msg};
+use crate::rules::has_player;
+use crate::world::{Cx, Entity, UseType};
+use goldsrc::edict::EdictPtr;
+use goldsrc::ext::entities::ATTN_NORM;
+use goldsrc::server::engine;
+use goldsrc::sys::*;
+use shared::pm::plus_double;
+use std::ffi::CStr;
+
+pub const SF_NORESPAWN: i32 = 1 << 30;
+const ITEM_RESPAWN_TIME: f32 = 30.0;
+
+/// TS `CBasePlayer::TakeHealth` (0xd8760, `player::damage::take_health_edict`): fails only with
+/// takedamage off or health above max; no cap; overhealing starts the 1/s decay.
+pub fn player_take_health(p: *mut edict_t, amount: f32) -> bool {
+    has_player(p) && crate::player::damage::take_health_edict(p, amount)
+}
+
+/// `pOther->TakeHealth(amount)` for any entity (SDK `CBaseEntity::TakeHealth` caps at max).
+pub fn take_health(e: *mut edict_t, amount: f32) -> bool {
+    if has_player(e) {
+        return player_take_health(e, amount);
+    }
+    crate::ham::take_health(e, amount, base_take_health)
+}
+
+/// [`take_health`] without the plugins' hooks (`crate::ham`'s `ExecuteHam`).
+pub fn take_health_plain(e: *mut edict_t, amount: f32) -> bool {
+    if has_player(e) { crate::player::damage::take_health_edict_plain(e, amount) } else { base_take_health(e, amount) }
+}
+
+/// `CBaseEntity::TakeHealth` (SDK cbase.cpp): refused with `takedamage` off or full health.
+fn base_take_health(e: *mut edict_t, amount: f32) -> bool {
+    let v = e.v();
+    if v.takedamage == 0.0 || v.health >= v.max_health {
+        return false;
+    }
+    v.health = (v.health + amount).min(v.max_health);
+    true
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    HealthKit,
+    Battery,
+    Antidote,
+    Suit,
+    Security,
+    /// A ruleset's own `CItem` subclass ([`RulesetItem`]).
+    Ruleset,
+}
+
+/// A gameplay ruleset's own `CItem` subclass: `CItem::Spawn`, `ItemTouch`, `Respawn` and
+/// `Materialize` as for the HL items, with the class's model, `Precache` and `MyTouch` (which
+/// gets the item and the touching player, and returns whether it was taken). A plugin hands
+/// one out with [`ruleset_item`] from
+/// [`ServerRules::entity_object`](crate::gameplay::ServerRules::entity_object).
+pub struct RulesetItem {
+    pub model: &'static CStr,
+    pub precache: fn(),
+    pub my_touch: fn(&mut Cx, *mut edict_t) -> bool,
+}
+
+/// A new item of class `def` (the game object of an edict, see [`RulesetItem`]).
+pub fn ruleset_item(def: &'static RulesetItem) -> Box<dyn Entity> {
+    Box::new(Item::<5> { def: Some(def), ..Default::default() })
+}
+
+impl Kind {
+    /// Whether the item's `MyTouch` tests `deadflag`: only `CHealthKit::MyTouch` (0xc8968) and
+    /// `CItemBattery::MyTouch` (0xcb74c) do. `CItem::ItemTouch` (0xcaf8c) itself doesn't, so a
+    /// dead player takes an antidote, a suit or a security card.
+    fn refuses_dead(self) -> bool {
+        matches!(self, Kind::HealthKit | Kind::Battery)
+    }
+}
+
+/// `CItem` subclasses: `KIND` 0 = healthkit, 1 = battery, 2 = antidote, 3 = suit, 4 = security,
+/// 5 = a ruleset's ([`RulesetItem`]).
+#[derive(Default)]
+pub struct Item<const KIND: u8> {
+    /// The class of a ruleset item (`KIND` 5).
+    def: Option<&'static RulesetItem>,
+    respawning: bool,
+    /// `m_pfnTouch` is `ItemTouch` (`CItem::Spawn` 0xcae8c, `Materialize`).
+    touchable: bool,
+    /// `m_pfnThink` is `Materialize`: set by the first `Respawn` (0xcb064) and never cleared
+    /// (`Materialize` 0xcb0f8 leaves it), so only the save sees it after the item is back.
+    think_set: bool,
+}
+
+impl<const KIND: u8> Item<KIND> {
+    fn kind() -> Kind {
+        match KIND {
+            0 => Kind::HealthKit,
+            1 => Kind::Battery,
+            2 => Kind::Antidote,
+            3 => Kind::Suit,
+            4 => Kind::Security,
+            _ => Kind::Ruleset,
+        }
+    }
+
+    /// The model of an HL item class (none for a ruleset's: [`Self::model`]).
+    fn class_model() -> &'static CStr {
+        match Self::kind() {
+            Kind::HealthKit => c"models/w_medkit.mdl",
+            Kind::Battery => c"models/w_battery.mdl",
+            Kind::Antidote => c"models/w_antidote.mdl",
+            Kind::Suit => c"models/w_suit.mdl",
+            Kind::Security => c"models/w_security.mdl",
+            Kind::Ruleset => c"",
+        }
+    }
+
+    fn model(&self) -> &'static CStr {
+        self.def.map_or_else(Self::class_model, |d| d.model)
+    }
+
+    /// The class's `Precache`.
+    fn precache_own(&self) {
+        match self.def {
+            Some(d) => (d.precache)(),
+            None => Self::precache(),
+        }
+    }
+
+    fn my_touch(&mut self, cx: &mut Cx, p: *mut edict_t) -> bool {
+        let cls = s(cx.pev().classname);
+        match Self::kind() {
+            Kind::HealthKit => {
+                // `CHealthKit::MyTouch` (0xc8968): refused while the player is dead (`deadflag`).
+                if (Self::kind().refuses_dead() && p.v().deadflag != DEAD_NO as i32) || !player_take_health(p, 50.0) {
+                    return false;
+                }
+                messages::one(Msg::ItemPickup, p).string(cls).end();
+                emit_sound_slow(p, CHAN_ITEM, c"items/smallmedkit1.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
+            }
+            Kind::Battery => {
+                // `CItemBattery::MyTouch` (0xcb74c): a living player with the HEV suit bit
+                // (weapons bit 31).
+                let v = p.v();
+                if (Self::kind().refuses_dead() && v.deadflag != DEAD_NO as i32) || v.armorvalue >= 100.0 || v.weapons >= 0 {
+                    return false;
+                }
+                // TS ignores TakeArmor's result: the battery is used up either way.
+                crate::gameplay::active().server.battery_armor(p, 50.0);
+                emit_sound_slow(p, CHAN_ITEM, c"items/gunpickup2.wav", 1.0, ATTN_NORM, 0, PITCH_NORM as i32, 0.5);
+                messages::one(Msg::ItemPickup, p).string(cls).end();
+                // The suit's charge report, "!HEV_<n>P" (n = armour / 5 - 1).
+                let mut pct = ((p.v().armorvalue * 100.0 * 0.01 + 0.5) as i32) / 5;
+                if pct > 0 {
+                    pct -= 1;
+                }
+                let name = std::ffi::CString::new(format!("!HEV_{pct}P")).unwrap_or_default();
+                super::sentences::set_suit_update(p, &name, false, 30);
+            }
+            Kind::Antidote => {
+                // `CItemAntidote::MyTouch` (0xcb968): no pickup message or sound, always taken.
+                super::sentences::set_suit_update(p, c"!HEV_DET4", false, 60);
+                // `m_rgItems[ITEM_ANTIDOTE]++` (+0x834), at once when the player is reachable or
+                // lent; one held by a dispatch that didn't lend it counts it once that returns.
+                crate::world::run_now_or_defer(p, move || {
+                    crate::player::with_player(p, |pl, _| pl.tbd.antidotes += 1);
+                });
+            }
+            Kind::Suit => {
+                // `CItemSuit::MyTouch` (0xcb60c): refused while the player has the suit bit, which
+                // every TS player gets on spawn.
+                let v = p.v();
+                if v.weapons < 0 {
+                    return false;
+                }
+                let sentence = if cx.pev().spawnflags & SF_SUIT_SHORTLOGON != 0 { c"!HEV_A0" } else { c"!HEV_AAx" };
+                emit_sound_suit(p, sentence);
+                p.v().weapons |= WEAPON_SUIT;
+            }
+            Kind::Ruleset => {
+                let Some(d) = self.def else { return false };
+                if !(d.my_touch)(cx, p) {
+                    return false;
+                }
+            }
+            Kind::Security => {
+                // `CItemSecurity::MyTouch` (0xcba58): `m_rgItems[ITEM_SECURITY]++` (+0x838) and
+                // always taken. Only the player's save reads the count. As for the antidote, the
+                // player can be taken out further up the stack.
+                crate::world::defer(p, move || {
+                    crate::player::with_player(p, |pl, _| pl.security_cards += 1);
+                });
+            }
+        }
+        true
+    }
+
+    /// `CItem::Respawn`.
+    fn respawn(&mut self, cx: &mut Cx) {
+        self.touchable = false;
+        cx.pev().effects |= EF_NODRAW as i32;
+        let org = cx.pev().origin;
+        engine().set_origin(cx.edict, org);
+        self.respawning = true;
+        self.think_set = true;
+        cx.pev().nextthink = engine().time() + ITEM_RESPAWN_TIME;
+    }
+
+    /// `CItem::Materialize`.
+    fn materialize(&mut self, cx: &mut Cx) {
+        if cx.pev().effects & EF_NODRAW as i32 != 0 {
+            emit_sound_slow(cx.edict, CHAN_WEAPON, c"items/suitchargeok1.wav", 1.0, ATTN_NORM, 0, 150, 0.5);
+            let v = cx.pev();
+            v.effects &= !(EF_NODRAW as i32);
+            v.effects |= EF_MUZZLEFLASH as i32;
+        }
+        self.touchable = true;
+    }
+}
+
+impl<const KIND: u8> Item<KIND> {
+    /// The class's `Precache`: `CHealthKit` (0xc8930) and `CItemBattery` (0xcb714) add their
+    /// pickup sound; `CItemAntidote` (0xcb940), `CItemSuit` (0xcb5e4) and `CItemSecurity`
+    /// (0xcba30) only precache the model.
+    fn precache() {
+        let eng = engine();
+        if Self::kind() == Kind::Ruleset {
+            return; // the ruleset's own ([`Self::precache_own`])
+        }
+        eng.precache_model(Self::class_model());
+        match Self::kind() {
+            Kind::HealthKit => eng.precache_sound(c"items/smallmedkit1.wav"),
+            Kind::Battery => eng.precache_sound(c"items/gunpickup2.wav"),
+            Kind::Antidote | Kind::Suit | Kind::Security | Kind::Ruleset => 0,
+        };
+    }
+}
+
+/// `Precache` of an item class, for `UTIL_PrecacheOther` (`base::precache_other`); false for
+/// any other class.
+pub fn precache_class(class: &CStr) -> bool {
+    match class.to_bytes() {
+        b"item_healthkit" => HealthKit::precache(),
+        b"item_battery" => Battery::precache(),
+        b"item_antidote" => Antidote::precache(),
+        b"item_suit" => Suit::precache(),
+        b"item_security" => Security::precache(),
+        _ => return false,
+    }
+    true
+}
+
+impl<const KIND: u8> Entity for Item<KIND> {
+    /// `CBaseEntity::Save` (0xabe40): TS's items (`CItem` subclasses) save no table of their
+    /// own. A restored think or touch never runs, so a restored item that was set to touch or to
+    /// come back can't be picked up any more, as in TS.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        let funcs = crate::save::BaseFuncs { think: self.think_set, touch: self.touchable, ..Default::default() };
+        let cleared = f.base_funcs(cx, funcs);
+        if cleared.think {
+            self.think_set = false;
+            self.respawning = false;
+        }
+        if cleared.touch {
+            self.touchable = false;
+        }
+    }
+
+    /// The class's `Precache` (see [`Self::precache`]).
+    fn restored(&mut self, _cx: &mut Cx) {
+        self.precache_own();
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        self.precache_own();
+        eng.set_model(cx.edict, self.model());
+        // CItem::Spawn
+        let v = cx.pev();
+        v.movetype = MOVETYPE_TOSS as i32;
+        v.solid = SOLID_TRIGGER as i32;
+        let org = v.origin;
+        eng.set_origin(cx.edict, org);
+        eng.set_size(cx.edict, [-16.0, -16.0, 0.0], [16.0, 16.0, 16.0]);
+        self.touchable = true;
+        if eng.drop_to_floor(cx.edict) == 0 {
+            let o = cx.pev().origin;
+            let cls = s(cx.pev().classname).to_string_lossy();
+            eng.alert(ALERT_TYPE::at_error, &format!("Item {cls} fell out of level at {},{},{}\n", o[0], o[1], o[2]));
+            remove(cx.edict);
+        }
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        if self.respawning {
+            self.respawning = false;
+            self.materialize(cx);
+        }
+    }
+
+    /// `CItem::ItemTouch` (0xcaf8c): any player (`IsPlayer`; `CanHaveItem` is always 1), dead or
+    /// alive: only the healthkit's and the battery's `MyTouch` refuse the dead. The antidote, suit
+    /// and security card are taken by a dead player too.
+    fn touch(&mut self, cx: &mut Cx, other: *mut edict_t) {
+        if !self.touchable || !has_player(other) {
+            return;
+        }
+        if self.my_touch(cx, other) {
+            let me = cx.edict;
+            sub_use_targets(me, cx.pev().target, 0, 0.0, other, UseType::Toggle, 0.0);
+            self.touchable = false;
+            // `ItemShouldRespawn`: `CHalfLifeRules` (0xde8a0) never respawns.
+            if cx.pev().spawnflags & SF_NORESPAWN == 0 && !crate::rules::state::single_player() {
+                crate::ham::respawn_item(self, cx, Self::respawn);
+            } else {
+                remove(me);
+            }
+        }
+    }
+}
+
+pub type HealthKit = Item<0>;
+pub type Battery = Item<1>;
+/// `item_antidote` (`CItemAntidote`, 0xcb1c0; Spawn 0xcb8f8).
+pub type Antidote = Item<2>;
+/// `item_suit` (`CItemSuit`, 0xcb178; Spawn 0xcb59c).
+pub type Suit = Item<3>;
+/// `item_security` (`CItemSecurity`, 0xcb1e4; Spawn 0xcb9e8).
+pub type Security = Item<4>;
+
+/// `CItem::Respawn` (0xcb064) on `ent` if it is one of the HL items (`crate::ham`'s
+/// `ExecuteHam(Ham_Respawn)`); false for any other class.
+pub fn respawn_item(ent: &mut dyn Entity, cx: &mut Cx) -> bool {
+    fn one<T: std::any::Any>(ent: &mut dyn std::any::Any, f: impl FnOnce(&mut T)) -> bool {
+        ent.downcast_mut::<T>().map(f).is_some()
+    }
+    let any = ent as &mut dyn std::any::Any;
+    one::<HealthKit>(&mut *any, |i| i.respawn(cx))
+        || one::<Battery>(&mut *any, |i| i.respawn(cx))
+        || one::<Antidote>(&mut *any, |i| i.respawn(cx))
+        || one::<Suit>(&mut *any, |i| i.respawn(cx))
+        || one::<Security>(&mut *any, |i| i.respawn(cx))
+        || one::<Item<5>>(any, |i| i.respawn(cx))
+}
+
+/// The classes [`respawn_item`] runs on.
+pub fn is_item(ty: std::any::TypeId) -> bool {
+    use std::any::TypeId;
+    [
+        TypeId::of::<HealthKit>(),
+        TypeId::of::<Battery>(),
+        TypeId::of::<Antidote>(),
+        TypeId::of::<Suit>(),
+        TypeId::of::<Security>(),
+        TypeId::of::<Item<5>>(),
+    ]
+    .contains(&ty)
+}
+
+/// `item_suit` spawnflag: the short logon sentence.
+pub const SF_SUIT_SHORTLOGON: i32 = 1;
+/// The HEV suit bit in `pev->weapons` (`WEAPON_SUIT`, 31).
+pub const WEAPON_SUIT: i32 = 1 << 31;
+
+/// `EMIT_SOUND_SUIT` (0xe0bb0): a suit sentence on the player's `CHAN_STATIC` at `suitvolume`
+/// (a client cvar: 0 on a dedicated server, so silent there), pitch 100 or, half the time,
+/// 98..104.
+pub fn emit_sound_suit(p: *mut edict_t, sample: &CStr) {
+    let eng = engine();
+    let vol = eng.cvar_float(c"suitvolume");
+    let pitch = if eng.random_long(0, 1) != 0 { eng.random_long(0, 6) + 98 } else { PITCH_NORM as i32 };
+    if vol > 0.05 {
+        emit_sound_slow(p, CHAN_STATIC, sample, vol, ATTN_NORM, 0, pitch, 0.5);
+    }
+}
+
+/// `world_items` (`CWorldItem`): spawns the item its `type` names (42 antidote, 43 security, 44
+/// battery, 45 suit), hands it its `target`, `targetname` and spawnflags, and removes itself.
+#[derive(Default)]
+pub struct WorldItem {
+    kind: i32,
+}
+
+impl WorldItem {
+    fn class_for(kind: i32) -> Option<&'static CStr> {
+        Some(match kind {
+            42 => c"item_antidote",
+            43 => c"item_security",
+            44 => c"item_battery",
+            45 => c"item_suit",
+            _ => return None,
+        })
+    }
+}
+
+impl Entity for WorldItem {
+    /// `CWorldItem::KeyValue` (0xcad0c).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        if key != c"type" {
+            return false;
+        }
+        self.kind = kv_i(value);
+        true
+    }
+
+    /// `CWorldItem::Spawn` (0xcad6c).
+    fn spawn(&mut self, cx: &mut Cx) {
+        let v = cx.pev();
+        let (origin, angles, target, targetname, flags) = (v.origin, v.angles, v.target, v.targetname, v.spawnflags);
+        let item = Self::class_for(self.kind).map_or(std::ptr::null_mut(), |c| create_entity(c, origin, angles, std::ptr::null_mut()));
+        if item.is_null() {
+            engine().alert(ALERT_TYPE::at_console, &format!("unable to create world_item {}\n", self.kind));
+        } else {
+            let iv = item.v();
+            iv.target = target;
+            iv.targetname = targetname;
+            iv.spawnflags = flags;
+        }
+        remove(cx.edict);
+    }
+}
+
+// ---- func_healthcharger / func_recharge ---------------------------------------------------------------
+
+/// `func_healthcharger` (`ARMOR = false`) and `func_recharge` (`ARMOR = true`), TS versions: a full
+/// charger empties in one go (full health via `TakeHealth(max - health)`, or `TakeArmor(100)`),
+/// then recharges after 60 s (health) / 30 s (armour). Continuous +use. The juice and what one
+/// charge does are the rules' ([`ServerRules::charger_capacity`], [`ServerRules::charger_charge`]).
+///
+/// [`ServerRules::charger_capacity`]: crate::gameplay::ServerRules::charger_capacity
+/// [`ServerRules::charger_charge`]: crate::gameplay::ServerRules::charger_charge
+#[derive(Default)]
+pub struct Charger<const ARMOR: bool> {
+    /// `m_iJuice` (+0x10c): TS 3.0's is 1 full, 0 empty.
+    juice: i32,
+    /// `m_iOn` (+0x110).
+    on: i32,
+    /// `m_flNextCharge` (+0x104).
+    next_charge: f32,
+    /// `m_flSoundTime` (+0x114).
+    sound_time: f32,
+    /// The think is `Recharge` (else `Off` or `SUB_DoNothing`).
+    recharge_at: Option<f32>,
+    /// `m_iReactivate` (+0x108): the `dmdelay` key, then the recharge time `Off` last took.
+    reactivate: i32,
+    /// `m_pfnThink` is set: the first `Use` that charges or `Off` sets it, and nothing clears it.
+    /// A restored one never runs.
+    think_set: bool,
+    /// The `CBaseDelay` / `CBaseToggle` members: only `CBaseToggle::KeyValue` fills them, TS
+    /// doesn't save them, and only `m_flWait` is read back (`GetDelay`, a camera or train path
+    /// through the charger).
+    t: Toggle<Self>,
+}
+
+impl<const ARMOR: bool> Charger<ARMOR> {
+    fn sounds() -> (&'static CStr, &'static CStr, &'static CStr, f32) {
+        if ARMOR {
+            (c"items/suitchargeok1.wav", c"items/suitcharge1.wav", c"items/suitchargeno1.wav", 0.85)
+        } else {
+            (c"items/medshot4.wav", c"items/medcharge4.wav", c"items/medshotno1.wav", 1.0)
+        }
+    }
+
+    /// `CRecharge::Precache` (0xc6f8c) / `CWallHealth::Precache` (0xc8cc4), in TS's order.
+    fn precaches() -> [&'static CStr; 3] {
+        if ARMOR {
+            [c"items/suitcharge1.wav", c"items/suitchargeno1.wav", c"items/suitchargeok1.wav"]
+        } else {
+            [c"items/medshot4.wav", c"items/medshotno1.wav", c"items/medcharge4.wav"]
+        }
+    }
+
+    fn off(&mut self, cx: &mut Cx) {
+        let (_, charge, _, _) = Self::sounds();
+        if self.on > 1 {
+            emit_slow(cx.edict, CHAN_STATIC, charge, 0.0, 0.0, goldsrc::ext::entities::snd::STOP);
+        }
+        self.on = 0;
+        self.think_set = true;
+        // `FlHealthChargerRechargeTime` / `FlHEVChargerRechargeTime` are 0 in single player
+        // (`CHalfLifeRules` 0xde934, `CGameRules`), and an empty charger then stays empty.
+        if self.juice == 0 {
+            let time = if ARMOR { 30 } else { 60 };
+            self.reactivate = if crate::rules::state::single_player() { 0 } else { time };
+            if self.reactivate > 0 {
+                let t = self.reactivate as f32;
+                self.recharge_at = Some(t);
+                think_ltime(cx, t);
+                return;
+            }
+        }
+        self.recharge_at = None;
+    }
+
+    /// `CWallHealth::Recharge` (0xc8f2c) / `CRecharge::Recharge` (0xc7234): only the health
+    /// charger plays its start sound.
+    fn recharge(&mut self, cx: &mut Cx) {
+        if !ARMOR {
+            let (start, _, _, vol) = Self::sounds();
+            emit_slow(cx.edict, CHAN_ITEM, start, vol, ATTN_NORM, 0);
+        }
+        self.juice = crate::gameplay::active().server.charger_capacity(ARMOR);
+        cx.pev().frame = 0.0;
+        self.recharge_at = None;
+    }
+}
+
+impl<const ARMOR: bool> Charger<ARMOR> {
+    fn precache() {
+        let eng = engine();
+        for snd in Self::precaches() {
+            eng.precache_sound(snd);
+        }
+    }
+}
+
+impl<const ARMOR: bool> Entity for Charger<ARMOR> {
+    /// `CBaseToggle::GetDelay` (0xe3dac): `m_flWait`.
+    fn get_delay(&self) -> f32 {
+        self.t.wait
+    }
+
+    /// `CWallHealth::KeyValue` (0xc8b34) / `CRecharge::KeyValue` (0xc6dfc): `dmdelay` is
+    /// `m_iReactivate`; style/height/value1-3 are swallowed; the rest go to CBaseToggle, of which
+    /// only `wait` is read back (`GetDelay`).
+    fn key_value(&mut self, _cx: &mut Cx, key: &CStr, value: &CStr) -> bool {
+        if key == c"dmdelay" {
+            self.reactivate = kv_i(value);
+            return true;
+        }
+        matches!(key.to_bytes(), b"style" | b"height" | b"value1" | b"value2" | b"value3") || self.t.key_value(key, value)
+    }
+
+    /// `CWallHealth::Save` (0xc8a70) / `CRecharge::Save` (0xc6d38). `Use` is the class's own.
+    fn save_fields(&mut self, cx: &mut Cx, f: &mut crate::save::Fields) {
+        if f.base_funcs(cx, crate::save::BaseFuncs { think: self.think_set, ..Default::default() }).think {
+            self.think_set = false;
+            self.recharge_at = None;
+        }
+        f.table(if ARMOR { &crate::save::tables::CRecharge } else { &crate::save::tables::CWallHealth });
+        f.float(&mut self.next_charge);
+        f.int(&mut self.reactivate);
+        f.int(&mut self.juice);
+        f.int(&mut self.on);
+        f.float(&mut self.sound_time);
+    }
+
+    /// `CWallHealth::Precache` (0xc8cc4) / `CRecharge::Precache` (0xc6f8c).
+    fn restored(&mut self, _cx: &mut Cx) {
+        Self::precache();
+    }
+
+    fn spawn(&mut self, cx: &mut Cx) {
+        let eng = engine();
+        Self::precache();
+        let v = cx.pev();
+        v.solid = SOLID_BSP as i32;
+        v.movetype = MOVETYPE_PUSH as i32;
+        let (org, mins, maxs) = (v.origin, v.mins, v.maxs);
+        eng.set_origin(cx.edict, org);
+        eng.set_size(cx.edict, mins, maxs);
+        set_own_model(cx);
+        self.juice = crate::gameplay::active().server.charger_capacity(ARMOR);
+        cx.pev().frame = 0.0;
+    }
+
+    fn think(&mut self, cx: &mut Cx) {
+        if !self.think_set {
+            return;
+        }
+        if self.recharge_at.is_some() {
+            self.recharge(cx);
+        } else {
+            self.off(cx);
+        }
+    }
+
+    /// `CRecharge::Use` (0xc6fd0) takes an activator whose classname is `"player"`;
+    /// `CWallHealth::Use` (0xc8d08) a non-NULL one whose `IsPlayer()` holds. Both are true for any
+    /// `CBasePlayer`, connected or not (`rules::has_player`), not just for `FL_CLIENT` edicts.
+    fn use_(&mut self, cx: &mut Cx, activator: *mut edict_t, _c: *mut edict_t, _k: UseType, _v: f32) {
+        if !has_player(activator) {
+            return;
+        }
+        let now = engine().time();
+        let (start, charge, deny, vol) = Self::sounds();
+        if self.juice < 1 {
+            cx.pev().frame = 1.0;
+            self.off(cx);
+        }
+        // `CWallHealth::Use` (0xc8d08) and `CRecharge::Use` (0xc6fd0) both refuse players
+        // without the HEV suit bit.
+        if self.juice < 1 || activator.v().weapons & WEAPON_SUIT == 0 {
+            if self.sound_time <= now {
+                self.sound_time = plus_double(now, 0.62);
+                emit_slow(cx.edict, CHAN_ITEM, deny, vol, ATTN_NORM, 0);
+            }
+            return;
+        }
+        self.recharge_at = None;
+        self.think_set = true;
+        think_ltime(cx, 0.25);
+        if self.next_charge >= now {
+            return;
+        }
+        if self.on == 0 {
+            self.on = 1;
+            emit_slow(cx.edict, CHAN_ITEM, start, vol, ATTN_NORM, 0);
+            self.sound_time = plus_double(now, 0.56);
+        }
+        if self.on == 1 && self.sound_time <= now {
+            self.on = 2;
+            emit_slow(cx.edict, CHAN_STATIC, charge, vol, ATTN_NORM, 0);
+        }
+        crate::gameplay::active().server.charger_charge(ARMOR, &mut self.juice, activator);
+        self.next_charge = plus_double(now, 0.1);
+    }
+}
+
+/// The chargers' `EMIT_SOUND_DYN`: pitch 100 with the slow-motion factor 0.5.
+fn emit_slow(e: *mut edict_t, chan: u32, sample: &CStr, vol: f32, attn: f32, flags: i32) {
+    emit_sound_slow(e, chan, sample, vol, attn, flags, PITCH_NORM as i32, 0.5);
+}
+
+pub type HealthCharger = Charger<false>;
+pub type ArmorCharger = Charger<true>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn charger_precaches_follow_ts() {
+        // CWallHealth::Precache (0xc8cc4): medshotno1 before medcharge4.
+        assert_eq!(Charger::<false>::precaches(), [c"items/medshot4.wav", c"items/medshotno1.wav", c"items/medcharge4.wav"]);
+        // CRecharge::Precache (0xc6f8c).
+        assert_eq!(Charger::<true>::precaches(), [c"items/suitcharge1.wav", c"items/suitchargeno1.wav", c"items/suitchargeok1.wav"]);
+        // The use sounds are the same set.
+        for armor in [false, true] {
+            let (a, b, c, _) = if armor { Charger::<true>::sounds() } else { Charger::<false>::sounds() };
+            let p = if armor { Charger::<true>::precaches() } else { Charger::<false>::precaches() };
+            for s in [a, b, c] {
+                assert!(p.contains(&s));
+            }
+        }
+    }
+
+    #[test]
+    fn only_healthkit_and_battery_refuse_the_dead() {
+        assert!(Kind::HealthKit.refuses_dead());
+        assert!(Kind::Battery.refuses_dead());
+        assert!(!Kind::Antidote.refuses_dead());
+        assert!(!Kind::Suit.refuses_dead());
+        assert!(!Kind::Security.refuses_dead());
+        assert!(!Kind::Ruleset.refuses_dead(), "CItem::ItemTouch doesn't test it: the MyTouch decides");
+    }
+}

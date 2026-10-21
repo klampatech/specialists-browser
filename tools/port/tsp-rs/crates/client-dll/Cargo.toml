@@ -1,0 +1,33 @@
+[package]
+name = "ts-client-dll"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+# The engine-facing half of the client library: every exported symbol and engine callback, and
+# the only place (with goldsrc) where `unsafe` is allowed. Game logic lives in `ts-client`.
+[lib]
+name = "client"
+crate-type = ["cdylib"]
+
+[dependencies]
+goldsrc   = { path = "../goldsrc", features = ["client"] }
+shared    = { path = "../shared" }
+ts-client = { path = "../client" }
+# Client extensions (cl_dlls/tsmod_*, issue #293): the C ABI, and the loader that maps them.
+ts-client-ext-api = { path = "../client-ext-api" }
+libloading = "0.8"
+# The gameplay plugins (docs/implementation/gameplay-plugins.md), registered at `Initialize`, each
+# behind its default-on feature: TS 3.0 (`ts30`) and TS 2.1 (`ts21`, docs/implementation/ts21.md).
+# At least one is required; the first registered (3.0 when both are on) is the default ruleset.
+ts30-gameplay = { path = "../ts30", optional = true }
+ts30-client = { path = "../ts30/client", optional = true }
+ts21-gameplay = { path = "../ts21", optional = true }
+ts21-client = { path = "../ts21/client", optional = true }
+
+[features]
+default = ["ts30", "ts21"]
+ts30 = ["dep:ts30-gameplay", "dep:ts30-client"]
+ts21 = ["dep:ts21-gameplay", "dep:ts21-client"]
+# The relaunch e2e hooks (crates/client/src/relaunch/e2e.rs); only `cargo xtask relaunch` builds it.
+e2e = ["ts-client/e2e"]

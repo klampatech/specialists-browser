@@ -1,0 +1,29 @@
+//! Per-work-package engine helper extensions (one file per package).
+
+#[cfg(feature = "server")]
+pub mod entities;
+#[cfg(feature = "client")]
+pub mod gl;
+#[cfg(feature = "client")]
+pub mod gles_state;
+#[cfg(feature = "client")]
+pub mod hud;
+#[cfg(feature = "client")]
+pub mod hud_record;
+#[cfg(feature = "client")]
+pub mod models;
+pub mod movement;
+#[cfg(feature = "client")]
+pub mod render;
+#[cfg(feature = "server")]
+pub mod rules;
+#[cfg(feature = "server")]
+pub mod saverestore;
+#[cfg(feature = "client")]
+pub mod spectator;
+#[cfg(feature = "client")]
+pub mod studio;
+#[cfg(feature = "client")]
+pub mod tri;
+pub mod voice;
+pub mod weapons;
