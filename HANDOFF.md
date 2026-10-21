@@ -192,7 +192,94 @@ scoring, rounds, briefcase.
 
 # § NEXT TASK
 
-> ## R1 step 3: find why the same `_Mem_Alloc: pool == NULL` is fatal-for-us but warning-for-c91698be
+> ## R1 step 4: the blocker is upstream of any WASM toolchain patch
+>
+> **What this session produced.**
+>
+> Three more diagnostic tools were shipped, none of which moved the
+> runtime past the `_Mem_Alloc: pool == NULL (cmd.c:638)` halt:
+>
+> 1. **`add-start-section.py`** — synthesizes a Start section that calls
+>    `__wasm_call_ctors` and `__wasm_apply_data_relocs`. Raw emcc no
+>    longer emits a Start section by default (modern emcc exports
+>    these as runtime helpers instead). Without the Start, no engine
+>    pathway invokes them. **WAT validates fine. Empirically still
+>    halts** with the same trace as before — so `__wasm_call_ctors`
+>    and `__wasm_apply_data_relocs` are necessary but not sufficient.
+>
+> 2. **`build-ts-dll.sh` got `-mno-bulk-memory -mno-bulk-memory-opt`**
+>    — to rule out a missing bulk-memory feature on the engine side.
+>    Did not change behavior.
+>
+> 3. **dylink.0 byte-for-byte swap** (`shim/build/ts_shim_v3_w9_dylinkswap.wasm`)
+>    — copy c91698be's entire dylink.0 section into our WASM. Did not
+>    change behavior. (Confirmed in R1 step 3.)
+>
+> ### The structural mismatch is bigger than one subsection
+>
+> | Aspect | c91698be (working) | Our WASM (broken, all variants) |
+> |---|---|---|
+> | Start section | `start: 47` (`func[47]` uses type 1: `(i32)->(i32)` — not nullary!) | no Start, then `start: 2194` (nullary void, type 11) |
+> | `__wasm_call_ctors` | absent (Start function is the whole init) | exported as `func[47]` |
+> | `__wasm_apply_data_relocs` | absent | exported as `func[48]` |
+> | memory.fill / memory.copy | used | used (37 + many occurrences) even after `-mno-bulk-memory` flag the test ran uses `memory.fill` heavily elsewhere in the runtime path |
+> | string_table (dylink `MEM_INFO`) | size = 289424 (1 entry count LEB) | size = 278288 (different by ~12k) — semantics unclear |
+>
+> **The fact that `start: 47` works in c91698be (NOT nullary) but
+> `start: 2194` (nullary void) is rejected by the runtime is
+> bizarre.** The Xash3D-FWGS loader has its own conventions that don't
+> match either the WASM spec or the upstream emcc layout.
+>
+> ### Concrete next steps (in order of cost)
+>
+> 1. **Find one (1) successfully-deployed TS-era side module in
+>    webXash's git history.** If there is one, byte-compare its section
+>    structure to ours and apply the diff (likely candidates:
+>    looking for a `[HS]`-firing past commit). The HANDOFF points to
+>    D.7.19 saying we got a menu rendering. We have no artifact of
+>    that, only the assumption. **Recovering that artifact would
+>    give us a known-good reference.**
+>
+> 2. **Check if the Xash loader has a non-Start-section init pathway.**
+>    The c91698be Start function uses `(i32)->(i32)` and works. Our
+>    nullary-void Start does not. There's likely some custom JS-bridge
+>    path we don't see. Check `webxash/src/services/xash-loader.ts` for
+>    runtime helper calls — possibly `__wasm_call_ctors` is registered
+>    via `postInstantiate` / `Module['.exports__wasm_call_ctors']` or
+>    similar.
+>
+> 3. **Stop fighting the toolchain.** The shim is engineered for an
+>    engine that doesn't actually load it the way we think. Pivot to
+>    Babylon + WebRTC multiplayer (D.5/D.6 substrate is mature) or
+>    to a fresh WASM that re-imports the engine's halflife client
+>    imports rather than trying to be a fresh server.dll substitute.
+>
+> ### Archive (this session)
+>
+> - `tools/port/ts-server-dll/add-start-section.py` — synthesizes a
+>   Start section pointing at a wrapper that calls
+>   `__wasm_call_ctors` and `__wasm_apply_data_relocs`. Idempotent
+>   (no-op if Start section already present). Builds a working WASM
+>   but doesn't change runtime behavior.
+> - `tools/port/ts-server-dll/build-ts-dll.sh` — adds
+>   `-mno-bulk-memory -mno-bulk-memory-opt` to emcc.
+> - `tools/port/ts-server-dll/shim/build/ts_shim_v3_wA_raw_nobulk.wasm`
+>   — raw emcc, no bulk-memory, no Start
+> - `tools/port/ts-server-dll/shim/build/ts_shim_v3_wB_raw_start.wasm`
+>   — raw emcc, no bulk-memory, **with** Start section
+> - `side-by-side.js` runs for both: same `_Mem_Alloc: pool == NULL`
+>   output as c91698be, but **halts** instead of recovering.
+>
+> ### Do NOT
+>
+> - Keep adding `xxx-section.py` tools that produce shape-correct
+>   WASMs without changing runtime behavior. Two of these already
+>   (densify, add-start). Three or more is a smell.
+> - Trust `wasm-validate` as a proxy for "engine will load this". The
+>   c91698be baseline wouldn't validate either (its Start func uses
+>   `(i32)->(i32)` not nullary-void) — yet it works.
+> - Spend another session on this exact path without first recovering
+>   a known-good artifact from git history or pivoting approach.
 >
 > **What this session produced.** `rewrite-got-densify.py` (WAT
 > round-trip → replace the `(elem (;0;) ...)` line with funcrefs for

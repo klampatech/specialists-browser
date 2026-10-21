@@ -127,6 +127,7 @@ emcc \
     -sSIDE_MODULE=1 \
     -sERROR_ON_UNDEFINED_SYMBOLS=0 \
     -sALLOW_MEMORY_GROWTH=1 \
+    -mno-bulk-memory -mno-bulk-memory-opt \
     -Wl,--strip-all \
     -Wl,--gc-sections \
     -o "$OUT/ts_emscripten_wasm32.wasm" \
