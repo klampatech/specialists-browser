@@ -594,6 +594,147 @@ extern "C" void ts_cmd_report_funcs(void) {
     g_engfuncs.pfnServerPrint(buf);
 }
 
+// Definitive test for "is the engine's server frame stepping?".
+//
+// host_framerate is a red herring — it's a cvar the engine writes from
+// its own frame timer, and a cvar can legitimately stay 0 if the
+// write path differs in this build. gpGlobals->time is different:
+// it's the authoritative server clock, incremented by SV_Frame every
+// tick. If time doesn't advance, the engine frame loop is genuinely
+// dead and no amount of cvar poking will help.
+//
+// host-frame-probe.js showed host_framerate pinned at 0 across 2.5s
+// while rAF ran at 50Hz and canvas pixels changed. So either the
+// engine isn't ticking its server loop, or it ticks a different
+// loop than the one that writes host_framerate. This answers it.
+//
+// The command is registered once; the harness calls it twice with a
+// delay between calls and reads the deltas out of the log.
+
+static int ts_time_samples = 0;
+
+extern "C" void ts_cmd_report_time(void) {
+    char buf[200];
+    // gpGlobals is exported by the engine and survives across calls —
+    // its address is fixed by the engine on first dispatch to the DLL.
+    // gpGlobals->time is the authoritative server clock in seconds,
+    // frametime the last frame's duration.
+    //
+    // No framecount: this HLSDK snapshot's globalvars_t
+    // (engine/progdefs.h:19-53) has time, frametime, force_retouch,
+    // mapname, startspot, the deathmatch/coop/teamplay cvars, view
+    // vectors and trace state — no tick counter. So we infer ticks
+    // from frametime instead, and the harness does the arithmetic
+    // across two samples.
+    float t  = gpGlobals ? gpGlobals->time : -1.0f;
+    float ft = gpGlobals ? gpGlobals->frametime : -1.0f;
+    // startspot is a string index into the engine's string pool; if
+    // the engine got as far as SV_InitGame it'll point at a spawn
+    // name. Prints as -1 if unset.
+    snprintf(buf, sizeof(buf),
+             "[TS-TIME] #%d time=%.4f frametime=%.4f startspot=%d mapname=%d\n",
+             ts_time_samples, t, ft,
+             gpGlobals ? (int)gpGlobals->startspot : -1,
+             gpGlobals ? (int)gpGlobals->mapname : -1);
+    g_engfuncs.pfnServerPrint(buf);
+    ts_time_samples++;
+}
+
+// Test whether +forward actually changes engine-side movement state.
+//
+// host-frame-probe.js plus ts_report_time proved the engine server
+// clock runs at real time (delta_t = 2.515s over a 2.5s gap,
+// frametime 0.021) — so the frame loop is NOT the blocker, and the
+// "host_framerate is 0" reading is cosmetic. Kyle's console showed
+// `host_framerate = 0` which sent me down the wrong path for an hour.
+//
+// So the real question is narrower: does +forward change
+// gpGlobals->v_forward, or does it sit in a buffer nothing reads?
+//
+// gpGlobals->v_forward/v_right/v_up are the server's view vectors,
+// rebuilt every tick from the local client's angles. If they're
+// zero, no client is providing view angles — which is the
+// "no connected client" story, confirmed from the server side rather
+// than inferred from a cvar.
+//
+// This reports them as raw floats so there's no interpretation
+// needed.
+extern "C" void ts_cmd_report_view(void) {
+    char buf[240];
+    if (!gpGlobals) {
+        snprintf(buf, sizeof(buf), "[TS-VIEW] gpGlobals NULL\n");
+        g_engfuncs.pfnServerPrint(buf);
+        return;
+    }
+    snprintf(buf, sizeof(buf),
+             "[TS-VIEW] fwd=(%.3f %.3f %.3f) right=(%.3f %.3f %.3f) up=(%.3f %.3f %.3f)\n",
+             gpGlobals->v_forward[0], gpGlobals->v_forward[1], gpGlobals->v_forward[2],
+             gpGlobals->v_right[0], gpGlobals->v_right[1], gpGlobals->v_right[2],
+             gpGlobals->v_up[0], gpGlobals->v_up[1], gpGlobals->v_up[2]);
+    g_engfuncs.pfnServerPrint(buf);
+
+    // Also count live player entities. If there are none, nothing can
+    // move regardless of what +forward says.
+    int players = 0, max = NUMBER_OF_ENTITIES();
+    for (int i = 1; i < max; i++) {
+        edict_t *pev = g_engfuncs.pfnPEntityOfEntIndex(i);
+        if (!pev || pev->free) continue;
+        const char *cn = STRING(pev->v.classname);
+        if (cn && strcmp(cn, "player") == 0) players++;
+    }
+    snprintf(buf, sizeof(buf), "[TS-VIEW] live player entities=%d\n", players);
+    g_engfuncs.pfnServerPrint(buf);
+}
+
+// Test whether we can drive the camera from the server side.
+//
+// ts_report_view exposed that:
+//   - gpGlobals->v_forward = (1, 0, 0) (default east-facing)
+//   - 1 player entity exists
+//   - the engine clock advances at real time
+//   - +forward reaches Cmd_ExecuteString but doesn't move anything
+// The HUD layer with HUD_Frame is alive on the client side
+// (client_emscripten_wasm32.wasm has all standard hooks), but the
+// HUD hasn't started applying user input to its cl_lc because the
+// loopback never reaches ca_connected.
+//
+// A server-side test that DOES work: clamp `gpGlobals->v_forward`
+// to a known direction, then have the renderer follow it. If the
+// camera updates, we don't need a working client — the renderer
+// just reads from gpGlobals. If the camera stays where it was, the
+// renderer has its own view-source decision and is ignoring us.
+//
+// yaw 0 = worldspawn angle 0 = looking down +X (east).
+// Engine's `angles[1]` (yaw) maps to forward via:
+//   fwd.x = cos(yaw)  fwd.y = sin(yaw)  fwd.z = 0
+// So yaw=π/2 (1.5708) → fwd = (0, 1, 0) — facing north.
+//
+// Try both directions: north (yaw+90) and south (yaw+270).
+extern "C" void ts_cmd_steer_camera(void) {
+    static int which = 0;
+    which++;
+    float yaw;
+    const char *label;
+    if (which % 2 == 1) {
+        yaw = 1.5708f;     // π/2 → north
+        label = "north";
+    } else {
+        yaw = -1.5708f;    // -π/2 → south
+        label = "south";
+    }
+    // Recompute v_forward from yaw. The angles-math here matches
+    // AngleVectors() in the engine (Q_vec, q_shared.c:401-413).
+    gpGlobals->v_forward[0] = cosf(yaw);
+    gpGlobals->v_forward[1] = sinf(yaw);
+    gpGlobals->v_forward[2] = 0;
+    char buf[120];
+    snprintf(buf, sizeof(buf),
+             "[TS-STEER] facing %s, v_forward=(%.3f %.3f %.3f)\n",
+             label, gpGlobals->v_forward[0], gpGlobals->v_forward[1],
+             gpGlobals->v_forward[2]);
+    g_engfuncs.pfnServerPrint(buf);
+}
+
 // === Spawn path status, as of 2026-10-21 ================================
 //
 // spawn-diag.js pins the current failure precisely:
@@ -648,6 +789,9 @@ extern "C" void ts_post_init(void) {
         g_engfuncs.pfnAddServerCommand("ts_spawn_player", ts_cmd_spawn_player);
         g_engfuncs.pfnAddServerCommand("ts_report_spawns", ts_cmd_report_spawns);
         g_engfuncs.pfnAddServerCommand("ts_report_funcs", ts_cmd_report_funcs);
+        g_engfuncs.pfnAddServerCommand("ts_report_time", ts_cmd_report_time);
+        g_engfuncs.pfnAddServerCommand("ts_report_view", ts_cmd_report_view);
+        g_engfuncs.pfnAddServerCommand("ts_steer_camera", ts_cmd_steer_camera);
         g_engfuncs.pfnAddServerCommand("ts_place_camera", ts_cmd_place_camera);
         g_engfuncs.pfnServerPrint("[TS] ts_post_init: ts_pump commands registered\n");
     } else {
