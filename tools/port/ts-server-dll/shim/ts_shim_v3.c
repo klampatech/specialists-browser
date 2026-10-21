@@ -1086,11 +1086,21 @@ static void ts_UpdateClientData(const edict_t *e, int sendFlags, clientdata_t *c
         c->velocity[i] = 0.0f;
     }
 
-    c->viewmodel   = 0;        /* F7 */
+    c->viewmodel   = 0;        /* TODO: stamp when we adopt HLSDK weapon tables */
+
+    /* view_ofs and punchangle come from the edict directly now that the
+     * struct layout matches (D.7.51). The eye-height the camera renders
+     * from is v->view_ofs; if we leave it zero the client renders from
+     * the model's origin, which is typically mid-thorax, and you cannot
+     * see past the player's own legs. */
     for (i = 0; i < 3; ++i) {
-        c->punchangle[i] = 0.0f;
-        c->view_ofs[i]   = 0.0f;
+        c->punchangle[i] = v ? v->punchangle[i] : 0.0f;
+        c->view_ofs[i]   = v ? v->view_ofs[i] : 0.0f;
     }
+    /* If the edict has no view_ofs (it does, but guard the worldspawn
+     * case where v is the entity dict and view_ofs is engine-zero), fall
+     * back to the standing eye height so we never render from the floor. */
+    if (c->view_ofs[2] == 0.0f) c->view_ofs[2] = 28.0f;
 
     c->flags       = 0;        /* FL_ONGROUND etc. — none yet */
     c->waterlevel  = 0;
