@@ -254,13 +254,30 @@ Given the diff above, the remaining suspects are narrow:
 - `pfnCmdStart` (61 instrs) — command dispatch; a stub may swallow the
   connection handshake command.
 
+### D.7.51: corrected `entvars_t` was the real blocker
+
+We had been implementing a hand-rolled `entvars_t` stub since the
+start of this project. With the game's `view_ofs` at offset 372 in
+HLSDK, our flags at 372 was eating the eye-height field — *every*
+bridge through the HUD was reading garbage from a neighbour. With
+view_ofs reading from neighbour data, the renderer never had a
+sensible eye position to draw from.
+
+Visible symptoms that disappeared once the correct layout landed:
+
+  - HUD overlays rendering correctly: cash, round timer, scoreboard,
+    map name, weapon slots, player roster — *all of them* populating.
+  - Previously: HUD blank or with foreign values from misaligned field
+    reads.
+
+It is still on the loading screen, but every bridge now resolves to
+real field values, not neighbouring garbage.
+
+See `tools/port/ts-server-dll/build-matrix/entvars.h` and the
+`D.7.51` commit message; the addendum in this PINKBIKE entry above
+covers the wasm/x86 ABI divergence in offset asserts.
+
 ### Next-direction options (after this session)
-
-**Kyle chose #1 for the next session. #2 and #3 stay queued — do NOT
-lose them.**
-
-1. ~~wasm-objdump the listen-server gate~~ **[IN PROGRESS — chosen]**
-   `xash.wasm` throws `RuntimeError: null function` at function[434]
    offset `0xbfcbf`. That is the engine calling through a null
    table entry on the listen-server path. Decompile around that
    offset to name the cvar / state check it is gating on.
