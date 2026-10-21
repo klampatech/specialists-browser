@@ -232,10 +232,12 @@ impl Host for EngineHost {
         (!p.is_null()).then(|| unsafe { CStr::from_ptr(p) }.to_bytes().to_vec())
     }
 
-    // `c_ulong` is 32 bits on Windows and 64 elsewhere.
+    // `c_ulong` is 32 bits on Windows and 64 elsewhere. Cast via usize/u64 so
+    // this compiles on every host the upstream xtask supports (i686 is c_ulong=32,
+    // x86_64 / aarch64 are 64; `u64::from(*mut c_void)` isn't implemented).
     #[allow(clippy::useless_conversion)]
     fn function_from_name(&self, name: &CStr) -> u64 {
-        u64::from(eng!(pfnFunctionFromName(name.as_ptr())))
+        eng!(pfnFunctionFromName(name.as_ptr())) as usize as u64
     }
 
     fn has_private_data(&self, e: *mut edict_t) -> bool {

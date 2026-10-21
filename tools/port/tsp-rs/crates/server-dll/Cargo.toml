@@ -29,3 +29,10 @@ ts21-server = { path = "../ts21/server", optional = true }
 default = ["ts30", "ts21"]
 ts30 = ["dep:ts30-gameplay", "dep:ts30-server"]
 ts21 = ["dep:ts21-gameplay", "dep:ts21-server"]
+# Forward the client library's TSPkg gate (server-dll doesn't itself pull
+# ureq+rustls+ring, but the offers module on the client does; mirror the
+# forward so a WASM-side client build can keep its feature straight).
+tspkg = []
+# The relaunch e2e hooks (crates/server/src/relaunch/e2e.rs); only
+# `cargo xtask relaunch` builds it.
+e2e = []
