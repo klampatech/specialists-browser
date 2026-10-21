@@ -116,6 +116,128 @@ void CTSGameRules::Think(void) {
     }
 }
 
+extern DLL_FUNCTIONS gFunctionTable;
+
+// === External pump — bypasses engine-side loopback connect ===
+//
+// Emscripten side modules export public symbols into the
+// main WASM's dylink table. This means JS can grab the
+// function pointer and call it via `Module._<name>()` or
+// `Module.dynCall('iii', ptr, ...)`. We rely on this so
+// JavaScript can pump our game rules directly, independent
+// of whether the engine ever reaches `ca_connected`.
+//
+// Without this, the engine would need to:
+//   1. Begin a server (sv_active)
+//   2. Connect its own client to localhost (loopback)
+//   3. Get past cl_main.c:1394-1404 handshake
+// We're stuck at step 3 because `-noip -noip6` prevents the
+// loopback connect from completing.
+//
+// The `ts_pump_*` symbols are exported with default
+// visibility AND __attribute__((used)) so the optimizer
+// doesn't strip them. SAME trick keeps `bridge_diagLog`
+// visible — LINK_ENTITY_TO_CLASS does it for ts_* classes.
+
+#define TS_EXPORT extern "C" __attribute__((used, visibility("default")))
+
+TS_EXPORT void ts_pump_think(void);
+TS_EXPORT void ts_pump_player_spawn(void);
+TS_EXPORT void ts_pump_init_hud(void);
+
+extern "C" {
+
+void ts_pump_think(void) {
+    static int _ts_pump_count = 0;
+    if (g_pGameRules) g_pGameRules->Think();
+    bridge_diagLog(HS_THINK, 0, ++_ts_pump_count, 0);
+}
+
+void ts_pump_player_spawn(void) {
+    CBasePlayer *pPlayer = NULL;
+    int max = NUMBER_OF_ENTITIES();
+    for (int i = 1; i < max; i++) {
+        edict_t *e = INDEXENT(i);
+        if (!e || e->free) continue;
+        if (!e->pvPrivateData) continue;
+        const char *cn = STRING(e->v.classname);
+        if (cn && cn[0] == 'p' && strcmp(cn, "player") == 0) {
+            pPlayer = (CBasePlayer *)e->pvPrivateData;
+            break;
+        }
+    }
+    if (g_pGameRules && pPlayer) g_pGameRules->PlayerSpawn(pPlayer);
+}
+
+void ts_pump_init_hud(void) {
+    if (!g_pGameRules) return;
+    int max = NUMBER_OF_ENTITIES();
+    for (int i = 1; i < max; i++) {
+        edict_t *e = INDEXENT(i);
+        if (!e || e->free) continue;
+        if (!e->pvPrivateData) continue;
+        const char *cn = STRING(e->v.classname);
+        if (cn && cn[0] == 'p' && strcmp(cn, "player") == 0) {
+            g_pGameRules->InitHUD((CBasePlayer *)e->pvPrivateData);
+            break;
+        }
+    }
+}
+
+TS_EXPORT void ts_pump(void) {
+    ts_pump_init_hud();
+    ts_pump_player_spawn();
+    ts_pump_think();
+}
+
+}  // extern "C"
+
+// === Server-command pump (the real hook) ===
+//
+// JS can't reach side-module exports (the xash3d-fwgs wrapper
+// doesn't expose wasmExports), but the ENGINE can dispatch console
+// commands straight into the DLL via `g_engfuncs.pfnAddServerCommand`.
+// So we register `ts_pump` as a server command at DLL-init time;
+// JS then reaches our code with:
+//
+//   xash.Cmd_ExecuteString('ts_pump')
+//
+// A rAF/setInterval pump on the JS side becomes our Think driver,
+// independent of the engine's broken loopback connect. This is
+// the same trick TS itself uses for `ts_*` cvars.
+//
+// Two commands so JS can drive them separately:
+//   ts_pump         — think + spawn + hud (all three)
+//   ts_pump_think   — think only (hot path, called every frame)
+//
+// Throttled inside ts_pump_think so a 60fps pump doesn't flood the
+// console; we emit one [HS] line per 64 calls.
+extern "C" void ts_cmd_pump(void) {
+    bridge_diagLog(HS_MISC, 0, 0, 1);
+    ts_pump_init_hud();
+    ts_pump_player_spawn();
+    ts_pump_think();
+}
+
+extern "C" void ts_cmd_pump_think(void) {
+    ts_pump_think();
+}
+
+// ts_post_init is called from GiveFnptrsToDll (patched in by
+// build-ts-dll.sh step 2b) — the FIRST point where g_engfuncs is
+// populated. Constructors run earlier at WASM instantiation, so
+// anything touching g_engfuncs has to be deferred to here.
+extern "C" void ts_post_init(void) {
+    bridge_diagLog(HS_INIT, 1, 0, 0);   // second init marker: fnptrs valid
+    if (g_engfuncs.pfnAddServerCommand) {
+        g_engfuncs.pfnAddServerCommand("ts_pump", ts_cmd_pump);
+        g_engfuncs.pfnAddServerCommand("ts_pump_think", ts_cmd_pump_think);
+        g_engfuncs.pfnServerPrint("[TS] ts_post_init: ts_pump commands registered\n");
+    } else {
+        g_engfuncs.pfnServerPrint("[TS] ts_post_init: pfnAddServerCommand is NULL\n");
+    }
+}
+
 // Force the vtable to be emitted in this translation unit.
 // Without this, the vtable can land in gamerules.cpp (which now uses
 // `new CTSGameRules`) and we get duplicate-symbol at link time.

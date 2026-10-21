@@ -114,6 +114,61 @@ else
     fi
 fi
 
+# === 2b. Patch h_export.cpp — post-fnptrs init hook ========================
+# `__attribute__((constructor))` runs at WASM instantiation, which is
+# BEFORE the engine calls GiveFnptrsToDll. So g_engfuncs is still
+# zeroed at constructor time and `pfnAddServerCommand` reads as NULL.
+#
+# GiveFnptrsToDll is exactly the right moment: it's when g_engfuncs
+# first becomes valid. One extra line there lets us register the
+# ts_pump console commands — the JS→DLL bridge that drives Think()
+# independently of the engine's broken loopback connect.
+#
+# Kept as a build-script sed (not a hand edit) so re-runs from a
+# pristine HLSDK tree are reproducible — same discipline as the
+# gamerules.cpp factory patch above.
+
+echo "==> [2b/6] Patching h_export.cpp GiveFnptrsToDll -> ts_post_init"
+HEXPORT="$HLSDK/dlls/h_export.cpp"
+if grep -q "ts_post_init" "$HEXPORT"; then
+    echo "    already wired"
+else
+    # Declare + call the hook at the end of GiveFnptrsToDll's body.
+    python3 - "$HEXPORT" <<'PYEOF2'
+import re, sys
+path = sys.argv[1]
+text = open(path).read()
+if 'ts_post_init' in text:
+    print("    already wired")
+    sys.exit(0)
+# Add the extern declaration near the top (after the g_engfuncs decl).
+text = text.replace(
+    "enginefuncs_t\t g_engfuncs;",
+    "// >>> TS-POST-INIT >>> (added by build-ts-dll.sh -- do not remove)\n"
+    "// Provide via cts_game_rules.cpp. Called from GiveFnptrsToDll below,\n"
+    "// which is the FIRST point where g_engfuncs is valid. Constructors\n"
+    "// run earlier (WASM instantiation) so they can't register commands.\n"
+    'extern "C" void ts_post_init(void);\n'
+    "// <<< TS-POST-INIT <<<\n\n"
+    "enginefuncs_t\t g_engfuncs;",
+    1,
+)
+# Append the call at the end of GiveFnptrsToDll's body.
+text = text.replace(
+    "\tmemcpy( &g_engfuncs, pengfuncsFromEngine, sizeof(enginefuncs_t) );\n"
+    "\tgpGlobals = pGlobals;\n}",
+    "\tmemcpy( &g_engfuncs, pengfuncsFromEngine, sizeof(enginefuncs_t) );\n"
+    "\tgpGlobals = pGlobals;\n"
+    "\t// >>> TS-POST-INIT >>> (added by build-ts-dll.sh -- do not remove)\n"
+    "\tts_post_init();\n"
+    "\t// <<< TS-POST-INIT <<<\n}",
+    1,
+)
+open(path, 'w').write(text)
+print("    patched")
+PYEOF2
+fi
+
 # === 3. Wire overlays into CMakeLists.txt ====================================
 # Idempotent: guarded by marker comments so re-runs don't duplicate entries.
 

@@ -58,7 +58,7 @@ const CHROME_PATH = resolveChromium();
       ...stored,
       // Match the default we set in src/stores/store.ts:36 — boot
       // straight into -game ts +sv_lan 1 +map ts_lobby.
-      launchOptions: '-noip -noip6 -game ts +sv_lan 1 +maxplayers 4 +map ts_lobby',
+      launchOptions: "-noip -noip6 -game ts +local +maxplayers 4 +map ts_lobby",
     };
     cur.launchOptions = newOpts;
     localStorage.setItem(KEY, JSON.stringify(cur));
@@ -72,6 +72,46 @@ const CHROME_PATH = resolveChromium();
   const milestones = /Game started|Trying to connect|Spooling demo|Setting up renderer|Custom resource|Dll loaded|TCP\/IP|player server started|precache|Loading|No spawn|Failed|Error|Entering|map:|\[HS\] /i;
   console.log('=== MILESTONE SEQUENCE (shim w6) ===');
   lines.filter(l=>milestones.test(l)).forEach((l,i)=>console.log('  '+String(i).padStart(2)+' '+l.slice(0,150)));
+  // === ts_pump server-command driver ===
+  // This is the real hook. We registered `ts_pump` and `ts_pump_think`
+  // as server commands in the WASM (via g_engfuncs.pfnAddServerCommand).
+  // Cmd_ExecuteString('ts_pump') dispatches straight into our DLL —
+  // no loopback connect required. A setInterval on our side becomes
+  // the Think driver the engine won't give us.
+  const pumpDiag = await page.evaluate(async () => {
+    const xash = window.__xash;
+    if (!xash || !xash.Cmd_ExecuteString) return { ok:false, reason:'no Cmd_ExecuteString' };
+    const log = [];
+    const origLog = console.log;
+    // Record any [HS] lines the pump produces
+    const orig = console.log.bind(console);
+    console.log = (...a) => { log.push(a.join(' ')); orig(...a); };
+    try {
+      // One full pump first — should fire HS_MISC + InitHUD + PlayerSpawn + Think
+      xash.Cmd_ExecuteString('ts_pump');
+      await new Promise(r => setTimeout(r, 400));
+      const firstCall = log.slice();
+      log.length = 0;
+      // Now hammer the think-only path ~120x over 2 seconds
+      for (let i = 0; i < 120; i++) {
+        xash.Cmd_ExecuteString('ts_pump_think');
+        await new Promise(r => setTimeout(r, 16));
+      }
+      const hammer = log.slice();
+      return { ok:true, firstCall, hammerCount: hammer.length, hammerSample: hammer.slice(0,6) };
+    } catch (e) {
+      return { ok:false, err: e.message.slice(0, 200) };
+    } finally {
+      console.log = origLog;
+    }
+  });
+  console.log('PUMP_DIAG:', JSON.stringify(pumpDiag, null, 1));
+
+  // Final [HS] roll-call — anything new since the pump?
+  const hsFinal = lines.filter(l => l.includes('HS_'));
+  console.log('FINAL HS LINES:', hsFinal.length);
+  hsFinal.slice(-12).forEach(l => console.log('  →', l.slice(0,150)));
+
   await page.screenshot({path:'/tmp/smoke-test/sbs-shim.png'});
   await browser.close();
 })().catch(e=>console.error('FAIL:',e.message));
