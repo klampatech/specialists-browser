@@ -1,6 +1,6 @@
 # Asset delivery: why `tsmod.zip` must be chunked
 
-**Status:** decided, not yet implemented
+**Status:** implemented (`aa0e90d`), measured
 **Artifact:** `webxash/public/hl/tsmod.zip` — 516,960,756 bytes (493 MiB / 517 MB decimal)
 **Related:** `specialists-browser-cloud-architecture.md` §3, §8.3 (Ernie), `vite-asset-headers.mjs`
 
@@ -114,6 +114,45 @@ Either they are unnecessary and should be dropped, or they are load-bearing for
 something not yet identified. Worth resolving before prod, since COOP/COEP
 affect cross-origin behaviour and are easy to leave in by accident.
 
+## Result (measured, same profile, cold then warm)
+
+| | part requests | bytes on the wire | boot |
+|---|---|---|---|
+| Cold | 8 / 8 | **493.0 MiB** | 16.6 s |
+| Warm | **0 / 8** | **0.0 MiB** | 15.3 s |
+
+493.0 MiB saved per repeat visit — 100% of the payload. Gameplay verified
+on both paths (HUD 100, 81 free slots, Kung-Fu, `ts_casa` loaded,
+ruleset 30).
+
+## Two bugs found by measuring rather than reading
+
+**Manifest prefix resolved against the wrong base.** `prefix` is written
+relative to the manifest, so `34e843c4b7cf/part-000.bin` resolved against
+the *document* URL rather than the manifest's, hit `/webXash/…`, and Vite
+answered with `index.html` — 1107 bytes where 671,088,640 were declared.
+Part URLs are now built with `new URL(part, manifestBaseUrl)`, and a
+length mismatch that is really an HTML page is reported as such.
+
+**Reassembly held 986 MB.** Collecting all 8 chunks and then building a
+merged copy means 493 MB of chunks *and* 493 MB of output at once,
+immediately before the unzip allocates another 885 MB of decompressed
+data. Measured cost: the download phase failed to complete inside 245 s,
+from a baseline of 2 s. Parts now stream straight into one preallocated
+buffer and are released per part — 493 MB plus one 64 MB part.
+
+## Header tiers
+
+```
+hl/ts/<version>/part-NNN.bin   public, max-age=31536000, immutable
+hl/ts/manifest.json            public, max-age=0, must-revalidate
+```
+
+The directory name *is* the archive's SHA-256, so a part URL can never
+change meaning — which is what makes `immutable` safe. The manifest is the
+mutable pointer and is published last by the uploader, so a client never
+sees a version whose parts are not all present.
+
 ## Implementation sketch
 
 1. **Split** `tsmod.zip` into 8 × 64 MB parts + `manifest.json`
@@ -127,6 +166,24 @@ affect cross-origin behaviour and are easy to leave in by accident.
    hand the assembled `ArrayBuffer` to the loader unchanged.
 4. **Progress** becomes two-signal: parts downloaded vs bytes downloaded.
    Both are honest and both are cheap.
+
+### Shipped
+
+- `tools/assets/split-tsmod.mjs` — splits, hashes, writes the manifest
+- `tools/assets/object-store.mjs` — `putObject`/`getObject`/`publicUrl`
+  over the S3 API, plus an in-memory store for `--dry-run`
+- `tools/assets/upload-tsmod.mjs` — publishes parts first, manifest last
+- `webxash/src/services/ts-asset-store.ts` — IndexedDB part storage,
+  version-keyed, with pruning of superseded versions
+- `webxash/src/services/ts-mod-assets.ts` — manifest fetch, per-part
+  cache-or-network, streaming reassembly
+- `webxash/vite-asset-headers.mjs` — the two header tiers above
+
+`src/utils/zip-helpers.ts` is removed; the loader calls
+`getTsmodArchive` directly.
+
+Nothing in this pipeline knows which provider it is uploading to. Switching
+between R2 and S3 is `ASSET_STORE_ENDPOINT` and `ASSET_STORE_REGION`.
 
 The loader's boot screen already reports real per-phase progress, so this
 plugs into the existing `download` phase rather than adding a new one.
