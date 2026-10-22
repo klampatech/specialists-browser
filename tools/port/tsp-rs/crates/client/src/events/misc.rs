@@ -94,8 +94,23 @@ pub fn pump(a: &Args) {
 pub fn reload(a: &Args) {
     let id = a.i1;
     let anim_phase = a.f1 as i32;
-    let phase = if crate::gameplay::current().reload_sound_phases() { anim_phase } else { 0 };
+    // Guard: a reload event with no real weapon must not reach the view model.
+    //
+    // `set(0)` and `weapon_body(0, ..)` both return zero, so `seq` would be 0 and
+    // `weapon_animation(0, 0)` is handed a sequence belonging to no weapon - a view
+    // model that never reaches a sequence end.
+    //
+    // NOTE ON SCOPE: this guard is defensive, NOT the fix for the bare-`reload` OOM.
+    // Instrumenting this function shows it is never called for that command (no
+    // `misc::reload` line appears), so the leak is entirely inside the engine, before
+    // the client DLL is reached. Kept because it is correct on its own terms and costs
+    // nothing; the real fix is upstream or in the bridge, which no longer sends the
+    // bare name. See `keyboard-bridge.ts` (KeyR is a held `+reload`/`-reload` pair).
     let owner = a.is_view_owner();
+    if id <= 0 {
+        return;
+    }
+    let phase = if crate::gameplay::current().reload_sound_phases() { anim_phase } else { 0 };
     if owner {
         let s = set(id);
         let seq = if anim_phase == 0 { s[1] } else { s.get(anim_phase as usize).copied().unwrap_or(0) };
