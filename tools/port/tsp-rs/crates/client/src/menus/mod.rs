@@ -120,6 +120,7 @@ pub fn init() {
     engine().add_command(c"ts_menu_slot", cmd_menu_slot);
     engine().add_command(c"ts_menu_close", cmd_menu_close);
     engine().add_command(c"ts_join_team", cmd_join_team);
+    engine().add_command(c"ts_respawn", cmd_respawn);
     engine().add_command(c"ts_key", cmd_key);
 }
 
@@ -217,6 +218,33 @@ extern "C" fn cmd_join_team() {
     };
     join_team(n);
     e.print(&format!("ts_join_team: jointeam {n}\n"));
+}
+
+/// `ts_respawn`: leave observer and spawn, by sending the stock `respawn` client command.
+///
+/// WHY THIS EXISTS
+/// ---------------
+/// `jointeam` and `respawn` are two DIFFERENT client->server commands and only the first was
+/// reachable from a browser. Per the TS command reference (and the port's own
+/// `rules::commands`, where `respawn` dispatches to `lifecycle::respawn_command`):
+///
+///  - `jointeam <n>` sets the team name. It does not spawn anybody.
+///  - `respawn` is the only thing that leaves observer mode and runs `Spawn()`.
+///
+/// A player who joined a team but never sent `respawn` therefore kept `iuser1`/`iuser2` set and
+/// stayed in Free Chase-Camera for the whole session, even with the respawn timer expired. The
+/// server has no autonomous path out of observer for a human: bots get `stop_observer` from
+/// `bot_backend::spawn_pre`, humans never do.
+///
+/// Sending this is the documented client action, so it goes through the same command channel as
+/// `jointeam` rather than reaching into server state.
+extern "C" fn cmd_respawn() {
+    if !crate::input::dev_script_input_enabled() {
+        engine().print("ts_respawn: needs ts_dev_scriptinput 1\n");
+        return;
+    }
+    engine().client_cmd("respawn");
+    engine().print("ts_respawn: sent respawn\n");
 }
 
 /// `ts_key <key> <1|0>`: `Key_Event` as a key press or release would, reaching `HUD_Key_Event`.
