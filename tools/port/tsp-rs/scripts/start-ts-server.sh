@@ -46,11 +46,23 @@ if [[ -f $PIDFILE ]] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
 fi
 
 cd "$ROOT"
+
+# Default map: ts_lobby IS a hub map (chat, bot parade, no deathmatch
+# spawns), so a freshly connected client ends up in Free Chase-Camera
+# spectator. To actually play, override with TS_MAP=ts_casa (or any of
+# the .bsp files in /tmp/tsds/ts/maps/).
+#
+# Pick something fast: casa is a small standard TS map and should boot
+# even on the slowest build. Override with `TS_MAP=ts_japa ./start-ts-server.sh`.
+DEFAULT_MAP="ts_casa"
+START_MAP="${TS_MAP:-$DEFAULT_MAP}"
+
 nohup ./xash -dedicated -dev -game ts +ip 0.0.0.0 +port 27015 +maxplayers 8 \
-    +map ts_lobby +hostname "TS Mod Test Server (rust-port)" -log +developer 1 \
+    +map "$START_MAP" +hostname "TS Mod Test Server (rust-port)" -log +developer 1 \
     > "$ROOT/xash.stdout" 2>&1 &
 echo $! > "$PIDFILE"
 sleep 3
 echo "start-ts-server: started pid=$(cat $PIDFILE), listening UDP 0.0.0.0:27015."
 echo "  log: $LOG"
+echo "  map: $START_MAP (override with TS_MAP=ts_<name>)"
 echo "  connect URL:  https://100.95.111.112:5174/webXash/?launchOptions=-noip+-noip6+-game+ts+%2Bconnect+100.95.111.112%3A27015"
