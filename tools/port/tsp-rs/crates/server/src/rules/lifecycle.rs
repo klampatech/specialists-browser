@@ -747,6 +747,63 @@ pub fn start_observer(p: &mut Player, cx: &mut Cx, origin: [f32; 3], angles: [f3
 /// player `target` (0 keeps the current one), as `Observer_SetMode` would after the observer's
 /// own `+jump` and `+attack`. Scripted tests use it for clients whose input can't be scripted (the
 /// original TS client's anti-script gate). Returns false for a player who isn't observing.
+
+/// Port dev aid: `ts_dev_forcejoin [<player#>]` — print why a player is not playing, then
+/// force them out of observer and respawn them.
+///
+/// WHY
+/// ---
+/// A browser WASM client can join, get a team (`* you are on team 'x'`), and still sit in
+/// Free Chase-Camera forever, while bots spawn and play on the same map. `ts_status` shows
+/// each player as `observer`/`alive`/`dead` but not *why* the client thinks so, and the
+/// server has no command that will drag a player out of observer on demand — bots get
+/// `bot_backend::spawn_pre` -> `stop_observer`, humans never get that call.
+///
+/// So this prints the full observer state, clears `iuser1`/`iuser2`, zeroes the respawn
+/// timer, and calls the real `stop_observer`. It reports what it found BEFORE and AFTER so
+/// the round trip is legible in one log line.
+///
+/// Not gated on `sv_cheats`: this is a dedicated-server dev aid and the only route we have
+/// to tell "the server thinks you are observing" apart from "the client never left
+/// observer on its own".
+pub fn dev_forcejoin(p: &mut Player, cx: &mut Cx) -> (bool, i32, i32, f32) {
+    let idx = cx.index();
+    let (u1, u2, dead, origin) = {
+        let v = cx.pev();
+        (v.iuser1, v.iuser2, v.deadflag, [v.origin[0], v.origin[1], v.origin[2]])
+    };
+    let respawn_at = p.respawn_at;
+    let before = format!(
+        "[ts] ts_dev_forcejoin: #{} '{}' before: iuser1={} iuser2={} deadflag={} respawn_at={} team='{}' origin=({:.0} {:.0} {:.0})",
+        idx,
+        String::from_utf8_lossy(&super::netname(cx.edict)),
+        u1,
+        u2,
+        dead,
+        respawn_at,
+        String::from_utf8_lossy(&p.ts.team_name),
+        origin[0],
+        origin[1],
+        origin[2]
+    );
+    engine().print(&before);
+
+    // Zero the respawn timer first: `stop_observer` returns early while it is in the
+    // future, which is the one case where a stuck observer is self-inflicted by config.
+    p.respawn_at = 0.0;
+    stop_observer(p, cx);
+
+    let (a1, a2) = (cx.pev().iuser1, cx.pev().iuser2);
+    engine().print(&format!(
+        "[ts] ts_dev_forcejoin: #{} after: iuser1={} iuser2={} -> {}",
+        idx,
+        a1,
+        a2,
+        if a1 == 0 && a2 == 0 { "playing" } else { "STILL OBSERVING" }
+    ));
+    (a1 == 0 && a2 == 0, a1, a2, p.respawn_at)
+}
+
 pub fn dev_observe(p: &mut Player, cx: &mut Cx, mode: i32, target: i32) -> bool {
     if cx.pev().iuser1 == 0 {
         return false;

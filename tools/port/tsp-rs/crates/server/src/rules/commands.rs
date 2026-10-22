@@ -344,6 +344,7 @@ pub fn register_server_commands() {
     e.add_server_command(c"ts_as", crate::commands::cmd_as);
     e.add_server_command(c"ts_dev_touch", cmd_dev_touch);
     e.add_server_command(c"ts_dev_hamlog", crate::ham::cmd_dev_hamlog);
+    e.add_server_command(c"ts_dev_forcejoin", cmd_dev_forcejoin);
 }
 
 /// `ts_dev_touch <file>` (sv_cheats): creates an empty file in the game directory. Scripted
@@ -503,6 +504,37 @@ extern "C" fn cmd_status() {
         if let Some(l) = line {
             e.print(&shared::bformat!("[ts]  #{} {} {}", e.index_of(p), name_col, l));
         }
+    }
+}
+
+
+/// `ts_dev_forcejoin [<player#>]`: print each player's observer state, then drag them out of
+/// observer and respawn them. With no argument it walks every slot.
+///
+/// The browser WASM client can hold a team name while still rendering Free Chase-Camera,
+/// because nothing on the human path ever calls `stop_observer` (bots get it from
+/// `bot_backend::spawn_pre`). This is the only route to tell a server-side observer state
+/// apart from a client that never left observer on its own. See `lifecycle::dev_forcejoin`.
+extern "C" fn cmd_dev_forcejoin() {
+    let e = engine();
+    let targets: Vec<i32> = if e.cmd_argc() >= 2 {
+        vec![e.cmd_argv(1).to_string_lossy().trim().parse().unwrap_or(1)]
+    } else {
+        super::players().iter().map(|p| e.index_of(*p) as i32).collect()
+    };
+    if targets.is_empty() {
+        e.print("[ts] ts_dev_forcejoin: no players\n");
+        return;
+    }
+    for idx in targets {
+        let p = e.client(idx);
+        if p.is_null() {
+            e.print(&format!("[ts] ts_dev_forcejoin: #{idx} is not a client\n"));
+            continue;
+        }
+        crate::player::with_player(p, |pl, cx| {
+            super::lifecycle::dev_forcejoin(pl, cx);
+        });
     }
 }
 

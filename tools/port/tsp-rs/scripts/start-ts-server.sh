@@ -57,12 +57,23 @@ cd "$ROOT"
 DEFAULT_MAP="ts_casa"
 START_MAP="${TS_MAP:-$DEFAULT_MAP}"
 
+# Console on a named FIFO, so server commands are reachable without an
+# interactive terminal. Dev aids that exist ONLY as server commands
+# (ts_status, ts_dev_forcejoin) are otherwise unreachable on a headless
+# dedicated, and the client's own console does not forward to the server.
+CONSOLE="$ROOT/engine.console"
+rm -f "$CONSOLE"
+mkfifo "$CONSOLE"
+# Hold the FIFO open with a reader, or the first write blocks forever.
+( sleep infinity ) < "$CONSOLE" &
+
 nohup ./xash -dedicated -dev -game ts +ip 0.0.0.0 +port 27015 +maxplayers 8 \
     +map "$START_MAP" +hostname "TS Mod Test Server (rust-port)" -log +developer 1 \
-    > "$ROOT/xash.stdout" 2>&1 &
+    < "$CONSOLE" > "$ROOT/xash.stdout" 2>&1 &
 echo $! > "$PIDFILE"
 sleep 3
 echo "start-ts-server: started pid=$(cat $PIDFILE), listening UDP 0.0.0.0:27015."
 echo "  log: $LOG"
 echo "  map: $START_MAP (override with TS_MAP=ts_<name>)"
+echo "  console: echo \"ts_status\" > $CONSOLE"
 echo "  connect URL:  https://100.95.111.112:5174/webXash/?launchOptions=-noip+-noip6+-game+ts+%2Bconnect+100.95.111.112%3A27015"
