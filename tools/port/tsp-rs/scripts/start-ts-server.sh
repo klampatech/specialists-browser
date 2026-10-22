@@ -61,16 +61,22 @@ START_MAP="${TS_MAP:-$DEFAULT_MAP}"
 # interactive terminal. Dev aids that exist ONLY as server commands
 # (ts_status, ts_dev_forcejoin) are otherwise unreachable on a headless
 # dedicated, and the client's own console does not forward to the server.
+# Server commands go through a plain FILE that is tailed into stdin.
+# NOT a named FIFO: a FIFO blocks on open until a peer arrives, so a
+# reader that dies leaves the next start hanging on `< $FIFO` forever
+# and the server silently never comes up. A file plus `tail -F` has
+# neither failure mode, and the same `echo cmd > file` interface.
 CONSOLE="$ROOT/engine.console"
-rm -f "$CONSOLE"
-mkfifo "$CONSOLE"
-# Hold the FIFO open with a reader, or the first write blocks forever.
-( sleep infinity ) < "$CONSOLE" &
+: > "$CONSOLE"
 
-nohup ./xash -dedicated -dev -game ts +ip 0.0.0.0 +port 27015 +maxplayers 8 \
-    +map "$START_MAP" +hostname "TS Mod Test Server (rust-port)" -log +developer 1 \
-    < "$CONSOLE" > "$ROOT/xash.stdout" 2>&1 &
-echo $! > "$PIDFILE"
+setsid bash -c "tail -n +1 -F '$CONSOLE' | ./xash -dedicated -dev -game ts \
+    +ip 0.0.0.0 +port 27015 +maxplayers 8 \
+    +map '$START_MAP' +hostname 'TS Mod Test Server (rust-port)' \
+    -log +developer 1 > '$ROOT/xash.stdout' 2>&1" &
+sleep 1
+# Record xash's own pid, not the setsid/tail wrapper's: stop-ts-server.sh
+# signals this pid, and signalling the wrapper leaves xash holding 27015.
+pgrep -n -x xash > "$PIDFILE"
 sleep 3
 echo "start-ts-server: started pid=$(cat $PIDFILE), listening UDP 0.0.0.0:27015."
 echo "  log: $LOG"
