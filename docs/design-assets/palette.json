@@ -1,0 +1,179 @@
+{
+  "_comment": [
+    "Measured palette for The Specialists. Every hex here was sampled from",
+    "a named file or a named constant in the Rust port - none were eyeballed.",
+    "This file is committed because measured FACTS are not artwork. The art",
+    "they were measured from is not committed; see extract-assets.py.",
+    "",
+    "Two sources, and the difference matters:",
+    "  'accent' comes from the Rust port's TEAM_COLORS, TS's original",
+    "  iTeamColors table at 0x10096974. It is the colour players actually see",
+    "  (HUD status bar, scoreboard, team bars) and should lead.",
+    "  'intro' comes from game/titles.txt $color2. It is the INTRO TEXT",
+    "  colour - real, but incidental. Using it as the accent was wrong.",
+    "",
+    "Contrast figures are measured ratios against the stated background."
+  ],
+
+  "accent": {
+    "amber": {
+      "hex": "#ffaa00",
+      "source": "crates/client/src/menus/widgets.rs TEAM_COLORS[0] (iTeamColors, 0x10096974)",
+      "where": "HUD status bar, scoreboard, team colour bars, VGUI fg fallback",
+      "role": "THE accent - primary CTA, active states, focus rings",
+      "contrast": { "on_void": 10.86, "on_panel": 7.6, "void_on_it": 10.86 }
+    },
+    "amberHot": {
+      "hex": "#ffc44d",
+      "source": "derived - lifted from #ffaa00 for hover",
+      "role": "hover state"
+    }
+  },
+
+  "brand_mark": {
+    "tsGreen": {
+      "hex": "#00a600",
+      "source": "ts/logos/remapped.bmp (64x64 paletted)",
+      "role": "LOGO LOCKUP ONLY - 0 green pixels measured in a live 1600x900 game capture",
+      "warning": "do NOT use as a UI accent; it is the logo mark"
+    }
+  },
+
+  "chrome": {
+    "void": {
+      "hex": "#000301",
+      "source": "specialists.wad entry title1, dominant pixel",
+      "role": "page background"
+    },
+    "abyss": {
+      "hex": "#060c14",
+      "source": "ts/resource/background splash.bmp top pixels (#000001-#020207)",
+      "role": "alternate background"
+    },
+    "panel": {
+      "hex": "#292a22",
+      "source": "TSManual/Images/Menu1.jpg panel bg",
+      "role": "panel fill"
+    },
+    "panelHi": {
+      "hex": "#303129",
+      "source": "TSManual/Images/Menu2.jpg panel bg",
+      "role": "raised panel fill"
+    },
+    "edge": {
+      "hex": "#2c2d24",
+      "source": "gfx/shell/btns_main.bmp button outline",
+      "role": "borders"
+    }
+  },
+
+  "text": {
+    "inkBright": {
+      "hex": "#e9e9e9",
+      "source": "gfx/shell/head_advanced.BMP header text highlight",
+      "role": "headings",
+      "contrast": { "on_void": 15.9 }
+    },
+    "wordmark": {
+      "hex": "#e8ecbb",
+      "source": "gfx/shell/btns_main.bmp button highlight",
+      "role": "the title wordmark"
+    },
+    "ink": {
+      "hex": "#9e9daf",
+      "source": "TSManual/Images/Menu1.jpg menu text (grey-lavender)",
+      "role": "body copy",
+      "contrast": { "on_void": 7.79 }
+    },
+    "muted": {
+      "hex": "#9696ab",
+      "source": "derived from --ts-ink to clear WCAG AA",
+      "role": "small labels that must stay readable",
+      "contrast": { "on_void": 7.15, "on_panel": 5.0 },
+      "note": "the sampled #646464 only manages 3.50:1 - AA-large at best - so it is decorative-only"
+    },
+    "header": {
+      "hex": "#a69c7a",
+      "source": "gfx/shell/head_*.BMP header lettering (all 27 tabs)",
+      "role": "secondary labels",
+      "contrast": { "on_void": 7.56 }
+    },
+    "dim": {
+      "hex": "#646464",
+      "source": "game/titles.txt $color 100 100 100",
+      "role": "DECORATIVE ONLY",
+      "contrast": { "on_void": 3.5 },
+      "warning": "fails AA for small text - never use for UI labels"
+    }
+  },
+
+  "menu_button_family": {
+    "_comment": "TS's actual buttons are a four-step vertical ramp, not a flat fill",
+    "highlight": "#e8ecbb",
+    "face": "#ccc19a",
+    "midtone": "#b0a883",
+    "shadow": "#9e9574",
+    "source": "gfx/shell/btns_main.bmp"
+  },
+
+  "misc": {
+    "activeTab": { "hex": "#ffff00", "source": "gfx/shell/head_single.BMP active tab" },
+    "intro": {
+      "hex": "#f06e00",
+      "source": "game/titles.txt $color2 240 110 0",
+      "role": "INTRO TEXT colour only - superseded by accent.amber"
+    },
+    "loadingTileRange": { "min": "#232323", "max": "#414040", "source": "13 loading tiles, no hue" },
+    "portraitBg": { "hex": "#5d5d5d", "source": "flat mid-grey behind every character portrait" }
+  },
+
+  "typography": {
+    "engineRequest": {
+      "font": "Arial",
+      "detail": "cl_dlls/client.dll contains the literal 'Arial' exactly once, adjacent to the VGUI scheme parser (Default Scheme, FontName, SchemeName, SchemeFont, bitmapfonts). No Tahoma/Verdana/Times/Courier/Impact."
+    },
+    "hudGlyphs": {
+      "font": "custom bitmap fonts",
+      "detail": "fonts.wad -> fonts_FONT0/FONT1/FONT2. TS ships no *_textscheme.txt, so engine default scheme + Arial fallback applies. Neither is shippable as a webfont."
+    },
+    "webSubstitute": {
+      "display": "'Barlow Condensed' - condensed grotesque, matching GoldSrc HUD lettering",
+      "mono": "'Share Tech Mono' - instrument-panel readouts for map names and counts",
+      "rationale": "neither pretends to be the bitmap font we cannot ship"
+    }
+  },
+
+  "roster": {
+    "models": ["agent", "castor", "gordon", "hitman", "laurence", "merc", "seal"],
+    "defaultTeams": {
+      "team0": ["seal", "merc"],
+      "team1": ["gordon", "laurence"],
+      "team2": ["agent"],
+      "team3": ["hitman", "castor"]
+    },
+    "classes": ["civilian", "engineer", "spy", "pyro", "hwguy", "medic", "demoman", "soldier", "sniper", "scout"],
+    "garmentColours": "NOT DETERMINED. The texture sheets are dark and palette-mapped; only hue families are reliable (agent/gordon warm tan-pink, castor/hitman dark blood red, merc/seal mid brown, laurence very dark brown). Do not print a hex as authoritative."
+  },
+
+  "modes": {
+    "DeathMatch": "default, mp_teamplay 0 -> 'The Specialists (DM)'",
+    "TeamDeathmatch": "mp_teamplay 1, or worldspawn gamemode 2 -> 'The Specialists (Teamplay)'",
+    "LastManStanding": "lastmanstanding 1, or gamemode 3 -> 'The Specialists (LMS)'",
+    "TheOne": "mp_theonemode 1, or gamemode 4 -> 'The Specialists (The One)'"
+  },
+
+  "counts": {
+    "weaponsUsable": 37,
+    "maps": 19,
+    "characters": 7,
+    "powerups": 9,
+    "spectatorCameraModes": ["Locked Chase-Camera", "Free Chase-Camera", "Free-Look", "First Person", "First Person", "Chase Map Overview"]
+  },
+
+  "doNotAdvertise": {
+    "cashEconomy": "CashBased() is hard-wired to return 0 in TS 3.0. ts_sellzone refunds do nothing and dropped weapons are never buyable. No shop, no economy.",
+    "roundBasedTeamplay": "m_mode 2/3 are only assigned in InitObjectives and nothing sets g_teamplay to 2 or 3. The code is intact but dead.",
+    "superjumpCvar": "'superjump' is a POWERUP in TS 3.0, not a cvar. Do not list it in a config cheat-sheet.",
+    "fakeScreenshots": "TSHud.vue is a JS-animated DEMO overlay with hardcoded values, and its buy panel would advertise a weapon shop that does not exist. Use real engine captures only."
+  }
+}
