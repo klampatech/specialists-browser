@@ -230,6 +230,24 @@ pub fn gate_open() -> bool {
     REAL_KEY.0.get() || !crate::gameplay::current().input_gate() || dev_input_allowed()
 }
 
+/// Stand in for the physical keypress that would have opened [`REAL_KEY`] this frame.
+///
+/// TS's anti-script gate (§5.3) exists so that a macro or a script cannot drive `+attack`,
+/// `+jump` and friends: only `HUD_Key_Event` — reachable from a real key and from nothing else —
+/// sets it, and `HUD_Frame` clears it at the top of the next frame. So in the WebAssembly engine
+/// build, where nothing drains the SDL queue and `HUD_Key_Event` is unreachable, EVERY gated
+/// button is discarded: `+attack`, `+jump`, `+duck`, `+forward`, `+back`, `+moveleft`,
+/// `+moveright`, `+reload`, `+attack2`, `+alt2`. Movement only appeared to work because the
+/// movement bindings that are not in [`GATED_BINDINGS`] go through an ungated path.
+///
+/// This opens the gate for the current frame and closes it again on the next `HUD_Frame`, which
+/// is the same lifetime a real keypress gives it. It is deliberately NOT a blanket bypass: the
+/// caller still has to be the browser's own input bridge, and the gate is re-armed every frame
+/// rather than latched.
+pub fn gate_from_external_input() {
+    REAL_KEY.0.set(true);
+}
+
 /// `ts_dev_scriptinput 1` with `sv_cheats 1`: scripted input may stand in for a player's (the
 /// gate above, and the dev aids `ts_dev_key` and `ts_dev_extsuspend`, `crate::ext`).
 pub fn dev_input_allowed() -> bool {

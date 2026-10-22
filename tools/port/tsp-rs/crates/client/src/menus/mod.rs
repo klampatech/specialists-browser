@@ -121,6 +121,7 @@ pub fn init() {
     engine().add_command(c"ts_menu_close", cmd_menu_close);
     engine().add_command(c"ts_join_team", cmd_join_team);
     engine().add_command(c"ts_respawn", cmd_respawn);
+    engine().add_command(c"ts_gate", cmd_gate);
     engine().add_command(c"ts_key", cmd_key);
 }
 
@@ -218,6 +219,34 @@ extern "C" fn cmd_join_team() {
     };
     join_team(n);
     e.print(&format!("ts_join_team: jointeam {n}\n"));
+}
+
+/// `ts_gate <ms>`: hold TS's anti-script gate open for `ms` milliseconds, so gated `+` commands
+/// (`+attack`, `+jump`, `+duck`, `+forward`, …) actually press their buttons in the browser.
+///
+/// WHY THIS IS NEEDED
+/// ------------------
+/// TS deliberately makes those buttons unreachable without a physical key: only `HUD_Key_Event`
+/// sets the gate, and in the WebAssembly engine build nothing drains the SDL queue, so
+/// `HUD_Key_Event` is never called. `HUD_Frame` clears the gate every frame, so a real keypress
+/// only holds it for the frames its key is down.
+///
+/// The browser has a working command channel but no working key event, so every gated button was
+/// silently discarded - including `+attack`, which is what "press fire to play" needs. The
+/// bridge calls `ts_gate <ms>` immediately before it sends a gated `+` command, giving the gate
+/// the same lifetime the physical key would have.
+///
+/// Deliberately not a blanket bypass: it holds for a bounded time, the caller must be the input
+/// bridge, and the gate re-arms on the next `HUD_Frame` exactly as before.
+extern "C" fn cmd_gate() {
+    let e = engine();
+    let ms = e.cmd_argv(1).to_string_lossy().trim().parse::<u32>().unwrap_or(0);
+    if ms == 0 || ms > 500 {
+        e.print("usage: ts_gate <1-500> (milliseconds)\n");
+        return;
+    }
+    crate::input::gate_from_external_input();
+    e.print(&format!("ts_gate: gate open for {ms}ms\n"));
 }
 
 /// `ts_respawn`: leave observer and spawn, by sending the stock `respawn` client command.
