@@ -37,6 +37,9 @@
 - **Deploying or operating it?** Read
   [`docs/PRODUCTION-INFRA.md`](./docs/PRODUCTION-INFRA.md) and
   [`docs/CONTROL-PLANE.md`](./docs/CONTROL-PLANE.md).
+- **Changing the CI or the deploy?** Read
+  [`docs/CI-CD.md`](./docs/CI-CD.md) — including the two traps that have
+  already broken a build.
 
 ---
 
@@ -416,6 +419,41 @@ already trust is not evidence about the path you have not tried.** Every
 e2e test here originally matched `/join/i` — a server row's *Join* button —
 so the suite was exercising the path that already worked while the *Play*
 button was broken, and every run passed.
+
+---
+
+## CI and deployment
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | PR, push to main | Typecheck, build, 36 unit tests, builds all three images |
+| `pr-required.yml` | push to main | Fails a commit that did not come from a pull request |
+| `deploy.yml` | push to main | Ships to production, then verifies it in a real browser |
+
+Merging to `main` builds the frontend, swaps it into place, streams the
+control-plane images to the host, recreates the containers, and then
+clicks **Play** in a real browser to confirm a player actually arrived.
+The deploy is refused for any commit that did not come through a pull
+request.
+
+```bash
+npm test          # the regression suite
+```
+
+36 tests, and **every one corresponds to a bug that reached production**.
+That is the design rule: a test earns its place by locking in a failure
+we actually had. The A2S bot count's byte offset, the bridge's
+allowlist, the empty-map-versus-unknown distinction in the human count,
+scale-out slot selection, and the pull-request gate's own false
+negative are all covered.
+
+> **One limitation, stated plainly.** GitHub's branch protection and
+> rulesets need a paid plan for a private repository, and this one is
+> private and free — the API answers 403. The `pr-required` workflow is
+> the substitute: it **detects** a direct push and **blocks the deploy**,
+> but it cannot **prevent** the push, because the commit is already on
+> main by the time it runs. GitHub Pro (~$4/month) enables the real
+> thing. Details in [`docs/CI-CD.md`](./docs/CI-CD.md).
 
 ---
 

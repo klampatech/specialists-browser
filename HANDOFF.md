@@ -110,6 +110,40 @@ inside `launch()` and *before* anything expensive happens — one source of
 truth for "where does a player go", so the two buttons cannot diverge
 again. There is now a test that clicks PLAY specifically.
 
+## The repo now has CI and a deploy
+
+Three workflows, live since 2026-10-23:
+
+- **`ci.yml`** — on every PR: typecheck, build, 36 unit tests, and it
+  builds all three service images. The image build is there because a
+  Dockerfile that references a file the image does not copy produces a
+  container that starts and dies in the same second — and it happened.
+- **`pr-required.yml`** — on push to main: fails a commit that did not
+  come through a pull request.
+- **`deploy.yml`** — on push to main: builds the frontend, swaps it into
+  place, streams the control-plane images over SSH, recreates the
+  containers, and then verifies in a real browser.
+
+**The limitation, stated plainly:** GitHub's branch protection needs a
+paid plan for a private repo, and this one is free — the API answers
+403. So the PR gate is a *substitute*: it detects a direct push and
+blocks the deploy, but it cannot prevent the push. GitHub Pro (~$4/mo)
+enables the real thing. Kyle said he usually stands this up once there
+is something worth protecting — there is now.
+
+Three things that broke during the first setup, all worth knowing:
+
+1. **The gate had a false negative.** `jq 'length'` on an API *error
+   object* returns its key count, so a 403 read as "3 pull requests" and
+   a direct push was approved. It now only reads a count from an actual
+   array, and fails closed on anything else.
+2. **The frontend is a bun project** and two of its dependencies were
+   unpublished from npm, so *no* fresh install worked — not even
+   locally. Both were dead and are gone.
+3. **The e2e scripts read the player count over SSH** to an alias that
+   only exists on one machine, so CI saw "0 connections" for a browser
+   that was playing fine. They now read the public API.
+
 ## The decisions that are locked
 
 **The bridge is same-origin with the page.** Not a preference — a
