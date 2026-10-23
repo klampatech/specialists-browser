@@ -60,7 +60,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { queryServer } from '../../webxash/vite-a2s-plugin.mjs';
 import { probeWithRetry, timeoutForAttempt } from './lib/a2s-retry.mjs';
-import { classifyProbeFailure, nextFailureCount } from './lib/liveness.mjs';
+import { classifyProbeFailure, nextFailureCount, shouldRefreshSeenAt } from './lib/liveness.mjs';
 import {
   desiredBotQuota as computeBotQuota,
   resolveHumanCount,
@@ -223,31 +223,6 @@ async function collectMetrics(instance) {
     };
   } catch {
     return null;
-  }
-}
-
-/**
- * Is the game server actually alive?
- *
- * The console is a pipe into the server's stdin, and it answers
- * regardless of what the game thread is doing. `sys_ticrate` coming
- * back is proof of life.
- *
- * This is the tie-breaker for a missed A2S probe. A2S is answered on
- * the game thread, so it is missed precisely when the server is busy
- * with real players — and a busy server must not be mistaken for a
- * dead one, because restarting it kicks those players off.
- *
- * @returns true if the console answered, false if it did not, and null
- *          if the console could not be consulted at all.
- */
-async function isAliveViaConsole(container) {
-  if (!USE_DOCKER || !container) return null;
-  try {
-    const tick = await consoleAsk(container, 'sys_ticrate', /"sys_ticrate"\s+is\s+"(\d+)"/, 3000);
-    return tick ? true : false;
-  } catch {
-    return false;
   }
 }
 
@@ -436,13 +411,20 @@ async function pollA2S() {
           // answers regardless. If the server answers there, it is
           // alive and busy, and this miss must NOT accumulate toward a
           // restart that would kick those players off.
-          const alive = await isAliveViaConsole(existing.container);
-          const classification = classifyProbeFailure(alive);
+          const classification = classifyProbeFailure({
+            metricsOk: existing.metricsOk,
+            metricsAgeMs: existing.metricsAt ? Date.now() - existing.metricsAt : undefined,
+          });
           const failures = nextFailureCount(classification, existing.consecutiveFailures ?? 0);
           const down = failures >= FAILURES_BEFORE_DOWN;
           registry.set(id, {
             ...existing,
-            seenAt: existing.seenAt,
+            // "Seen" means "we know it is there", not "A2S answered".
+            // When the console proves the server is alive but A2S is
+            // quiet, the entry must NOT age out — otherwise the
+            // staleness cutoff deletes it, the server vanishes from the
+            // list, and nobody can join a server that is running.
+            seenAt: shouldRefreshSeenAt(classification) ? Date.now() : existing.seenAt,
             stale: down,
             responsive: !down,
             consecutiveFailures: failures,
@@ -478,10 +460,12 @@ async function pollMetrics() {
         const metrics = await collectMetrics(instance);
         if (!metrics) {
           instance.metricsOk = false;
+          instance.metricsAt = now;
           instance.tickrate = null;
           return;
         }
         instance.metricsOk = true;
+        instance.metricsAt = now;
         instance.tickrate = metrics.tickrate;
         instance.botQuota = metrics.botQuota;
 
@@ -544,6 +528,7 @@ function publicView(row) {
     responsive: row.responsive !== false,
     consecutiveFailures: row.consecutiveFailures ?? 0,
     metricsOk: row.metricsOk === true,
+    metricsAt: row.metricsAt ?? null,
     stale: Boolean(row.stale),
     seenAt: row.seenAt,
   };

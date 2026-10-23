@@ -4,3 +4,4 @@
 !services/orchestrator/package.json
 !services/orchestrator/service.mjs
 !services/orchestrator/lib/slot.mjs
+!services/orchestrator/lib/restart-clock.mjs
