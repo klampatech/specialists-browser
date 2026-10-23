@@ -50,17 +50,67 @@ SSH alias bb-prod / bulletballet
 
 ---
 
-## 3. Capacity — measured against the real box
+## 3. Capacity — MEASURED (2026-10-23)
 
-From `ts-server-dll` measurements (363.1 MiB RSS per TS container) against **3909 MB** actually present:
+### The load test
+
+Ran a dedicated server on port 27025 with **`maxplayers 32`**, `sys_ticrate 100`,
+map `ts_casa`, and filled all **32 slots with bots** via `ts_bot_quota 32`.
+
+**Bot activity was verified before trusting the numbers** — a cheap bot quota that
+never fights would have produced a beautifully low and completely meaningless CPU
+figure. `ts_status` confirmed real combat:
 
 ```
-OS + Docker + Caddy + bridge      ~600 MB
-remaining                        ~3.3 GB
-÷ 363 MB per container            9 containers
+#28 Bot Link   frags=8  deaths=9   hp=56   held=0x0
+#29 Bot Seraph frags=21 deaths=11  hp=100
+#30 Bot Sati   frags=18 deaths=8   hp=38   spree=2
+#31 Bot Rama   frags=15 deaths=13  held=0x1/1s
+#32 Bot Kid    frags=14 deaths=8   hp=100
 ```
 
-**8 TS containers fit with headroom.** This was the estimate before provisioning and has now been checked against real hardware. Still **unverified** under load — see §8.
+76 frags and 49 deaths accumulated. They fight.
+
+### Results
+
+| metric | value |
+|---|---|
+| CPU | **5.8% of one core** (5.6–5.8% across three 45 s windows) |
+| RSS | **375 MB**, flat over 45 s — no leak |
+| `sys_ticrate` | **100** |
+| players | 32 (all slots filled, active combat) |
+
+### How many fit on the VPS-1
+
+**RAM binds. CPU is not close.**
+
+```
+RAM:  (3909 MB total − ~600 MB OS/Docker/Caddy/bridge) ÷ 375 MB  =  8.8  →  8 servers
+CPU:  (2 vCores, ~50% reserved for bridge/Caddy/burst) = 1.0 core ÷ 5.8%  =  17 servers
+```
+
+### **8 servers × 32 players = 256 player capacity, one box.**
+
+The architecture doc modelled **64 slots per VM** (8 instances × 8 players). With
+32-player instances that is **4× the capacity per box** — 256. One VPS-1 covers a
+long way past what a starting audience needs.
+
+### Caveats — what would make this wrong
+
+1. **Bots are not players.** A bot client sends no network traffic. 32 humans add
+   per-client packet parsing and delta encoding every tick. Direction unknown,
+   additive cost likely.
+2. **`ts_casa` is a small map.** Entity count drives AI and touch-test cost. A
+   larger map costs more per player.
+3. **The measurement ran on different silicon.** Test host: Ryzen 7 5700U
+   (16-thread mobile). VPS: **AMD EPYC-Genoa**, materially better per-thread.
+   Favourable, but LocalZone vCores are shared and bursty, not dedicated.
+4. **tickrate 100 is expensive.** Dropping to 30 would cut server CPU roughly
+   3×. It buys CPU headroom, not RAM — RAM still binds at 8 either way.
+5. **Container overhead is not included** in the 375 MB figure.
+
+**Bottom line: 8 is a defensible plan, not a promise.** Item 1 is the one that could
+move the number, and it is only answerable with real clients.
 
 ---
 
@@ -188,7 +238,7 @@ Consequences already accepted:
 | Bridge on the VPS | none — still on the dev host |
 | Caddy / TLS termination on 443 | not started |
 | R2 payload upload | bucket ready, **not uploaded** |
-| 8-container load proof | **UNVERIFIED** — the §3 figure is arithmetic, not a measurement |
+| 8-container load proof | **single-instance load test DONE** (§3). Running 8 *concurrently* is still unverified. |
 | Bridge registry / multi-target | not started |
 | Production A2S service | dev-only middleware in `vite-a2s-plugin.mjs` |
 | Control plane | **undecided** — see `CONTROL-PLANE.md` |
