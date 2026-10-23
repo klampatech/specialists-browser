@@ -112,6 +112,28 @@ a plain HTTP 403. Validating afterwards would let the connection open
 successfully and only then close, which reads to the client as "connected" and
 hides the refusal.
 
+### The port range, not the port list — and what it breaks
+
+The port range fixed scale-out, and it broke the orchestrator in a way
+that was easy to miss: with a fixed list of ports, the only ports were
+the ones that existed. With a *range*, "the port does not answer" means
+two different things — an instance that **crashed**, and an instance that
+was **never deployed** — and the orchestrator treated both as a crash.
+
+It restarted `ts-1` through `ts-7` every cycle against containers that did
+not exist. Fifty failed attempts before it was noticed, and nothing about
+the symptom said "wrong question": the restart calls returned a normal
+Docker error, the action log filled with the same line, and `ts-0` was
+perfectly healthy the whole time.
+
+The fix is one question: **does the container exist?** If it does not, the
+slot was never deployed and there is nothing to restart. If it does exist
+and is not answering, that is a crash.
+
+A failed action also now updates the cooldown, so a permanently-failing
+action backs off instead of retrying every cycle and filling the log with
+the same line.
+
 ### The port range, not the port list
 
 The registry and the orchestrator derive their port list from

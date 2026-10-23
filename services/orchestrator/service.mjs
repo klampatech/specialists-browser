@@ -134,9 +134,32 @@ function record(kind, id, detail) {
   console.log(`[orch] ${kind} ${id} ${detail || ''}`.trimEnd());
 }
 
+/**
+ * Does the instance's container exist at all?
+ *
+ * This is the difference between an instance that CRASHED and an instance
+ * that was never DEPLOYED. With a port range, "the port does not answer"
+ * means both — and treating a never-deployed slot as a crashed one sends
+ * the orchestrator into a restart loop against containers that do not
+ * exist. That is not a harmless no-op: it is a retry every cycle against
+ * a name the Docker daemon has to look up and reject.
+ *
+ * A crashed instance has a container that exists and is not answering.
+ * A scaled-in instance has no container. Only the first is a fault.
+ */
+async function containerExists(name) {
+  const { stdout } = await sh('docker', ['inspect', '-f', '{{.State.Running}}', name]);
+  return stdout.trim() !== '' && stdout.trim() !== '<no value>';
+}
+
 async function restartInstance(inst) {
   const { err, stderr } = await sh('docker', ['restart', inst.container]);
   if (err) {
+    // Back off even on failure. Without this a permanently-failing action
+    // retries every cycle forever, and the action log fills with the same
+    // failure instead of the thing that actually changed.
+    inst.lastActionAt = Date.now();
+    inst.actions += 1;
     record('restart-failed', inst.id, (stderr || err.message).slice(0, 200));
     return false;
   }
@@ -198,6 +221,15 @@ async function decide() {
     const id = `ts-${port - PORT_BASE}`;
     const inst = instanceFor(id);
     const row = byId.get(id);
+
+    // A slot with no container was never deployed. It is not crashed, and
+    // restarting it would be a retry against a name that does not exist.
+    if (!(await containerExists(inst.container))) {
+      inst.unresponsiveSince = null;
+      inst.deployed = false;
+      continue;
+    }
+    inst.deployed = true;
 
     if (!row || row.responsive === false) {
       inst.unresponsiveSince ??= now;
