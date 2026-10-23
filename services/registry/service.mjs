@@ -59,6 +59,7 @@
 import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { queryServer } from '../../webxash/vite-a2s-plugin.mjs';
+import { probeWithRetry, timeoutForAttempt } from './lib/a2s-retry.mjs';
 import {
   desiredBotQuota as computeBotQuota,
   resolveHumanCount,
@@ -369,7 +370,24 @@ async function pollA2S() {
     await Promise.all(
       PORTS.map(async (port) => {
         const id = `ts-${port - PORT_BASE}`;
-        const result = await queryServer(HOST, port, id, PUBLIC).catch(() => null);
+        // A2S replies get LOST — this server drops a large share of
+        // queries when they arrive in bursts (measured: 42% at one
+        // query every 60ms, 0% at one every 2s). A single dropped
+        // reply must not be enough to mark a healthy instance down and
+        // have the orchestrator restart it, because that kicks every
+        // player off the server.
+        //
+        // So the probe is retried, with a tight window on the retries:
+        // a server that is up answers in tens of milliseconds.
+        const result = await probeWithRetry(async (attempt) => {
+          try {
+            return await queryServer(HOST, port, id, PUBLIC, {
+              timeoutMs: timeoutForAttempt(attempt),
+            });
+          } catch {
+            return null;
+          }
+        });
         const existing = registry.get(id);
         if (result) {
           registry.set(id, {
