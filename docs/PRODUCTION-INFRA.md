@@ -844,3 +844,40 @@ The registry now requires **three consecutive** failed probes before an
 instance counts as down. Detection is slower and that is the right
 trade: a missed probe costs one wasted restart, but a missed probe during
 a busy match disconnects every player in it.
+
+## The registry was restarting healthy servers
+
+Three times in three hours, the orchestrator restarted `ts-0` while it
+was perfectly healthy. The orchestrator was doing its job — the
+registry had marked the instance DOWN — but the registry was wrong.
+
+The cause is that **A2S replies get lost**. Measured against the live
+production instance:
+
+| probe rate | replies lost |
+|---|---|
+| one query every 2s | **0%** |
+| one query every 400ms | 15% |
+| one query every 60ms | **42%** |
+
+The server is not slow when it answers: 16ms p50, under 52ms p95. It
+is *dropping* queries, apparently as flood protection. The registry
+probed once every 5 seconds, and three consecutive dropped replies
+were enough to mark a healthy instance down — and the orchestrator
+then restarted it, **kicking every player off the server**.
+
+Three things changed:
+
+1. **The probe is retried.** Three attempts instead of one. Measured
+   against the live public server: 22.5% of single-shot probes failed;
+   with the retry, **0%** did.
+2. **The retry window is tight.** The first attempt gets the generous
+   1200ms window; retries get 500ms — ten times the observed p95, so a
+   busy server still answers, while a port with nothing listening does
+   not cost 1200ms of wall clock per attempt.
+3. **The failure threshold is unchanged** at three consecutive *cycles*.
+   With the retry, three cycles all failing after three attempts each
+   really does mean the server is gone.
+
+The retry lives in `services/registry/lib/a2s-retry.mjs` and is
+covered by `tests/unit/a2s-retry.test.mjs`.
