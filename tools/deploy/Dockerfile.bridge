@@ -23,6 +23,10 @@ COPY tools/deploy/bridge/package.json /app/package.json
 RUN npm install --omit=dev && npm cache clean --force
 
 COPY tools/port/tsp-rs/scripts/ts-udp-bridge.js /app/bridge.js
+# The allowlist is a separate module so it can be unit-tested. It MUST be
+# copied — the bridge requires it at startup, and a missing file is a
+# container that dies in the first second.
+COPY tools/port/tsp-rs/scripts/bridge-allowlist.cjs /app/bridge-allowlist.cjs
 
 # The target allowlist is the security boundary — without it this process
 # would be an open UDP relay — so it comes from the environment, never from

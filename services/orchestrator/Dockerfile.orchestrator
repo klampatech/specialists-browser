@@ -41,6 +41,9 @@ RUN set -eux; \
 
 COPY services/orchestrator/package.json /app/package.json
 COPY services/orchestrator/service.mjs /app/services/orchestrator/service.mjs
+# Slot selection lives in a separate module so it can be unit-tested: the
+# original "highest + 1" logic walked off the end of the port range.
+COPY services/orchestrator/lib/slot.mjs /app/services/orchestrator/lib/slot.mjs
 
 ENV ORCH_BIND=127.0.0.1:8090 \
     REGISTRY_URL=http://127.0.0.1:8081/api/registry \

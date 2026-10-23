@@ -8,3 +8,4 @@
 !tools/deploy/Dockerfile.bridge
 !tools/deploy/bridge/package.json
 !tools/port/tsp-rs/scripts/ts-udp-bridge.js
+!tools/port/tsp-rs/scripts/bridge-allowlist.cjs

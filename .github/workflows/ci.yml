@@ -1,0 +1,148 @@
+name: CI
+
+# The gate every pull request has to pass.
+#
+# Kept deliberately cheap: typecheck, build, and the unit suite. The
+# browser suite that talks to production is NOT here — it belongs to the
+# deploy, after the merge, because a 493 MB download per PR is not a
+# thing anyone should pay for on every review.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    name: Frontend — typecheck and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webxash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The webxash submodule is a PRIVATE repository. The default
+          # token works for public submodules; being explicit about it
+          # is the difference between a checkout that works and one
+          # that 404s on a private submodule.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webxash/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        # The typecheck is the cheapest possible regression gate, and it
+        # catches the class of bug where a store field is renamed and
+        # one consumer is not.
+        run: npx vue-tsc --noEmit
+
+      - name: Build
+        env:
+          VITE_ASSET_BASE: https://assets.bulletballet.dev
+        run: npm run build
+
+      - name: The bundle must not contain the game archive
+        # The archive is 493 MB and is served from R2. A build that
+        # accidentally includes it would publish it a second time, to
+        # the wrong place, for free.
+        run: |
+          if [ -d dist/hl ]; then
+            echo "::error::the built bundle contains dist/hl — the game archive must not be in the web build"
+            du -sh dist/hl
+            exit 1
+          fi
+          echo "  no archive in the bundle"
+
+  unit:
+    name: Unit — the regressions that actually bit us
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The webxash submodule is a PRIVATE repository. The default
+          # token works for public submodules; being explicit about it
+          # is the difference between a checkout that works and one
+          # that 404s on a private submodule.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Syntax-check every service and deploy script
+        # A service that fails to parse is a container that dies in the
+        # first second, and a deploy that reports success anyway.
+        run: |
+          set -euo pipefail
+          failed=0
+          while IFS= read -r f; do
+            if node --check "$f" >/dev/null 2>&1; then
+              echo "  ok   $f"
+            else
+              echo "  FAIL $f"
+              node --check "$f" 2>&1 | head -5 || true
+              failed=1
+            fi
+          done < <(find services tools -name '*.mjs' -o -name '*.cjs' | grep -v node_modules | sort)
+          exit $failed
+
+      - name: Unit tests
+        # Every one of these corresponds to a bug that reached production.
+        run: node --test tests/unit/*.test.mjs
+
+  docker:
+    name: Docker — the images still build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The webxash submodule is a PRIVATE repository. The default
+          # token works for public submodules; being explicit about it
+          # is the difference between a checkout that works and one
+          # that 404s on a private submodule.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: recursive
+
+      - name: Build the service images
+        # A Dockerfile that references a file the image does not copy is
+        # a container that starts and dies in the same second. Building
+        # the image is the only way to know.
+        run: |
+          docker build -f services/registry/Dockerfile.registry -t registry:ci .
+          docker build -f services/orchestrator/Dockerfile.orchestrator -t orchestrator:ci .
+          docker build -f tools/deploy/Dockerfile.bridge -t ts-bridge:ci .
+
+      - name: The service images must not contain game assets
+        # The server image is asset-free on purpose: the assets are a
+        # runtime volume. A baked-in copy is a copyright problem and a
+        # 1.1 GB image.
+        run: |
+          set -euo pipefail
+          for img in registry:ci orchestrator:ci ts-bridge:ci; do
+            size=$(docker image inspect "$img" --format '{{.Size}}')
+            echo "  $img: $((size / 1000000)) MB"
+            if docker run --rm --entrypoint sh "$img" -c \
+              'ls /srv 2>/dev/null; find / -maxdepth 3 \( -name "*.bsp" -o -name "*.pak" -o -name "*.mdl" \) 2>/dev/null | head -5' \
+              | grep -q .; then
+              echo "::error::$img contains game assets — the images must stay asset-free"
+              exit 1
+            fi
+          done
+          echo "  all three images are asset-free"

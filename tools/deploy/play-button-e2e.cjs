@@ -12,7 +12,8 @@
  * its default launch options carry a DEVELOPMENT address, and from a
  * browser that resolves to the player's own machine.
  */
-const { chromium } = require('/home/kyle/Development/slot-protocol/node_modules/playwright');
+const { loadPlaywright } = require('./lib/browser.cjs');
+const { chromium } = loadPlaywright();
 
 const { execFileSync } = require('node:child_process');
 const URL = process.argv[2] || 'https://bulletballet.dev/';
