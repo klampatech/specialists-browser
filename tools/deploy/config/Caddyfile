@@ -1,0 +1,90 @@
+# Caddyfile — bulletballet.dev
+#
+# WHY ONE CADDY FOR EVERYTHING
+# ----------------------------
+# The browser needs three things and they have to share an origin:
+#
+#   /             the app bundle (static)
+#   /api/servers  the server browser's JSON (the a2s container)
+#   /bridge       the WebSocket↔UDP bridge (long-lived, upgraded)
+#
+# The bridge MUST be same-origin with the page. A page served over HTTPS
+# cannot open a plain `ws://` WebSocket — the browser blocks it as mixed
+# content — and a cross-origin WebSocket cannot carry the page's
+# cross-origin-isolation context. So the bridge cannot live on a different
+# host or a different port from the app.
+#
+# Caddy terminates TLS and proxies all three. The game UDP port is
+# separate and stays open directly: that is the actual game traffic, and
+# putting it through a WebSocket would be absurd.
+#
+# DNS for bulletballet.dev is DNS-ONLY (grey cloud), pointing straight at
+# this host. That is deliberate: a proxied (orange cloud) record would put
+# Cloudflare in front of the long-lived game WebSocket, and Cloudflare's
+# idle timeout on proxied WebSockets would sever a player mid-match. Caddy
+# owning TLS keeps that behaviour predictable.
+#
+# The asset host (assets.bulletballet.dev) IS proxied through Cloudflare,
+# because R2 lives there and the edge cache is the point.
+
+{
+	# The admin API binds loopback only. It exposes a way to reconfigure
+	# and shut down Caddy, so it must never be reachable from the network.
+	admin 127.0.0.1:2019
+}
+
+bulletballet.dev {
+	encode zstd gzip
+
+	# Cross-origin isolation. The engine is a WASM build that needs
+	# SharedArrayBuffer, which the browser only grants to a cross-origin
+	# isolated document. Without these the engine boots but fails the
+	# moment it tries to use threaded memory.
+	#
+	# `credentialless` rather than `require-corp` because the game
+	# archive is fetched cross-origin from assets.bulletballet.dev: it
+	# does not send a CORP header, and requiring one would mean asking
+	# R2 for cross-origin isolation headers on every asset.
+	header {
+		Cross-Origin-Opener-Policy   same-origin
+		Cross-Origin-Embedder-Policy credentialless
+		Cross-Origin-Resource-Policy cross-origin
+		# HSTS. Once a browser has seen this, it refuses to talk to
+		# the host over plain HTTP for two years.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
+	# The server browser's JSON. The a2s container binds loopback on the
+	# host; it is never exposed directly, because publicly it would let
+	# anyone enumerate the whole fleet for free.
+	handle /api/servers {
+		reverse_proxy 127.0.0.1:8081 {
+			flush_interval -1
+		}
+	}
+
+	# The WebSocket↔UDP bridge. Caddy proxies the upgrade automatically;
+	# the bridge answers /bridge as well as /ws so no rewrite is needed.
+	handle /bridge {
+		reverse_proxy 127.0.0.1:27017
+	}
+
+	# The app bundle. Everything else is a static file.
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}
+
+# The game server's own UDP port is published directly by Docker and is
+# deliberately NOT proxied through this vhost: it is raw UDP, not HTTP.

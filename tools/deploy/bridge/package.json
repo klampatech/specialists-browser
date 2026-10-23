@@ -1,0 +1,8 @@
+{
+  "name": "specialists-bridge",
+  "private": true,
+  "description": "WebSocket-to-UDP bridge for the Specialists browser client.",
+  "dependencies": {
+    "ws": "^8.22.0"
+  }
+}

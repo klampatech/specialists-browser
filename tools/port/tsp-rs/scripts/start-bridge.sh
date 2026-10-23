@@ -27,8 +27,14 @@ if [[ -f $PIDFILE ]] && kill -0 "$(cat $PIDFILE)" 2>/dev/null; then
 fi
 
 cd "$WD"
+# The public address is the ip:port the BROWSER puts in `+connect`. The
+# bridge matches it against this allowlist to pick the right instance, so
+# it has to be declared here. Override with BRIDGE_PUBLIC_ADDRESS when the
+# browser reaches this box by a different address.
+PUBLIC=${BRIDGE_PUBLIC_ADDRESS:-100.95.111.112:27015}
 nohup node --unhandled-rejections=warn "$BRIDGE" \
-    --listen 27017 --target 127.0.0.1:27015 \
+    --listen 27017 \
+    --targets "default=127.0.0.1:27015@$PUBLIC" \
     --debug \
     > "$LOG" 2>&1 &
 BPID=$!

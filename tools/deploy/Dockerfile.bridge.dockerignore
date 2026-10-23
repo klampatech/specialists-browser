@@ -1,0 +1,10 @@
+# Build context for the bridge image.
+#
+# The repository root is 1.1 GB of game assets (_runtime_assets/) and the
+# webxash subtree has its own node_modules. None of that belongs in this
+# image, and shipping it as build context is slow and leaks assets into
+# the build. Negate only what the bridge actually needs.
+**
+!tools/deploy/Dockerfile.bridge
+!tools/deploy/bridge/package.json
+!tools/port/tsp-rs/scripts/ts-udp-bridge.js

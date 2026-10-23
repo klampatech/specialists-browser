@@ -9,8 +9,8 @@
 // the engine CANNOT emit raw UDP datagrams — there is no UDP in a browser.
 // webXash's only multiplayer transport is WebRTC data channels between two
 // BROWSER peers (xash-webrtc.ts) — that only works when both sides are
-// browsers. Kyle's requirement is a real dedicated server on the LAN, so we
-// need something in the middle that speaks:
+// browsers. Kyle's requirement is a real dedicated server, so we need
+// something in the middle that speaks:
 //
 //     browser (WASM engine)  <--WebSocket-->  this bridge  <--UDP-->  xash DS
 //
@@ -35,20 +35,48 @@
 //
 //   --listen   TCP port to accept WebSocket connections on (default 27017)
 //   --target   host:port of the UDP GoldSrc server (default 127.0.0.1:27015)
+//   --targets  id=host:port[,id=host:port...] extra named targets
 //   --health   plain-HTTP health path on the listen port (default /health)
+//   --debug    log the first few datagram headers per connection
 //
-// A tiny HTTP health endpoint answers GET /health with JSON so Kyle can
-// curl it to prove the bridge is alive without opening a socket.
+// A tiny HTTP health endpoint answers GET /health with JSON so the operator
+// can curl it to prove the bridge is alive without opening a socket.
+//
+// MULTI-TARGET
+// ------------
+// One bridge now fronts every game instance, because the server browser
+// lets a player pick one. The target is chosen per connection:
+//
+//   ws://host:port/ws?server=ts-1
+//
+// `server` names an entry in the allowlist. THE ALLOWLIST IS A SECURITY
+// BOUNDARY, not a convenience: without it this process would be an open
+// UDP relay — anyone who could open a WebSocket could make it send
+// packets to any host:port the VPS can reach, which is a UDP-based SSRF
+// and an amplification vector. A target that is not in the allowlist is
+// refused, not forwarded.
+//
+// The allowlist comes from --targets / BRIDGE_TARGETS. --target sets the
+// default target for connections that do not name one.
 
 const http = require('http');
 
 function parseArgs(argv) {
   const out = {
-    listen: 27017,
+    // Environment first, command line second: the container passes the
+    // target allowlist through the environment so it is never baked into
+    // an image layer, and the dev script still passes --target on the
+    // command line.
+    listen: parseInt(process.env.BRIDGE_LISTEN || '', 10) || 27017,
     targetHost: '127.0.0.1',
     targetPort: 27015,
-    health: '/health',
+    health: process.env.BRIDGE_HEALTH || '/health',
     debug: false,
+    targets: process.env.BRIDGE_TARGETS ? parseTargetSpec(process.env.BRIDGE_TARGETS) : [],
+    // Whether an explicit allowlist was supplied. If one was, the
+    // --target default is NOT silently added to it — a default that was
+    // never declared would be a target outside the configured boundary.
+    targetsProvided: Boolean(process.env.BRIDGE_TARGETS),
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -58,11 +86,15 @@ function parseArgs(argv) {
       const idx = v.lastIndexOf(':');
       out.targetHost = v.slice(0, idx);
       out.targetPort = parseInt(v.slice(idx + 1), 10);
+    } else if (a === '--targets') {
+      out.targets = parseTargetSpec(argv[++i]);
+      out.targetsProvided = true;
     } else if (a === '--health') out.health = argv[++i];
     else if (a === '--debug') out.debug = true;
     else if (a === '--help' || a === '-h') {
       console.log(
-        'Usage: node ts-udp-bridge.js [--listen PORT] [--target host:port] [--health PATH]'
+        'Usage: node ts-udp-bridge.js [--listen PORT] [--target host:port]\n' +
+          '                            [--targets id=host:port,...] [--health PATH] [--debug]'
       );
       process.exit(0);
     }
@@ -70,21 +102,104 @@ function parseArgs(argv) {
   return out;
 }
 
+/**
+ * Parse `id=host:port,id2=host:port2`.
+ *
+ * A bare `host:port` (no id) becomes the default target, because that is
+ * what a single-server deployment wants and it keeps the flag shape
+ * identical to --target.
+ */
+function parseTargetSpec(spec) {
+  const out = [];
+  for (const raw of (spec || '').split(',')) {
+    const item = raw.trim();
+    if (!item) continue;
+    const eq = item.indexOf('=');
+    if (eq === -1) {
+      const hp = item;
+      const idx = hp.lastIndexOf(':');
+      if (idx === -1) continue;
+      out.push({
+        id: 'default',
+        host: hp.slice(0, idx),
+        port: parseInt(hp.slice(idx + 1), 10),
+      });
+      continue;
+    }
+    const id = item.slice(0, eq).trim();
+    let hp = item.slice(eq + 1).trim();
+    // `id=internal:port@public:port` — the public address is what the
+    // BROWSER sees in the server list and what it puts in `+connect`. The
+    // internal address is where the packet actually goes. They differ
+    // because the game server sits behind the same host as the bridge, so
+    // the browser's peer address is a public IP while the bridge dials
+    // loopback.
+    let publicHost = null;
+    let publicPort = null;
+    const at = hp.indexOf('@');
+    if (at !== -1) {
+      const pub = hp.slice(at + 1).trim();
+      hp = hp.slice(0, at).trim();
+      const pidx = pub.lastIndexOf(':');
+      if (pidx !== -1) {
+        publicHost = pub.slice(0, pidx);
+        publicPort = parseInt(pub.slice(pidx + 1), 10);
+      }
+    }
+    const idx = hp.lastIndexOf(':');
+    if (!id || idx === -1) continue;
+    out.push({
+      id,
+      host: hp.slice(0, idx),
+      port: parseInt(hp.slice(idx + 1), 10),
+      publicHost,
+      publicPort,
+    });
+  }
+  return out;
+}
+
 const opts = parseArgs(process.argv);
 
-// `ws` is a dependency of the signaling server that already lives in the
-// webXash subtree, so resolve it relative to this file's location rather
-// than assuming a global install.
+// `ws` is a dependency of tools/port/tsp-rs (and of the production image's
+// own package.json). Resolve it relative to this file rather than assuming a
+// global install.
 const path = require('path');
-const wsPath = require.resolve('ws', {
-  paths: [
-    path.dirname(__filename),
-    path.join(path.dirname(__filename), 'node_modules'),
-  ],
-});
+let wsPath;
+try {
+  wsPath = require.resolve('ws');
+} catch (_) {
+  wsPath = require.resolve('ws', {
+    paths: [
+      path.dirname(__filename),
+      path.join(path.dirname(__filename), 'node_modules'),
+      path.join(path.dirname(__filename), '..', 'node_modules'),
+    ],
+  });
+}
 const { WebSocketServer } = require(wsPath);
 
 const dgram = require('dgram');
+
+/**
+ * The allowlist, keyed by id.
+ *
+ * `--target` provides the default entry. `--targets` adds named ones. If
+ * the deployment named exactly one target and did not give a --target, that
+ * one becomes the default too, so a single-instance bridge works with no
+ * `?server=` parameter at all.
+ */
+const TARGETS = new Map();
+for (const t of opts.targets) TARGETS.set(t.id, t);
+if (!opts.targetsProvided && !TARGETS.has('default')) {
+  // No allowlist was declared at all: this is the single-server dev case,
+  // so --target becomes the one and only target.
+  TARGETS.set('default', {
+    id: 'default',
+    host: opts.targetHost,
+    port: opts.targetPort,
+  });
+}
 
 const stats = {
   startedAt: new Date().toISOString(),
@@ -95,6 +210,7 @@ const stats = {
   bytesToClient: 0,
   liveConnections: 0,
   debugLogged: 0,
+  rejectedTargets: 0,
 };
 
 const server = http.createServer((req, res) => {
@@ -104,7 +220,11 @@ const server = http.createServer((req, res) => {
       JSON.stringify(
         {
           ok: true,
-          target: `${opts.targetHost}:${opts.targetPort}`,
+          targets: [...TARGETS.values()].map(
+            (t) =>
+              `${t.id}=${t.host}:${t.port}` +
+              (t.publicHost ? ` (public ${t.publicHost}:${t.publicPort})` : '')
+          ),
           ...stats,
         },
         null,
@@ -117,14 +237,104 @@ const server = http.createServer((req, res) => {
   res.end();
 });
 
-const wss = new WebSocketServer({ server, path: '/ws' });
+// Both /ws (dev, direct) and /bridge (production, behind a reverse proxy)
+// are accepted. The `ws` library's `path` option only handles one path, and
+// managing the upgrade by hand is the supported way to serve several.
+const wss = new WebSocketServer({ noServer: true });
 
-wss.on('connection', (ws) => {
+server.on('upgrade', (req, socket, head) => {
+  let pathname;
+  try {
+    pathname = new URL(req.url, 'http://bridge.invalid').pathname;
+  } catch (_) {
+    socket.destroy();
+    return;
+  }
+  if (pathname !== '/ws' && pathname !== '/bridge') {
+    socket.destroy();
+    return;
+  }
+  // Validate the target BEFORE completing the handshake. Validating in the
+  // connection handler would let the WebSocket open successfully and only
+  // then close, which reads to the client as "connected" and hides the
+  // refusal. Answering with a plain HTTP error is unambiguous.
+  const target = resolveTarget(req);
+  if (!target) {
+    stats.rejectedTargets += 1;
+    console.warn(
+      `[bridge] refused upgrade: target not in the allowlist (${req.url})`
+    );
+    socket.write(
+      'HTTP/1.1 403 Forbidden\r\n' +
+        'Content-Type: text/plain\r\n' +
+        'Connection: close\r\n' +
+        '\r\n' +
+        'unknown bridge target\n'
+    );
+    socket.destroy();
+    return;
+  }
+  req.bridgeTarget = target;
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req);
+  });
+});
+
+/**
+ * Resolve the target for a connection.
+ *
+ * Returns null when the request names a target that is not in the
+ * allowlist — the caller refuses the connection rather than forwarding.
+ */
+function resolveTarget(req) {
+  let serverId = null;
+  let address = null;
+  try {
+    const u = new URL(req.url, 'http://bridge.invalid');
+    serverId = u.searchParams.get('server');
+    address = u.searchParams.get('address');
+  } catch (_) {
+    /* fall through to the default */
+  }
+
+  if (serverId) {
+    const byId = TARGETS.get(serverId);
+    if (byId) return byId;
+    // An id that is not in the allowlist is a refusal, not a fallback —
+    // silently connecting somewhere else would hide the mistake.
+    return null;
+  }
+
+  if (address) {
+    // Match the public address the browser was told about. The browser
+    // already knows this from the server list, so it does not have to be
+    // told a separate id, and the player cannot invent an address that
+    // is not in the allowlist.
+    for (const t of TARGETS.values()) {
+      if (t.publicHost && t.publicPort) {
+        if (`${t.publicHost}:${t.publicPort}` === address) return t;
+      }
+    }
+    return null;
+  }
+
+  return TARGETS.get('default') || null;
+}
+
+wss.on('connection', (ws, req) => {
+  // The target was resolved and checked during the upgrade, so by the time
+  // a connection exists it is known-good.
+  const target = req.bridgeTarget || resolveTarget(req);
+  if (!target) {
+    ws.close(1008, 'unknown target');
+    return;
+  }
+
   stats.connections += 1;
   stats.liveConnections += 1;
   const connId = stats.connections;
   console.log(
-    `[bridge] #${connId} browser connected (live=${stats.liveConnections}) → udp ${opts.targetHost}:${opts.targetPort}`
+    `[bridge] #${connId} browser connected (live=${stats.liveConnections}) → udp ${target.host}:${target.port}`
   );
 
   // Each browser gets its own UDP socket. GoldSrc servers track
@@ -147,9 +357,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('open', () => {
-    console.log(
-      `[bridge] #${connId} WS open, readyState=${ws.readyState}`
-    );
+    console.log(`[bridge] #${connId} WS open, readyState=${ws.readyState}`);
   });
 
   ws.on('error', (err) =>
@@ -165,22 +373,20 @@ wss.on('connection', (ws) => {
     // The engine only ever sends binary frames. If we get text, drop it —
     // it isn't a GoldSrc datagram.
     const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    udp.send(buf, 0, buf.length, opts.targetPort, opts.targetHost, (err) => {
+    udp.send(buf, 0, buf.length, target.port, target.host, (err) => {
       if (err) console.error(`[bridge] #${connId} udp send failed:`, err.message);
     });
     stats.packetsToServer += 1;
     stats.bytesToServer += buf.length;
-    // 2026-10-21 debug: log the first datagram per connection so we can
-    // see whether the engine's GoldSrc handshake is actually crossing
-    // the WebSocket (it should be a 0xffffffff-prefixed challenge with
-    // "TSource Engine Query"). Keep it cheap: only while a debug flag is
-    // set, and only the first 8 bytes so the log stays readable.
+    // Debug: log the first datagram per connection so we can see whether the
+    // engine's GoldSrc handshake is actually crossing the WebSocket (it
+    // should be a 0xffffffff-prefixed challenge with "TSource Engine
+    // Query"). Keep it cheap: only while a debug flag is set, and only the
+    // first 8 bytes so the log stays readable.
     if (opts.debug && stats.debugLogged < 40) {
       stats.debugLogged += 1;
       const head = buf.subarray(0, 8).toString('hex');
-      console.log(
-        `[bridge] #${connId} → udp ${buf.length}B  head=${head}`
-      );
+      console.log(`[bridge] #${connId} → udp ${buf.length}B  head=${head}`);
     }
   });
 
@@ -206,8 +412,15 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(opts.listen, '0.0.0.0', () => {
+  const list = [...TARGETS.values()]
+    .map(
+      (t) =>
+        `${t.id}=${t.host}:${t.port}` +
+        (t.publicHost ? `@${t.publicHost}:${t.publicPort}` : '')
+    )
+    .join(', ');
   console.log(
-    `[bridge] listening on ws://0.0.0.0:${opts.listen}/ws  →  udp://${opts.targetHost}:${opts.targetPort}`
+    `[bridge] listening on ws://0.0.0.0:${opts.listen}/ws (and /bridge)  targets: ${list}`
   );
   console.log(`[bridge] health: http://0.0.0.0:${opts.listen}${opts.health}`);
 });

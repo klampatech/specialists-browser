@@ -342,3 +342,136 @@ interval instead of vanishing on a single lost packet.
 
 Binds 127.0.0.1 deliberately. Publicly it would let anyone enumerate the
 fleet for free.
+
+
+---
+
+## 6. Caddy + the production bridge (Phase 3, 2026-10-23)
+
+### The shape
+
+```
+browser ──https──> Caddy (bulletballet.dev, Let's Encrypt)
+                     ├── /              -> /srv/web        (the app bundle, 56 MB)
+                     ├── /api/servers  -> 127.0.0.1:8081   (a2s container)
+                     └── /bridge       -> 127.0.0.1:27017  (bridge container, WebSocket)
+                                                    │
+                                                    └── UDP ─> 127.0.0.1:27015 -> ts-0
+```
+
+The game UDP port is published directly by Docker and deliberately does
+NOT go through Caddy — it is raw UDP, not HTTP.
+
+**The bridge must be same-origin with the page.** A page served over HTTPS
+cannot open a plain `ws://` WebSocket (mixed content), and a cross-origin
+WebSocket cannot carry the page's cross-origin-isolation context, which the
+WASM engine needs for SharedArrayBuffer. So there is no "bridge on a
+different host" option — it is a constraint, not a preference.
+
+`bulletballet.dev` is DNS-ONLY (grey cloud) pointing straight at the VPS.
+That is deliberate: a proxied record would put Cloudflare in front of the
+long-lived game WebSocket, and Cloudflare's idle timeout would sever a
+player mid-match. `assets.bulletballet.dev` IS proxied, because R2 lives
+there and the edge cache is the point.
+
+### What is running
+
+| | |
+|---|---|
+| Caddy | 2.6.2, systemd, automatic HTTPS |
+| Cert | Let's Encrypt, `CN=bulletballet.dev`, valid to 2027-01-21 |
+| App bundle | `/srv/web`, 56 MB (the 1.2 GB `hl/` tree is excluded — the archive comes from R2) |
+| a2s | `a2s-service:0.1`, `--network host`, 127.0.0.1:8081 |
+| bridge | `ts-bridge:0.2`, `--network host`, 127.0.0.1:27017 |
+
+### The bridge's allowlist is a security boundary
+
+One bridge fronts every instance. The target is chosen per connection:
+
+```
+wss://bulletballet.dev/bridge?address=40.160.225.81:27015
+```
+
+The address must match an entry in the bridge's allowlist, or the upgrade
+is refused with a plain HTTP 403 **before** the WebSocket handshake
+completes. Validating after the handshake would let the connection open
+successfully and only then close, which reads to the client as
+"connected" and hides the refusal.
+
+Without an allowlist this process would be an open UDP relay: anyone who
+could open a WebSocket could make it send packets to any host:port the
+VPS can reach — a UDP-based SSRF and an amplification vector.
+
+The allowlist entry carries both addresses:
+
+```
+ts-0=127.0.0.1:27015@40.160.225.81:27015
+         └─ where the packet goes   └─ what the browser knows it as
+```
+
+The browser already knows the public address from the server list, so it
+sends that; the bridge matches it and dials loopback.
+
+### Headers
+
+```
+Cross-Origin-Opener-Policy:   same-origin
+Cross-Origin-Embedder-Policy: credentialless
+Cross-Origin-Resource-Policy: cross-origin
+Strict-Transport-Security:    max-age=31536000; includeSubDomains
+```
+
+`credentialless` rather than `require-corp` because the game archive is
+fetched cross-origin from `assets.bulletballet.dev` and does not send a
+CORP header; requiring one would mean asking R2 for isolation headers on
+every asset.
+
+### Verified end to end, from a real browser
+
+```
+https://bulletballet.dev/          200, HTTP/2, crossOriginIsolated: true
+/api/servers                       ts-0 · bulletballet TS · ts_casa · 4/32
+/bridge?server=ts-0                wss handshake OK
+/bridge?server=evil                403
+```
+
+With the browser joined:
+
+```
+wss://bulletballet.dev:443/bridge?address=40.160.225.81:27015
+bridge: #1 browser connected -> udp 127.0.0.1:27015
+bridge: packetsToServer 268 (7521 B)   packetsToClient 612 (91765 B)
+raw A2S: players=5 maxplayers=32 bots=4
+```
+
+5 players = 4 bots + the browser. The screenshot shows the TS 3.0 client
+in `ts_casa` on Server 3.0.8, live from the dedicated server.
+
+### Firewall
+
+```
+22/tcp     ssh key-only
+80/tcp     caddy ACME http-01 challenge
+443/tcp    app + wss bridge via caddy
+27015:27022/udp   goldsrc game servers, base+N
+```
+
+`27017/tcp` was open while the bridge was exposed directly. It is closed
+now that Caddy fronts it.
+
+### One thing that bit during the deploy
+
+The bridge image was rebuilt on prod BEFORE the public-address parsing
+existed, so the container was running an old script that treated
+`127.0.0.1:27015@40.160.225.81:27015` as a hostname:
+
+```
+[bridge] udp send failed: getaddrinfo ENOTFOUND 127.0.0.1:27015@40.160.225.81
+```
+
+The symptom was invisible from the browser — the WebSocket opened, the
+engine booted, and nothing arrived. The health endpoint showed the
+allowlist, which is where the bad parsing was visible. Bumping the image
+tag and restarting fixed it. Lesson: the bridge's health output is the
+only place the parsed allowlist is visible, so check it after any change
+to the target spec.
