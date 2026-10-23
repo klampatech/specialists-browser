@@ -49,6 +49,10 @@ jobs:
           # that 404s on a private submodule.
           token: ${{ secrets.GITHUB_TOKEN }}
           submodules: recursive
+          # Depth 2 so that HEAD~1 exists — the change detection compares
+          # against it. With the default depth of 1 there is no parent
+          # commit, and the step fails with "ambiguous argument".
+          fetch-depth: 2
 
       - name: Refuse a commit that did not come from a pull request
         # The SAME gate the PR-required workflow uses. The first copy of
@@ -87,9 +91,18 @@ jobs:
       # ── what changed? ─────────────────────────────────────────────────
       - name: Work out what changed
         id: changed
+        env:
+          # The push event's `before` is the commit that was on main
+          # before this push — the exact base of the comparison. HEAD~1
+          # is the fallback, and it needs a checkout with enough depth.
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          base=$(git rev-parse HEAD~1)
+          base="$BEFORE_SHA"
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            base=$(git rev-parse HEAD~1)
+          fi
+          echo "  comparing against $base"
           git diff --name-only "$base" HEAD > /tmp/changed.txt
           echo "  changed files:"
           sed 's/^/    /' /tmp/changed.txt
