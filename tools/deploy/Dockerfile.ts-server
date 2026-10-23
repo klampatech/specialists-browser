@@ -1,0 +1,115 @@
+# ts-server image — ASSET-FREE BY DESIGN
+#
+# The previous version of this file did:
+#
+#     COPY ts    /srv/ts
+#     COPY valve /srv/valve
+#
+# which baked ~1.1 GB of copyrighted maps, models, sounds and art into the
+# image. That is the same problem we refuse to solve by hosting the payload
+# in R2: it puts other people's content under our account, permanently, in
+# every layer that touches it — image registry, layer cache, node disk, and
+# every backup of any of those.
+#
+# So the image carries only what we built or can legitimately redistribute:
+#   - the upstream Xash3D FWGS engine (pinned by checksum, see fetch-engine.sh)
+#   - the Rust TS server DLL built from this workspace
+#   - configuration (server.cfg, gameinfo.txt)
+#
+# Game assets arrive at RUNTIME as a mounted volume:
+#
+#     -v /srv/ts-data:/srv/valve:ro
+#
+# populated once from the operator's own copy of the game. The image is
+# therefore small, redistributable, and contains nothing we do not own.
+#
+# ── Build ────────────────────────────────────────────────────────────────────
+#   tools/deploy/fetch-engine.sh /tmp/engine
+#   cargo build --release -p ts-server-dll --features "ts30 ts21"
+#   docker build -f tools/deploy/Dockerfile.ts-server -t ts-server:0.21 .
+#
+# ── Run ──────────────────────────────────────────────────────────────────────
+#   docker run -d --name ts-0 \
+#     -p 27015:27015/udp \
+#     -e TS_INSTANCE=0 -e TS_PORT=27015 \
+#     -v /srv/ts-data:/srv/valve:ro \
+#     -v /srv/ts-config:/srv/config:ro \
+#     ts-server:0.21
+#
+# Instance N gets UDP port TS_PORT_BASE + N (see run-instance.sh). Only UDP is
+# exposed: the bridge reaches the server over the docker network, and nothing
+# in this container needs to be reachable from the internet except its game
+# port.
+
+FROM debian:bookworm-slim
+
+# ca-certificates: not needed for gameplay, but a missing CA bundle turns any
+# future HTTPS fetch inside the container into a confusing TLS error.
+# libc6 is already in the base image but is listed explicitly because the
+# engine dlopen()s filesystem_stdio.so and the failure mode otherwise looks
+# like a missing file rather than a missing dependency.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Non-root. The engine needs no privileges; running as root would be an
+# unnecessary blast radius for a process that parses untrusted network input.
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin gameserver
+
+WORKDIR /srv
+
+# Scripts arrive from a git checkout, where the exec bit does not survive a
+# mode change or a fresh clone on a filesystem without permissions. Make them
+# runnable here rather than trusting the copy to preserve the mode — the
+# failure otherwise surfaces as "permission denied" at container start, which
+# says nothing about which file is at fault.
+COPY entrypoint.sh /srv/entrypoint.sh
+RUN chmod 0755 /srv/entrypoint.sh
+
+# Engine — staged by fetch-engine.sh, checksum-verified at fetch time.
+COPY --chown=gameserver:gameserver \
+     engine/xash engine/filesystem_stdio.so /srv/
+
+# Our Rust server DLL. Staged at /srv/server and copied into the composed game
+# tree by entrypoint.sh, because the game tree is assembled at runtime from
+# symlinks and cannot be written at build time. Named ts_amd64_amd64.so
+# because FWGS's dlopen path is amd64-aware and looks for that exact name.
+COPY --chown=gameserver:gameserver server/ts_amd64_amd64.so /srv/server/ts_amd64_amd64.so
+
+# Config. Deliberately tiny — server.cfg is our own file. The `valve/` dir it
+# refers to is NOT here; it is the runtime volume.
+COPY --chown=gameserver:gameserver config/ /srv/config/
+
+ENV LD_LIBRARY_PATH=/srv
+ENV TS_ASSETS_DIR=/srv/assets
+ENV TS_PORT_BASE=27015
+ENV TS_MAXPLAYERS=32
+
+# UDP only. The bridge talks to this over the container network, not the
+# public internet, so there is nothing else to publish.
+EXPOSE 27015/udp
+
+# Fail fast if the assets volume was not mounted. Without this the engine
+# starts, logs a wall of missing-wad errors, binds its port anyway, and the
+# server looks "up" to any health probe while being unplayable.
+# Checks that the asset volume produced a playable game tree, not merely that
+# a directory exists. A server with no maps binds its port and reports healthy
+# while being unplayable, which is the failure mode worth catching.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=45s --retries=3 \
+  CMD test -f /srv/ts/maps/ts_casa.bsp && test -f /srv/ts/dlls/ts_amd64_amd64.so || exit 1
+
+# The game tree is composed at runtime by entrypoint.sh, so these directories
+# must exist and be writable by the non-root user BEFORE that happens. This
+# has to run before the USER switch below: /srv is root-owned, so a non-root
+# mkdir fails with a bare "permission denied" that gives no hint about which
+# user is running or which path is at fault.
+RUN mkdir -p /srv/ts/dlls /srv/valve \
+ && chown -R gameserver:gameserver /srv/ts /srv/valve
+
+USER gameserver
+
+# -dev omitted deliberately: it is a development flag and this is production.
+# Map, port, slot count and hostname are all appended by entrypoint.sh from
+# the TS_* environment variables, so the image behaves identically whether it
+# is launched by the orchestrator or by hand.
+ENTRYPOINT ["/srv/entrypoint.sh", "/srv/xash"]

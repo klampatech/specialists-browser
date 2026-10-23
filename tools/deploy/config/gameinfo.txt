@@ -1,0 +1,19 @@
+// The Specialists — gameinfo.txt for Xash3D FWGS
+// Falls back to hl.dll WASM (ts_i386.so is a Linux ELF
+// that can't be loaded in browser).
+
+basedir		"valve"
+game		"The Specialists"
+title		"TS"
+startmap		"ts_apartments"
+trainmap		"ts_apartments"
+version		3.0
+type		"multiplayer_only"
+gamemode		"both"
+icon		"ts_logo"
+sp_entity		"info_player_start"
+mp_entity		"info_player_deathmatch"
+secure		"0"
+nomodels		"0"
+gamedll_linux		"dlls/ts_amd64.so"
+gamedll		"dlls/hl.dll"
