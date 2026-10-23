@@ -340,6 +340,23 @@ let registryById = new Map();
 let registryFetchedAt = 0;
 const REGISTRY_TTL_MS = 10_000;
 
+/**
+ * Instance ids the registry currently reports as DOWN.
+ *
+ * The registry polls A2S, so it is the only component that knows when a
+ * game server has actually gone away. The bridge cannot tell by itself:
+ * UDP has no connection state, so a dead server just means packets stop
+ * arriving — indistinguishable from a quiet moment.
+ *
+ * This matters for the player. A server restart does NOT close the
+ * WebSocket (the browser talks to the bridge, not to the server), so
+ * without this the client keeps a live socket that carries nothing, and
+ * the player is left looking at a frozen world with no way to tell what
+ * happened.
+ */
+let registryDownIds = new Set();
+let consecutiveDownPolls = 0;
+
 async function refreshRegistry() {
   if (!REGISTRY_URL) return false;
   try {
@@ -363,6 +380,27 @@ async function refreshRegistry() {
     registryByAddress = byAddress;
     registryById = byId;
     registryFetchedAt = Date.now();
+
+    // Track which instances are down, requiring several consecutive polls.
+    // One bad poll is not a dead server — see the registry's own
+    // FAILURES_BEFORE_DOWN for the same reasoning.
+    const downNow = new Set(
+      (body.instances || [])
+        .filter((inst) => inst.stale || inst.responsive === false)
+        .map((inst) => inst.id)
+    );
+    if (downNow.size > 0) {
+      consecutiveDownPolls += 1;
+      // Two consecutive down polls before acting. The registry already
+      // requires three failed A2S probes; this is the bridge's own
+      // second opinion, and it should not be twitchier than its source.
+      if (consecutiveDownPolls >= 2) {
+        registryDownIds = downNow;
+      }
+    } else {
+      consecutiveDownPolls = 0;
+      registryDownIds = new Set();
+    }
     return true;
   } catch (_) {
     return false;
@@ -483,6 +521,24 @@ wss.on('connection', (ws, req) => {
       `[bridge] #${connId} WS close code=${code} reason=${reason?.toString() || '<none>'}`
     );
   });
+
+  // If the game server behind this connection has gone away, say so
+  // instead of letting the connection linger as a silent pipe to nothing.
+  // The client cannot detect this on its own — its socket is to the
+  // bridge, and the bridge is still perfectly alive.
+  const checkTargetAlive = setInterval(() => {
+    if (ws.readyState !== ws.OPEN) return;
+    if (!target.id || !registryDownIds.has(target.id)) return;
+    console.log(
+      `[bridge] #${connId} target ${target.id} is down — closing so the client can say so`
+    );
+    stats.liveConnections = Math.max(0, stats.liveConnections - 1);
+    // 4001 is an application close code: the peer is fine, the thing it
+    // was talking to is not.
+    ws.close(4001, 'game server unavailable');
+  }, 5000);
+  checkTargetAlive.unref?.();
+  ws.on('close', () => clearInterval(checkTargetAlive));
 
   ws.on('message', (data, isBinary) => {
     // The engine only ever sends binary frames. If we get text, drop it —

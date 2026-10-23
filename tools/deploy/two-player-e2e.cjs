@@ -12,10 +12,52 @@
  * its own 493 MB download. That is the honest test of a cold first-time
  * player, and it is slow — which is itself the finding.
  */
+const dgram = require('node:dgram');
 const { chromium } = require('/home/kyle/Development/slot-protocol/node_modules/playwright');
 
 const URL = process.argv[2] || 'https://bulletballet.dev/';
 const PLAYERS = parseInt(process.argv[3] || '2', 10);
+const GAME_HOST = process.argv[4] || '40.160.225.81';
+const GAME_PORT = parseInt(process.argv[5] || '27015', 10);
+
+/**
+ * Ask the game server how many humans it has.
+ *
+ * This is the AUTHORITATIVE check, and it is why it is here rather than
+ * trusting the browser. A headless page can be torn down mid-run — the
+ * harness closes it, a navigation happens, a context dies — and the
+ * client-side assertions then report a failure that did not happen. The
+ * server does not lie about who is connected to it.
+ */
+function askServer() {
+  return new Promise((resolve) => {
+    const sock = dgram.createSocket('udp4');
+    const timer = setTimeout(() => {
+      try { sock.close(); } catch (_) {}
+      resolve(null);
+    }, 5000);
+    sock.on('message', (msg) => {
+      clearTimeout(timer);
+      try { sock.close(); } catch (_) {}
+      let off = 6;
+      for (let i = 0; i < 4; i++) off = msg.indexOf(0, off) + 1;
+      off += 2;
+      const players = msg[off];
+      const maxPlayers = msg[off + 1];
+      const bots = msg[off + 2];
+      resolve({ players, maxPlayers, bots, humans: players - bots });
+    });
+    // Buffer.concat, not Buffer + string. `buffer + 'text'` concatenates
+    // as a STRING, so the 0xff bytes get UTF-8 encoded into U+FFFD and
+    // the query is garbage — which looks exactly like a server that is not
+    // answering.
+    const query = Buffer.concat([
+      Buffer.from([0xff, 0xff, 0xff, 0xff]),
+      Buffer.from('TSource Engine Query\0', 'latin1'),
+    ]);
+    sock.send(query, GAME_PORT, GAME_HOST);
+  });
+}
 
 async function bootPlayer(browser, label) {
   const ctx = await browser.newContext();
@@ -87,6 +129,9 @@ async function bootPlayer(browser, label) {
 }
 
 (async () => {
+  const before = await askServer();
+  console.log(`  server before: ${JSON.stringify(before)}`);
+
   const browser = await chromium.launch({
     args: ['--enable-features=SharedArrayBuffer', '--no-sandbox'],
   });
@@ -110,7 +155,22 @@ async function bootPlayer(browser, label) {
   console.log(`\n  console errors across all players: ${errs.length}`);
   errs.slice(0, 8).forEach((l) => console.log(`    ${l}`));
 
+  const after = await askServer();
+  console.log(`  server after:  ${JSON.stringify(after)}`);
+
+  // The verdict comes from the server, not from the browser.
+  const gained = after && before ? after.humans - before.humans : -1;
+  console.log(
+    `\n  VERDICT: ${gained === PLAYERS ? 'PASS' : 'FAIL'} — expected ${PLAYERS} more human(s), got ${gained}`,
+  );
+  console.log(
+    `  (client-side boot flags are informational only: ${players
+      .map((p, i) => `P${i + 1}=${p.booted}`)
+      .join(', ')})`,
+  );
+
   await browser.close();
+  process.exit(gained === PLAYERS ? 0 : 1);
 })().catch((e) => {
   console.error('TEST FAILED:', e);
   process.exit(1);
