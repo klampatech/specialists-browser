@@ -13,6 +13,7 @@
  * player, and it is slow — which is itself the finding.
  */
 const dgram = require('node:dgram');
+const { execFileSync } = require('node:child_process');
 const { chromium } = require('/home/kyle/Development/slot-protocol/node_modules/playwright');
 
 const URL = process.argv[2] || 'https://bulletballet.dev/';
@@ -29,6 +30,32 @@ const GAME_PORT = parseInt(process.argv[5] || '27015', 10);
  * client-side assertions then report a failure that did not happen. The
  * server does not lie about who is connected to it.
  */
+/**
+ * How many BROWSERS have an open socket on the bridge.
+ *
+ * This is the ghost-free signal. The game server's own player count
+ * includes clients whose slots have not timed out yet — a browser that
+ * disconnected up to two minutes ago is still counted — so a delta on
+ * that number is not the number of players who joined. The bridge counts
+ * open WebSockets, and there is no lag on that.
+ *
+ * It lives on the VPS behind the firewall, so it is read over SSH. The
+ * test already depends on SSH for the disconnect test, so this is not a
+ * new dependency.
+ */
+function bridgeLiveConnections() {
+  try {
+    const out = execFileSync(
+      'ssh',
+      ['-o', 'ConnectTimeout=8', 'bb-prod', 'curl -sS --max-time 6 http://127.0.0.1:27017/health'],
+      { encoding: 'utf8', timeout: 25_000 },
+    );
+    return JSON.parse(out).liveConnections ?? -1;
+  } catch {
+    return -1;
+  }
+}
+
 function askServer() {
   return new Promise((resolve) => {
     const sock = dgram.createSocket('udp4');
@@ -144,7 +171,16 @@ async function bootPlayer(browser, label) {
   }
 
   console.log('\n  waiting 25s for the server to settle the connections...');
-  await new Promise((r) => setTimeout(r, 25_000));
+  // Watch the bridge's live connection count while the players settle.
+  // The PEAK is what matters: it is the number of browsers connected at
+  // the same moment, which is exactly what "can two players be in the
+  // server together" means.
+  let peakLive = 0;
+  for (let i = 0; i < 25; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const live = bridgeLiveConnections();
+    if (live > peakLive) peakLive = live;
+  }
 
   for (const p of players) {
     const body = (await p.page.evaluate(() => document.body.innerText || '')).slice(0, 260);
@@ -158,10 +194,17 @@ async function bootPlayer(browser, label) {
   const after = await askServer();
   console.log(`  server after:  ${JSON.stringify(after)}`);
 
-  // The verdict comes from the server, not from the browser.
-  const gained = after && before ? after.humans - before.humans : -1;
+  // The verdict is the number of browsers connected AT THE SAME MOMENT,
+  // which is the bridge's peak live-connection count.
+  //
+  // The server's own player count is reported alongside it, but it is
+  // NOT the verdict: it includes slots whose clients have disconnected
+  // but not yet timed out, so it overstates occupancy for a couple of
+  // minutes and a delta on it is meaningless.
+  console.log(`  bridge peak live connections: ${peakLive}`);
+  const ok = peakLive >= PLAYERS;
   console.log(
-    `\n  VERDICT: ${gained === PLAYERS ? 'PASS' : 'FAIL'} — expected ${PLAYERS} more human(s), got ${gained}`,
+    `\n  VERDICT: ${ok ? 'PASS' : 'FAIL'} — ${peakLive} browser(s) connected simultaneously, needed ${PLAYERS}`,
   );
   console.log(
     `  (client-side boot flags are informational only: ${players
@@ -170,7 +213,7 @@ async function bootPlayer(browser, label) {
   );
 
   await browser.close();
-  process.exit(gained === PLAYERS ? 0 : 1);
+  process.exit(ok ? 0 : 1);
 })().catch((e) => {
   console.error('TEST FAILED:', e);
   process.exit(1);
