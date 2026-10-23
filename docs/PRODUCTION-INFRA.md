@@ -674,10 +674,49 @@ shows up with two is the important one — both browsers land on the same
 server-side client slot, or the second is rejected, and the symptom is
 "it works for one player", which looks like success.
 
+### The PLAY button was broken, and every automated test missed it
+
+Kyle's first real click on prod: **PLAY downloaded the whole game, booted
+the engine, and then failed** with "Could not reach the game server".
+Clicking **Join** on a server row worked perfectly.
+
+The cause was the launch options. PLAY used the store's default, which
+carries a *development* address:
+
+```
+-game ts +connect 127.0.0.1:27015 +maxplayers 8
+```
+
+From a browser, `127.0.0.1` is **the player's own machine**. The engine
+tried to connect to itself, the bridge correctly refused an address that
+was not the production one, and the player got a confusing error after a
+493 MB download and a full engine boot. Join built its options from the
+server row, which is why it worked.
+
+**Why every test missed it:** they all matched `/join/i`, which finds a
+server row's Join button. The suite was exercising Join and calling it a
+pass while PLAY was broken. A test suite that only ever exercises the
+path you already know works is not evidence about the path you have not
+tried.
+
+Fixed: PLAY resolves its target from the same live server list Join uses,
+inside `launch()` and *before* anything expensive happens. One source of
+truth for "where does a player go", so the two buttons cannot diverge
+again. The target is the server with room and the fewest humans — TS is
+an FFA deathmatch, so players want company, not empty servers.
+
+There is now a test that clicks PLAY specifically:
+
+```bash
+node tools/deploy/play-button-e2e.cjs https://bulletballet.dev/
+```
+
 ### Verified
 
 ```
 two browsers, one server:   players=5 max=32 bots=3 humans=2
+PLAY button reaches server:  bridge peak live connections: 1
+?autoplay=1 reaches server:  bridge peak live connections: 1
 bridge:                     #7 and #8, live=2 — two UDP sockets,
                             two distinct server-side client slots
                             (identical packet counts = no collision)
