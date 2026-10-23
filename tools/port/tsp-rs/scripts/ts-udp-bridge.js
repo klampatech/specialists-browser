@@ -258,6 +258,10 @@ const stats = {
   bytesToServer: 0,
   bytesToClient: 0,
   liveConnections: 0,
+  // Live connections PER TARGET. The total is not enough: with several
+  // instances, "how many browsers are on THIS server" is the question
+  // the bot policy needs answered.
+  liveByTarget: {},
   debugLogged: 0,
   rejectedTargets: 0,
 };
@@ -486,6 +490,8 @@ wss.on('connection', (ws, req) => {
   stats.connections += 1;
   stats.liveConnections += 1;
   const connId = stats.connections;
+  const targetKey = target.id || `${target.host}:${target.port}`;
+  stats.liveByTarget[targetKey] = (stats.liveByTarget[targetKey] || 0) + 1;
   console.log(
     `[bridge] #${connId} browser connected (live=${stats.liveConnections}) → udp ${target.host}:${target.port}`
   );
@@ -571,6 +577,11 @@ wss.on('connection', (ws, req) => {
       }
     }
     stats.liveConnections -= 1;
+    const key = target.id || `${target.host}:${target.port}`;
+    if (stats.liveByTarget[key]) {
+      stats.liveByTarget[key] -= 1;
+      if (!stats.liveByTarget[key]) delete stats.liveByTarget[key];
+    }
     console.log(
       `[bridge] #${connId} disconnected (${why}) — up ${stats.packetsToServer}p/${stats.packetsToClient}p`
     );

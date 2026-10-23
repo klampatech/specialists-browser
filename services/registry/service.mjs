@@ -271,6 +271,49 @@ function evaluateDegradation(instance, tickrate, now) {
 }
 
 /**
+ * How many real browsers are connected to each instance.
+ *
+ * The A2S player count cannot answer this. It includes client slots
+ * whose browsers have disconnected but not yet timed out — a player who
+ * left up to two minutes ago is still counted — so `players - bots` is
+ * an over-estimate of humans for a couple of minutes after anyone
+ * leaves. With ghosts in the count the bot policy shrinks the bot
+ * roster, and a server that should have four bots plays with none.
+ *
+ * The bridge counts OPEN WEBSOCKETS, which has no such lag. So the
+ * bridge is the authority on how many humans there are, and A2S is the
+ * authority on what the server is doing.
+ *
+ * If the bridge cannot be reached, fall back to the A2S arithmetic —
+ * slightly wrong for a couple of minutes is better than not knowing.
+ */
+const BRIDGE_URL = process.env.BRIDGE_URL || '';
+
+// `null` means the bridge has never answered — which is different from
+// "the bridge answered and there are no connections". An EMPTY map from
+// a reachable bridge means zero humans, and that has to be respected;
+// treating it as "unknown" would fall back to the A2S count and
+// re-introduce the ghost problem for exactly the case the bridge was
+// added to fix (an empty server).
+let bridgeLiveByTarget = null;
+
+async function fetchBridgeLive() {
+  if (!BRIDGE_URL) return null;
+  try {
+    const res = await fetch(BRIDGE_URL, {
+      signal: AbortSignal.timeout(4000),
+      headers: { accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    bridgeLiveByTarget = body.liveByTarget || {};
+    return bridgeLiveByTarget;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Bot backfill.
  *
  * The policy: keep a small number of bots so a lone player has something
@@ -371,6 +414,8 @@ async function pollMetrics() {
   try {
    try {
     const now = Date.now();
+    // Refresh the bridge's view first, so the human counts below use it.
+    await fetchBridgeLive();
     await Promise.all(
       [...registry.values()].map(async (instance) => {
         const metrics = await collectMetrics(instance);
@@ -383,8 +428,18 @@ async function pollMetrics() {
         instance.tickrate = metrics.tickrate;
         instance.botQuota = metrics.botQuota;
 
-        // A2S counts bots as players. The difference is the humans.
-        instance.humans = Math.max(0, (instance.players ?? 0) - (instance.bots ?? 0));
+        // A2S counts bots as players, but its player count also includes
+        // slots that have not timed out yet. The bridge knows how many
+        // browsers are actually connected, so prefer that.
+        // A reachable bridge is authoritative even when it reports
+        // nothing for this instance — that means zero browsers, not
+        // "unknown". Only an unreachable bridge falls back to A2S.
+        const live = bridgeLiveByTarget ? (bridgeLiveByTarget[instance.id] ?? 0) : null;
+        instance.humans =
+          live !== null
+            ? live
+            : Math.max(0, (instance.players ?? 0) - (instance.bots ?? 0));
+        instance.humansSource = live !== null ? 'bridge' : 'a2s';
 
         const d = evaluateDegradation(instance, metrics.tickrate, now);
         instance.degradation = d;
@@ -419,6 +474,7 @@ function publicView(row) {
     players: row.players,
     bots: row.bots ?? 0,
     humans: row.humans ?? 0,
+    humansSource: row.humansSource ?? 'a2s',
     maxPlayers: row.maxPlayers,
     address: row.address,
     port: row.port,
