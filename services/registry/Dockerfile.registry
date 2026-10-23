@@ -1,0 +1,52 @@
+# registry — the fleet's source of truth.
+#
+#   docker build -f services/registry/Dockerfile.registry -t registry:0.1 .
+#   docker run -d --name registry --network host \
+#     -v /var/run/docker.sock:/var/run/docker.sock \
+#     -e TS_PUBLIC=40.160.225.81 \
+#     registry:0.1
+#
+# The docker socket is mounted because the tickrate and the bot quota live
+# in the engine's console, and the only way to reach a running game's
+# console is through its container. That is root-equivalent on the host.
+#
+# It is acceptable here because the host is a dedicated game box and the
+# `ubuntu` user was already placed in the `docker` group during the
+# initial hardening — the same privilege. The registry's own code is the
+# only thing that holds this access.
+
+FROM node:22-bookworm-slim
+
+WORKDIR /app
+
+COPY services/registry/package.json /app/package.json
+COPY services/registry/service.mjs /app/services/registry/service.mjs
+
+# The registry imports queryServer() from the Vite plugin rather than
+# reimplementing A2S: the GoldSrc handshake rules are easy to get subtly
+# wrong and impossible to notice until a server browser silently shows the
+# wrong map. The plugin also carries the bots field, which is how the
+# registry tells a human from a bot.
+COPY webxash/vite-a2s-plugin.mjs /app/webxash/vite-a2s-plugin.mjs
+
+ENV REGISTRY_BIND=127.0.0.1:8081 \
+    TS_PORTS=27015 \
+    TS_PORT_BASE=27015 \
+    TS_CONTAINER_PREFIX=ts \
+    TS_CONSOLE_PIPE=/tmp/console.pipe \
+    REGISTRY_POLL_MS=10000 \
+    REGISTRY_METRICS_MS=15000 \
+    TS_TARGET_TICKRATE=100 \
+    TS_DEGRADE_RATIO=0.85 \
+    TS_RECOVER_RATIO=0.95 \
+    TS_DEGRADE_SUSTAIN_MS=30000 \
+    TS_ACTION_COOLDOWN_MS=120000 \
+    TS_BOT_TARGET=4
+
+EXPOSE 8081
+
+RUN useradd --create-home --uid 10004 --shell /usr/sbin/nologin registry \
+ && chown -R registry:registry /app
+USER registry
+
+CMD ["node", "/app/services/registry/service.mjs"]

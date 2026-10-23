@@ -1,0 +1,6 @@
+# Build context for the registry image.
+**
+!services/registry/Dockerfile.registry
+!services/registry/package.json
+!services/registry/service.mjs
+!webxash/vite-a2s-plugin.mjs

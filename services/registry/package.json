@@ -1,0 +1,9 @@
+{
+  "name": "specialists-registry",
+  "private": true,
+  "type": "module",
+  "description": "Fleet registry: server list, tickrate, health and bot quota.",
+  "scripts": {
+    "start": "node service.mjs"
+  }
+}
