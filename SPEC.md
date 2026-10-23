@@ -4,16 +4,68 @@
 > Mirror: `~/Obsidian/projects/specialists-browser/SPEC.md`
 > Authoritative canonical: this file in the repo.
 
-**Status:** Phase 1 scope — **webXash WASM port path (D.7)**.
+**Status:** **PRODUCTION.** The game is live at `https://bulletballet.dev` —
+a browser plays The Specialists against a real dedicated server. See
+`docs/PRODUCTION-INFRA.md` for the topology and the verified evidence.
 **Pivot history:** Option B (CheerpX) → abandoned 2026-10-14 after
 cascading linker bugs. Option D (AI decompile) completed D.4 (369+
 methods decompiled). D.5 Babylon attempt → visual baseline didn't
-match. **D.7 webXash engine-port path active** (the engine port
-already exists, just run it). WASM DLL port still needed for "real
-TS" gameplay (Priority 1, multi-week).
-**Last updated:** 2026-10-19 (D.7.11 — visual + MP signaling verified)
+match. **D.7 webXash engine-port path** → then the **server-DLL WASM
+port**, which is what made a real dedicated server possible. The
+decompile + pump path is now the **single-player fallback**, not the
+production path.
+**Last updated:** 2026-10-23 (production live; control plane built)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
+
+---
+
+## Production state (2026-10-23)
+
+**The shape.** The browser is an ordinary GoldSrc **client**; the TS
+server runs as a separate WASM **dedicated-server** process in a
+container. That split is what made the game playable, and it is why the
+old "the player entity never spawns" blocker no longer applies.
+
+```
+browser → https://bulletballet.dev/          Caddy (Let's Encrypt)
+            ├── /              app bundle (56 MB)
+            ├── /api/servers   registry: A2S + tickrate + bots + health
+            └── /bridge        bridge: WebSocket↔UDP, allowlisted
+                                  └─ UDP → ts-0 (dedicated server, 32 slots)
+
+assets.bulletballet.dev → Cloudflare R2, 493 MB in 8×64 MiB parts
+```
+
+**Verified from a real browser:** `players=5 max=32 bots=4` — four bots
+and the player, live in `ts_casa` on Server 3.0.8, through TLS, against
+the public URL.
+
+**The decisions that are locked** (and why):
+
+- **The bridge is same-origin with the page.** An `https://` page cannot
+  open a plain `ws://` WebSocket, and a cross-origin WebSocket cannot
+  carry the cross-origin-isolation context the engine needs for
+  `SharedArrayBuffer`. Not a preference — a constraint.
+- **The bridge's allowlist is a security boundary.** Without one it is an
+  open UDP relay. The registry may say *where* to send a packet; only the
+  floor (`127.0.0.1` on a static port range) says whether it is
+  *allowed* to.
+- **Unknown targets are refused before the handshake** (HTTP 403), because
+  a connection that opens and then closes reads to the client as
+  "connected".
+- **The registry observes; the orchestrator decides.** A registry bug
+  cannot take the fleet down.
+- **The game archive is served from a public R2 bucket.** Deliberate, and
+  the highest-exposure of the three delivery options — the content is in
+  Kyle's Cloudflare account, fetchable by anyone with the URL, forever.
+  The server image stays clean regardless: the assets live in a read-only
+  volume and are never baked into an image.
+
+**What is not done:** matchmaking; real-user metrics (so the "8
+instances" capacity figure is still a budget, not a measurement); the FE
+tweaks and the bulletballet re-brand; single-player depth on the
+fallback path.
 
 ## Phase 1 D-step progress (Option D + webXash)
 
@@ -189,21 +241,46 @@ scores, names), more weapons (shotgun, SMG, sniper), more maps
 **Exit criterion:** Playing against bots feels like the original
 TS mod (within reason — we're not pixel-perfect).
 
-### Phase 3 — Multiplayer (6-10 weeks)
+### Phase 3 — Multiplayer ✅ **SUPERSEDED — see Phase P**
 
-WebRTC datachannel P2P between browser tabs. Server in Web Worker
-(already done in Phase 1), client on main thread. Hit registration,
-lag compensation, client-side prediction, connection flow UI,
-reconnection logic.
+The original plan was WebRTC datachannel P2P between browser tabs, with
+the server in a Web Worker. Three transport options were on the table
+(a: WebRTC datachannels, b: WebRTC-to-UDP SFU, c: custom over
+WebSockets).
 
-Three transport options on the table (decision at Phase 3 kickoff):
+**None of them shipped.** The transport that shipped is **(b) in
+substance but not in mechanism**: a WebSocket to a bridge that speaks
+UDP to a real dedicated server. The reason is not latency — it is that a
+*real server* is what makes the game real. The browser is now an ordinary
+GoldSrc client, so every piece of authoritative gameplay the server DLL
+already implements applies to a browser player with no extra work.
 
-- **(a) WebRTC datachannels (SCTP)** between browser tabs. Lowest
-  latency, hardest NAT traversal.
-- **(b) WebRTC-to-UDP SFU** on a VPS bridge. Lowest dev cost, adds
-  ~20-30ms RTT.
-- **(c) Custom over WebSockets.** Well-understood, easier debugging,
-  slightly higher latency.
+WebRTC P2P remains a possible future transport for player-to-player, but
+it is no longer the path to "The Specialists in a browser".
+
+### Phase P — Production ✅ **COMPLETE (2026-10-23)**
+
+The phase that actually shipped. See `docs/PRODUCTION-INFRA.md` for the
+topology and the evidence, and `docs/ASSET-DELIVERY.md` for the archive
+and the CDN path.
+
+| | |
+|---|---|
+| Public URL | `https://bulletballet.dev`, Let's Encrypt |
+| Asset delivery | 493 MB → R2 → Cloudflare edge, 8×64 MiB parts + manifest |
+| Transport | `wss://` → allowlisted bridge → UDP → dedicated server |
+| Server | WASM dedicated server, 32 slots, tickrate 100, `ts_casa` |
+| Control plane | registry (observes) + orchestrator (decides) |
+| Verified | `players=5 max=32 bots=4` from a real browser |
+
+### Phase 5 — Matchmaking, metrics, FE (active)
+
+1. **Matchmaking** — the one control-plane piece not built. The registry
+   knows the instance set; it does not assign players to it.
+2. **Real-user metrics** — retention over time, so the capacity number
+   becomes a measurement instead of a budget.
+3. **FE polish + the bulletballet re-brand** (Grover).
+4. **Single-player depth** — the old Phase 2 items, on the fallback path.
 
 ### Phase 4 — Polish (variable)
 

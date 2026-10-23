@@ -601,3 +601,63 @@ bridge         --network host, target allowlist from BRIDGE_TARGETS
 ts-0           --restart unless-stopped, udp 27015, /srv/ts-data mounted ro
 caddy          systemd, automatic TLS
 ```
+
+
+---
+
+## 9. Capacity — a plan, not a promise
+
+Kyle's call, 2026-10-23: *"we honestly probably won't get to test this with
+32 actual players each in 8 servers simultaneously for a while. Can take it
+as a best case scenario for now until we get some better metrics in from
+our first server with real users that we can try an extrapolate from."*
+
+Recorded here so the number is not quoted later as a guarantee.
+
+### Measured on the box (2026-10-23, one instance, 4 bots, 0 players)
+
+```
+host            3909 MB RAM, 2 vCores
+ts-0            365.5 MiB, 0.89-1.27% CPU
+registry         20.2 MiB
+orchestrator      17.1 MiB
+bridge            16.8 MiB
+control plane     54 MiB total
+available        2797 MB with one instance running
+```
+
+### The two bounds
+
+```
+RAM-bound:  (3909 - ~600 reserved) / 365.5 MB  ≈  9 instances
+CPU-bound:  2 vCores / ~0.35-0.40 core per instance under real load
+            ≈  4-5 instances
+```
+
+**They disagree, and CPU is the one that binds.** The RAM figure is an
+upper bound even on its own terms: 365.5 MB was measured with four bots
+and no players, and a 32-player instance carries far more entity state,
+snapshots and per-client buffers.
+
+### The verdict
+
+**8 instances is a defensible plan, not a promise.** The number that
+would move it is a CPU measurement under real load, and the only honest
+way to get that is a real 32-player instance — which is exactly the
+metric we do not have yet.
+
+A synthetic load test right now would produce a confident wrong number:
+bots do not generate the traffic that players do, so it would measure the
+easy case and report it as the hard one.
+
+### What the registry already collects toward this
+
+Per instance, per poll: tickrate, player count, bot count, human count,
+responsiveness, degradation state. That is the raw material for the
+extrapolation. What it does **not** yet do is **retain it over time** —
+there is no history, so there is nothing to extrapolate from yet. That
+retention is the first item in the metrics task (`HANDOFF.md` § ROADMAP,
+R2).
+
+Until it exists, the honest statement is: *one instance fits comfortably;
+eight is probably fine on RAM and is unproven on CPU.*

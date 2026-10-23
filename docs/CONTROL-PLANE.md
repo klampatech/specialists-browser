@@ -1,125 +1,172 @@
 # Control Plane — bridge, matchmaking, registry
 
-**Status: PLANNING. Nothing built. No decisions locked.**
+**Status: BUILT (bridge + registry + orchestrator). Matchmaking not built.**
 
-This exists to put the forks on paper before code gets written, because the first
-one — *what runs where* — changes everything downstream.
+Last updated: 2026-10-23. Evidence and topology in
+`docs/PRODUCTION-INFRA.md`.
 
----
-
-## The three things to build
-
-1. **Bridge** — WebSocket↔UDP. Exists and works, single-target. Needs to become multi-target.
-2. **Registry** — the thing the bridge consults to know *which* game server a player should join. Does not exist.
-3. **Matchmaking** — assign players to instances. Does not exist.
-
-The bridge is the smallest piece. The registry is the critical path: it unblocks
-the fleet, autoscaling, and matchmaking together, and none of the three can be
-built usefully before it.
+This doc existed to put the forks on paper before code got written, because the
+first one — *what runs where* — changes everything downstream. Two of the three
+forks are now settled by construction rather than by argument, and the third
+turned out to be a different question than the one that was asked.
 
 ---
 
-## Fork 1 — where does the control plane live? ⬅ **decide first**
+## The three things
 
-Three options. They are not equally reversible.
+1. **Bridge** — WebSocket↔UDP. ✅ **Built.** Multi-target, allowlisted.
+2. **Registry** — the fleet's source of truth. ✅ **Built.** A2S state,
+   tickrate, bot count, health.
+3. **Matchmaking** — assign players to instances. ❌ **Not built.** This is the
+   next task — see `HANDOFF.md` § NEXT TASK.
 
-### Option A — same box as the game plane
+The bridge was the smallest piece. The registry turned out to be the critical
+path, as predicted: it unblocked the fleet, the autoscaling and the bot policy
+together.
+
+---
+
+## Fork 1 — where does the control plane live? → **Option A, same box**
 
 ```
 bb-prod (VPS-1 LZ, 2 vCore / 4 GB)
   ├── caddy        :443
-  ├── bridge       :27017 (behind /bridge)
-  ├── registry + matchmaking + A2S
-  └── 8 × ts-server containers   (363 MB each = 2.9 GB)
+  ├── registry     127.0.0.1:8081     (--network host)
+  ├── orchestrator 127.0.0.1:8090     (--network host, docker socket)
+  ├── bridge       127.0.0.1:27017    (--network host)
+  └── N × ts-server containers        (udp 27015+)
 ```
 
-- **+$0/mo.** Nothing new to buy.
-- Cheapest possible start, and correct at low player counts.
-- **2 vCores** now run Caddy + Node services *and* 8 GoldSrc servers. Idle is fine; **under load this is the first thing to saturate.**
-- Control plane and game plane share a failure domain. A game-server OOM takes matchmaking down with it.
+**+$0/mo**, and correct at the player counts this project has.
 
-### Option B — second VPS-1, control plane only
+The thing this analysis worried about — *"control plane and game plane share a
+failure domain; a game-server OOM takes matchmaking down with it"* — is real
+and still real. It has not been mitigated, because at one instance and 32 slots
+there is nothing to mitigate it against. It is the first thing to revisit if
+the fleet grows past one box, or if the Node services ever need to be more than
+three small processes.
 
-```
-bb-prod  ($6.54)  caddy + bridge + 8 game containers
-bb-ctl   ($6.54)  registry + matchmaking + A2S + DB
-```
+The registry and orchestrator both mount the Docker socket, which is
+root-equivalent on the host. That is acceptable *here specifically* because the
+host is a dedicated game box and `ubuntu` was already placed in the `docker`
+group during the initial hardening — the same privilege. The services' own
+code are the only things holding it.
 
-- **+$6.54/mo.** Still trivially cheap.
-- Independent failure domains; control plane survives a game-plane restart.
-- Room to run a real database without squeezing the game servers.
-- **The bridge must reach the game plane over the network** — cross-VPS UDP, which adds a hop the current single-box setup doesn't have.
-
-### Option C — free-tier / local control plane
-
-Fly.io / Render / a local box for dev, real host in production.
-
-- **+$0**, but a split environment that behaves differently from production is a
-  reliable source of "works on my machine".
-- Not worth it until something at real scale forces the question.
-
-### Recommendation
-
-**Option A now, Option B when the first player complains.**
-
-The reasoning: with one box, an extra hop doesn't exist, Caddy is local, and every
-debug is a single `ssh`. None of that complexity needs paying for until there are
-enough players to notice. But the registry's storage and API shape should be built
-as if it were Option B from day one — a Postgres connection string and an env-var'd
-registry URL — so promoting it later is a deploy, not a rewrite.
+The original recommendation stands and was followed: **Option A now, Option B
+when the first player complains.** The registry and orchestrator were built
+with env-var'd URLs and a docker socket rather than hardcoded paths, so
+promoting them to a second box is a deploy rather than a rewrite.
 
 ---
 
-## Fork 2 — where does state live?
+## Fork 2 — where does state live? → **Nowhere yet, deliberately**
 
-The registry needs durable state (instances, players, capacity). Three candidates:
+The registry is **stateless**. It polls the fleet and reports what it sees; it
+owns nothing.
 
-| | Postgres on the box | Managed (Neon / Supabase) | SQLite |
-|---|---|---|---|
-| Setup | apt + tune | account + connection string | zero |
-| Survives box death | no — needs backups | yes | no |
-| Cost | free | free tier covers a long time | free |
-| Migration cost | — | low | low |
-| Ops burden | backups, upgrades | none | backups |
+This is a deviation from the original lean (Postgres on the box, with backups
+to R2), and it is worth being explicit about why: the registry was built to
+*observe*, and an observer that owns durable state has two sources of truth
+for the same fact. The registry's answer to "is ts-0 healthy" is always the
+latest observation, never a cached belief.
 
-**Lean: Postgres on the box now**, with automated backups to R2, because a managed
-provider adds an account and a dependency to solve a problem that a 40 GB disk and
-`pg_dump` doesn't have yet. Move to managed when the box's failure modes start
-costing more than the dependency.
-
-Note the R2 bucket is asset-only by policy — backups are *ours*, so that policy does
-not block them, but keep them in a **separate bucket** (`ts-backups`) so the asset
-bucket's contents stay trivially auditable.
+The Postgres lean still stands for **when matchmaking needs it** — a player
+connecting to an instance is a fact that outlives the connection, and that is
+exactly the shape of thing a database is for. The same answer applies then:
+Postgres on the box, automated backups to R2, in a **separate bucket**
+(`ts-backups`) so the asset bucket's contents stay trivially auditable.
 
 ---
 
-## Fork 3 — registry API shape
+## Fork 3 — what does the registry answer? → **Not the question that was asked**
 
-The bridge needs to answer one question: *"given player X and game mode M, which
-instance should they join?"* Everything else follows from how that answer is
-computed.
+The original fork asked for a registry API shaped like:
 
-Three candidate strategies:
+> *"given player X and game mode M, which instance should they join?"*
 
-**A. Round-robin / least-loaded**
-Simple, stateless, works. Doesn't know about latency or skill.
-→ correct until it isn't; fine for FFA.
+**That question was not built, because it turned out to be two questions owned
+by two different services.**
 
-**B. Latency-aware**
-Registry pings candidate bridges, returns the nearest. Needs measurement infrastructure.
-→ the obvious upgrade once players span coasts.
+| Question | Owner | Why |
+|---|---|---|
+| "what instances exist, and are they healthy?" | the **registry** | it observes the fleet directly |
+| "where do I send THIS player's packets?" | the **bridge** | it owns the socket, and it must answer without a network hop on the connection path |
+| "which instance should this player join?" | **matchmaking** (not built) | it owns the assignment policy |
 
-**C. Skill/matchmaking**
-Team or rating-based grouping.
-→ **almost certainly wrong for this game.** TS is FFA with no teams and no persistent
-rating. "Matchmaking" here likely means *find me a server with room and low ping*,
-which is (B) with a capacity check. Building a rating system for an FFA deathmatch
-would be solving a problem nobody has.
+### The floor is the important part
 
-**Recommendation: A first, B when a second region exists, and do not build C.**
+The bridge does **not** take the registry's word for where it may send
+packets. Without a floor, "the registry said so" is not a security property —
+it is a suggestion from another service, and the bridge would be an open UDP
+relay: anyone who could open a WebSocket could make the VPS send packets to
+any host it can reach.
 
-The naming is the trap here — "matchmaking server" implies (C), and the thing that
-will actually help players is (B).
+So the registry may tell the bridge **where** to send a packet. Only the floor
+says whether it is **allowed** to. The floor is `127.0.0.1` on a static port
+range (`BRIDGE_ALLOWED_PORTS`), covering every instance the fleet can ever
+have — so it never has to be widened to add a server, and widening it is
+always a deliberate act.
+
+Unknown targets are refused **before** the WebSocket handshake completes, with
+a plain HTTP 403. Validating afterwards would let the connection open
+successfully and only then close, which reads to the client as "connected" and
+hides the refusal.
+
+### The port range, not the port list
+
+The registry and the orchestrator derive their port list from
+`TS_PORT_BASE + TS_INSTANCE_COUNT`. This matters more than it looks: a fixed
+list of ports would mean every service needed editing before a scale-out, and
+the one that was forgotten would be the one that silently failed — the
+instance would come up, appear nowhere, and be unreachable.
+
+This was a real bug, not a hypothetical. Scale-out was wired in name only:
+starting a second instance produced a server-list entry the bridge then
+refused with a 403. Verified fixed by starting `ts-1` on udp/27016 and
+watching the registry pick it up and the bridge accept it, with no restart.
+
+### Matchmaking strategy — still unresolved, and deliberately so
+
+The original analysis of *how* to assign was:
+
+**A. Round-robin / least-loaded** — simple, stateless, works. Doesn't know
+about latency or skill. → correct until it isn't; fine for FFA.
+
+**B. Latency-aware** — registry pings candidate instances, returns the
+nearest. Needs measurement infrastructure. → the obvious upgrade once
+players span coasts.
+
+**C. Skill/matchmaking** — team or rating-based grouping. → **almost
+certainly wrong for this game.** TS is FFA with no teams and no persistent
+rating. "Matchmaking" here likely means *find me a server with room and low
+ping*, which is (B) with a capacity check. Building a rating system for an
+FFA deathmatch would be solving a problem nobody has.
+
+**Recommendation, unchanged: A first, B when a second region exists, and do
+not build C.** The naming is the trap — "matchmaking server" implies (C), and
+the thing that will actually help players is (B).
+
+What has *not* been decided is who computes it: the browser already picks
+from the server list, so a server-side assignment is more work and more
+correct (it can account for capacity the browser cannot see). That is a
+design question for the matchmaking task, not a foregone conclusion here.
+
+---
+
+## What was built that was not in the plan
+
+- **Tickrate collection.** A2S does not report tickrate. The engine does,
+  but only through its console, so the registry reads it out of each
+  container's console FIFO and correlates the reply against the container
+  log.
+- **Bot counting.** A2S counts bots as players, so without the bot count
+  there is no way to tell a human from a bot — every occupied slot looks
+  like a person.
+- **Bot backfill.** Bots yield to humans automatically. A policy decision,
+  not an engineering one, and it needed the two above.
+- **Degradation detection** with hysteresis and a cooldown, so a one-frame
+  tickrate dip (map change, bot respawn, GC pause) does not make the
+  orchestrator thrash the fleet.
 
 ---
 
@@ -129,59 +176,56 @@ Don't rebuild these:
 
 | Component | Location | State |
 |---|---|---|
-| Bridge | `tools/port/tsp-rs/scripts/ts-udp-bridge.js` | **works**, single-target, `/health` on :27017 |
-| A2S client | `webxash/vite-a2s-plugin.mjs` | works, **dev-only**, Node-side |
-| A2S client (client) | `webxash/src/services/ts-server-list.ts` | works against the dev middleware |
-| Server binary + image | `tools/port/ts-server-dll/build-matrix/` | built; Dockerfile still in `/tmp` |
-| Instance config | `/tmp/tsds/ts/server.cfg` | FFA, ruleset 30, `mp_teamlist` 4 teams |
-
-The bridge's `serverAddr` is currently a constructor argument. Making it a
-**registry lookup at join time** is the smallest change that turns it into a
-multi-target bridge.
+| Bridge | `tools/port/tsp-rs/scripts/ts-udp-bridge.js` | **built**, multi-target, allowlisted, `/health` on :27017 |
+| Registry | `services/registry/service.mjs` | **built**, `/api/servers` + `/api/registry` |
+| Orchestrator | `services/orchestrator/service.mjs` | **built**, `/api/orchestrator` |
+| A2S client | `webxash/vite-a2s-plugin.mjs` | works, shared by the registry and the dev middleware |
+| A2S client (client) | `webxash/src/services/ts-server-list.ts` | works against the registry in production |
+| Server image | `tools/deploy/Dockerfile.ts-server` | built, in the repo |
+| Instance runner | `tools/deploy/run-instance.sh` | the one way to bring an instance up |
 
 ---
 
-## Sequencing
+## Sequencing — what actually happened
 
-Ordered so each step is independently useful and independently throwaway.
+Ordered so each step was independently useful and independently throwaway.
 
-1. **Promote the container image** — `/tmp/tsds/Dockerfile` → the repo. Nothing
-   else is deployable without it.
-2. **Deploy one TS server on `bb-prod`.** Prove the same binary that works locally
-   works in a container on the new box. Boring, and it de-risks everything after.
-3. **Deploy the bridge on `bb-prod`, behind Caddy at `/bridge` on 443.** Then delete
-   the `27017/tcp` firewall rule, which is temporary by design.
-4. **Upload the R2 payload.** Bucket and custom domain are already live; the
-   immutable-header-through-the-edge verification is the one untested assumption.
-5. **Load proof: 8 containers on the box.** This is currently arithmetic
-   (2.9 GB of 3.9 GB), not a measurement. Measure it, then either confirm the plan
-   or discover why it's wrong.
-6. **Build the registry.** Behind the `InstanceProvider` seam already defined in
-   `object-store.mjs` (`provision` / `destroy` / `list`).
-7. **Latency-aware selection.** Only once a second region exists.
+1. ✅ **Promote the container image** — into the repo.
+2. ✅ **Deploy one TS server on `bb-prod`** — same binary locally and in a
+   container on the new box.
+3. ✅ **Deploy the bridge behind Caddy at `/bridge` on 443** — and delete the
+   `27017/tcp` firewall rule, which was temporary by design.
+4. ✅ **Upload the R2 payload** — the immutable-header-through-the-edge
+   assumption was the untested one, and it held.
+5. ⏸ **Load proof: 8 containers on the box** — still arithmetic (2.9 GB of
+   3.9 GB), not a measurement. Deliberately deferred: it cannot be measured
+   honestly until there are real users on the first instance, and a synthetic
+   load test would produce a confident wrong number.
+6. ✅ **Build the registry** — and the orchestrator alongside it, because a
+   registry that observes but cannot act is only half a control plane.
+7. ⏸ **Latency-aware selection** — only once a second region exists.
 
 ---
 
-## Open questions to settle before writing code
+## Open questions, still open
 
-1. **Fork 1** — is `bb-prod` both planes, or do we buy a second box?
-2. **Game modes** — is everything FFA, or do powerups/pickup games ship? This drives
-   whether the registry needs mode-aware routing at all. *Deferred: the archive is
-   still whole (493 MB) pending an explicit decision on which maps ship.*
-3. **Player capacity per instance** — the architecture doc models 8/instance, but the
-   engine advertises 32 (`MAX_CLIENT_BITS=5`). 8 was a modelling choice, not a limit.
-   Real answer changes the whole fleet-sizing story.
-4. **Autoscaling trigger** — CPU? tickrate degradation? player count? Tickrate is
-   the honest signal for a game server, and it is **not currently instrumented**.
-5. **Does the bridge need to survive a game-plane restart** — i.e. reconnect players,
-   or drop them and let matchmaking re-place?
+1. **Game modes** — is everything FFA, or do powerups/pickup games ship?
+   This drives whether the registry needs mode-aware routing at all.
+2. **Player capacity per instance** — the engine advertises 32
+   (`MAX_CLIENT_BITS=5`). Real capacity under real load is unmeasured.
+3. **Does the bridge need to survive a game-plane restart** — reconnect
+   players, or drop them and let matchmaking re-place?
+4. **Metrics retention** — the registry collects per-instance tickrate,
+   player count and bot count, but does not keep them over time. Until it
+   does, "8 instances of 32 slots" is a budget and not a measurement.
 
 ---
 
 ## Explicitly deferred
 
-- Stripping unused content from the archive — Kyle deferred this 2026-10-22: *"let's
-  not start ripping stuff out quite yet, that can be a later optimization once we've
-  decided on exactly what maps and gameplay we want the servers to run."*
+- Stripping unused content from the archive — Kyle deferred this 2026-10-22:
+  *"let's not start ripping stuff out quite yet, that can be a later
+  optimization once we've decided on exactly what maps and gameplay we want
+  the servers to run."*
 - Skill-based matchmaking (§Fork 3 C) — wrong shape for this game.
 - Second region — no reason to optimise for one.

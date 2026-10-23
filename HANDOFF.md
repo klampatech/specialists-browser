@@ -16,295 +16,197 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-21, commit `f7093c6` (**R1 SOLVED — the pump works, the world renders**)
-**Active path:** webXash (Xash3D-fwgs WASM) + custom TS server DLL
-**Goal:** playable The Specialists in the browser, real assets, real gameplay.
+**As of:** 2026-10-23, commit `d144550` (**PRODUCTION — the game is live at https://bulletballet.dev**)
+**Active path:** webXash (Xash3D-FWGS WASM **client**) + the real TS server as a WASM **dedicated server** in a container
+**Goal:** ~~playable The Specialists in the browser~~ — **met.** Real assets, real gameplay, real dedicated server, public URL.
 
 ## The one-line version
 
-**The game loop is alive.** `ts_pump.ts` drives `g_pGameRules->Think()` from
-JavaScript at ~60Hz over a console-command bridge, because the engine's own
-loopback connect never completes. The ts_lobby world renders with real
-geometry and the TS HUD sits on top. The player entity is the last thing
-missing — see R1.1.
+**It works in production.** A browser at `https://bulletballet.dev` pulls the
+493 MB game archive off Cloudflare R2, boots the Xash3D-FWGS WASM engine,
+opens a `wss://` WebSocket to a bridge on the same origin, and plays
+multiplayer against a real dedicated TS server on the same box.
 
-## Why the engine couldn't do this itself
+Verified from a real browser, not a test harness:
 
-Xash3D-FWGS's loopback connect stalls at `cl_main.c:1394-1404` under
-`-noip -noip6`: the client sets `ca_connecting` and sends a connect packet
-that never arrives, so it never reaches `ca_connected`. With no connected
-client the engine never dispatches the server frame loop, so
-`g_pGameRules->Think()` — and every TS hook hanging off it — stayed silent.
-Five sessions of instrumentation could not distinguish "engine won't call
-us" from "our code is wrong", because both look identical: nothing fires.
+```
+raw A2S:  players=5  max=32  bots=4        ← 4 bots + the browser
+registry: ts-0 · ts_casa · tick=100 · humans=1 · bots=3
+engine console: BUILD 4221 SERVER (0 CRC) → FS_AddGameHierarchy( ts )
+```
 
-The fix is to be the frame clock ourselves.
+## The production shape
 
-## The pump (D.7.56)
+```
+browser
+  │  https://bulletballet.dev/
+  ▼
+Caddy (Let's Encrypt, cert valid to 2027-01-21)
+  ├── /              → /srv/web          app bundle, 56 MB
+  ├── /api/servers   → 127.0.0.1:8081    registry container
+  └── /bridge        → 127.0.0.1:27017   bridge container (WebSocket)
+                                              │
+                                              └─ UDP → 127.0.0.1:27015 → ts-0
 
-| Piece | Where |
+assets.bulletballet.dev  →  Cloudflare R2 (ts-assets), 493 MB in 8×64 MiB parts
+```
+
+The game UDP port is published straight out of Docker and deliberately does
+**not** go through Caddy — it is raw UDP, not HTTP.
+
+## What changed since the last handoff (2026-10-21)
+
+That handoff ended with "R1.1 — the player entity" as the blocker, and a
+roadmap of R2–R7 (spawn points, `AddToFullPack`, movement, the 207 spawn
+errors, HUD, gameplay) all built on the **decompile + pump** path.
+
+**That path is now the single-player fallback, and production does not use
+it.** The production architecture puts the server logic where it belongs:
+in a separate WASM dedicated-server process, with the browser acting as an
+ordinary GoldSrc client. So:
+
+- the player entity is not a blocker — a real client connects to a real
+  server and gets a real player
+- the client handshake that never completed under `-noip -noip6` is no
+  longer on the critical path, because the client is not hosting the
+  server
+- R2–R7 remain real work, but they are work on the **fallback**, and
+  they are now Phase-5 polish rather than the road to production
+
+What was actually built in this window:
+
+| | |
 |---|---|
-| Tick loop, 16ms, idempotent, backs off on throw | `webxash/src/services/ts-pump.ts` |
-| Starts with the engine | `webxash/src/services/xash-loader.ts` (`tsPump.start(xash)` after `xash.main()`) |
-| Registers `ts_pump` / `ts_pump_think` / `ts_spawn_player` | `cts_game_rules.cpp:ts_post_init` |
-| `ts_post_init` called from `GiveFnptrsToDll` | `build-ts-dll.sh` step 2b patches `h_export.cpp` |
-| Telemetry strip (`[data-pump-strip]`) | `TSHud.vue` |
-| Pass/fail harness | `tools/port/ts-server-dll/test-harness/pump-smoke.js` |
+| Asset delivery | 493 MB archive split into 8×64 MiB parts + manifest, on R2 behind Cloudflare, edge-cached (`MISS`→`HIT`) |
+| Vite base | `/webXash/` → `/`, so the app is at the domain root |
+| Transport | `wss://` + an explicit `+bridge` address separate from `+connect` |
+| Bridge | multi-target, allowlisted, refuses unknown targets with 403 |
+| Caddy | TLS, routing, cross-origin isolation headers |
+| Registry | A2S + tickrate + bot count + health, per instance |
+| Orchestrator | restart unhealthy, restart degraded, scale out, scale in |
+| Bot backfill | bots yield to humans automatically |
 
-### Ordering gotcha — don't move the registration
+## The decisions that are locked
 
-`__attribute__((constructor))` runs at WASM instantiation, **before** the
-engine calls `GiveFnptrsToDll`. So `g_engfuncs` is still zeroed there and
-`pfnAddServerCommand` reads NULL. Registration must happen in
-`ts_post_init`, which the build script patches into `GiveFnptrsToDll`. The
-`HS_INIT ent=0` and `HS_INIT ent=1` markers exist to prove both hooks fire.
+**The bridge is same-origin with the page.** Not a preference — a
+constraint. An `https://` page cannot open a plain `ws://` WebSocket
+(mixed content), and a cross-origin WebSocket cannot carry the page's
+cross-origin-isolation context, which the WASM engine needs for
+`SharedArrayBuffer`.
 
-### Why a console command and not a direct WASM call
+**The bridge's allowlist is a security boundary.** Without one it is an
+open UDP relay: anyone who can open a WebSocket can make the VPS send
+packets to any host it can reach. The registry may tell the bridge
+*where* to send a packet; only the floor says whether it is *allowed* to.
+The floor is `127.0.0.1` on a static port range, so it never has to be
+widened to add a server.
 
-The xash3d-fwgs wrapper keeps `wasmExports` in a closure and never puts it
-on the Module object. `em.cwrap()`, `em['ts_pump']`, `em.wasmExports` and
-`em.asm` are all undefined — four lookup paths, all verified missing.
-Console commands are the one JS→DLL channel the engine actually exposes.
-`ts_pump*` are still exported from the WASM (visible in `wasm-objdump -j
-Export`) in case a future engine build exposes them.
+**Unknown targets are refused before the handshake.** Validating after
+would let the connection open successfully and then close — which reads
+to the client as "connected" and hides the refusal.
 
-## Verification
+**The registry observes; the orchestrator decides.** Separate services, so
+a registry bug cannot take the fleet down. The orchestrator never measures
+anything itself.
 
-`node tools/port/ts-server-dll/test-harness/pump-smoke.js`:
+**The orchestrator does nothing when the registry is unreachable.** "I
+cannot see the fleet" and "the fleet is empty" look identical from there,
+and only one is true. Scaling in on a registry outage would take the
+fleet down.
 
-```
-PASS  WASM instantiates              1x HS_INIT ent=0
-PASS  GiveFnptrsToDll hook fired     1x HS_INIT ent=1 (ts_post_init)
-PASS  ts_pump_think registered       no "Unknown command"
-PASS  Think() executing in WASM      counter 1 -> 170
-PASS  HUD strip reports live Hz      17.6 Hz
-PASS  HUD strip tick count agrees    170 ticks
-PASS  ts_* spawn errors              0
-WARN  player hooks                   0 (spawn path traps)
-ALL PASS
-```
+**The game archive is served from a public R2 bucket.** This is the
+highest-exposure of the three delivery options and it is a deliberate
+call: the browser needs the content, and the server image stays clean
+(the assets live in a read-only volume, never baked into the image). The
+content is now in Kyle's Cloudflare account and is fetchable by anyone
+with the URL, permanently.
 
-The counter check is the load-bearing one. `Think()` on a NULL rules object
-is a silent no-op, so "no error" proves nothing — only a monotonically
-increasing counter proves our code after the call actually ran.
+## What is NOT done
 
-## R1.1. 🔴 THE BLOCKER — the player entity
-
-`node tools/port/ts-server-dll/test-harness/spawn-diag.js` pins it exactly:
-
-```
-step 31  ENTER                          ok
-step 33  pfnCreateEntity -> edict 185   ok
-step 34  pfnAllocString('player')       ok
-step 41  player(&pev->v) -> privdata    ok  (non-NULL)
-<trap>   DispatchSpawn -> CBasePlayer::Spawn()
-```
-
-The sequence is correct — it reproduces what `SV_Spawn` does, including
-calling the `LINK_ENTITY_TO_CLASS`-generated `player` symbol to allocate the
-`CBasePlayer` before dispatching. The trap is inside `CBasePlayer::Spawn()`,
-which reaches for a long tail of `g_engfuncs` slots; several are NULL in this
-Xash3D-FWGS build (same class of gap as `pfnCreateFakeClient`, which the
-engine declares in `eiface.h` and never implements). A NULL indirect call
-through the enginefuncs table is an unconditional WASM trap, uncatchable from
-JS — hence the step markers.
-
-**Two fixes, (b) first:**
-
-- **(b) Minimal `CTSPlayer` overriding `Spawn()`** — skip the HL1
-  weapon/model machinery, set origin / health / movetype / modelindex
-  directly. Smaller, touches no HLSDK code. **Start here.**
-- **(a) Audit `CBasePlayer::Spawn`'s enginefuncs dependencies** and
-  NULL-guard each. Tedious but mechanical, and the guard is correct on its
-  own terms: a shipped DLL shouldn't trap on optional slots.
-
-### Engine NULL slots found so far
-
-- `pfnCreateFakeClient` — declared in `eiface.h:200`, never implemented.
-  Returns NULL, so `bot_quota` can never create anything.
-- Whatever `CBasePlayer::Spawn` touches — not yet enumerated.
-
-**This also explains "no bots".** Bots in this engine are fake clients, and
-the fake-client slot is NULL. `bot_quota` is not a settings problem.
-
-## ⚠️ DO NOT use most of the HUD as a progress signal
-
-> **Updated 2026-10-21.** The `[data-pump-strip]` element in the
-> bottom-left IS a real signal (it counts actual `Think()` calls in
-> the WASM). Everything else below is still a literal.
-
-`webxash/src/components/TSHud.vue:145-151` initialises every visible value as
-a **literal**:
-
-```js
-const cash = ref(850)
-const roundTimeRemaining = ref(178)
-const roundCount = ref(1)
-const currentWeapon = ref('Desert Eagle')
-const className = ref('Soldier')
-```
-
-The player roster is static too. Only **2** bindings in the whole component are
-bridge-fed. **The HUD renders identically with none of our code loaded**,
-including on the c91698be baseline. We claimed otherwise once and had to walk
-it back — see PINKBIKE D.7.52.
-
-**Real signals:** engine stdout, `cls.state` transitions, network messages.
-The only genuinely live HUD-ish value today is the round timer, because
-`gpGlobals->time` is real.
-
----
+- **Matchmaking.** The one control-plane piece not built. The registry
+  knows what instances exist and how healthy they are; it does not assign
+  players to them.
+- **Capacity is an estimate, not a measurement.** "8 instances of 32 slots
+  on this box" is arithmetic from a 4 GB RAM budget and 363 MB per
+  image. It has never been run. Treat it as a plan, not a promise — the
+  binding constraint is most likely CPU (2 vCores shared between 8 game
+  servers, Caddy, and three Node services), not RAM.
+- **The FE work Kyle identified**, and the web UI re-brand (Grover).
+- **The native SDL event queue** — the long-standing upstream issue that
+  leaves keyboard input routing through a busy-wait poll.
 
 # § ROADMAP
 
 Dependency-ordered. Do not skip ahead — each step is untestable without the
 one above it.
 
-### R1. ~~THE BLOCKER — finish the client handshake~~ ✅ SOLVED via the pump
+### ~~R0. Playable in the browser, in production~~ ✅ **DONE (2026-10-23)**
 
-Superseded by § CURRENT STATE: the handshake never completes in webXash,
-so we drive `Think()` from JS instead. The original analysis below is
-kept for the record but the conclusion ("the handshake is the blocker")
-was wrong — it was a symptom of `-noip -noip6`, not a port defect.
+Real assets, real dedicated server, public URL, verified from a browser.
+Everything below builds on this.
 
-**Historical analysis:**
+### R1. Matchmaking
 
-**Exit criterion:** `cls.state` reaches `ca_connected` and stdout prints
-`Setting up renderer...`.
+Assign a player to an instance. The registry already knows the instance
+set and each one's health, tickrate and load; what is missing is the
+policy for *which* instance a given player should join, and the
+"instance full → try the next one" path. The orchestrator's scale-out
+already reacts to fleet-wide load, so the load signal exists.
 
-**First move: instrument, don't guess.** We have inferred this blocker for
-several rounds. Add stdout instrumentation on `cls.state` transitions in
-`cl_main.c`'s state machine so we *read* which state we reach instead of
-inferring from "nothing renders." This turns guessing into measurement and
-should be step one.
+### R2. Real-user metrics
 
-**Then, in likelihood order,** the three hooks we stub that the baseline
-implements substantially (measured instruction counts from c91698be):
+The first thing that makes the capacity number real. The registry
+already collects tickrate, player count and bot count per instance —
+what it does not yet do is retain them over time. Until it does, the
+"8 instances" figure is a budget, not a measurement, and the extrapolation
+from one busy server cannot be made.
 
-| Hook | Baseline instrs | Our state |
-|---|---|---|
-| `PlayerPostThink` (func[497]) | 505 | stub |
-| `GetWeaponData` (func[515]) | 207 | returns 0 |
-| `PlayerPreThink` (func[496]) | 120 | stub |
-| `CmdStart` | 61 | stub |
+### R3. FE polish + the web UI re-brand
 
-The baseline's `ClientConnect` is **1 instruction** and `Spawn`/`Think` are
-**3 each** — and it still renders. So entity behaviour is NOT the gate, and
-table coverage is NOT the gap (we fill all 50). Look at the four above.
+Kyle's identified FE tweaks, plus the bulletballet re-brand Grover is
+working on. Now that prod is stable, this is the active workstream.
 
-### R2. Spawn at a real `info_player_start`
+### R4. Single-player depth (the old R2–R7, on the fallback path)
 
-Currently hardcoded `(0,0,32)`. If the camera is inside a wall the world is
-black regardless of R1. Walk the entity list at `ServerActivate` time,
-remember the first `info_player_start` origin, spawn there.
-
-`player` and `info_player_start` are already exported and resolve.
-
-### R3. `AddToFullPack` real payloads
-
-Entity snapshots so the client sees a world at all. Baseline is a 36-instr
-pass-through; ours is a stub.
-
-### R4. Movement — `PM_Move`
-
-Baseline is 4 instructions. Then `+forward` should move the camera.
-**This is the "it's a game" milestone.**
-
-### R5. Non-player entities (the 207 errors)
-
-`No spawn function for ""` — 207 of them, server-side during
-`SV_LoadFromFile`. **Known NOT to be the handshake cause** (they predate
-client connect). They do gate lights/doors/triggers and all TS gameplay.
-Probably needs `physFuncs.pfnAllocString` / `pfnGetString` so the DLL owns
-string representation. String-index behaviour is already understood — see
-PINKBIKE D.7.49, and **do not re-attempt that dead end.**
-
-### R6. Live HUD
-
-Last, because it's cosmetic. Wire `TSHud.vue` to real bridge data so it stops
-showing literals.
-
-### R7. TS gameplay
-
-Only meaningful after R4. `src/mod/` is the decompiled gameplay spec
-(`CTSGameRules`, `CTSBriefcase`, `CTSBulletManager`). Weapons, fire modes,
-scoring, rounds, briefcase.
-
----
+Spawn at a real `info_player_start`, `AddToFullPack` real payloads,
+movement via `PM_Move`, the 207 non-player spawn errors, live HUD, and
+full TS gameplay. All of this is still wanted — it is just wanted on the
+**fallback** path now, not on the path to production. See § DEAD ENDS for
+the parts that are known traps.
 
 # § NEXT TASK
 
-> ## R1 step 5: instrument the CMake-built TS module and watch for [HS] hook logs
+> ## R1: matchmaking — assign a player to an instance
 >
-> **THE WASM-LOAD BLOCKER IS SOLVED.** Root cause and fix:
+> **Context.** The registry already publishes every instance with its
+> health, tickrate, human count and bot count. The bridge already routes
+> a player to the instance they picked. What is missing is the policy
+> layer between them: given the instance list and a player, which instance
+> should they be sent to, and what happens when it is full.
 >
-> `build-ts-dll.sh` was driving **raw emcc** with `-sSIDE_MODULE=1`.
-> That invocation emits a side module **without a `Start` section and
-> without a `DataCount` section**. Xash3D-FWGS's dylink loader requires
-> the start function (it runs the module's C++ global constructors and
-> data relocations). Without it the loader halts and the engine prints
+> **Decide first:**
+> 1. **Fill or spread?** Prefer the emptiest instance (keeps latency flat,
+>    spreads load) or the fullest (keeps players together, better for a
+>    deathmatch)? For TS, *together* is probably right — the mode is
+>    about fighting each other, not about low ping.
+> 2. **Does the browser pick, or the server?** The browser already picks
+>    from the server list. A server-side assignment is more work and more
+>    correct (it can account for capacity the browser cannot see).
+> 3. **Where does the choice live?** The registry is stateless today and
+>    that was deliberate. Matchmaking needs somewhere to hold "who is
+>    connecting to what" — which is the fork the old
+>    `docs/CONTROL-PLANE.md` called "where does state live", answered as
+>    "not yet" because the registry had no durable state to own.
 >
-> ```
-> _Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)
-> [xash-exec] failed: hostmap Infinity
-> ...dead engine
-> ```
+> **First move: write the policy down before writing any code.** The
+> decision above is a design decision, not an implementation detail, and
+> it is much cheaper to change on paper.
 >
-> The working baseline `c91698be…` was built by **CMake driving the
-> Emscripten toolchain**, which *does* emit Start + DataCount. Several
-> sessions tried to patch the raw-emcc output (elem densification,
-> dylink.0 byte-swap, synthetic Start section, bulk-memory flags) — all
-> produced `wasm-validate`-clean WASMs that still halted, because the
-> problem was never in the WASM *shape*, it was in never calling the
-> runtime init helpers at all.
->
-> ### Evidence
->
-> | Build path | Start | DataCount | Console milestones | Verdict |
-> |---|---|---|---|---|
-> | raw emcc (old script) | absent | absent | **3** | halts |
-> | CMake + Emscripten, stock HL1 | present | present | **27** | boots to "Setting up renderer..." |
-> | CMake + Emscripten + TS overlays | present | present | **27** | boots, `CTSFog_Spawn` + `ts_marker` exported |
->
-> Currently deployed: SHA `e372294046857e8d55829beae7a0cdd1f8824134f95d8d58c769cac828a76072`
-> (1,155,150 bytes, 47 imports / 0 GOT.func).
->
-> ### What changed in this session
->
-> - **`build-ts-dll.sh` rewritten** to drive CMake + the Emscripten
->   toolchain. Copies TS overlays into `$HLSDK/dlls/`, patches the
->   `gamerules.cpp` factory, wires overlays into `dlls/CMakeLists.txt`'s
->   `SVDLL_SOURCES`, builds, runs `rewrite-got.py`, safety-gates, deploys.
-> - **`dlls/CMakeLists.txt` Release strip disabled under EMSCRIPTEN.**
->   GNU `strip` cannot read WASM (`file format not recognized`) and failed
->   the link. `wasm-strip` is worse — it drops the `dylink.0` custom section
->   the engine loader requires as the FIRST section. Skipping strip entirely
->   costs ~100KB and loads fine.
-> - **Safety gate extended** to also refuse on a missing `dylink.0` or a
->   missing `Start` section — those are the two raw-emcc symptoms.
-> - **`build-ts-dll-raw-emcc.sh.legacy`** — the old script, kept for
->   reference only. Do not use.
-> - Artifact preserved: `shim/build/ts_shim_v3_wC_cmake_ts.wasm`.
->
-> ### Concrete next steps
->
-> 1. **Add `[HS]` hook instrumentation** to the TS overlay sources
->    (`cts_game_rules.cpp`) via an `EM_JS` console-logger, for the four
->    handshake hooks: `ClientConnect`, `ClientPutInServer`, `Spawn`,
->    `ClientDisconnect`. The module now loads, so these will actually fire.
-> 2. **Rebuild + deploy + `side-by-side.js`.** First test that should ever
->    show `[HS]` lines.
-> 3. Then work R2 (spawn at a real `info_player_start`) with a module we
->    know the engine can call into.
->
-> ### Do NOT
->
-> - Use `build-ts-dll-raw-emcc.sh.legacy`. It cannot produce a loadable module.
-> - Add `wasm-strip` to the build. It removes `dylink.0` and the engine dies.
-> - Trust `wasm-validate` as a proxy for "the engine will load this."
->   Several `wasm-validate`-clean modules halted. The gate that matters is
->   "Start section present", which the build script now checks.
-
+> **Do not break what works.** The production path is verified end to end.
+> Matchmaking sits in front of it. Any change that alters which instance
+> a player lands on must keep the bridge's `403` behaviour for anything
+> not in the allowlist, and must not reintroduce a second source of
+> truth for the instance list.
 
 ---
 
@@ -364,82 +266,105 @@ scoring, rounds, briefcase.
 
 # § KEY FILES
 
-**Shim (our TS server DLL):**
-- `tools/port/ts-server-dll/shim/ts_shim_v3.c` — active implementation
-- `tools/port/ts-server-dll/shim/ts_class_stubs.inc` — 249 entity-class exports
-- `tools/port/ts-server-dll/build-matrix/entvars.h` — verbatim HLSDK `entvars_t`
-  + `_Static_assert` layout guards
-- `tools/port/ts-server-dll/shim/probe_entvars.c` — standalone offsetof probe
+**Production services** (all on `bb-prod`, all `--restart unless-stopped`):
 
-**Tooling (all vendored — no /tmp dependency):**
-- `tools/port/ts-server-dll/bootstrap-tools.sh` — **RUN THIS FIRST.** Verifies
-  wabt / emscripten / playwright+chromium / dev server / rollback baseline.
-- `tools/port/ts-server-dll/dllfunc-diff.py` — structural DLL_FUNCTIONS diff
-  vs the baseline wasm
-- `tools/port/ts-server-dll/build-ts-dll.sh` — build + F1 safety gate
-  (refuses >60 imports or any `GOT.func`)
-- `tools/port/ts-server-dll/test-harness/*.js` — 90 Playwright diagnostics
-  (self-locating; auto-detects playwright-core and the newest chromium)
-- `tools/port/ts-server-dll/reference/engine/` — **vendored engine sources.**
-  `cl_main.c` (handshake), `sv_client.c` (connect dispatch, the two hooks we
-  own), `sv_game.c` (authoritative `g_engfuncs` table), `eiface.h`,
-  `physint.h`, `progdefs.h`, + full HLSDK headers. Provenance + re-fetch
-  commands in `reference/PROVENANCE.md`. Do not hand-edit.
+- `services/registry/service.mjs` — the fleet's source of truth. A2S state,
+  tickrate, bot count, health. Endpoints `/api/servers`, `/api/registry`,
+  `/healthz`. Image `registry:0.4`.
+- `services/orchestrator/service.mjs` — the decision maker. Restart
+  unhealthy, restart degraded, scale out, scale in. Reads the registry;
+  measures nothing itself. Image `orchestrator:0.2`.
+- `tools/port/tsp-rs/scripts/ts-udp-bridge.js` — WebSocket↔UDP bridge.
+  Multi-target, allowlisted, refuses unknown targets with 403 *before* the
+  handshake. Image `ts-bridge:0.3`.
+- `tools/deploy/config/Caddyfile` — TLS, routing, cross-origin isolation.
+- `tools/deploy/run-instance.sh` — the one way to bring an instance up.
+  Verifies health AND that the engine bound the right port.
+- `tools/deploy/Dockerfile.bridge` — the bridge image.
+- `services/registry/Dockerfile.registry`,
+  `services/orchestrator/Dockerfile.orchestrator` — the control-plane images.
 
-> ⚠️ `wasm-objdump` (wabt) is **not on PATH** — it is a tarball in
-> `/tmp/wabt-1.0.42/bin/`. Either `export PATH="/tmp/wabt-1.0.42/bin:$PATH"`
-> or `sudo apt-get install -y wabt`. Every structural analysis needs it.
+**Asset delivery:**
+- `tools/assets/split-tsmod.mjs` — splits the archive into 64 MiB parts.
+- `tools/assets/upload-tsmod.mjs` — uploads to R2. The storage key layout
+  must mirror the dev-served layout exactly.
+- `tools/port/tsp-rs/scripts/ts-udp-bridge.js` — see above.
+
+**Frontend transport** (in the `webxash` submodule):
+- `webxash/src/services/xash-bridge.ts` — `wss://` scheme, peer address in
+  the WS query.
+- `webxash/src/services/xash-loader.ts` — `+bridge host:port` (the bridge)
+  is separate from `+connect ip:port` (the game peer).
+- `webxash/src/services/ts-server-list.ts` — the server browser and
+  `bridgeAddress()`.
+- `webxash/src/env.d.ts` — `VITE_ASSET_BASE`, `VITE_BRIDGE_ADDRESS`.
+- `webxash/vite-a2s-plugin.mjs` — the A2S parser, including the bot count.
+
+**Fallback path (single-player, NOT production):**
+- `tools/port/ts-server-dll/shim/ts_shim_v3.c` — the TS server DLL shim.
+- `tools/port/ts-server-dll/build-ts-dll.sh` — build + the F1 safety gate.
+- `webxash/src/services/ts-pump.ts` — the JS-driven frame clock, for when
+  the server logic runs inside the browser.
+- `webxash/src/components/TSHud.vue` — ⚠️ still shows literals.
 
 **Docs:**
-- `tools/port/ts-server-dll/PINKBIKE.md` — findings, dead ends, corrections
-- `tools/port/ts-server-dll/WAY-FORWARD.md` — architecture + gotchas
-- `tools/port/ts-server-dll/D.7.38-got-root-cause.md` — the 229 GOT.func story
-
-**Runtime:**
-- `webxash/src/stores/store.ts` — launch args:
-  `-noip -noip6 bot_quota 2 -game ts +map ts_apartments`
-- `webxash/src/components/TSHud.vue` — ⚠️ literals, see above
-- `webxash/src/services/ts-bridge.ts` — ⚠️ still targets `Module.ctsBridge`;
-  the shim reads `globalThis.__ctsBridge`. Unresolved contract mismatch.
-
-**Assets / rollback:**
-- `webxash/public/dlls/hl_emscripten_wasm32.wasm` — **live, c91698be**
-- `/tmp/hl_emscripten_wasm32.wasm.bak` — known-good rollback
-- `shim/build/ts_shim_v3_w*.wasm` — 16+ preserved experiment artifacts
-- Live: `https://100.95.111.112:5174/webXash/`
-- Diagnostics: `?nohud=1`, `?xashnoise=1`; Playwright scripts in `/tmp/smoke-test/`
+- `docs/PRODUCTION-INFRA.md` — the production topology, Caddy, TLS,
+  firewall, the control plane, and the verified end-to-end evidence.
+- `docs/ASSET-DELIVERY.md` — the archive, R2, CORS, the edge cache, and
+  the `vary: Origin` stale-variant trap.
+- `docs/CONTROL-PLANE.md` — the control-plane decisions, and which forks
+  are settled.
+- `SPEC.md` — the living design spec (mirrored to the vault).
 
 ---
 
 # § VERIFICATION
 
+**Production, from anywhere:**
+
 ```bash
-cd /home/kyle/Development/specialists-browser
+# the site, over TLS
+curl -sS -o /dev/null -w "%{http_code}\n" https://bulletballet.dev/
 
-# 0. verify the toolchain (wabt / emcc / playwright / dev server / rollback)
-./tools/port/ts-server-dll/bootstrap-tools.sh
+# the server browser — this is the live fleet view
+curl -sS https://bulletballet.dev/api/servers | python3 -m json.tool
 
-# 1. build the shim — MUST print 0 GOT.func
-cd tools/port/ts-server-dll && ./build-ts-dll.sh
-
-# 2. differential test: baseline vs our shim, same launch flags.
-#    Look for "Setting up renderer..." — the marker R1 must produce.
-cd tools/port/ts-server-dll/test-harness && node side-by-side.js
-
-# 3. ROLL BACK live webXash (always do this after testing)
-cp /tmp/hl_emscripten_wasm32.wasm.bak \
-   webxash/public/dlls/hl_emscripten_wasm32.wasm
-cp /tmp/hl_emscripten_wasm32.wasm.bak \
-   webxash/public/xash3d-fwgs/dist/dlls/ts_emscripten_wasm32.wasm
+# raw A2S, independent of our own parser
+python3 - <<'PY'
+import socket
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM); s.settimeout(8)
+s.sendto(b'\xff\xff\xff\xffTSource Engine Query\x00', ('40.160.225.81',27015))
+d,_=s.recvfrom(4096); off=6
+for _ in range(4):
+    e=d.index(b'\x00',off); off=e+1
+off+=2; p=d[off]; off+=1; m=d[off]; off+=1; b=d[off]
+print('players=%d max=%d bots=%d -> humans=%d' % (p,m,b,p-b))
+PY
 ```
 
-Vendored rollback (in case `/tmp` was cleared):
-`tools/port/ts-server-dll/baseline/hl_emscripten_wasm32.wasm`
+**On the box:**
 
-Record on every build attempt: file size, import count, `GOT.func` count, SHA,
-browser result, page errors, and whether TS assets/commands register.
+```bash
+ssh bb-prod 'docker ps'                                   # all four services
+ssh bb-prod 'curl -sS 127.0.0.1:8081/api/registry'         # fleet detail
+ssh bb-prod 'curl -sS 127.0.0.1:8090/api/orchestrator'      # decisions + history
+ssh bb-prod 'curl -sS 127.0.0.1:27017/health'              # bridge allowlist
+```
 
----
+**The browser test that matters** — a real browser at the real URL, a real
+player in a real server:
+
+```
+https://bulletballet.dev/  →  Servers tab  →  bulletballet TS  →  JOIN
+```
+
+Then confirm from outside that the player count went up by one, and that
+`humans` did too. A browser that boots the engine but does not appear in
+the server's player count is a silent failure, and the A2S player count is
+the only thing that catches it.
+
+**Do not use the HUD as a progress signal** — see the warning in the
+historical record below.
 
 # § USERS' WORKING STYLE (Kyle)
 
