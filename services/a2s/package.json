@@ -1,0 +1,9 @@
+{
+  "name": "specialists-a2s-service",
+  "private": true,
+  "type": "module",
+  "description": "Standalone A2S server-browser backend for production.",
+  "scripts": {
+    "start": "node service.mjs"
+  }
+}

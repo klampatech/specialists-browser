@@ -311,3 +311,34 @@ at the right address.
 `hostname` in A2S truncates the trailing token: `bulletballet TS-0` reports
 as `bulletballet TS`. Cosmetic; per-instance names should avoid spaces until
 the encoding is understood.
+
+
+---
+
+## 5. A2S service (Phase 2, 2026-10-23)
+
+`vite-a2s-plugin.mjs` was a dev-server plugin, and in production there is no
+Vite process — the frontend is a static bundle behind Caddy — so the endpoint
+the server browser calls simply would not exist. `services/a2s/service.mjs` is
+that endpoint standing on its own.
+
+```
+container   a2s-service:0.1   --network host
+binds       127.0.0.1:8081    (not public — Caddy fronts it)
+probes      127.0.0.1:27015   -> ts-0
+reports     ts-0  ts_casa  4/32  publicAddress 40.160.225.81
+```
+
+It reuses `queryServer()` from the plugin rather than reimplementing A2S — the
+GoldSrc handshake rules are easy to get subtly wrong and impossible to notice
+until a server browser silently shows one map.
+
+**Probing is in the background, not in the request path.** Each probe is a
+UDP round trip with a ~1.2s timeout, so doing it inline would let the
+slowest or dead instance set the latency of every page load. The service
+polls on an interval and serves the last good snapshot, marking entries
+stale rather than dropping them: a server that dies fades out over one poll
+interval instead of vanishing on a single lost packet.
+
+Binds 127.0.0.1 deliberately. Publicly it would let anyone enumerate the
+fleet for free.

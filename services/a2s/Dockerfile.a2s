@@ -1,0 +1,41 @@
+# a2s-service — standalone server-browser backend.
+#
+# Runs on --network host so it can probe the game servers on 127.0.0.1 without
+# NAT or published-port gymnastics. Nothing else on this host needs to reach
+# it: Caddy fronts it.
+#
+#   docker build -t a2s-service:0.1 -f services/a2s/Dockerfile.a2s .
+#   docker run -d --name a2s --network host \
+#     -e A2S_PORTS=27015,27016 \
+#     -e A2S_PUBLIC=40.160.225.81 \
+#     a2s-service:0.1
+
+FROM node:22-bookworm-slim
+
+WORKDIR /app
+
+# Only the A2S query module and the service are needed. The service imports
+# queryServer from the plugin rather than reimplementing the GoldSrc
+# handshake — see services/a2s/service.mjs for why that matters.
+COPY webxash/vite-a2s-plugin.mjs /app/webxash/vite-a2s-plugin.mjs
+COPY services/a2s/service.mjs /app/services/a2s/service.mjs
+
+# The plugin is imported by the service, so Node has to treat these as ESM.
+# A package.json with "type": "module" is the least surprising way to say
+# that; without it the import in service.mjs fails with a confusing
+# "Cannot use import statement outside a module".
+COPY services/a2s/package.json /app/package.json
+
+ENV A2S_BIND=127.0.0.1:8081 \
+    A2S_HOST=127.0.0.1 \
+    A2S_POLL_MS=10000 \
+    A2S_STALE_MS=45000
+
+EXPOSE 8081
+
+# Non-root. This service only needs to read a UDP port and serve JSON.
+RUN useradd --create-home --uid 10002 --shell /usr/sbin/nologin a2s \
+ && chown -R a2s:a2s /app
+USER a2s
+
+CMD ["node", "/app/services/a2s/service.mjs"]
