@@ -532,9 +532,10 @@ wss.on('connection', (ws, req) => {
     console.log(
       `[bridge] #${connId} target ${target.id} is down — closing so the client can say so`
     );
-    stats.liveConnections = Math.max(0, stats.liveConnections - 1);
     // 4001 is an application close code: the peer is fine, the thing it
-    // was talking to is not.
+    // was talking to is not. The live-connection count is decremented by
+    // the normal teardown path, not here — decrementing it in both places
+    // drove the counter negative.
     ws.close(4001, 'game server unavailable');
   }, 5000);
   checkTargetAlive.unref?.();
