@@ -60,6 +60,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { queryServer } from '../../webxash/vite-a2s-plugin.mjs';
 import { probeWithRetry, timeoutForAttempt } from './lib/a2s-retry.mjs';
+import { classifyProbeFailure, nextFailureCount } from './lib/liveness.mjs';
 import {
   desiredBotQuota as computeBotQuota,
   resolveHumanCount,
@@ -222,6 +223,31 @@ async function collectMetrics(instance) {
     };
   } catch {
     return null;
+  }
+}
+
+/**
+ * Is the game server actually alive?
+ *
+ * The console is a pipe into the server's stdin, and it answers
+ * regardless of what the game thread is doing. `sys_ticrate` coming
+ * back is proof of life.
+ *
+ * This is the tie-breaker for a missed A2S probe. A2S is answered on
+ * the game thread, so it is missed precisely when the server is busy
+ * with real players — and a busy server must not be mistaken for a
+ * dead one, because restarting it kicks those players off.
+ *
+ * @returns true if the console answered, false if it did not, and null
+ *          if the console could not be consulted at all.
+ */
+async function isAliveViaConsole(container) {
+  if (!USE_DOCKER || !container) return null;
+  try {
+    const tick = await consoleAsk(container, 'sys_ticrate', /"sys_ticrate"\s+is\s+"(\d+)"/, 3000);
+    return tick ? true : false;
+  } catch {
+    return false;
   }
 }
 
@@ -400,9 +426,19 @@ async function pollA2S() {
             consecutiveFailures: 0,
           });
         } else if (existing) {
-          // Only count as down after several misses in a row. See
-          // FAILURES_BEFORE_DOWN above for why one is not enough.
-          const failures = (existing.consecutiveFailures ?? 0) + 1;
+          // A missed A2S probe is NOT evidence that the server is dead.
+          // A2S is answered on the GAME THREAD, which is busiest exactly
+          // when real players are connected — and a missed reply NEVER
+          // arrives, so no timeout can rescue it. The server was busy
+          // because players were playing.
+          //
+          // So ask the console, which is a different path entirely and
+          // answers regardless. If the server answers there, it is
+          // alive and busy, and this miss must NOT accumulate toward a
+          // restart that would kick those players off.
+          const alive = await isAliveViaConsole(existing.container);
+          const classification = classifyProbeFailure(alive);
+          const failures = nextFailureCount(classification, existing.consecutiveFailures ?? 0);
           const down = failures >= FAILURES_BEFORE_DOWN;
           registry.set(id, {
             ...existing,

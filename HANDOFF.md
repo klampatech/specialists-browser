@@ -110,6 +110,41 @@ inside `launch()` and *before* anything expensive happens — one source of
 truth for "where does a player go", so the two buttons cannot diverge
 again. There is now a test that clicks PLAY specifically.
 
+## The registry was restarting healthy servers
+
+Three times in three hours the orchestrator restarted `ts-0` while it
+was perfectly healthy — kicking every player off it each time.
+
+The cause: **A2S replies get lost.** Measured against the live
+instance:
+
+```
+one query every 2s   ->  0% lost
+one query every 400ms -> 15% lost
+one query every 60ms  -> 42% lost
+```
+
+The server is not slow when it answers — 16ms p50, under 52ms p95. It
+is *dropping* queries, apparently as flood protection. The registry
+probed once every 5 seconds, and three consecutive dropped replies
+marked a healthy instance down.
+
+Fixed by retrying the probe (three attempts), with a tight 500ms window
+on the retries — ten times the observed p95, so a busy server still
+answers, but a port with nothing listening does not burn 1200ms per
+attempt. Measured against the live public server: **22.5% of
+single-shot probes failed; with the retry, 0% did.**
+
+Things ruled out first: not a timeout (replies come back in 16ms), not
+the socket (a persistent socket failed at the same rate), not our rate
+(the registry polls once per 5s and nothing else sends A2S), and not
+Docker's NAT (the packet trace shows the full loop and every probe in
+a clean window was answered).
+
+The threshold of three consecutive failed cycles is unchanged — with
+the retry, three cycles all failing after three attempts each really
+does mean the server is gone.
+
 ## The repo now has CI and a deploy
 
 Three workflows, live since 2026-10-23:

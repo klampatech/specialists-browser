@@ -26,6 +26,7 @@ COPY services/registry/service.mjs /app/services/registry/service.mjs
 # bugs were invisible from the outside.
 COPY services/registry/lib/fleet-logic.mjs /app/services/registry/lib/fleet-logic.mjs
 COPY services/registry/lib/a2s-retry.mjs /app/services/registry/lib/a2s-retry.mjs
+COPY services/registry/lib/liveness.mjs /app/services/registry/lib/liveness.mjs
 
 # The registry imports queryServer() from the Vite plugin rather than
 # reimplementing A2S: the GoldSrc handshake rules are easy to get subtly
