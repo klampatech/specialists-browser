@@ -722,16 +722,47 @@ The engine needs cross-origin isolation (`SharedArrayBuffer`). Caddy sends
 
 ### When the server goes away
 
-The engine does not notice a dropped connection on its own: the WebSocket
-is to the *bridge*, not to the server, so a server death stops packets
-without closing anything the client can see. The client would freeze on
-its last frame.
+The engine does not notice this on its own, and the reason is structural:
+the client's WebSocket is to the **bridge**, not to the server. A server
+death closes nothing the client can see. The bridge keeps relaying into
+the void, the engine keeps rendering its last frame, and the player is
+looking at a frozen world with no explanation.
 
-The bridge now reports the disconnect, the store carries it, and the page
-shows a **CONNECTION LOST** overlay with a Reconnect button. Note that a
-server *restart* does not close the WebSocket — the bridge relays into
-the void and resumes when the server returns — so the overlay covers a
-dropped bridge or a dropped network, not the restart case.
+The bridge cannot tell a dead server from a quiet one either — UDP has no
+connection state, so a dead server just means packets stop arriving. But
+the **registry** polls A2S and already knows when an instance has gone.
+So:
+
+```
+server dies → registry's A2S poll misses (3 in a row) → registry marks it down
+            → bridge notices (2 polls) → bridge closes the socket with 4001
+            → client shows CONNECTION LOST, counts down, reconnects
+```
+
+The application close code (4001) lets the client say *"The game server is
+restarting. It will be back in about a minute"* rather than a generic
+network message. And it counts down and reconnects on its own — a player
+staring at a frozen screen needs to click something to be told what to
+do, and most will not.
+
+Verified end to end: killed the server under a live player, and the
+overlay appeared **25 seconds later** with the right text and a running
+countdown.
+
+```bash
+node tools/deploy/disconnect-ux-test.cjs https://bulletballet.dev/
+```
+
+### Players linger for ~2 minutes after leaving
+
+A disconnected browser's slot stays in the server's list until the
+server's own timeout fires. Observed: two ghost clients
+(`Specialist (2)`, `Specialist`, same uniqueid) sat in `status` for over
+two minutes past `sv_timeout=65`, then cleared together.
+
+So the server browser shows players who have already left, and the bot
+quota takes that long to refill. It self-corrects, but do not read the
+player count as a live occupancy metric during a test.
 
 ### One false-restart bug, found and fixed
 
