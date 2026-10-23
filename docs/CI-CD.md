@@ -73,8 +73,31 @@ had trouble with is maintenance, not protection.
 | `tests/unit/fleet-logic.test.mjs` | Humans come from the bridge, not from A2S arithmetic. And an **empty** map from a reachable bridge means *zero humans*, not *unknown* — treating it as unknown brings the ghost problem straight back. |
 | `tests/unit/slot.test.mjs` | Scale-out takes the lowest free index. "Highest + 1" walks off the end of a contiguous port range. |
 
-To make those testable, four small pieces of logic moved into modules of
-their own:
+### The frontend is a bun project
+
+`webxash` has a `bun.lock`, not a `package-lock.json`. `npm ci` cannot
+run there at all — there is no npm lockfile to install from.
+
+Worse, two of its dependencies had been **unpublished from npm** on
+2026-09-08:
+
+```
+$ npm view hlsdk-portable versions
+npm error 404 Unpublished on 2026-09-08T14:17:21.709Z
+```
+
+Both were already stubbed out in the loader and neither was imported
+anywhere, but both were still listed in `package.json` — so every fresh
+install failed with a 404. The local build worked only because
+`node_modules` was already populated. **Nothing in the repo could be
+installed from scratch**, which is how the first CI run failed.
+
+A dependency that cannot be installed is not a dependency. They are
+removed, and `bun install --frozen-lockfile` now works from a clean
+checkout.
+
+To make the tests possible, four small pieces of logic moved into modules
+of their own:
 
 ```
 tools/port/tsp-rs/scripts/bridge-allowlist.cjs
@@ -89,6 +112,15 @@ with an explicit `COPY` line, and each has an allowlist-style
 not added to BOTH the Dockerfile and the `.dockerignore` produces an
 image that starts and dies in the same second. `ci.yml` builds all three
 images on every pull request for exactly this reason.
+
+**A second trap, in the same family:** `public/hl/` holds three *tracked*
+zips (168 MB) that are part of this repo, plus the TS archive and its
+split parts (494 MB each) which are gitignored. So the build is 222 MB in
+CI and 1.2 GB on a machine that has the archive lying around. The check
+is for the specific files — `dist/hl/tsmod.zip` and `dist/hl/ts/` — and
+not for `dist/hl` as a whole, because a blanket check fails on a clean
+checkout for the wrong reason. The deploy excludes `hl/` regardless:
+the archive is served from R2, not from the web bundle.
 
 ---
 

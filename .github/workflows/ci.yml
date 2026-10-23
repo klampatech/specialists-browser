@@ -37,37 +37,43 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           submodules: recursive
 
-      - uses: actions/setup-node@v4
+      - name: Set up bun
+        # The frontend is a BUN project — bun.lock, not package-lock.json.
+        # There is no npm lockfile here, so `npm ci` cannot run at all.
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: webxash/package-lock.json
+          bun-version: latest
 
       - name: Install
-        run: npm ci
+        working-directory: webxash
+        run: bun install --frozen-lockfile
 
       - name: Typecheck
         # The typecheck is the cheapest possible regression gate, and it
         # catches the class of bug where a store field is renamed and
         # one consumer is not.
-        run: npx vue-tsc --noEmit
+        working-directory: webxash
+        run: bunx vue-tsc --noEmit
 
       - name: Build
+        working-directory: webxash
         env:
           VITE_ASSET_BASE: https://assets.bulletballet.dev
-        run: npm run build
-
-      - name: The bundle must not contain the game archive
-        # The archive is 493 MB and is served from R2. A build that
-        # accidentally includes it would publish it a second time, to
-        # the wrong place, for free.
         run: |
-          if [ -d dist/hl ]; then
-            echo "::error::the built bundle contains dist/hl — the game archive must not be in the web build"
-            du -sh dist/hl
+          set -euo pipefail
+          bun run build
+          # public/hl/ legitimately holds three TRACKED zips (168 MB)
+          # that are part of this repo. What must NOT be in the build is
+          # the TS archive and its split parts — 494 MB each, gitignored,
+          # and served from R2 instead. A build that picked those up
+          # would publish them a second time, to the wrong place, for
+          # free.
+          if [ -e dist/hl/tsmod.zip ] || [ -d dist/hl/ts ]; then
+            echo "::error::the built bundle contains the TS game archive — it belongs on R2"
             exit 1
           fi
-          echo "  no archive in the bundle"
+          echo "  bundle size: $(du -sh dist | cut -f1)"
+
 
   unit:
     name: Unit — the regressions that actually bit us

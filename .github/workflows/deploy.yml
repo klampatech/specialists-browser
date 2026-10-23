@@ -103,13 +103,15 @@ jobs:
           echo "  services changed: $services"
 
       # ── the frontend ──────────────────────────────────────────────────
-      - name: Set up Node for the frontend build
+      - name: Set up bun
+        # The frontend is a BUN project — bun.lock, not package-lock.json.
+        # `npm ci` cannot even run here: there is no npm lockfile, and
+        # two of the old dependencies were unpublished from npm, so a
+        # fresh install failed with a 404.
         if: steps.changed.outputs.frontend == '1'
-        uses: actions/setup-node@v4
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: webxash/package-lock.json
+          bun-version: latest
 
       - name: Install and build the frontend
         if: steps.changed.outputs.frontend == '1'
@@ -118,11 +120,11 @@ jobs:
           VITE_ASSET_BASE: https://assets.bulletballet.dev
         run: |
           set -euo pipefail
-          npm ci
-          npx vue-tsc --noEmit
-          npm run build
-          if [ -d dist/hl ]; then
-            echo "::error::the built bundle contains dist/hl — the archive must not be in the web build"
+          bun install --frozen-lockfile
+          bunx vue-tsc --noEmit
+          bun run build
+          if [ -e dist/hl/tsmod.zip ] || [ -d dist/hl/ts ]; then
+            echo "::error::the built bundle contains the TS game archive — it belongs on R2"
             exit 1
           fi
           echo "  built $(du -sh dist | cut -f1)"
@@ -135,7 +137,11 @@ jobs:
           # --delete in place leaves a window where index.html is new and
           # the hashed assets it references are old — which is a blank
           # page for exactly as long as the upload takes.
-          rsync -az --delete webxash/dist/ prod:/srv/web.new/
+          # `hl/` is excluded on purpose: the game archive is served
+          # from R2, not from the web bundle. The tracked zips in
+          # public/hl are 168 MB of game content that has no business
+          # being re-uploaded to the VPS on every deploy.
+          rsync -az --delete --exclude 'hl/' webxash/dist/ prod:/srv/web.new/
           ssh -F ~/.ssh/config prod '
             set -euo pipefail
             rm -rf /srv/web.old
