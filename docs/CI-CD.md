@@ -53,6 +53,51 @@ gh api "repos/$REPO/commits/$SHA/pulls" --jq 'length'
 
 Zero means nobody opened a pull request for this commit.
 
+### The gate had a false negative, and it was silent
+
+The first version of the check lived in each workflow as a shell
+one-liner. The copy in the **deploy** workflow declared
+`permissions: contents: read` and no `pull-requests: read`, so the API
+answered with an error object instead of a list:
+
+```json
+{ "message": "Resource not accessible by integration",
+  "documentation_url": "...", "status": "403" }
+```
+
+And `jq 'length'` on an **object** returns the number of its **keys**.
+That response has three keys — so the gate read "3 pull requests" and
+**approved a direct push to main**.
+
+This was not theoretical. It happened: a direct push sailed through the
+deploy's gate while the separate `PR required` workflow, which had the
+permission, correctly failed the same commit.
+
+The gate is the thing standing between a direct push and production. A
+gate that approves what it exists to refuse is worse than no gate,
+because it looks like it is working.
+
+So the gate now lives in one place:
+
+```
+tools/ci/pr-gate.cjs        the runner
+tools/ci/pr-gate-logic.cjs  the decision, as pure functions
+```
+
+and it:
+
+- reads the count **only from an actual array** — anything else is
+  "could not verify", which fails closed;
+- **fails closed** on a missing token, a bad token, a non-200 response,
+  or a response that is not a list;
+- prints the HTTP status and whether the response was a list, so a
+  permission problem is visible instead of silent;
+- is covered by `tests/unit/pr-gate.test.mjs`, including the exact
+  failure it had.
+
+Both workflows call the same script, so the two copies cannot drift
+apart again — which is how they drifted apart in the first place.
+
 ---
 
 ## The regression suite

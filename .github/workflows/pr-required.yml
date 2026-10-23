@@ -39,19 +39,17 @@ jobs:
     name: This commit came from a pull request
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Look for the pull request this commit belongs to
+        # The gate lives in tools/ci/pr-gate.cjs so that the check and
+        # the deploy use the SAME logic. The first version was a shell
+        # one-liner in each workflow, and the copy in the deploy had a
+        # permission gap that made it approve direct pushes.
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ github.sha }}
           REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          count=$(gh api "repos/$REPO/commits/$SHA/pulls" \
-            --jq 'length' 2>/dev/null || echo 0)
-          echo "  pull requests associated with $SHA: $count"
-          if [ "$count" -eq 0 ]; then
-            echo "::error::Direct push to main. This commit is not associated with any pull request."
-            echo "::error::Open a pull request instead — CI and the deploy both key off it."
-            exit 1
-          fi
-          echo "  ok — the commit came through a pull request"
+        run: node tools/ci/pr-gate.cjs "$SHA"
