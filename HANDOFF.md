@@ -145,6 +145,36 @@ The threshold of three consecutive failed cycles is unchanged — with
 the retry, three cycles all failing after three attempts each really
 does mean the server is gone.
 
+### Four separate ways to restart a healthy server
+
+The orchestrator restarted `ts-0` four times tonight. Each restart
+kicked every player off it. Each cause was a different mistake, and
+fixing one did not fix the others:
+
+1. **A dropped A2S reply was believed.** Fixed by the retry.
+2. **A busy server was believed dead.** A2S is answered on the game
+   thread — busiest exactly when players are connected — and when a
+   reply is lost it never arrives, so no longer timeout can rescue it.
+   Fixed by corroborating on the console, using the reading the
+   registry already collects (a fresh read would compete with the
+   metrics poll and time out exactly when the server is busiest).
+3. **A missing row was believed down.** `!row` means "the registry does
+   not know about this instance", not "it is down" — and a row is
+   missing while the registry starts up, which is exactly when a deploy
+   recreates the control plane. Fixed by starting the clock only on a
+   positive "down".
+4. **A live server was believed gone.** The staleness cutoff deleted
+   any entry not refreshed for 45s, and "refreshed" meant "A2S
+   answered". A server the console proves is alive had its entry
+   deleted — so it vanished from the server list and nobody could
+   join it. Fixed by keying retention on "we know it is there".
+
+Each rule lives in a module with its own tests:
+
+- `services/registry/lib/a2s-retry.mjs`
+- `services/registry/lib/liveness.mjs`
+- `services/orchestrator/lib/restart-clock.mjs`
+
 ## The repo now has CI and a deploy
 
 Three workflows, live since 2026-10-23:
