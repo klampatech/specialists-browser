@@ -1,0 +1,9 @@
+{
+  "name": "specialists-orchestrator",
+  "private": true,
+  "type": "module",
+  "description": "Decides what should happen to the game fleet.",
+  "scripts": {
+    "start": "node service.mjs"
+  }
+}

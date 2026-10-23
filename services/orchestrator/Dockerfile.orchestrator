@@ -1,0 +1,65 @@
+# orchestrator — the fleet's decision maker.
+#
+#   docker build -f services/orchestrator/Dockerfile.orchestrator -t orchestrator:0.1 .
+#   docker run -d --name orchestrator --restart unless-stopped --network host \
+#     -v /var/run/docker.sock:/var/run/docker.sock \
+#     --group-add "$(getent group docker | cut -d: -f3)" \
+#     -v /home/ubuntu/run-instance.sh:/usr/local/bin/run-instance.sh:ro \
+#     -v /srv/ts-data:/srv/ts-data:ro \
+#     orchestrator:0.1
+#
+# The docker socket is mounted for the same reason the registry has it:
+# starting, stopping and restarting instances means talking to the engine.
+#
+# /srv/ts-data is mounted read-only because run-instance.sh checks that the
+# map file exists before starting a container. The check runs inside this
+# container, so the path has to be visible here. The actual game-asset
+# mount is resolved by the daemon on the host, so it is unaffected.
+
+FROM node:22-bookworm-slim
+
+WORKDIR /app
+
+# The docker CLI. `docker logs` handles the multiplexed stream framing
+# that the raw Engine API does not. The STATIC binary is used rather than
+# the apt package, which drags in the daemon.
+ARG DOCKER_CLI_VERSION=27.3.1
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in amd64) dcli=x86_64 ;; arm64) dcli=aarch64 ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/$dcli/docker-$DOCKER_CLI_VERSION.tgz" \
+      -o /tmp/docker.tgz; \
+    tar -xzf /tmp/docker.tgz -C /tmp; \
+    install -m 0755 "/tmp/docker/docker" /usr/local/bin/docker; \
+    rm -rf /tmp/docker /tmp/docker.tgz; \
+    apt-get purge -y curl; \
+    apt-get autoremove -y; \
+    rm -rf /var/lib/apt/lists/*; \
+    docker --version
+
+COPY services/orchestrator/package.json /app/package.json
+COPY services/orchestrator/service.mjs /app/services/orchestrator/service.mjs
+
+ENV ORCH_BIND=127.0.0.1:8090 \
+    REGISTRY_URL=http://127.0.0.1:8081/api/registry \
+    TS_PORTS=27015 \
+    TS_PORT_BASE=27015 \
+    TS_MAX_INSTANCES=8 \
+    TS_MIN_INSTANCES=1 \
+    ORCH_INTERVAL_MS=20000 \
+    UNRESPONSIVE_MS=60000 \
+    DEGRADED_RESTART_MS=180000 \
+    ACTION_COOLDOWN_MS=180000 \
+    SCALE_OUT_RATIO=0.75 \
+    SCALE_IN_IDLE_MS=900000 \
+    TS_RUN_INSTANCE=/usr/local/bin/run-instance.sh
+
+EXPOSE 8090
+
+RUN useradd --create-home --uid 10005 --shell /usr/sbin/nologin orchestrator \
+ && chown -R orchestrator:orchestrator /app
+USER orchestrator
+
+CMD ["node", "/app/services/orchestrator/service.mjs"]

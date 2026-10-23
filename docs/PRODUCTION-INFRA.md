@@ -475,3 +475,129 @@ allowlist, which is where the bad parsing was visible. Bumping the image
 tag and restarting fixed it. Lesson: the bridge's health output is the
 only place the parsed allowlist is visible, so check it after any change
 to the target spec.
+
+
+---
+
+## 7. Control plane: registry + orchestrator (Phase 4, 2026-10-23)
+
+### The split
+
+```
+                         ┌──────────────────┐
+  A2S  ─────────────────▶│    registry      │◀─── orchestrator
+  console pipe ─────────▶│  (observes)      │      (decides)
+                         └──────────────────┘
+                                │
+                                ▼  /api/servers
+                         Caddy → the browser
+```
+
+The **registry observes** and the **orchestrator decides**. They are
+separate on purpose: if the registry is what both reads and writes, a
+registry bug can take the fleet down. The orchestrator never measures
+anything itself — every fact it acts on comes from the registry, because
+two services measuring the same thing is how they end up disagreeing.
+
+### Registry (`registry:0.3`)
+
+| | |
+|---|---|
+| A2S | map, players, bots, humans, max players |
+| Tickrate | `sys_ticrate`, read from the engine's console FIFO |
+| Bot quota | `ts_bot_quota`, read and applied |
+| Health | responsive (A2S) and metricsOk (console) as separate signals |
+| Endpoints | `/api/servers`, `/api/registry`, `/healthz` |
+
+**The tickrate comes from a console pipe.** A2S does not report it. The
+engine does — `sys_ticrate` — but only through its console, which each
+game container exposes as a FIFO at `/tmp/console.pipe`. Writing a command
+to it and reading the reply out of the container's stdout is the only way
+to ask a running server how it is actually doing.
+
+The reply is found by diffing the container log from the offset taken
+before the command was written. An `echo <marker>` is sent first so the
+answer is unambiguously the first thing after the marker — without it a
+value could be confused with unrelated log output containing the same
+digits.
+
+**The registry needs Docker access**, because the only route to a running
+game's console is through its container. It runs with the socket mounted
+and the docker group added, which is root-equivalent on the host. That is
+acceptable here because the host is a dedicated game box and `ubuntu` was
+already in the `docker` group during the initial hardening — the same
+privilege. The registry's own code is the only thing holding it.
+
+### Degradation policy
+
+The signal is **sustained** tickrate shortfall, not a single sample.
+
+| | value | why |
+|---|---|---|
+| target tickrate | 100 | the configured rate |
+| degrade below | 85% | one or two frames of dip happens on a map change, a bot respawn, a GC pause |
+| recover above | 95% | hysteresis — without a higher recovery bar, an instance sitting exactly at the threshold oscillates and the orchestrator flip-flops |
+| sustain window | 30s | a brief dip is not a trend |
+| action cooldown | 120s | reconfiguring a server that is already struggling makes it struggle more |
+
+### Bot policy
+
+Keep a few bots so a lone player has something to fight, and get out of
+the way as humans arrive. Bots cost server CPU and add nothing.
+
+```
+humans 0 -> 4 bots        humans 2 -> 2 bots
+humans 1 -> 3 bots        humans 4 -> 0 bots
+```
+
+A2S counts bots as players, so the A2S reply's bot count is what makes
+this possible. Verified live: a browser joined, the registry saw
+`humans=1 bots=3`, applied `ts_bot_quota 3`, and the server culled a bot.
+When the player left, the quota went back to 4.
+
+### Orchestrator (`orchestrator:0.1`)
+
+| | value |
+|---|---|
+| restart if unresponsive | 60s with no A2S answer |
+| restart if degraded | sustained 180s |
+| action cooldown | 180s per instance |
+| scale out | fleet humans >= 75% of capacity, max 8 instances |
+| scale in | fleet empty for 900s, never below 1 instance |
+
+It never acts twice in a row on the same instance without waiting out the
+cooldown. An orchestrator that keeps poking a struggling server makes the
+server struggle more, and a restart loop can turn one bad instance into a
+whole-host problem.
+
+**Scale-in requires zero humans fleet-wide**, and the orchestrator does
+nothing at all when the registry is unreachable — "I cannot see the fleet"
+and "the fleet is empty" look identical from there, and only one of them
+is true. Scaling in on a registry outage would take the whole fleet
+down.
+
+It starts instances through the same `run-instance.sh` the operator
+uses, so there is one way to bring an instance up.
+
+### Verified: crash recovery
+
+```
+docker stop ts-0                  explicit stop, so --restart does not fire
+[orch] ts-0 unresponsive for 60s
+[orch] restart ts-0 container restarted
+t+75s  ts-0: running healthy
+```
+
+The site, the registry, the bridge and the server all came back, and the
+registry correctly restored the bot quota to 4 — the player had been
+disconnected by the restart, and the backfill works in both directions.
+
+### Production container set
+
+```
+orchestrator   --network host, docker socket, run-instance.sh + /srv/ts-data mounted ro
+registry       --network host, docker socket
+bridge         --network host, target allowlist from BRIDGE_TARGETS
+ts-0           --restart unless-stopped, udp 27015, /srv/ts-data mounted ro
+caddy          systemd, automatic TLS
+```

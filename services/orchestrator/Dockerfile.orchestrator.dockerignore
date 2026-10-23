@@ -1,0 +1,5 @@
+# Build context for the orchestrator image.
+**
+!services/orchestrator/Dockerfile.orchestrator
+!services/orchestrator/package.json
+!services/orchestrator/service.mjs
