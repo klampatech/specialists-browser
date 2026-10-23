@@ -40,6 +40,7 @@
 import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { lowestFreeSlot, highestSlot } from './lib/slot.mjs';
+import { classifyInstance } from './lib/restart-clock.mjs';
 
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const bool = (v, d) => (v === undefined || v === '' ? d : v === '1' || v === 'true');
@@ -232,9 +233,18 @@ async function decide() {
     }
     inst.deployed = true;
 
-    if (!row || row.responsive === false) {
+    // "The registry does not know about this instance" and "the
+    // registry says this instance is down" are different statements.
+    // A row is missing while the registry is starting up and when it
+    // drops an entry it has not refreshed for a while — both happen
+    // during a deploy. Acting on "I cannot see it" is how a healthy
+    // server gets restarted for no reason, which kicks every player
+    // off it. The timer is left alone: if the registry later reports
+    // the instance down, the clock starts then.
+    const state = classifyInstance({ row });
+    if (state.unresponsive) {
       inst.unresponsiveSince ??= now;
-    } else {
+    } else if (state.clear) {
       inst.unresponsiveSince = null;
     }
 

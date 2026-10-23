@@ -227,31 +227,6 @@ async function collectMetrics(instance) {
 }
 
 /**
- * Is the game server actually alive?
- *
- * The console is a pipe into the server's stdin, and it answers
- * regardless of what the game thread is doing. `sys_ticrate` coming
- * back is proof of life.
- *
- * This is the tie-breaker for a missed A2S probe. A2S is answered on
- * the game thread, so it is missed precisely when the server is busy
- * with real players — and a busy server must not be mistaken for a
- * dead one, because restarting it kicks those players off.
- *
- * @returns true if the console answered, false if it did not, and null
- *          if the console could not be consulted at all.
- */
-async function isAliveViaConsole(container) {
-  if (!USE_DOCKER || !container) return null;
-  try {
-    const tick = await consoleAsk(container, 'sys_ticrate', /"sys_ticrate"\s+is\s+"(\d+)"/, 3000);
-    return tick ? true : false;
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Degradation detection.
  *
  * The signal is SUSTAINED tickrate shortfall, not a single bad sample. A
@@ -436,8 +411,10 @@ async function pollA2S() {
           // answers regardless. If the server answers there, it is
           // alive and busy, and this miss must NOT accumulate toward a
           // restart that would kick those players off.
-          const alive = await isAliveViaConsole(existing.container);
-          const classification = classifyProbeFailure(alive);
+          const classification = classifyProbeFailure({
+            metricsOk: existing.metricsOk,
+            metricsAgeMs: existing.metricsAt ? Date.now() - existing.metricsAt : undefined,
+          });
           const failures = nextFailureCount(classification, existing.consecutiveFailures ?? 0);
           const down = failures >= FAILURES_BEFORE_DOWN;
           registry.set(id, {
@@ -478,10 +455,12 @@ async function pollMetrics() {
         const metrics = await collectMetrics(instance);
         if (!metrics) {
           instance.metricsOk = false;
+          instance.metricsAt = now;
           instance.tickrate = null;
           return;
         }
         instance.metricsOk = true;
+        instance.metricsAt = now;
         instance.tickrate = metrics.tickrate;
         instance.botQuota = metrics.botQuota;
 
@@ -544,6 +523,7 @@ function publicView(row) {
     responsive: row.responsive !== false,
     consecutiveFailures: row.consecutiveFailures ?? 0,
     metricsOk: row.metricsOk === true,
+    metricsAt: row.metricsAt ?? null,
     stale: Boolean(row.stale),
     seenAt: row.seenAt,
   };

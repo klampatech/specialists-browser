@@ -910,6 +910,34 @@ fails:
 The threshold of three consecutive failures is unchanged. The console
 check only stops *busy* servers from being mistaken for dead ones.
 
+The tie-breaker is not a fresh console read — it is the reading the
+registry **already collects** for the tickrate and the bot quota. A
+second read would compete with the metrics poll for the server's
+attention and time out exactly when the server is busiest, which is
+precisely when the answer matters most.
+
+### And: a missing row is not a down row
+
+The orchestrator restarted `ts-0` a third time, during a deploy. The
+cause was here:
+
+```js
+if (!row || row.responsive === false) { /* start the restart clock */ }
+```
+
+`!row` means **the registry does not know about this instance** — not
+that it is down. A row is missing while the registry is starting up
+(its first poll has not landed yet) and when it drops an entry it has
+not refreshed for a while. Both happen during a deploy, and both ended
+with a healthy server being restarted and every player kicked off it.
+
+So the clock now starts only when the registry *says* the instance is
+down. A missing row leaves the timer alone: if the registry later
+reports the instance down, the clock starts then.
+
+That, the retry, and the console tie-breaker are three separate
+defences, because each one was a separate way to get this wrong.
+
 
 The retry lives in `services/registry/lib/a2s-retry.mjs` and is
 covered by `tests/unit/a2s-retry.test.mjs`.
