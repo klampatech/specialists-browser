@@ -1,6 +1,6 @@
 # Asset delivery: why `tsmod.zip` must be chunked
 
-**Status:** implemented (`aa0e90d`), measured
+**Status:** IMPLEMENTED (`aa0e90d`) + IN PRODUCTION infra (`9d9011c`)
 **Artifact:** `webxash/public/hl/tsmod.zip` — 516,960,756 bytes (493 MiB / 517 MB decimal)
 **Related:** `specialists-browser-cloud-architecture.md` §3, §8.3 (Ernie), `vite-asset-headers.mjs`
 
@@ -181,6 +181,23 @@ sees a version whose parts are not all present.
 
 `src/utils/zip-helpers.ts` is removed; the loader calls
 `getTsmodArchive` directly.
+
+### Production wiring (2026-10-23)
+
+- Bucket **`ts-assets`** created; custom domain **`assets.bulletballet.dev`**
+  attached and verified serving **HTTP/2 + real TLS through Cloudflare's edge**
+  (`cf-cache-status: DYNAMIC`).
+- Bucket keys mirror `webxash/public/hl/ts/` exactly, so the same client code
+  works against a bucket or the dev server with no reconfiguration.
+- Asset host is a build-time setting:
+  ```bash
+  VITE_ASSET_BASE=https://assets.bulletballet.dev npm run build
+  ```
+- **Payload not yet uploaded.** Bucket is ready and empty.
+- **Legal constraint:** this bucket must carry authored assets only. See
+  §7 of `PRODUCTION-INFRA.md` — hosting the copyrighted archive under our own
+  account is the one unambiguously infringing act available in this project, and
+  the chunked pipeline makes it inconvenient to avoid.
 
 Nothing in this pipeline knows which provider it is uploading to. Switching
 between R2 and S3 is `ASSET_STORE_ENDPOINT` and `ASSET_STORE_REGION`.
