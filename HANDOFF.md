@@ -86,6 +86,30 @@ What was actually built in this window:
 | Orchestrator | restart unhealthy, restart degraded, scale out, scale in |
 | Bot backfill | bots yield to humans automatically |
 
+## What the first real user found
+
+Kyle's first click on prod hit a bug no test had: **PLAY downloaded the
+game, booted the engine, and then failed** at the last step with "Could
+not reach the game server". Clicking **Join** on a server row worked
+perfectly.
+
+PLAY used the store's default launch options, which carry a *development*
+address (`+connect 127.0.0.1:27015`). From a browser that is **the
+player's own machine**. The engine tried to connect to itself, the bridge
+correctly refused an address that was not the production one, and the
+player got a confusing error after a 493 MB download and a full engine
+boot. Join built its options from the server row, which is why it worked.
+
+**Why every automated test missed it:** they all matched `/join/i`, which
+finds a server row's Join button. The suite was exercising the path that
+already worked and calling it a pass. A test that only covers the path
+you already trust is not evidence about the path you have not tried.
+
+Fixed: PLAY resolves its target from the same live server list Join uses,
+inside `launch()` and *before* anything expensive happens — one source of
+truth for "where does a player go", so the two buttons cannot diverge
+again. There is now a test that clicks PLAY specifically.
+
 ## The decisions that are locked
 
 **The bridge is same-origin with the page.** Not a preference — a
