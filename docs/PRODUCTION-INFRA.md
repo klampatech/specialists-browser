@@ -879,5 +879,37 @@ Three things changed:
    With the retry, three cycles all failing after three attempts each
    really does mean the server is gone.
 
+### And then: a busy server is not a dead server
+
+The retry was necessary but not sufficient. The orchestrator still
+restarted `ts-0` at 23:12 — while the browser E2E tests were running.
+
+A2S is answered on the **game thread**. The game thread is busiest
+exactly when the server is doing its job — when real players are
+connected. And when a reply is lost it **never arrives**: listening
+for eight seconds after a missed probe caught nothing, so no longer
+timeout can rescue it.
+
+Which makes the failure mode vicious. The busier the server gets with
+real players, the more likely it is to be declared dead and restarted
+— which kicks the players off and empties it again.
+
+The console is a different path entirely: a pipe into the server's
+stdin, which answers regardless of what the game thread is doing.
+`sys_ticrate` coming back is proof of life.
+
+So a missed A2S probe is now only believed when the console **also**
+fails:
+
+| A2S | console | verdict |
+|---|---|---|
+| missed | answered | **alive** — busy, not dead. The failure count resets. |
+| missed | failed | down — the A2S miss counts. |
+| missed | unavailable | unknown — fall back to counting the miss. |
+
+The threshold of three consecutive failures is unchanged. The console
+check only stops *busy* servers from being mistaken for dead ones.
+
+
 The retry lives in `services/registry/lib/a2s-retry.mjs` and is
 covered by `tests/unit/a2s-retry.test.mjs`.
