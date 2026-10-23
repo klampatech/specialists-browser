@@ -60,6 +60,19 @@ export function classifyProbeFailure(
 }
 
 /**
+ * Should the entry's "last seen" timestamp be refreshed?
+ *
+ * "Seen" means "we know it is there", not "A2S answered". When the
+ * console proves the server is alive but A2S is quiet, the entry must
+ * NOT age out — otherwise the staleness cutoff deletes it, the server
+ * vanishes from the server list, and nobody can join a server that is
+ * running perfectly well.
+ */
+export function shouldRefreshSeenAt(classification) {
+  return classification === 'alive';
+}
+
+/**
  * How a probe failure affects the running failure count.
  *
  * 'alive' resets it to zero: the server is demonstrably up, so the A2S

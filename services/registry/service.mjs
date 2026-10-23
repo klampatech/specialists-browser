@@ -60,7 +60,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { queryServer } from '../../webxash/vite-a2s-plugin.mjs';
 import { probeWithRetry, timeoutForAttempt } from './lib/a2s-retry.mjs';
-import { classifyProbeFailure, nextFailureCount } from './lib/liveness.mjs';
+import { classifyProbeFailure, nextFailureCount, shouldRefreshSeenAt } from './lib/liveness.mjs';
 import {
   desiredBotQuota as computeBotQuota,
   resolveHumanCount,
@@ -419,7 +419,12 @@ async function pollA2S() {
           const down = failures >= FAILURES_BEFORE_DOWN;
           registry.set(id, {
             ...existing,
-            seenAt: existing.seenAt,
+            // "Seen" means "we know it is there", not "A2S answered".
+            // When the console proves the server is alive but A2S is
+            // quiet, the entry must NOT age out — otherwise the
+            // staleness cutoff deletes it, the server vanishes from the
+            // list, and nobody can join a server that is running.
+            seenAt: shouldRefreshSeenAt(classification) ? Date.now() : existing.seenAt,
             stale: down,
             responsive: !down,
             consecutiveFailures: failures,

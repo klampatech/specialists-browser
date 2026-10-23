@@ -31,7 +31,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { classifyProbeFailure, nextFailureCount, DEFAULT_MAX_METRICS_AGE_MS } =
+const { classifyProbeFailure, nextFailureCount, shouldRefreshSeenAt, DEFAULT_MAX_METRICS_AGE_MS } =
   require('../../services/registry/lib/liveness.mjs');
 
 test('a server whose console answered recently is alive, not dead', () => {
@@ -91,4 +91,15 @@ test('a busy server in the middle of a failure run clears the run', () => {
   assert.equal(count, 2);
   count = nextFailureCount('alive', count);
   assert.equal(count, 0, 'one busy poll must clear the accumulated failures');
+});
+
+test('a console-proven-alive instance refreshes its "last seen" time', () => {
+  // Otherwise the staleness cutoff deletes it, the server vanishes from
+  // the server list, and nobody can join a server that is running.
+  assert.equal(shouldRefreshSeenAt('alive'), true);
+});
+
+test('a down or unknown instance does not refresh its "last seen" time', () => {
+  assert.equal(shouldRefreshSeenAt('down'), false);
+  assert.equal(shouldRefreshSeenAt('unknown'), false);
 });
