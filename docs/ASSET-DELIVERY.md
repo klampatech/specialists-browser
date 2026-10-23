@@ -282,7 +282,33 @@ new CORS headers until the cache is purged — for a *year*. After setting the
 policy, purge `assets.bulletballet.dev` (or at minimum the manifest and
 `part-000.bin`, the only two objects fetched so far).
 
-Rule propagation can also take up to 30 seconds.
+Rule propagation can also take to 30 seconds.
+
+### `vary: Origin` means the cache is per-origin, so stale variants linger
+
+Once a CORS policy exists, R2 sends `vary: Origin` and the Cloudflare edge
+caches **one variant per origin**. A variant cached *before* the policy was
+applied comes back without `Access-Control-Allow-Origin`, and it keeps doing
+so until that specific variant is purged. Purging once is not enough if
+several origins have already hit the bucket.
+
+How it presents is genuinely confusing: the same URL returns a correct ACAO
+for one origin and no ACAO at all for another, from the same bucket and the
+same policy.
+
+```
+Origin: https://bulletballet.dev   -> HIT   ACAO=https://bulletballet.dev
+Origin: http://127.0.0.1:8099      -> HIT   ACAO=(none)      <- cached pre-policy
+Origin: http://127.0.0.1:7777      -> MISS  ACAO=(none)      <- unlisted origin
+same URL + ?v=probe                -> MISS  ACAO=correct     <- fresh cache key
+```
+
+The cache-busting query string is the diagnostic: it changes the cache key,
+forces a fresh fetch from origin, and comes back with the right headers.
+That proves the policy is correct and the cached variant is stale.
+
+So after any CORS change, purge the asset hostname — and re-verify with a
+cache-busted request before concluding the policy is wrong.
 
 ### Two other things this surfaced
 
