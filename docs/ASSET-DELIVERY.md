@@ -242,6 +242,48 @@ only and the older account token is dead; both get `Authentication error`
 from `/accounts/<id>/r2/buckets/ts-assets/cors`. Bucket-level CORS is a
 dashboard setting.
 
+### The CORS policy — check the format, there are two
+
+R2 uses different key styles in different places, and guessing produces a
+policy that looks plausible and does nothing.
+
+**Dashboard, JSON tab** — PascalCase, an array of one object:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://bulletballet.dev"],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["Content-Length", "ETag"],
+    "MaxAgeSeconds": 86400
+  }
+]
+```
+
+**Wrangler CLI** — lowercase, with an `allowed` wrapper:
+
+```json
+{ "rules": [ { "allowed": { "origins": ["https://example.com"], "methods": ["GET"] } } ] }
+```
+
+`npx wrangler r2 bucket cors set ts-assets --file cors.json`
+
+### Two traps in the policy itself
+
+**Ports cannot contain wildcards.** `http://127.0.0.1:*` is invalid — the
+docs are explicit that each localhost port must be listed separately. An
+origin is `scheme://host[:port]` with no path and no trailing slash.
+
+**Cached objects keep their old headers until purged.** The parts are served
+`cache-control: public, max-age=31536000, immutable`. If any of them are
+already in the Cloudflare edge cache, they will keep coming back without the
+new CORS headers until the cache is purged — for a *year*. After setting the
+policy, purge `assets.bulletballet.dev` (or at minimum the manifest and
+`part-000.bin`, the only two objects fetched so far).
+
+Rule propagation can also take up to 30 seconds.
+
 ### Two other things this surfaced
 
 **The Vite build base is `/webXash/`.** The production bundle references
