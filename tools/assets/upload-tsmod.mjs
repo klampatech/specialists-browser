@@ -45,9 +45,18 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
 const PARTS_DIR = path.join(REPO, 'webxash', 'public', 'hl', 'ts');
 
-/** Key layout under the bucket. Mirrors the on-disk layout exactly. */
-const keyFor = (prefix, name) => `ts/${prefix}${name}`;
-const MANIFEST_KEY = 'ts/manifest.json';
+/**
+ * Key layout under the bucket.
+ *
+ * Mirrors webxash/public/hl/ts/ exactly, so the SAME client code works
+ * against a bucket and against the dev server with no reconfiguration.
+ * The `hl/` prefix is not decorative - the client hardcodes
+ * `./hl/ts/manifest.json`, so a bucket keyed at `ts/` would 404 the whole
+ * delivery path. Nothing exercised that until now, because Vite serves
+ * public/ at the same paths.
+ */
+const keyFor = (prefix, name) => `hl/ts/${prefix}${name}`;
+const MANIFEST_KEY = 'hl/ts/manifest.json';
 
 async function loadManifest() {
   const p = path.join(PARTS_DIR, 'manifest.json');
