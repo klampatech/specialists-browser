@@ -14,7 +14,8 @@
  * Every link in that chain is a place this can silently not work, so the
  * test asserts on the DOM rather than on the logs.
  */
-const { chromium } = require('/home/kyle/Development/slot-protocol/node_modules/playwright');
+const { loadPlaywright } = require('./lib/browser.cjs');
+const { chromium } = loadPlaywright();
 const { execFileSync } = require('node:child_process');
 
 const URL = process.argv[2] || 'https://bulletballet.dev/';

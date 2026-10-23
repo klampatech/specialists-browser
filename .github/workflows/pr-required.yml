@@ -1,0 +1,57 @@
+name: PR required
+
+# The free-plan equivalent of "require pull requests on main".
+#
+# WHY THIS EXISTS
+# ---------------
+# GitHub's branch protection and rulesets are only available on private
+# repositories under a paid plan. This repository is private and on the
+# free plan, so the API answers 403:
+#
+#   "Upgrade to GitHub Pro or make this repository public to enable
+#    this feature."
+#
+# Which means the real thing cannot be configured yet. This workflow is
+# the best available substitute, and it is honest about what it is:
+#
+#   - It DETECTS a direct push to main and turns the run red.
+#   - It BLOCKS the deploy, so a direct push does not reach production.
+#
+# It does NOT prevent the push — the commit is already on main by the
+# time this runs. Nothing on the free plan can do that. When the repo
+# gets a paid plan, set the real branch protection and this workflow
+# becomes a belt-and-braces check rather than the only line of defence.
+#
+# The check: a commit that came from a merged pull request is associated
+# with that pull request, and GitHub can tell us. A commit pushed
+# straight to main has no pull request, so the answer is zero.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check:
+    name: This commit came from a pull request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Look for the pull request this commit belongs to
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          count=$(gh api "repos/$REPO/commits/$SHA/pulls" \
+            --jq 'length' 2>/dev/null || echo 0)
+          echo "  pull requests associated with $SHA: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::Direct push to main. This commit is not associated with any pull request."
+            echo "::error::Open a pull request instead — CI and the deploy both key off it."
+            exit 1
+          fi
+          echo "  ok — the commit came through a pull request"

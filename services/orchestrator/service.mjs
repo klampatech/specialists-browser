@@ -39,6 +39,7 @@
 
 import http from 'node:http';
 import { execFile } from 'node:child_process';
+import { lowestFreeSlot, highestSlot } from './lib/slot.mjs';
 
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const bool = (v, d) => (v === undefined || v === '' ? d : v === '1' || v === 'true');
@@ -274,10 +275,8 @@ async function decide() {
       // one. The port range is contiguous, so "highest + 1" would walk off
       // the end of it on the first scale-out and collide with a port the
       // range already covers.
-      const used = new Set(live.map((i) => Number(i.id.replace(/^ts-/, ''))));
-      const next = Array.from({ length: MAX_INSTANCES }, (_, n) => n).find(
-        (n) => !used.has(n)
-      );
+      const used = live.map((i) => Number(i.id.replace(/^ts-/, '')));
+      const next = lowestFreeSlot(used, MAX_INSTANCES);
       if (next === undefined) {
         console.log('[orch] scale-out wanted but every instance slot is taken');
       } else {
@@ -296,7 +295,7 @@ async function decide() {
       // Remove the highest-numbered instance: it is the most likely to be
       // the recently-added spare, and keeping the low numbers stable
       // keeps the ports the bridge and the registry already know about.
-      const highest = Math.max(...live.map((i) => Number(i.id.replace(/^ts-/, ''))));
+      const highest = highestSlot(live.map((i) => Number(i.id.replace(/^ts-/, ''))));
       console.log(`[orch] fleet empty for ${Math.round((now - fleet.emptySince) / 1000)}s — removing ts-${highest}`);
       await stopInstance(highest);
       fleet.emptySince = null;

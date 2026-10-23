@@ -1,0 +1,265 @@
+name: Deploy
+
+# Ship what merged on main to production.
+#
+# WHAT THIS DEPLOYS
+#   - the frontend bundle (always)
+#   - the control-plane images: registry, orchestrator, bridge (when their
+#     source changed)
+#
+# WHAT THIS DOES NOT DEPLOY
+#   - the game server image. Its payload is the Rust port's compiled
+#     server DLL, which is a build artifact and is deliberately not
+#     committed. The game containers are also owned by the orchestrator,
+#     because scaling the fleet is a decision, not a deployment.
+#
+# THE PR GATE
+#   Branch protection is not available on this repository's plan (private
+#   repo, free account — the API answers 403). So this workflow checks
+#   the same thing branch protection would: that the commit came from a
+#   merged pull request. A direct push to main does not reach production.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      # ── the PR gate ───────────────────────────────────────────────────
+      - name: Refuse a commit that did not come from a pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          count=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq 'length' 2>/dev/null || echo 0)
+          echo "  pull requests for $SHA: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::Refusing to deploy a commit that did not come from a pull request."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          # The webxash submodule is a PRIVATE repository. The default
+          # token works for public submodules; being explicit about it
+          # is the difference between a checkout that works and one
+          # that 404s on a private submodule.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: recursive
+          fetch-depth: 2
+
+      - name: Set up SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          cat > ~/.ssh/config <<'EOF'
+          Host prod
+            HostName ${{ secrets.PROD_SSH_HOST }}
+            User ${{ secrets.PROD_SSH_USER }}
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ServerAliveInterval 30
+          EOF
+          ssh -F ~/.ssh/config prod 'echo "  ssh ok: $(whoami)@$(hostname)"'
+
+      # ── what changed? ─────────────────────────────────────────────────
+      - name: Work out what changed
+        id: changed
+        run: |
+          set -euo pipefail
+          base=$(git rev-parse HEAD~1)
+          git diff --name-only "$base" HEAD > /tmp/changed.txt
+          echo "  changed files:"
+          sed 's/^/    /' /tmp/changed.txt
+
+          frontend=0
+          services=0
+          if grep -qE '^webxash/' /tmp/changed.txt; then frontend=1; fi
+          if grep -qE '^(services/|tools/port/tsp-rs/scripts/ts-udp-bridge|tools/deploy/Dockerfile.bridge|webxash/vite-a2s-plugin)' /tmp/changed.txt; then
+            services=1
+          fi
+
+          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
+          echo "services=$services" >> "$GITHUB_OUTPUT"
+          echo "  frontend changed: $frontend"
+          echo "  services changed: $services"
+
+      # ── the frontend ──────────────────────────────────────────────────
+      - name: Set up bun
+        # The frontend is a BUN project — bun.lock, not package-lock.json.
+        # `npm ci` cannot even run here: there is no npm lockfile, and
+        # two of the old dependencies were unpublished from npm, so a
+        # fresh install failed with a 404.
+        if: steps.changed.outputs.frontend == '1'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install and build the frontend
+        if: steps.changed.outputs.frontend == '1'
+        working-directory: webxash
+        env:
+          VITE_ASSET_BASE: https://assets.bulletballet.dev
+        run: |
+          set -euo pipefail
+          bun install --frozen-lockfile
+          bunx vue-tsc --noEmit
+          bun run build
+          if [ -e dist/hl/tsmod.zip ] || [ -d dist/hl/ts ]; then
+            echo "::error::the built bundle contains the TS game archive — it belongs on R2"
+            exit 1
+          fi
+          echo "  built $(du -sh dist | cut -f1)"
+
+      - name: Ship the frontend
+        if: steps.changed.outputs.frontend == '1'
+        run: |
+          set -euo pipefail
+          # Upload beside the live directory, then swap. A plain rsync
+          # --delete in place leaves a window where index.html is new and
+          # the hashed assets it references are old — which is a blank
+          # page for exactly as long as the upload takes.
+          # `hl/` is excluded on purpose: the game archive is served
+          # from R2, not from the web bundle. The tracked zips in
+          # public/hl are 168 MB of game content that has no business
+          # being re-uploaded to the VPS on every deploy.
+          rsync -az --delete --exclude 'hl/' webxash/dist/ prod:/srv/web.new/
+          ssh -F ~/.ssh/config prod '
+            set -euo pipefail
+            rm -rf /srv/web.old
+            mv /srv/web /srv/web.old
+            mv /srv/web.new /srv/web
+            rm -rf /srv/web.old
+            echo "  frontend swapped in"
+          '
+
+      # ── the control plane ─────────────────────────────────────────────
+      - name: Build the service images
+        if: steps.changed.outputs.services == '1'
+        run: |
+          set -euo pipefail
+          docker build -f services/registry/Dockerfile.registry -t registry:${{ github.sha }} .
+          docker build -f services/orchestrator/Dockerfile.orchestrator -t orchestrator:${{ github.sha }} .
+          docker build -f tools/deploy/Dockerfile.bridge -t ts-bridge:${{ github.sha }} .
+
+      - name: Ship the service images
+        if: steps.changed.outputs.services == '1'
+        run: |
+          set -euo pipefail
+          # Streamed over SSH rather than pushed to a registry: the
+          # images contain our source, and a public package registry
+          # would publish it. A private one would need a pull credential
+          # on the host for no benefit at this size.
+          for pair in \
+            "registry:${{ github.sha }} registry" \
+            "orchestrator:${{ github.sha }} orchestrator" \
+            "ts-bridge:${{ github.sha }} ts-bridge"; do
+            set -- $pair
+            echo "  streaming $1"
+            docker save "$1" | gzip -1 | ssh -F ~/.ssh/config prod 'gunzip | docker load'
+          done
+
+      - name: Recreate the control plane
+        if: steps.changed.outputs.services == '1'
+        run: |
+          set -euo pipefail
+          scp -F ~/.ssh/config tools/deploy/deploy-services.sh prod:/home/ubuntu/deploy-services.sh
+          ssh -F ~/.ssh/config prod '
+            set -euo pipefail
+            chmod +x /home/ubuntu/deploy-services.sh
+            REGISTRY_IMAGE=registry:'"${{ github.sha }}"' \
+            ORCHESTRATOR_IMAGE=orchestrator:'"${{ github.sha }}"' \
+            BRIDGE_IMAGE=ts-bridge:'"${{ github.sha }}"' \
+            /home/ubuntu/deploy-services.sh
+          '
+
+      # ── did it work? ──────────────────────────────────────────────────
+      - name: Verify production
+        run: |
+          set -euo pipefail
+          echo "  waiting for the site to answer"
+          for _ in $(seq 1 20); do
+            code=$(curl -fsS -o /dev/null -w '%{http_code}' --max-time 10 https://bulletballet.dev/ || echo 000)
+            [ "$code" = "200" ] && break
+            sleep 3
+          done
+          echo "  site: http=$code"
+          [ "$code" = "200" ] || { echo "::error::the site did not come up"; exit 1; }
+
+          echo "  the server browser:"
+          curl -fsS --max-time 10 https://bulletballet.dev/api/servers | tee /tmp/servers.json
+          echo
+          python3 - <<'PY'
+          import json, sys
+          data = json.load(open('/tmp/servers.json'))
+          servers = data.get('servers') or []
+          assert servers, 'the server list is empty — the registry is not reporting the instance'
+          for s in servers:
+              print(f"    {s.get('id')} {s.get('map')} {s.get('players')}/{s.get('maxPlayers')} "
+                    f"tick={s.get('tickrate')} humans={s.get('humans')} bots={s.get('bots')}")
+              assert s.get('maxPlayers') == 32, 'the server must advertise 32 slots'
+              assert s.get('tickrate', 0) > 0, 'the server is not ticking'
+          print('  the fleet reports a healthy server')
+          PY
+
+      - name: Internal endpoints
+        # The registry and the orchestrator bind to loopback, so they are
+        # only reachable from the host itself.
+        run: |
+          set -euo pipefail
+          ssh -F ~/.ssh/config prod '
+            set -euo pipefail
+            printf "  registry:  "; curl -fsS --max-time 5 http://127.0.0.1:8081/api/registry | head -c 120; echo
+            printf "  orchestr:  "; curl -fsS --max-time 5 http://127.0.0.1:8090/api/orchestrator | head -c 120; echo
+            printf "  bridge:    "; curl -fsS --max-time 5 http://127.0.0.1:27017/health | head -c 120; echo
+          '
+
+  browser:
+    name: Verify in a real browser
+    # The point of a deploy is that the thing works. A green HTTP 200
+    # from the landing page does not mean a player can get into a game —
+    # that is exactly the failure the first real user hit.
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The webxash submodule is a PRIVATE repository. The default
+          # token works for public submodules; being explicit about it
+          # is the difference between a checkout that works and one
+          # that 404s on a private submodule.
+          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Playwright
+        run: |
+          npm install --no-save playwright@latest
+          npx playwright install --with-deps chromium
+
+      - name: The Play button reaches the server
+        run: node tools/deploy/play-button-e2e.cjs https://bulletballet.dev/
+
+      - name: Two browsers can be in the server at once
+        run: node tools/deploy/two-player-e2e.cjs https://bulletballet.dev/ 2

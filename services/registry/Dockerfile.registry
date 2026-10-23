@@ -21,6 +21,10 @@ WORKDIR /app
 
 COPY services/registry/package.json /app/package.json
 COPY services/registry/service.mjs /app/services/registry/service.mjs
+# The bot policy and the human-source decision live in a separate module
+# so they can be unit-tested. Both were wrong at some point and both
+# bugs were invisible from the outside.
+COPY services/registry/lib/fleet-logic.mjs /app/services/registry/lib/fleet-logic.mjs
 
 # The registry imports queryServer() from the Vite plugin rather than
 # reimplementing A2S: the GoldSrc handshake rules are easy to get subtly

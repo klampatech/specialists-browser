@@ -14,7 +14,8 @@
  */
 const dgram = require('node:dgram');
 const { execFileSync } = require('node:child_process');
-const { chromium } = require('/home/kyle/Development/slot-protocol/node_modules/playwright');
+const { loadPlaywright } = require('./lib/browser.cjs');
+const { chromium } = loadPlaywright();
 
 const URL = process.argv[2] || 'https://bulletballet.dev/';
 const PLAYERS = parseInt(process.argv[3] || '2', 10);

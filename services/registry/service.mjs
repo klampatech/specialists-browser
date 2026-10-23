@@ -59,6 +59,10 @@
 import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { queryServer } from '../../webxash/vite-a2s-plugin.mjs';
+import {
+  desiredBotQuota as computeBotQuota,
+  resolveHumanCount,
+} from './lib/fleet-logic.mjs';
 
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const bool = (v, d) => (v === undefined || v === '' ? d : v === '1' || v === 'true');
@@ -325,8 +329,7 @@ async function fetchBridgeLive() {
  *   ...      -> 0 bots once humans >= BOT_TARGET
  */
 function desiredBotQuota(instance) {
-  const humans = instance.humans ?? 0;
-  return Math.max(0, BOT_TARGET - humans);
+  return computeBotQuota(instance.humans ?? 0, BOT_TARGET);
 }
 
 async function applyBotQuota(instance, quota) {
@@ -434,12 +437,14 @@ async function pollMetrics() {
         // A reachable bridge is authoritative even when it reports
         // nothing for this instance — that means zero browsers, not
         // "unknown". Only an unreachable bridge falls back to A2S.
-        const live = bridgeLiveByTarget ? (bridgeLiveByTarget[instance.id] ?? 0) : null;
-        instance.humans =
-          live !== null
-            ? live
-            : Math.max(0, (instance.players ?? 0) - (instance.bots ?? 0));
-        instance.humansSource = live !== null ? 'bridge' : 'a2s';
+        const count = resolveHumanCount({
+          bridgeLive: bridgeLiveByTarget,
+          instanceId: instance.id,
+          players: instance.players,
+          bots: instance.bots,
+        });
+        instance.humans = count.humans;
+        instance.humansSource = count.source;
 
         const d = evaluateDegradation(instance, metrics.tickrate, now);
         instance.degradation = d;

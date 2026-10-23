@@ -3,4 +3,5 @@
 !services/registry/Dockerfile.registry
 !services/registry/package.json
 !services/registry/service.mjs
+!services/registry/lib/fleet-logic.mjs
 !webxash/vite-a2s-plugin.mjs

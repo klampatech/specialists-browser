@@ -179,35 +179,23 @@ const REGISTRY_URL = process.env.BRIDGE_REGISTRY_URL || '';
 // ports derived from the index, so the range covers every instance the
 // fleet can ever have — and the floor never has to be widened to add a
 // server.
-const ALLOWED_HOST = process.env.BRIDGE_ALLOWED_HOST || '127.0.0.1';
-const ALLOWED_PORTS = parsePortRange(
-  process.env.BRIDGE_ALLOWED_PORTS || '27000-27100'
-);
+// THE FLOOR. The allowlist is a security boundary, not a convenience:
+// without it this process is an open UDP relay. It lives in its own
+// module so it can be unit-tested — the "unknown target is accepted then
+// closed" bug is invisible from the outside, because a browser reads a
+// closed socket as "connected".
+const { createAllowlist } = require('./bridge-allowlist.cjs');
 
-/** Parse "27015-27022" or "27015,27017" into a Set of ports. */
-function parsePortRange(spec) {
-  const out = new Set();
-  for (const part of String(spec || '').split(',')) {
-    const item = part.trim();
-    if (!item) continue;
-    const dash = item.indexOf('-');
-    if (dash !== -1) {
-      const lo = parseInt(item.slice(0, dash), 10);
-      const hi = parseInt(item.slice(dash + 1), 10);
-      if (Number.isInteger(lo) && Number.isInteger(hi)) {
-        for (let p = lo; p <= hi; p++) out.add(p);
-      }
-      continue;
-    }
-    const n = parseInt(item, 10);
-    if (Number.isInteger(n)) out.add(n);
-  }
-  return out;
-}
+const ALLOWLIST = createAllowlist({
+  host: process.env.BRIDGE_ALLOWED_HOST || '127.0.0.1',
+  ports: process.env.BRIDGE_ALLOWED_PORTS || '27000-27100',
+});
+const ALLOWED_HOST = ALLOWLIST.allowedHost;
+const ALLOWED_PORTS = ALLOWLIST.allowedPorts;
 
 /** Is this target inside the floor? */
 function withinFloor(host, port) {
-  return host === ALLOWED_HOST && ALLOWED_PORTS.has(port);
+  return ALLOWLIST.withinFloor(host, port);
 }
 
 // `ws` is a dependency of tools/port/tsp-rs (and of the production image's

@@ -5,7 +5,8 @@
  * the README's hero image has to come from a real browser session
  * against the real site.
  */
-const { chromium } = require('/home/kyle/Development/slot-protocol/node_modules/playwright');
+const { loadPlaywright } = require('./lib/browser.cjs');
+const { chromium } = loadPlaywright();
 const path = require('node:path');
 
 const URL = process.argv[2] || 'https://bulletballet.dev/';
