@@ -222,19 +222,47 @@ jobs:
           [ "$code" = "200" ] || { echo "::error::the site did not come up"; exit 1; }
 
           echo "  the server browser:"
-          curl -fsS --max-time 10 https://bulletballet.dev/api/servers | tee /tmp/servers.json
+          # POLL, do not sample. This step runs immediately after the
+          # control plane was recreated, and the registry needs a moment
+          # to come up:
+          #
+          #   - its first A2S poll populates the server list (~1s)
+          #   - its first metrics poll fills in the tickrate (~8s)
+          #
+          # Sampling once read `tickrate: null` off a perfectly healthy
+          # server and failed the deploy. The server was fine; the check
+          # was racing the control plane's startup.
+          for attempt in $(seq 1 30); do
+            if curl -fsS --max-time 10 https://bulletballet.dev/api/servers | tee /tmp/servers.json | python3 -c '
+          import json, sys
+          data = json.load(sys.stdin)
+          servers = data.get("servers") or []
+          if not servers:
+              sys.exit(1)
+          for s in servers:
+              if s.get("maxPlayers") != 32:
+                  sys.exit(1)
+              if not (s.get("tickrate") or 0) > 0:
+                  sys.exit(1)
+          '; then
+              echo "  the fleet reports a healthy server (after $((attempt - 1)) extra attempt(s))"
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              echo "::error::the registry never reported a healthy server"
+              cat /tmp/servers.json || true
+              exit 1
+            fi
+            echo "  not ready yet (attempt $attempt/30) — waiting"
+            sleep 3
+          done
           echo
           python3 - <<'PY'
-          import json, sys
+          import json
           data = json.load(open('/tmp/servers.json'))
-          servers = data.get('servers') or []
-          assert servers, 'the server list is empty — the registry is not reporting the instance'
-          for s in servers:
+          for s in data.get('servers') or []:
               print(f"    {s.get('id')} {s.get('map')} {s.get('players')}/{s.get('maxPlayers')} "
                     f"tick={s.get('tickrate')} humans={s.get('humans')} bots={s.get('bots')}")
-              assert s.get('maxPlayers') == 32, 'the server must advertise 32 slots'
-              assert s.get('tickrate', 0) > 0, 'the server is not ticking'
-          print('  the fleet reports a healthy server')
           PY
 
       - name: Internal endpoints
