@@ -130,7 +130,10 @@ async function main() {
     console.log('    ASSET_PUBLIC_BASE=https://assets.example.com \\');
     console.log('    node tools/assets/upload-tsmod.mjs\n');
   } else {
-    console.log(`  done. Point the client at: ${store.publicUrl('ts/manifest.json')}\n`);
+    // Must be the manifest's real key, including the hl/ prefix. This
+    // previously printed ts/manifest.json, which is a URL that 404s — the
+    // uploaded key is hl/ts/manifest.json, matching what the client requests.
+    console.log(`  done. Point the client at: ${store.publicUrl('hl/ts/manifest.json')}\n`);
   }
 }
 

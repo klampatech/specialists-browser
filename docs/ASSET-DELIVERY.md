@@ -204,3 +204,51 @@ between R2 and S3 is `ASSET_STORE_ENDPOINT` and `ASSET_STORE_REGION`.
 
 The loader's boot screen already reports real per-phase progress, so this
 plugs into the existing `download` phase rather than adding a new one.
+
+---
+
+## Production status (2026-10-23)
+
+Uploaded to `ts-assets` and serving from `https://assets.bulletballet.dev`:
+
+```
+hl/ts/manifest.json                    1346 B
+hl/ts/34e843c4b7cf/part-000..007.bin   8 x 64 MiB (last is 45 MiB)
+```
+
+Verified:
+- all 8 parts answer, range requests work (`206`);
+- `cache-control: public, max-age=31536000, immutable` on the parts;
+- the Cloudflare edge caches them — `cf-cache-status: MISS` then `HIT`.
+
+Cost inside the free tier: 0.49 GB of the 10 GB storage allowance, and 8 GETs
+per cold load against 10M free reads. Egress is $0.
+
+### BLOCKER: the bucket has no CORS policy
+
+The browser **cannot read the manifest**. curl works; `fetch()` does not:
+
+```
+cors-mode fetch  -> TypeError: Failed to fetch
+no-cors mode     -> OK, opaque response
+```
+
+`no-cors` succeeding is the tell: the network path is fine, the response is
+simply unreadable because R2 sends no `Access-Control-Allow-Origin`. A
+cross-origin `fetch()` cannot read a response without one.
+
+Neither available token can fix this. The R2 API token is scoped to objects
+only and the older account token is dead; both get `Authentication error`
+from `/accounts/<id>/r2/buckets/ts-assets/cors`. Bucket-level CORS is a
+dashboard setting.
+
+### Two other things this surfaced
+
+**The Vite build base is `/webXash/`.** The production bundle references
+`/webXash/assets/...`, so serving `dist/` at `/` gives a blank page with a
+404 on the entry script and no console error — the module simply never
+loads. Caddy must serve the app at that prefix, or the base should become
+`/`. Worth deciding deliberately for a domain like `bulletballet.dev`.
+
+**`vite build` does not run the A2S middleware**, which is why Phase 2 needed
+a standalone service rather than the plugin.
