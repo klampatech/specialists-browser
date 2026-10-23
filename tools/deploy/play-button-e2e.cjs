@@ -16,19 +16,19 @@ const { loadPlaywright } = require('./lib/browser.cjs');
 const { chromium } = loadPlaywright();
 
 const { execFileSync } = require('node:child_process');
+const { publicHumans } = require('./lib/prod-state.cjs');
 const URL = process.argv[2] || 'https://bulletballet.dev/';
 
+/**
+ * How many humans are connected RIGHT NOW.
+ *
+ * Read from the PUBLIC API rather than over SSH: the bridge's /health
+ * is on loopback, and `ssh bb-prod` is a host alias that does not
+ * resolve on a CI runner — which is exactly how the first CI run
+ * reported a perfectly good player as "0 connections".
+ */
 function bridgeLive() {
-  try {
-    const out = execFileSync(
-      'ssh',
-      ['-o', 'ConnectTimeout=8', 'bb-prod', 'curl -sS --max-time 6 http://127.0.0.1:27017/health'],
-      { encoding: 'utf8', timeout: 25_000 },
-    );
-    return JSON.parse(out).liveConnections ?? -1;
-  } catch {
-    return -1;
-  }
+  return publicHumans();
 }
 
 (async () => {
@@ -69,7 +69,7 @@ function bridgeLive() {
       console.log(`  >>> landing error: ${state.err}`);
       break;
     }
-    const live = bridgeLive();
+    const live = await bridgeLive();
     if (live > peak) peak = live;
   }
 

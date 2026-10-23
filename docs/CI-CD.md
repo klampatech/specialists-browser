@@ -187,17 +187,35 @@ Every e2e test at the time matched `/join/i`, so the suite was exercising
 the path that already worked and every run passed.
 
 So the deploy ends with a browser job that clicks **Play** for real and
-checks the bridge saw a connection:
+checks that a player actually arrived:
 
 ```
 node tools/deploy/play-button-e2e.cjs https://bulletballet.dev/
 node tools/deploy/two-player-e2e.cjs https://bulletballet.dev/ 2
 ```
 
-Those scripts used to hard-code a Playwright path on one machine, which
-made them unrunnable anywhere else. They now resolve Playwright from
-`tools/deploy/lib/browser.cjs`: an explicit path, then a normal
+Two things had to be fixed for those to run in CI at all:
+
+**Playwright resolution.** The scripts hard-coded a path on one machine,
+which made them unrunnable anywhere else. They now resolve Playwright
+from `tools/deploy/lib/browser.cjs`: an explicit path, then a normal
 `require('playwright')`, then the old local path as a fallback.
+
+**The signal.** The scripts used to shell out to `ssh bb-prod` and read
+the bridge's `/health` endpoint. That works on one machine and nowhere
+else — `bb-prod` is an SSH host **alias**, and on a CI runner it
+resolves to nothing. The first CI run therefore reported "0 connections"
+for a browser that was playing perfectly.
+
+The same number is available publicly. The registry's `humans` count
+comes from the bridge's live-WebSocket count, so `/api/servers` reports
+exactly what the bridge knows, one hop later. Reading it over the public
+API also exercises the whole chain — browser → bridge → registry →
+public API — rather than peeking at one component from the inside.
+
+The probe distinguishes "I could not tell" from "nobody is there":
+an unreachable API returns -1, not 0. Conflating those makes a broken
+probe look like a passing test.
 
 ---
 

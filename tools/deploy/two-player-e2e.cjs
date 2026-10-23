@@ -13,7 +13,7 @@
  * player, and it is slow — which is itself the finding.
  */
 const dgram = require('node:dgram');
-const { execFileSync } = require('node:child_process');
+const { publicHumans } = require('./lib/prod-state.cjs');
 const { loadPlaywright } = require('./lib/browser.cjs');
 const { chromium } = loadPlaywright();
 
@@ -44,17 +44,17 @@ const GAME_PORT = parseInt(process.argv[5] || '27015', 10);
  * test already depends on SSH for the disconnect test, so this is not a
  * new dependency.
  */
+/**
+ * How many humans are connected RIGHT NOW, read from the public API.
+ *
+ * The bridge's own /health is on loopback, so this cannot ask it
+ * directly from anywhere but the host. The registry republishes the
+ * bridge's live-WebSocket count as `humans`, which is the same number
+ * with one more hop — and reading it over the public API exercises the
+ * whole chain instead of peeking at one component from the inside.
+ */
 function bridgeLiveConnections() {
-  try {
-    const out = execFileSync(
-      'ssh',
-      ['-o', 'ConnectTimeout=8', 'bb-prod', 'curl -sS --max-time 6 http://127.0.0.1:27017/health'],
-      { encoding: 'utf8', timeout: 25_000 },
-    );
-    return JSON.parse(out).liveConnections ?? -1;
-  } catch {
-    return -1;
-  }
+  return publicHumans();
 }
 
 function askServer() {
@@ -179,7 +179,7 @@ async function bootPlayer(browser, label) {
   let peakLive = 0;
   for (let i = 0; i < 25; i++) {
     await new Promise((r) => setTimeout(r, 1000));
-    const live = bridgeLiveConnections();
+    const live = await bridgeLiveConnections();
     if (live > peakLive) peakLive = live;
   }
 
