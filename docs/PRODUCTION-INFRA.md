@@ -243,3 +243,71 @@ Consequences already accepted:
 | Production A2S service | dev-only middleware in `vite-a2s-plugin.mjs` |
 | Control plane | **undecided** — see `CONTROL-PLANE.md` |
 | COOP/COEP discrepancy | Ernie's doc says not required; served responses currently carry `credentialless` / `same-origin`. Unresolved. |
+
+---
+
+## 4. Deployed game server (Phase 1 complete, 2026-10-23)
+
+One instance is live on `bb-prod` and answering A2S over the public internet:
+
+```
+name      = bulletballet TS
+map       = ts_casa
+folder    = ts
+game      = The Specialists v3.0.8 (DM)
+players   = 4 / 32
+```
+
+```
+image        ts-server:0.21      176 MB (asset-free)
+assets       /srv/ts-data        961 MB, read-only volume
+instance     ts-0                udp/27015, 32 slots, healthy
+firewall     27015:27022/udp     open for base+N
+docker       29.1.3, ubuntu in the docker group
+```
+
+Commands: `tools/deploy/run-instance.sh <N>`. Waits on the healthcheck and
+verifies the engine bound the expected port, rather than sleeping and hoping.
+
+### Engine command-line flags — measured, not assumed
+
+Every one of these was established by starting a container and reading the
+value back. Guessing here is expensive: three of them fail silently.
+
+| flag | works? | note |
+|---|---|---|
+| `-port N` | yes | required for running N instances on one host |
+| `+maxplayers N` | yes | **required — the engine default is 4 slots** |
+| `+map NAME` | yes | |
+| `+hostname S` | yes | but `server.cfg` overrides it |
+| `+port N` | **no** | silently ignored; server binds default 27015 |
+
+`ts_bot_quota` is independent of `maxplayers`: it stayed at 4 while maxplayers
+went to 32. Bots are filler in a 32-slot server, which is the intended shape.
+
+### Two bugs that cost the most time
+
+**A missing `-p` on `docker run`.** `EXPOSE` in the Dockerfile is
+documentation, not a publish. Without `-p` the container bound its port in
+its own network namespace and the host saw nothing. The container still
+reported healthy and the log still said `Server IPv4 address 0.0.0.0:27015`,
+so both a local and a public probe simply timed out. It reads exactly like a
+firewall or A2S bug. `run-instance.sh` now verifies the bound port.
+
+**`+maxplayers` was wrongly documented as ignored.** The test that suggested
+it reused a container whose log already carried a 32-client line from an
+earlier run. Re-tested with fresh containers: `+maxplayers 8` → 8,
+`+maxplayers 32` → 32. Because the flag was removed on that bad evidence, the
+production server was a **4-slot server** while reporting healthy. This is
+the reason a green container is not evidence of a playable server.
+
+### A2S on this engine
+
+GoldSrc, answering `0x49` (`I`, info) — which is what `vite-a2s-plugin.mjs`
+uses. Verified byte-identical in behaviour against the local dev server, so
+the dev server browser should work against prod unmodified once it is pointed
+at the right address.
+
+`hostname` in A2S truncates the trailing token: `bulletballet TS-0` reports
+as `bulletballet TS`. Cosmetic; per-instance names should avoid spaces until
+the encoding is understood.

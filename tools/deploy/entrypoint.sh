@@ -85,10 +85,10 @@ done
 # image by hand behaves the same as running it through the orchestrator.
 : "${TS_INSTANCE:=0}"
 : "${TS_PORT_BASE:=27015}"
-# TS_MAXPLAYERS is accepted and ignored on purpose — see the flag notes below.
+# Slot count. Not cosmetic: the engine defaults to 4.
 : "${TS_MAXPLAYERS:=32}"
 : "${TS_MAP:=ts_casa}"
-: "${TS_HOSTNAME:=specialists TS}"
+: "${TS_HOSTNAME:=bulletballet TS}"
 TS_PORT=$((TS_PORT_BASE + TS_INSTANCE))
 
 # NOTE: motd.txt is deliberately not created here. If the asset tree contains
@@ -97,23 +97,31 @@ TS_PORT=$((TS_PORT_BASE + TS_INSTANCE))
 # "Read-only file system". If the asset tree has none, the engine simply has an
 # empty MOTD, which is fine.
 
-# Flag forms, established by experiment against this engine build:
+# Flag forms, established by experiment against this engine build on prod.
 #
-#   -port N        HONOURED. This is the one that matters — it is how N
-#                  instances coexist on one host.
-#   +port N        SILENTLY IGNORED. The server binds the default 27015
-#                  regardless and logs no warning. Invisible in local testing
-#                  only because every dev server already used 27015.
-#   +maxplayers N  SILENTLY IGNORED. MAX_CLIENTS is a compile-time cap of 32
-#                  in crates/shared/src/pm/mod.rs, so the server is a 32-slot
-#                  server no matter what is passed. That is the number we
-#                  want, so this is documented rather than worked around.
-#   +map NAME      honoured.
+#   -port N        works. Required — this is how N instances share one host.
+#   +maxplayers N  works. REQUIRED. The engine's default is 4 slots, so a
+#                  server started without this is a 4-player server. Found
+#                  running on prod and reading it as a capacity problem until
+#                  it turned out to be a missing flag.
+#   +map NAME      works.
+#   +hostname S    works, and is what A2S reports to the server browser.
+#   +port N        SILENTLY IGNORED — the server binds the default 27015 and
+#                  logs no warning.
 #
-# Anything added here must be verified by reading the log line the engine
-# prints back, not by assuming the flag took.
+# An earlier note in this file claimed +maxplayers was ignored too. That was
+# wrong: the test that suggested it reused a container whose startup log
+# already carried a 32-client line from an earlier run. Re-tested with fresh
+# containers: +maxplayers 8 -> 8, +maxplayers 32 -> 32.
+#
+# Note that ts_bot_quota is independent of maxplayers. It stayed at 4 while
+# maxplayers went to 32, so bots are filler in a 32-slot server, exactly as
+# intended — a few bots to fight, more slots for humans.
+#
+# Anything added here must be verified by reading back the cvar, not by
+# assuming the flag took.
 
-echo "entrypoint: instance $TS_INSTANCE -> udp/$TS_PORT  map $TS_MAP"
+echo "entrypoint: instance $TS_INSTANCE -> udp/$TS_PORT  map $TS_MAP  slots $TS_MAXPLAYERS"
 echo "entrypoint: assets=$(ls -1 "$GAME_TS" | wc -l) entries in game dir, $(ls -1 "$GAME_TS/maps" 2>/dev/null | wc -l) maps"
 
 # ── runtime console ──────────────────────────────────────────────────────────
@@ -142,7 +150,9 @@ exec 3<>"$CONSOLE"
 # it waits for a writer and then streams until EOF. The engine reads commands
 # from stdin and writes to stdout, which docker captures normally.
 cat "$CONSOLE" \
-  | "$@" -dedicated -game ts +ip 0.0.0.0 -port "$TS_PORT" +map "$TS_MAP" -log +developer 1 \
+  | "$@" -dedicated -game ts +ip 0.0.0.0 -port "$TS_PORT" \
+        +maxplayers "$TS_MAXPLAYERS" +map "$TS_MAP" \
+        +hostname "$TS_HOSTNAME" -log +developer 1 \
   &
 
 ENGINE=$!
