@@ -760,9 +760,34 @@ server's own timeout fires. Observed: two ghost clients
 (`Specialist (2)`, `Specialist`, same uniqueid) sat in `status` for over
 two minutes past `sv_timeout=65`, then cleared together.
 
-So the server browser shows players who have already left, and the bot
-quota takes that long to refill. It self-corrects, but do not read the
-player count as a live occupancy metric during a test.
+So the server browser shows players who have already left, and do not
+read the player count as a live occupancy metric during a test.
+
+### The ghost slots were driving the bot policy
+
+The bot policy decides how many bots to keep from the number of humans
+on the server, and it was getting that number from `A2S players - A2S
+bots`. With ghosts in the player count, the human count was inflated,
+and the policy shrank the bot roster as though people were still playing.
+Observed exactly that: the quota stuck at 2 on a server with nobody on
+it.
+
+The fix is to stop asking A2S. **The bridge counts open WebSockets**,
+which has no lag, so it is the authority on how many humans there are;
+A2S stays the authority on what the server is doing. The bridge reports
+live connections per target, and the registry prefers that.
+
+One subtlety worth stating, because getting it backwards reintroduces
+the original bug: an **empty** map from a reachable bridge means *zero
+humans*, not *unknown*. Treating it as unknown falls back to the A2S
+count — which is the ghost problem again, for exactly the case the
+bridge was added to fix: an empty server. So "the bridge has never
+answered" is tracked separately from "the bridge answered and there is
+nobody there".
+
+Verified live: humans `0 → 1 → 2` as two browsers joined, with the bot
+quota following exactly (`4 → 3 → 2`) while A2S's own player count
+lagged behind on the ghosts.
 
 ### One false-restart bug, found and fixed
 
