@@ -312,11 +312,38 @@ cache-busted request before concluding the policy is wrong.
 
 ### Two other things this surfaced
 
-**The Vite build base is `/webXash/`.** The production bundle references
-`/webXash/assets/...`, so serving `dist/` at `/` gives a blank page with a
-404 on the entry script and no console error — the module simply never
-loads. Caddy must serve the app at that prefix, or the base should become
-`/`. Worth deciding deliberately for a domain like `bulletballet.dev`.
+**The Vite build base is now `/`.** It was `/webXash/`, which meant the
+production bundle referenced `/webXash/assets/...` and serving `dist/` at
+`/` gave a blank page with a 404 on the entry script and *no console error*
+— the module simply never loaded, which reads as an app bug rather than a
+routing mistake. The base is now `/` so the app lives at
+`https://bulletballet.dev/`.
 
 **`vite build` does not run the A2S middleware**, which is why Phase 2 needed
 a standalone service rather than the plugin.
+
+
+---
+
+## Client-side self-heal for poisoned edge variants
+
+The `vary: Origin` trap above is a permanent failure for anyone unlucky
+enough to be holding the poisoned variant: an opaque `TypeError`, no status,
+no body, and nothing in the product that explains it.
+
+So the client now retries once with a cache-busting query string, which
+changes the cache key and gets a fresh copy from the origin with correct
+headers. Both the manifest fetch and the part fetch do this. Only network
+failures are retried — a 404 or 403 will not be fixed by changing the cache
+key, and retrying those only delays the real error. When the retry also
+fails, the original error is thrown, because that means the origin itself
+is unreachable.
+
+Verified in a browser against the production bucket: the poisoned
+`part-000.bin` failed, `part-000.bin?cb=...` retried clean, all 8 parts
+arrived with zero errors, and the TS v3.0.8 main menu rendered
+(`v49/0.21`, emscripten-wasm32).
+
+This does not replace purging the cache after a CORS change. It makes the
+client survive a stale variant instead of failing forever; the purge is
+still what makes the stale variant go away.
