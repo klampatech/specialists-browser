@@ -661,3 +661,91 @@ R2).
 
 Until it exists, the honest statement is: *one instance fits comfortably;
 eight is probably fine on RAM and is unproven on CPU.*
+
+
+---
+
+## 10. Readiness for real users (2026-10-23)
+
+Measured, not assumed. The two-player test is the one that matters: every
+earlier check had ONE browser in the server, which proves the client can
+connect but not that two clients can coexist. The failure mode that only
+shows up with two is the important one — both browsers land on the same
+server-side client slot, or the second is rejected, and the symptom is
+"it works for one player", which looks like success.
+
+### Verified
+
+```
+two browsers, one server:   players=5 max=32 bots=3 humans=2
+bridge:                     #7 and #8, live=2 — two UDP sockets,
+                            two distinct server-side client slots
+                            (identical packet counts = no collision)
+bot backfill:               4 → 3 → 2 bots as humans arrived
+```
+
+Reproduce it:
+
+```bash
+node tools/deploy/two-player-e2e.cjs https://bulletballet.dev/ 2
+```
+
+Each browser gets its own context, so each does its own 493 MB download —
+the honest test of a cold first-time player.
+
+### The cold download is the real cost
+
+```
+493.0 MiB in 12.0 s from a fast link (41.2 MiB/s)
+  ~30-40 s   on a 100 Mbps connection
+  ~90 s      on a 50 Mbps connection
+  ~6 min     on a slow mobile connection
+```
+
+One-time per browser — the parts are cached in IndexedDB, and a warm load
+skips the network entirely. But it is the thing that will decide whether a
+first-time visitor stays. Reducing it means shipping less content, which
+Kyle deferred on 2026-10-22 pending a decision on which maps and gameplay
+the servers run. That decision is now the highest-leverage one available.
+
+### Browser requirements
+
+The engine needs cross-origin isolation (`SharedArrayBuffer`). Caddy sends
+`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: credentialless`, and the page reports
+`crossOriginIsolated: true`.
+
+- Chrome / Edge — fine
+- Firefox — 119+ for `credentialless`
+- Safari — 18+; older Safari will fail to boot, and there is no graceful
+  message for it yet
+
+### When the server goes away
+
+The engine does not notice a dropped connection on its own: the WebSocket
+is to the *bridge*, not to the server, so a server death stops packets
+without closing anything the client can see. The client would freeze on
+its last frame.
+
+The bridge now reports the disconnect, the store carries it, and the page
+shows a **CONNECTION LOST** overlay with a Reconnect button. Note that a
+server *restart* does not close the WebSocket — the bridge relays into
+the void and resumes when the server returns — so the overlay covers a
+dropped bridge or a dropped network, not the restart case.
+
+### One false-restart bug, found and fixed
+
+The orchestrator restarted `ts-0` at 18:07:43 — 32 seconds after the
+server had been stopped, which is faster than the 60s unresponsive
+threshold. The reason: the registry marked the instance unresponsive at
+18:06:43, when the server was **perfectly healthy**. One A2S probe had
+been missed.
+
+That is not a cosmetic bug. A single dropped UDP probe — likely under
+load, with 32 players on the server — started a timer that ended in the
+orchestrator restarting a healthy server and disconnecting everyone on it.
+
+The registry now requires **three consecutive** failed probes before an
+instance counts as down. Detection is slower and that is the right
+trade: a missed probe costs one wasted restart, but a missed probe during
+a busy match disconnects every player in it.

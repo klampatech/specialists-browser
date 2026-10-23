@@ -299,6 +299,22 @@ async function applyBotQuota(instance, quota) {
 /* Polling                                                             */
 /* ------------------------------------------------------------------ */
 
+/**
+ * How many consecutive failed probes before an instance counts as down.
+ *
+ * ONE failed probe is not a signal. A UDP probe can be dropped by a
+ * busy server, a full socket buffer, or a momentary scheduling delay —
+ * and under load (32 players, tickrate 100) that is exactly when it
+ * happens. Marking an instance down on a single miss means the
+ * orchestrator's timer starts, and 60 seconds later it restarts a
+ * perfectly healthy server with players on it.
+ *
+ * That failure mode is worse than the one it protects against: a missed
+ * probe costs one wasted restart, whereas a missed probe during a busy
+ * match disconnects everyone.
+ */
+const FAILURES_BEFORE_DOWN = num(process.env.REGISTRY_FAILURES_BEFORE_DOWN, 3);
+
 async function pollA2S() {
   if (pollInFlight) return;
   pollInFlight = true;
@@ -317,9 +333,20 @@ async function pollA2S() {
             seenAt: Date.now(),
             stale: false,
             responsive: true,
+            consecutiveFailures: 0,
           });
         } else if (existing) {
-          registry.set(id, { ...existing, seenAt: existing.seenAt, stale: true, responsive: false });
+          // Only count as down after several misses in a row. See
+          // FAILURES_BEFORE_DOWN above for why one is not enough.
+          const failures = (existing.consecutiveFailures ?? 0) + 1;
+          const down = failures >= FAILURES_BEFORE_DOWN;
+          registry.set(id, {
+            ...existing,
+            seenAt: existing.seenAt,
+            stale: down,
+            responsive: !down,
+            consecutiveFailures: failures,
+          });
         }
       }),
     );
@@ -400,6 +427,7 @@ function publicView(row) {
     targetTickrate: TARGET_TICKRATE,
     degrading: Boolean(row.degradation?.sustained),
     responsive: row.responsive !== false,
+    consecutiveFailures: row.consecutiveFailures ?? 0,
     metricsOk: row.metricsOk === true,
     stale: Boolean(row.stale),
     seenAt: row.seenAt,
