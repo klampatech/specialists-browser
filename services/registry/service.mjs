@@ -214,7 +214,16 @@ async function collectMetrics(instance) {
  */
 function evaluateDegradation(instance, tickrate, now) {
   const ratio = tickrate / TARGET_TICKRATE;
-  const d = instance.degradation;
+  // Lazily initialised: this runs on the first metrics pass too, and an
+  // undefined here would throw inside a timer callback and take the whole
+  // registry down with it.
+  const d = (instance.degradation ??= {
+    degradedSince: null,
+    sustained: false,
+    lastRatio: null,
+    lastTickrate: null,
+    lastActionAt: 0,
+  });
 
   if (ratio < DEGRADE_RATIO) {
     d.degradedSince ??= now;
@@ -269,6 +278,7 @@ async function pollA2S() {
   if (pollInFlight) return;
   pollInFlight = true;
   try {
+   try {
     await Promise.all(
       PORTS.map(async (port) => {
         const id = `ts-${port - PORT_BASE}`;
@@ -293,6 +303,11 @@ async function pollA2S() {
       if ((row.seenAt ?? 0) < cutoff) registry.delete(id);
     }
     lastPollAt = Date.now();
+   } catch (err) {
+    // One bad instance must not take the registry down. The next poll
+    // retries; a stale entry is already handled by the staleness cutoff.
+    console.error('[registry] a2s poll failed:', err?.message || err);
+   }
   } finally {
     pollInFlight = false;
   }
@@ -302,6 +317,7 @@ async function pollMetrics() {
   if (metricsInFlight || !USE_DOCKER) return;
   metricsInFlight = true;
   try {
+   try {
     const now = Date.now();
     await Promise.all(
       [...registry.values()].map(async (instance) => {
@@ -326,6 +342,13 @@ async function pollMetrics() {
       }),
     );
     lastMetricsAt = Date.now();
+   } catch (err) {
+    // Same rule as the A2S poll: a failure here is a metrics failure, not
+    // a reason to die. The registry is the thing the whole fleet view
+    // depends on, and it has to keep answering even when one instance
+    // is misbehaving.
+    console.error('[registry] metrics poll failed:', err?.message || err);
+   }
   } finally {
     metricsInFlight = false;
   }

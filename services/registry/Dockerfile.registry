@@ -29,6 +29,30 @@ COPY services/registry/service.mjs /app/services/registry/service.mjs
 # registry tells a human from a bot.
 COPY webxash/vite-a2s-plugin.mjs /app/webxash/vite-a2s-plugin.mjs
 
+# The docker CLI. The registry talks to the engine through the socket, and
+# `docker logs` handles the multiplexed stream framing that the raw Engine
+# API does not. The STATIC binary is used rather than the apt package
+# because the apt package drags in the daemon.
+#
+# The socket is root:docker 0660, so the container also has to be started
+# with the docker group added:
+#   --group-add "$(getent group docker | cut -d: -f3)"
+ARG DOCKER_CLI_VERSION=27.3.1
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in amd64) dcli=x86_64 ;; arm64) dcli=aarch64 ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/$dcli/docker-$DOCKER_CLI_VERSION.tgz" \
+      -o /tmp/docker.tgz; \
+    tar -xzf /tmp/docker.tgz -C /tmp; \
+    install -m 0755 "/tmp/docker/docker" /usr/local/bin/docker; \
+    rm -rf /tmp/docker /tmp/docker.tgz; \
+    apt-get purge -y curl; \
+    apt-get autoremove -y; \
+    rm -rf /var/lib/apt/lists/*; \
+    docker --version
+
 ENV REGISTRY_BIND=127.0.0.1:8081 \
     TS_PORTS=27015 \
     TS_PORT_BASE=27015 \
