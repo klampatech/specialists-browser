@@ -54,7 +54,7 @@ RUN set -eux; \
     docker --version
 
 ENV REGISTRY_BIND=127.0.0.1:8081 \
-    TS_PORTS=27015 \
+    TS_INSTANCE_COUNT=8 \
     TS_PORT_BASE=27015 \
     TS_CONTAINER_PREFIX=ts \
     TS_CONSOLE_PIPE=/tmp/console.pipe \

@@ -56,10 +56,35 @@ const MIN_INSTANCES = num(process.env.TS_MIN_INSTANCES, 1);
 const RUN_INSTANCE = process.env.TS_RUN_INSTANCE || '/home/ubuntu/run-instance.sh';
 const USE_DOCKER = bool(process.env.ORCH_DOCKER, true);
 
-const PORTS = (process.env.TS_PORTS || '27015')
-  .split(',')
-  .map((p) => parseInt(p.trim(), 10))
-  .filter((p) => Number.isInteger(p) && p > 0 && p < 65536);
+/**
+ * The port range the fleet can occupy.
+ *
+ * This is a RANGE, not a list, and that is deliberate. The orchestrator
+ * starts instances on ports derived from the index, so the services that
+ * watch the fleet have to be able to see an instance that does not exist
+ * yet. A fixed list of ports would mean every service needed editing
+ * before a scale-out — and the one that was forgotten would be the one
+ * that silently failed.
+ *
+ * `TS_PORTS` pins an explicit list instead, for a fleet that is not
+ * managed dynamically.
+ */
+function portRange() {
+  const explicit = (process.env.TS_PORTS || '').trim();
+  if (explicit) {
+    return explicit
+      .split(',')
+      .map((p) => parseInt(p.trim(), 10))
+      .filter((p) => Number.isInteger(p) && p > 0 && p < 65536);
+  }
+  const base = num(process.env.TS_PORT_BASE, 27015);
+  const count = num(process.env.TS_INSTANCE_COUNT, 8);
+  const out = [];
+  for (let i = 0; i < count; i++) out.push(base + i);
+  return out;
+}
+
+const PORTS = portRange();
 
 const PORT_BASE = num(process.env.TS_PORT_BASE, 27015);
 
@@ -213,9 +238,20 @@ async function decide() {
 
   if (running > 0 && capacity > 0 && humans / capacity >= SCALE_OUT_RATIO) {
     if (running < MAX_INSTANCES && now - fleet.lastScaleAt >= ACTION_COOLDOWN_MS) {
-      const next = Math.max(...PORTS.map((p) => p - PORT_BASE)) + 1;
-      console.log(`[orch] fleet at ${humans}/${capacity} — starting ts-${next}`);
-      await startInstance(next);
+      // Take the LOWEST free index, not the next number after the highest
+      // one. The port range is contiguous, so "highest + 1" would walk off
+      // the end of it on the first scale-out and collide with a port the
+      // range already covers.
+      const used = new Set(live.map((i) => Number(i.id.replace(/^ts-/, ''))));
+      const next = Array.from({ length: MAX_INSTANCES }, (_, n) => n).find(
+        (n) => !used.has(n)
+      );
+      if (next === undefined) {
+        console.log('[orch] scale-out wanted but every instance slot is taken');
+      } else {
+        console.log(`[orch] fleet at ${humans}/${capacity} — starting ts-${next}`);
+        await startInstance(next);
+      }
     }
   }
 

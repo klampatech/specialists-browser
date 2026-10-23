@@ -81,10 +81,35 @@ const DEGRADE_SUSTAIN_MS = num(process.env.TS_DEGRADE_SUSTAIN_MS, 30_000);
 const ACTION_COOLDOWN_MS = num(process.env.TS_ACTION_COOLDOWN_MS, 120_000);
 const BOT_TARGET = num(process.env.TS_BOT_TARGET, 4);
 
-const PORTS = (process.env.TS_PORTS || '27015')
-  .split(',')
-  .map((p) => parseInt(p.trim(), 10))
-  .filter((p) => Number.isInteger(p) && p > 0 && p < 65536);
+/**
+ * The port range the fleet can occupy.
+ *
+ * This is a RANGE, not a list, and that is deliberate. The orchestrator
+ * starts instances on ports derived from the index, so the services that
+ * watch the fleet have to be able to see an instance that does not exist
+ * yet. A fixed list of ports would mean every service needed editing
+ * before a scale-out — and the one that was forgotten would be the one
+ * that silently failed.
+ *
+ * `TS_PORTS` pins an explicit list instead, for a fleet that is not
+ * managed dynamically.
+ */
+function portRange() {
+  const explicit = (process.env.TS_PORTS || '').trim();
+  if (explicit) {
+    return explicit
+      .split(',')
+      .map((p) => parseInt(p.trim(), 10))
+      .filter((p) => Number.isInteger(p) && p > 0 && p < 65536);
+  }
+  const base = num(process.env.TS_PORT_BASE, 27015);
+  const count = num(process.env.TS_INSTANCE_COUNT, 8);
+  const out = [];
+  for (let i = 0; i < count; i++) out.push(base + i);
+  return out;
+}
+
+const PORTS = portRange();
 
 /** id -> instance record. Kept until it goes stale. */
 const registry = new Map();

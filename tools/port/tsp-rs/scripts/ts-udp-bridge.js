@@ -161,6 +161,55 @@ function parseTargetSpec(spec) {
 
 const opts = parseArgs(process.argv);
 
+// The registry maps a PUBLIC address (what the browser knows from the
+// server list) to an INTERNAL target (where the packet actually goes).
+// The bridge consults it so a newly started instance is reachable without
+// restarting the bridge with new environment variables.
+const REGISTRY_URL = process.env.BRIDGE_REGISTRY_URL || '';
+
+// THE SECURITY FLOOR.
+//
+// The bridge may only ever dial this host, on these ports. The registry
+// can tell the bridge where to send a packet; it cannot tell the bridge
+// where it is ALLOWED to send one. That distinction is the whole point:
+// without a floor, "the registry said so" is not a security property, it
+// is just a suggestion from another service.
+//
+// The range is static on purpose. The orchestrator starts instances on
+// ports derived from the index, so the range covers every instance the
+// fleet can ever have — and the floor never has to be widened to add a
+// server.
+const ALLOWED_HOST = process.env.BRIDGE_ALLOWED_HOST || '127.0.0.1';
+const ALLOWED_PORTS = parsePortRange(
+  process.env.BRIDGE_ALLOWED_PORTS || '27000-27100'
+);
+
+/** Parse "27015-27022" or "27015,27017" into a Set of ports. */
+function parsePortRange(spec) {
+  const out = new Set();
+  for (const part of String(spec || '').split(',')) {
+    const item = part.trim();
+    if (!item) continue;
+    const dash = item.indexOf('-');
+    if (dash !== -1) {
+      const lo = parseInt(item.slice(0, dash), 10);
+      const hi = parseInt(item.slice(dash + 1), 10);
+      if (Number.isInteger(lo) && Number.isInteger(hi)) {
+        for (let p = lo; p <= hi; p++) out.add(p);
+      }
+      continue;
+    }
+    const n = parseInt(item, 10);
+    if (Number.isInteger(n)) out.add(n);
+  }
+  return out;
+}
+
+/** Is this target inside the floor? */
+function withinFloor(host, port) {
+  return host === ALLOWED_HOST && ALLOWED_PORTS.has(port);
+}
+
 // `ws` is a dependency of tools/port/tsp-rs (and of the production image's
 // own package.json). Resolve it relative to this file rather than assuming a
 // global install.
@@ -242,7 +291,7 @@ const server = http.createServer((req, res) => {
 // managing the upgrade by hand is the supported way to serve several.
 const wss = new WebSocketServer({ noServer: true });
 
-server.on('upgrade', (req, socket, head) => {
+server.on('upgrade', async (req, socket, head) => {
   let pathname;
   try {
     pathname = new URL(req.url, 'http://bridge.invalid').pathname;
@@ -258,7 +307,7 @@ server.on('upgrade', (req, socket, head) => {
   // connection handler would let the WebSocket open successfully and only
   // then close, which reads to the client as "connected" and hides the
   // refusal. Answering with a plain HTTP error is unambiguous.
-  const target = resolveTarget(req);
+  const target = await resolveTarget(req);
   if (!target) {
     stats.rejectedTargets += 1;
     console.warn(
@@ -281,12 +330,53 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 /**
+ * The registry's view: public address -> internal target.
+ *
+ * Refreshed on a timer and on demand. A stale map is better than no map,
+ * and the floor still applies to whatever comes out of it.
+ */
+let registryByAddress = new Map();
+let registryById = new Map();
+let registryFetchedAt = 0;
+const REGISTRY_TTL_MS = 10_000;
+
+async function refreshRegistry() {
+  if (!REGISTRY_URL) return false;
+  try {
+    const res = await fetch(REGISTRY_URL, {
+      signal: AbortSignal.timeout(4000),
+      headers: { accept: 'application/json' },
+    });
+    if (!res.ok) return false;
+    const body = await res.json();
+    const byAddress = new Map();
+    const byId = new Map();
+    for (const inst of body.instances || []) {
+      if (inst.stale || inst.responsive === false) continue;
+      // The registry reports the address the BROWSER knows. Its internal
+      // target is the same host and port as the instance's UDP port.
+      const publicAddr = `${inst.publicAddress || inst.address}:${inst.port}`;
+      const internal = `${ALLOWED_HOST}:${inst.port}`;
+      byAddress.set(publicAddr, { id: inst.id, host: ALLOWED_HOST, port: inst.port });
+      byId.set(inst.id, { id: inst.id, host: ALLOWED_HOST, port: inst.port });
+    }
+    registryByAddress = byAddress;
+    registryById = byId;
+    registryFetchedAt = Date.now();
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+/**
  * Resolve the target for a connection.
  *
- * Returns null when the request names a target that is not in the
- * allowlist — the caller refuses the connection rather than forwarding.
+ * Returns null when the request names a target that cannot be resolved
+ * inside the floor — the caller refuses the connection rather than
+ * forwarding.
  */
-function resolveTarget(req) {
+async function resolveTarget(req) {
   let serverId = null;
   let address = null;
   try {
@@ -297,19 +387,45 @@ function resolveTarget(req) {
     /* fall through to the default */
   }
 
-  if (serverId) {
-    const byId = TARGETS.get(serverId);
-    if (byId) return byId;
-    // An id that is not in the allowlist is a refusal, not a fallback —
-    // silently connecting somewhere else would hide the mistake.
-    return null;
+  if (!serverId && !address) {
+    const fallback = TARGETS.get('default') || null;
+    if (!fallback) return null;
+    return withinFloor(fallback.host, fallback.port) ? fallback : null;
   }
 
+  // The registry is the live source of truth — it knows about instances
+  // the static list has never heard of. Refresh if the map is empty or
+  // stale, because a scale-out that needs a bridge restart is not
+  // scale-out.
+  if (!REGISTRY_URL) {
+    // No registry configured: the static allowlist is all there is.
+    return staticLookup(serverId, address);
+  }
+  if (registryFetchedAt === 0 || Date.now() - registryFetchedAt > REGISTRY_TTL_MS) {
+    await refreshRegistry();
+  }
+
+  let found = null;
+  if (serverId) {
+    found = registryById.get(serverId) || null;
+  } else if (address) {
+    found = registryByAddress.get(address) || null;
+  }
+  if (!found) {
+    // Fall back to the static list — it may know a target the registry
+    // has not published yet (a dev bridge pointed at one server).
+    found = staticLookup(serverId, address);
+  }
+  if (!found) return null;
+
+  // THE FLOOR. The registry may say where; only the floor says whether.
+  if (!withinFloor(found.host, found.port)) return null;
+  return found;
+}
+
+function staticLookup(serverId, address) {
+  if (serverId) return TARGETS.get(serverId) || null;
   if (address) {
-    // Match the public address the browser was told about. The browser
-    // already knows this from the server list, so it does not have to be
-    // told a separate id, and the player cannot invent an address that
-    // is not in the allowlist.
     for (const t of TARGETS.values()) {
       if (t.publicHost && t.publicPort) {
         if (`${t.publicHost}:${t.publicPort}` === address) return t;
@@ -317,14 +433,13 @@ function resolveTarget(req) {
     }
     return null;
   }
-
-  return TARGETS.get('default') || null;
+  return null;
 }
 
 wss.on('connection', (ws, req) => {
   // The target was resolved and checked during the upgrade, so by the time
   // a connection exists it is known-good.
-  const target = req.bridgeTarget || resolveTarget(req);
+  const target = req.bridgeTarget;
   if (!target) {
     ws.close(1008, 'unknown target');
     return;
@@ -411,6 +526,11 @@ wss.on('connection', (ws, req) => {
   });
 });
 
+if (REGISTRY_URL) {
+  refreshRegistry();
+  setInterval(refreshRegistry, REGISTRY_TTL_MS).unref?.();
+}
+
 server.listen(opts.listen, '0.0.0.0', () => {
   const list = [...TARGETS.values()]
     .map(
@@ -422,6 +542,15 @@ server.listen(opts.listen, '0.0.0.0', () => {
   console.log(
     `[bridge] listening on ws://0.0.0.0:${opts.listen}/ws (and /bridge)  targets: ${list}`
   );
+  console.log(
+    `[bridge] floor: only ${ALLOWED_HOST}:${
+      [...ALLOWED_PORTS].length === 1
+        ? [...ALLOWED_PORTS][0]
+        : `${Math.min(...ALLOWED_PORTS)}-${Math.max(...ALLOWED_PORTS)}`
+    } may be dialled`
+  );
+  if (REGISTRY_URL) console.log(`[bridge] registry: ${REGISTRY_URL}`);
+  else console.log('[bridge] registry: none — static targets only');
   console.log(`[bridge] health: http://0.0.0.0:${opts.listen}${opts.health}`);
 });
 

@@ -27,9 +27,20 @@ COPY tools/port/tsp-rs/scripts/ts-udp-bridge.js /app/bridge.js
 # The target allowlist is the security boundary — without it this process
 # would be an open UDP relay — so it comes from the environment, never from
 # a file baked into the image.
+# The registry maps the public address the browser knows to the internal
+# target the packet goes to, so a newly started instance is reachable
+# without restarting the bridge.
+#
+# BRIDGE_ALLOWED_PORTS is the SECURITY FLOOR: the only ports the bridge
+# may ever dial, regardless of what the registry says. It is a range
+# covering every instance the fleet can have, so it never has to be
+# widened to add a server.
 ENV BRIDGE_LISTEN=27017 \
     BRIDGE_HEALTH=/health \
-    BRIDGE_TARGETS=default=127.0.0.1:27015
+    BRIDGE_REGISTRY_URL=http://127.0.0.1:8081/api/registry \
+    BRIDGE_ALLOWED_HOST=127.0.0.1 \
+    BRIDGE_ALLOWED_PORTS=27015-27022 \
+    BRIDGE_TARGETS=default=127.0.0.1:27015@40.160.225.81:27015
 
 EXPOSE 27017
 
