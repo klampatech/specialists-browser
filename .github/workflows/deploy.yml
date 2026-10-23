@@ -29,6 +29,10 @@ concurrency:
 
 permissions:
   contents: read
+  # The pull-request gate needs to READ pull requests. Without this, the
+  # API answers with an error object rather than a list, and the gate
+  # cannot tell "no pull requests" from "I was not allowed to look".
+  pull-requests: read
 
 jobs:
   deploy:
@@ -37,20 +41,6 @@ jobs:
     environment: production
     steps:
       # ── the PR gate ───────────────────────────────────────────────────
-      - name: Refuse a commit that did not come from a pull request
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.sha }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          count=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq 'length' 2>/dev/null || echo 0)
-          echo "  pull requests for $SHA: $count"
-          if [ "$count" -eq 0 ]; then
-            echo "::error::Refusing to deploy a commit that did not come from a pull request."
-            exit 1
-          fi
-
       - uses: actions/checkout@v4
         with:
           # The webxash submodule is a PRIVATE repository. The default
@@ -59,7 +49,21 @@ jobs:
           # that 404s on a private submodule.
           token: ${{ secrets.GITHUB_TOKEN }}
           submodules: recursive
-          fetch-depth: 2
+
+      - name: Refuse a commit that did not come from a pull request
+        # The SAME gate the PR-required workflow uses. The first copy of
+        # this check in the deploy had `permissions: contents: read` and
+        # no `pull-requests: read`, so the API answered with an error
+        # object instead of a list — and `jq 'length'` on an object is
+        # its KEY COUNT. The gate read "3 pull requests" and approved a
+        # direct push to main. It now fails closed, and the permission
+        # is declared.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: node tools/ci/pr-gate.cjs "$SHA"
+
 
       - name: Set up SSH
         env:
