@@ -74,6 +74,11 @@ the port replaces only the game libraries) and one of these engines:
   `3rdparty/library_suffix` submodule (or set `FWGS_DIR`). The engine bindings are generated
   from its headers; the release workflow pins the commit it builds against.
 
+**To build just the Linux server DLL** — the artefact the game server image installs as
+`ts_amd64_amd64.so` — use `scripts/build-server-dll.sh`. It finds the xash3d-fwgs checkout,
+libclang and the GCC headers by itself (reporting which it used), and needs neither the i686 nor
+the Windows targets, so it works where `cargo xtask build` does not. It takes about 45 seconds.
+
 **To run the checks** (`cargo xtask test`/`play`/`all`): Wine, the engine roots (set up with
 steamcmd, ReHLDS and FWGS builds as described in [docs/validation.md](docs/validation.md#11-setting-the-roots-up)),
 and TS content in `../ts_custom` (or `TS_DIR`).
