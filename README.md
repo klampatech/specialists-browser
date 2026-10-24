@@ -1,17 +1,19 @@
-# specialists-browser
+# BulletBallet
 
 > **The Specialists** — a Half-Life 1 mod — running in a browser tab, played
 > against a real dedicated server. No Steam client, no native binary.
+>
+> The repo is `specialists-browser`; the product is **BulletBallet**.
 
 <table>
   <tr>
     <td align="center" valign="top" width="50%">
       <b>bulletballet.dev</b><br>
-      <img src="docs/screenshots/landing.png" alt="The landing page: THE SPECIALISTS headline, a Play button, and a live server browser listing the running instance" width="100%">
+      <img src="docs/screenshots/landing.png" alt="The landing page: the BULLETBALLET wordmark over a falling code-rain backdrop, a Play button, and a live server browser listing the running instance" width="100%">
     </td>
     <td align="center" valign="top" width="50%">
       <b>In game</b><br>
-      <img src="docs/screenshots/spectator.png" alt="The game running in the browser: the ts_casa map rendering, two character models, the TS weapon HUD across the top, and the buy/config menu open on the left" width="100%">
+      <img src="docs/screenshots/spectator.png" alt="The game running in the browser: the ts_gpc map with a bot in the chase camera holding a lit pistol, and The Specialists' own amber HUD — the weapon and its ammo, the config menu, and the kill feed" width="100%">
     </td>
   </tr>
 </table>
@@ -374,10 +376,7 @@ player is told when the server goes away.
   possible, not merely awkward.
 - **A bare `reload` aborts the WASM heap.** The front end uses the held
   `+reload` / `-reload` pair and never hits it; the engine defect is
-  still there. [`docs/UPSTREAM-ISSUES.md`](./docs/UPSTREAM-ISSUES.md)
-  also carries the keyboard root cause that was **withdrawn** — the
-  instrument was wrong, and that draft report must not be filed as
-  written.
+  still there.
 
 ---
 
@@ -385,7 +384,7 @@ player is told when the server goes away.
 
 | Path | What it is |
 |---|---|
-| `webxash/` | Vue frontend + the WASM engine (git submodule, branch `feat/keyboard-native-input`) |
+| `webxash/` | Vue frontend + the WASM engine (git submodule, branch `main`) |
 | `tools/port/tsp-rs/` | Vendored Rust port of TS gameplay |
 | `tools/port/tsp-rs/crates/ts30/`, `ts21/` | TS 3.0 / 2.1 rulesets |
 | `tools/port/tsp-rs/scripts/` | Build, deploy, server, bridge, and probe scripts |
@@ -522,7 +521,7 @@ button was broken, and every run passed.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | PR, push to main | Typecheck, build, 79 unit tests, builds all three service images |
+| `ci.yml` | PR, push to main | Typecheck, build, 81 unit tests, builds all three service images |
 | `pr-required.yml` | push to main | Fails a commit that did not come from a pull request |
 | `deploy.yml` | push to main | Ships to production, then verifies it in a real browser |
 
@@ -536,7 +535,7 @@ request.
 npm test          # the regression suite
 ```
 
-79 tests, and **every one corresponds to a bug that reached production**.
+81 tests, and **every one corresponds to a bug that reached production**.
 That is the design rule: a test earns its place by locking in a failure
 we actually had. The A2S bot count's byte offset, the bridge's
 allowlist, the empty-map-versus-unknown distinction in the human count,
@@ -567,7 +566,10 @@ and [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md). The short version:
   thread; the inflate wants to be in a worker.
 - **Menus** — the buy menu, pre-game setup and client-side knobs, as DOM
   overlays over live engine state.
-- **The re-brand** — names, copy, favicon, and the server's own A2S name.
+- **The rebrand is done** — tokens, favicon, landing page, boot screen,
+  options overlay and the server's own A2S name (`bulletballet TS`) all
+  carry the BulletBallet identity. What is left is the game's *own* art,
+  which stays the mod's.
 
 ---
 

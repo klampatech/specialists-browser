@@ -126,10 +126,15 @@ const OUT = process.argv[3] || path.join(__dirname, '..', '..', 'docs', 'screens
   }
   await page.waitForTimeout(1200);
 
-  // Take the spectator shot as well: it shows more of the map and the
-  // character models, and it is a different moment.
-  await page.screenshot({ path: path.join(OUT, 'first-person.png') });
-  console.log('  first-person.png');
+  // Whatever this ends up being, do NOT call it first-person.png. If the
+  // spawn click above landed on the config menu's Cancel — which is what
+  // happens when the client is still in the spectator's menu — the client
+  // quits to the TS main menu and this frame is the MENU, not a
+  // first-person view. A file called first-person.png holding the main
+  // menu is a trap for the next reader, and the README's alt text would
+  // be describing a screenshot that shows something else.
+  await page.screenshot({ path: path.join(OUT, 'main-menu.png') });
+  console.log('  main-menu.png');
 
   const state = await page.evaluate(() => ({
     chase: /Chase-Camera/i.test(document.body.innerText || ''),
