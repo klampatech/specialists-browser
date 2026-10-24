@@ -38,8 +38,18 @@ Both were mine, and both were wrong:
 **weapon-slot buttons** — keys `1..11`, which is `slot1`..`slot10` plus
 `a`. The frontend already maps `Digit1 → slot1` … `Digit0 → slot10`, so
 pressing B opens the menu and 0-9 drives it. Kyle plays it; it works.
-The real items are that it cannot be closed with Escape, and that Kyle
-wants it gone anyway.
+
+Two details from the client source worth knowing:
+
+- **Escape does not close the buy menu.** The client's own comment says
+  so: *"The buy menu takes no keys here (Escape doesn't close it)."* You
+  leave it by choosing something, by pressing 0 (back), or with the
+  mouse.
+- **The mouse drives it too.** *"CTSBuyMenu::MouseEvent runs the row
+  under the cursor on a left release … and key 10 (back) on a right
+  release."* The mouse path works, so the buy menu is fully navigable
+  by mouse — which matters for A3, because it means a VGUI menu is
+  always a way out.
 
 **The SDL injection has never worked, and the probe cannot ever pass.**
 `sdl-key-inject.ts` pushes one event and then asks `SDL_HasEvents`
@@ -105,14 +115,26 @@ one overlay component. One session, one file, one shared unknown.
   wanted, it is the DOM overlay in Batch D.
 - **Accept:** B does nothing, and the UI no longer advertises it.
 
-### A2. Remove console access
+### A2. Remove console access — and the trap it is
 
-- **Now:** `Backquote: 'toggleconsole'` is our binding. The console is
-  the user's escape hatch out of the game and out of the server, it is
-  also advertised to every player (the `` { keys: ['`'], action:
-  'Developer console' } `` row in `TSHowToPlay.vue`), and — per Kyle —
-  it may not even be typable into, because the engine's own input is
-  dead.
+- **Now:** `Backquote: 'toggleconsole'` is our binding, and Kyle tested
+  it: **pressing ` brings up "Press ESC to release pointer"**, and the
+  console is not usable. The sequence is:
+
+  1. `toggleconsole` opens the engine's console.
+  2. The mouse is still grabbed (pointer lock), so the engine cannot
+     hand the mouse to the console and prints **"Press ESC to release
+     mouse"**.
+  3. Escape **cannot be delivered** — it is not in our key map, and the
+     SDL path is dead.
+
+  So the player is left with a grabbed mouse, an open console, and a
+  prompt asking for a key they cannot press. **That is a trap**, and it
+  is the one trap on this list that is real today.
+
+  It is also advertised to every player: the `` { keys: ['`'], action:
+  'Developer console' } `` row in `TSHowToPlay.vue`, which **is**
+  mounted in the production landing page.
 - **Do:** remove the `Backquote` binding and that row. The `Console`
   checkbox in `XashLaunchOptions.vue` and the `enableConsole` options
   in `XashLoadDirectory.vue` / `XashLoadZip.vue` are **dev-only
@@ -120,7 +142,8 @@ one overlay component. One session, one file, one shared unknown.
   the player sees — but they should go too, so the console cannot be
   re-enabled by a path nobody remembers.
 - **Accept:** Backquote does nothing; no production UI advertises a
-  console.
+  console; no state can leave the player with a grabbed mouse and no
+  way out.
 
 ### A3. Wall off the game menu — and know how it is reached today
 
@@ -165,6 +188,32 @@ disconnect button explains "dumping out of the server" with no key
 involved at all — and it would mean the fix is about **the menu's
 contents**, not about the keyboard.
 
+#### One ambiguity that has to be resolved before sending Escape
+
+The client's `HUD_Key_Event` returns 1 for Escape when its own menu did
+not take it, and the source says what happens then:
+
+> 1 hands it to the engine, which for Escape opens the main menu
+> (newer FWGS) or runs its `cancelselect` binding (Steam GoldSrc, FWGS
+> 0.21), which sends `escape`.
+
+**Those two are different outcomes and we ship the ambiguous one.** The
+server's engine is pinned to FWGS 0.21 (`tools/deploy/fetch-engine.sh`),
+but the browser's is the `xash3d-fwgs` **1.2.2** npm build, and it is
+not established which of the two behaviours it has. `cancelselect`
+would close the console and release the mouse; "opens the main menu"
+would put the player in the game menu, which is exactly what A3 wants
+to prevent.
+
+**So do not send Escape until that is known.** The client already has
+the answer built in: `ts_dev_keylog 1` prints a `[ts key]` line for
+every Escape, including whether the client's menu consumed it. One
+command, one keypress, and the answer is in the log.
+
+Until it is known, the safe shape is: **Escape is intercepted in the
+DOM and never becomes a `ts_key`**, and the options overlay is opened by
+the frontend itself.
+
 ### A4. The in-game options UI (Escape → settings / quit to web UI)
 
 - **Now:** nothing. There is no in-game overlay.
@@ -204,13 +253,26 @@ contents**, not about the keyboard.
 - **Do:**
   - widen the guard — track an explicit "a text field has focus" flag
     rather than sniffing the target, and step aside for **any**
-    element that is not the canvas while it is set;
-  - decide whether chat is worth having: with `ts_key` the browser can
-    now send real characters to the client, so chat becomes possible
-    rather than impossible. If it is wanted, the characters go through
-    `ts_key`; if it is not, `messagemode` is removed like the buy menu.
-- **Accept:** typing never fires a hotkey. If chat is kept, messages
-  reach the server.
+    element that is not the canvas while it is set. That half is
+    independent of everything else and can be done on its own;
+  - **typing is solvable.** Kyle's worry was that there is no way
+    around the SDL queue not draining — there is. `ts_key` calls the
+    engine's `Key_Event` directly:
+    ```rust
+    pub fn key_event(&self, key: i32, down: bool) {
+        cl_eng!(Key_Event(key, down as c_int));
+    }
+    ```
+    which is the *same* function the SDL path ends at, one step above
+    `HUD_Key_Event`. So `ts_key <ascii> 1` then `ts_key <ascii> 0` is
+    a character, and it reaches the engine's chat field, the engine's
+    console and the client's menus alike. The chat becomes possible
+    rather than impossible.
+  - So the question is no longer "can we" but "do we": keep
+    `messagemode` and drive it with `ts_key`, or remove it like the
+    buy menu and put chat in the DOM overlay in Batch D.
+- **Accept:** typing never fires a hotkey. If chat is kept, characters
+  reach the engine and messages reach the server.
 
 ### A6. Third person — not a bug, a rule
 
@@ -226,6 +288,10 @@ contents**, not about the keyboard.
 - **So:** while dead or spectating, X does nothing — by design, as in
   TS. To enter third person you have to be **alive**. In the browser
   you spawn with a left click (fire), so the answer is "spawn first".
+- **How to check it in ten seconds:** connect, **left-click to spawn**,
+  then press X. If it still does nothing, that is a different bug and
+  the client's `cam_thirdperson` cvar is where to look — the toggle
+  sets the view mode and the engine's camera is what has to follow.
 - **Do:** no code change. Fix the **controls list** — it currently does
   not mention X at all, and it should say that third person needs you
   alive.
