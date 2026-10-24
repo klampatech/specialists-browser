@@ -250,6 +250,61 @@ build would not have shown this at all.
   the restore in a host-side script with a `sleep`, so it fires even if the
   operator session dies.
 
+### Rebrand Phase 1 — the green shell (2026-10-24, shipped)
+
+**webXash PR #13.** The shell is now a phosphor-green operator terminal;
+the game keeps TS's amber. Tokens, head, brand assets.
+
+**What changed:**
+- The 26 `--ts-*` token **values** swapped. The **names are frozen** —
+  renaming them means touching every `var()` in every component,
+  redefining them means touching one file. New: `--ts-error`, `--ts-warn`,
+  `--ts-ok`, `--ts-font-body`, `--ts-rule`.
+- `--ts-notch: 0` — the chamfer is gone; square edges plus a phosphor
+  left-rule.
+- A **body font-family at all**. Nothing set one before, so any text that
+  did not opt into a display or mono face was rendering in the browser's
+  default serif. That was a latent bug, not just a style choice.
+- Brand: `src/assets/brand/bb-mark.svg` (as drawn), `bb-mark-24.svg` (no
+  cutouts, for 24px and below), `bb-favicon.svg`, and `public/og.png`
+  (1200x630).
+- The head: title, description, theme-color, OG + Twitter, and Anton /
+  Space Grotesk / JetBrains Mono.
+
+**The favicon is NOT the mark as drawn.** The mark is two slender
+cartridges 6.8:1 tall; at 16px that is a pair of two-pixel bars and its
+internal cutouts vanish, so it reads as a blob. `bb-favicon.svg` is a
+second drawing: one solid cartridge, chunky, on the void ground. It also
+stops us serving Valve's lambda as our own favicon, which we had been
+doing.
+
+**THE SIGNAL RULE — the one thing most likely to break silently.**
+`--ts-signal` is the accent and it is used by the primary CTA, the
+progress ring, the live dot, the tab underline and the reticle. It was
+**also** used by every error surface, so a plain token swap would have
+turned **errors green** — a lie the player reads as success. Every error
+surface now uses `--ts-error` explicitly: the launch error
+(`XashLanding.vue`), the server-list empty-error state
+(`TSServerList.vue`), and the CONNECTION LOST panel's title, button and
+border (`XashCanvas.vue`). The "connecting" splash label is `--ts-warn`.
+
+**The engine hijacks `document.title`** from its own window title once it
+boots — the live tab read "The Specialists" after the HTML said
+otherwise. `webxash/src/services/brand.ts` takes the title back with a
+MutationObserver and keeps it.
+
+**Verified:** `vue-tsc` + `bun run build` clean; the parent's 81 unit
+tests pass; every text pair passes WCAG AA against the **shipped** values
+(ghost/void 18.46, phosphor/void 14.70, mute/void 7.09, red/void 6.63);
+`--ts-ink-dim` is 4.07:1 and is documented as decorative-only; PLAY and
+the first server row are above the fold at 1280x720, 1440x900 and
+375x667; the error surface was confirmed **red** in a real browser.
+
+**Left for Phase 2:** the landing page's structure (the mock's top and
+bottom bars, the code rain fixed, the server row rebuilt with
+humans/bots, the tickrate and a health chip), and the fold measured
+against the mock rather than against today's page.
+
 ## The rebrand: BulletBallet (2026-10-24, planned)
 
 **The site is becoming BulletBallet.** The plan is
