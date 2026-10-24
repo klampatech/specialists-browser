@@ -59,6 +59,48 @@ assets.bulletballet.dev  →  Cloudflare R2 (ts-assets), 493 MB in 8×64 MiB par
 The game UDP port is published straight out of Docker and deliberately does
 **not** go through Caddy — it is raw UDP, not HTTP.
 
+## The rebrand: BulletBallet (2026-10-24, planned)
+
+**The site is becoming BulletBallet.** The plan is
+**`docs/REBRAND-PLAN.md`** — read that, not this summary.
+
+The decision that shapes it: **green shell, amber game.** The site
+chrome (landing, boot, options, disconnect) becomes a phosphor-green
+operator terminal; the *game* keeps TS's own amber, because that amber
+(`iTeamColors[0]` = 255,170,0) is what the HUD, the scoreboard and the
+menus actually are. The current theme is amber *everywhere* — that was
+deliberate, so the page handed off amber-to-amber — and under the new
+palette the shell's green becomes the distinguishing thing.
+
+Kyle owns the call on the palette; the plan has it.
+
+**The mock** is the single-file HTML Kyle supplied (the BB cartridge
+mark — original, made for BulletBallet — plus the code rain, the Anton /
+Space Grotesk / JetBrains Mono type stack, and the phosphor palette).
+It is a *reference*, not a spec: everything the live page has today and
+the mock does not (the fullscreen opt-out, the download progress, the
+launch error, the server-list states, the real "How It Works" copy and
+controls table, the real footer links) has to survive the rebrand. The
+plan lists them, one by one.
+
+**The highest-leverage fact:** the shell's 26 design tokens are consumed
+by only **6 component files**. So the whole re-skin is **redefining token
+values in one file** — no component rewrites — and the components follow.
+
+**The most likely silent regression:** `--ts-signal` is currently used
+for the primary CTA *and* for the error surfaces. If it simply becomes
+phosphor green, errors turn green, which reads as success. Every error
+surface moves to a new `--ts-error` in the same change.
+
+**Two measured gotchas, both in the plan:**
+- The **engine hijacks `document.title`** (`xash3d-fwgs` sets it from
+  the engine's own window title at boot — the live tab reads "🐴 The
+  Specialists" *today*). `index.html` governs the landing page, but the
+  tab reverts mid-match unless the client re-asserts it.
+- The **live favicon is Half-Life's lambda** (`hl-bright.svg`). We are
+  shipping Valve's logo under our own domain; replacing it is a brand fix
+  and a licence-posture fix at once.
+
 ## The matches are fifteen minutes now (2026-10-24)
 
 `mp_timelimit 10` → **`mp_timelimit 15`**, in `tools/deploy/config/server.cfg`.
@@ -470,10 +512,15 @@ what it does not yet do is retain them over time. Until it does, the
 "8 instances" figure is a budget, not a measurement, and the extrapolation
 from one busy server cannot be made.
 
-### R3. FE polish + the web UI re-brand
+### R3. FE polish + the web UI re-brand — **ACTIVE (2026-10-24)**
 
-Kyle's identified FE tweaks, plus the bulletballet re-brand Grover is
-working on. Now that prod is stable, this is the active workstream.
+The rebrand is specced: **`docs/REBRAND-PLAN.md`**. BulletBallet, green
+shell + amber game, phased into four shippable steps. Phase 0 is the fix
+Kyle named on 2026-10-24; Phase 1 is the token swap, the head and the
+brand assets.
+
+Kyle's other identified FE tweaks (Batch B/C/D in
+`docs/FE-MOD-PLAN.md`) ride along where they are free.
 
 ### R4. Single-player depth (the old R2–R7, on the fallback path)
 
@@ -485,37 +532,32 @@ the parts that are known traps.
 
 # § NEXT TASK
 
-> ## R1: matchmaking — assign a player to an instance
+> ## Phase 0 + Phase 1 of the BulletBallet rebrand
 >
-> **Context.** The registry already publishes every instance with its
-> health, tickrate, human count and bot count. The bridge already routes
-> a player to the instance they picked. What is missing is the policy
-> layer between them: given the instance list and a player, which instance
-> should they be sent to, and what happens when it is full.
+> **Read `docs/REBRAND-PLAN.md` first.** It is the plan; this is the
+> pointer.
 >
-> **Decide first:**
-> 1. **Fill or spread?** Prefer the emptiest instance (keeps latency flat,
->    spreads load) or the fullest (keeps players together, better for a
->    deathmatch)? For TS, *together* is probably right — the mode is
->    about fighting each other, not about low ping.
-> 2. **Does the browser pick, or the server?** The browser already picks
->    from the server list. A server-side assignment is more work and more
->    correct (it can account for capacity the browser cannot see).
-> 3. **Where does the choice live?** The registry is stateless today and
->    that was deliberate. Matchmaking needs somewhere to hold "who is
->    connecting to what" — which is the fork the old
->    `docs/CONTROL-PLANE.md` called "where does state live", answered as
->    "not yet" because the registry had no durable state to own.
+> **Phase 0 — the fix Kyle named on 2026-10-24.** Not yet specified in
+> writing. It gates Phase 1: ask, do not guess.
 >
-> **First move: write the policy down before writing any code.** The
-> decision above is a design decision, not an implementation detail, and
-> it is much cheaper to change on paper.
+> **Phase 1 — tokens, head, brand assets.** One `webxash` PR plus one
+> pointer-bump PR here. The whole shell re-skins by **redefining the 26
+> token values in `src/assets/ts-theme.css`** — the components follow,
+> because only 6 files consume them. Plus: the BB mark extracted at
+> three sizes, the favicon replaced (it is Half-Life's lambda today),
+> the title and meta set, and the client re-asserting `document.title`
+> after boot because the engine hijacks it.
 >
-> **Do not break what works.** The production path is verified end to end.
-> Matchmaking sits in front of it. Any change that alters which instance
-> a player lands on must keep the bridge's `403` behaviour for anything
-> not in the allowlist, and must not reintroduce a second source of
-> truth for the instance list.
+> **The two things most likely to go wrong**, both in the plan:
+> 1. **Error surfaces turning green.** `--ts-signal` is used for the CTA
+>    *and* for the errors. Every error moves to a new `--ts-error` in
+>    the same change.
+> 2. **The favicon at 16px.** The mark as drawn is mush at that size; it
+>    needs a separate solid silhouette, not a downscale.
+>
+> **Deferred by Kyle's direction on 2026-10-24:** R1 matchmaking. The
+> front-end half (B1 — flip the comparator to "highest population that
+> is not full") is still cheap and independent, and can ride along.
 
 ---
 
