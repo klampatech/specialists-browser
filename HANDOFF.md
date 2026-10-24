@@ -59,6 +59,34 @@ assets.bulletballet.dev  →  Cloudflare R2 (ts-assets), 493 MB in 8×64 MiB par
 The game UDP port is published straight out of Docker and deliberately does
 **not** go through Caddy — it is raw UDP, not HTTP.
 
+## The matches are fifteen minutes now (2026-10-24)
+
+`mp_timelimit 10` → **`mp_timelimit 15`**, in `tools/deploy/config/server.cfg`.
+
+The timer is the thing that ends a match and advances the map cycle, and it
+is in **minutes**. `roundtime` (the TS *round* timer, in seconds) is inert
+in FFA deathmatch — the server is `mp_teamplay 0`, `lastmanstanding 0`, so
+there is no round mode to give it anything to do.
+
+This is an **image change**, not a config change. The engine re-execs
+`server.cfg` on every map change, so a cvar set on a live server is
+stomped at the next map change (measured: `mp_timelimit 10` set at 15:39
+was back to 3 at the 15:48 map change). The only thing that sticks is a
+`server.cfg` that is *in the image* — which is why the tag moved
+`0.25 → 0.26` in the same PR, and why the image is still built by hand on
+the host rather than by the pipeline.
+
+Consequence: the 24-map cycle is now **~6 hours**, not ~4.
+
+```
+mp_timelimit 15
+```
+
+The other three copies of a number in this project (the bot target: the
+registry default, the registry image's env, the deploy script's env, and
+`server.cfg`) are unaffected — the registry only ever writes
+`ts_bot_quota`, never the match timer.
+
 ## What shipped on 2026-10-24 (afternoon): the client's heap, and the humans
 
 Two real defects were found and fixed, plus the guardrails so neither can
@@ -112,8 +140,8 @@ Shipped as PR #38 (the port change), PR #39 (the image tag), and PR #40
 (`scripts/build-server-dll.sh` — the server DLL build needed three separate
 env fixes that the errors never explained; the script now finds all three).
 
-The game server image is `ts-server:0.25`; **`0.24` is still on the host**, so
-a rollback is one env var: `TS_IMAGE=ts-server:0.24`.
+The game server image is `ts-server:0.26`; **`0.25` is still on the host**, so
+a rollback is one env var: `TS_IMAGE=ts-server:0.25`.
 
 **Caveat worth knowing:** the disconnect lags by ~90 seconds. It is a UDP
 drop, so the server only notices when the client's packets stop arriving.
