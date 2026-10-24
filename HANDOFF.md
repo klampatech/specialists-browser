@@ -305,6 +305,67 @@ bottom bars, the code rain fixed, the server row rebuilt with
 humans/bots, the tickrate and a health chip), and the fold measured
 against the mock rather than against today's page.
 
+### Rebrand Phase 2 — the landing page (2026-10-24, shipped)
+
+**webXash PR #14.** The landing page is the mock's structure: a fixed top
+bar, a fixed bottom bar, the code-rain stage, the nav row, the hero, the
+tab panel, the footer.
+
+**The code rain actually rains now.** The mock's is twelve columns of one
+IDENTICAL string, and its animation translates only -8% -> +8% of a
+120%-tall element, so the glyphs shimmer in place and never travel. Ours:
+16 columns, **16 unique strings**, each travelling a full column height —
+measured at 100px/second, 900px over the 9s cycle — with its own duration
+and phase so they do not march in step. The strings are generated from a
+fixed seed on purpose: the rain is the same on every load, so the page
+never reflows under the reader and a screenshot of it is reproducible.
+
+**The server row is rebuilt.** A2S reports `players` as humans PLUS bots,
+so the old row's "16 / 32" read as 16 players when it was 16 bots and
+nobody. The registry knows the real human count, so the row shows
+**HUMANS**, **BOTS** and **SLOTS** separately, with the humans in
+phosphor — that is the number a visitor is here for. Plus the tickrate
+and a health chip, which is three DIFFERENT facts: a server that is not
+answering is not the same as one answering badly, and neither is the same
+as the registry's own data being stale. `Ok` / `Degraded` / `No reply` /
+`Stale`.
+
+**The top bar is live.** The registry already publishes the current map
+and the real human count, and the list is polled every 20s, so the bar
+shows real data.
+
+**The fold, measured.** The acceptance criterion was PLAY *and* the first
+server row above the fold at 1280x720 and 1440x900. Measured with the
+**real production `/api/servers` payload** served into the preview, so the
+row is the one a visitor sees:
+
+| viewport | PLAY | first server row | bottom bar's edge |
+|---|---|---|---|
+| 1440x900 | 448-510 | 643-721 | 862 |
+| 1280x720 | 401-463 | 593-671 | 682 |
+
+Both pass. Two things were reserving space they were not using:
+
+- **The download-progress block was holding ~37px below the PLAY button**
+  on every load. It is a div with a bar and a line of text, and it was
+  reserving its height for a download that had not started. It now
+  collapses when inactive.
+- **The hero was centring itself in the free space**, which pushed the tab
+  panel DOWN — the opposite of what the fold wants. The panel absorbs the
+  free space instead (`margin-bottom: auto`), so the footer stays at the
+  bottom without the panel moving.
+
+**`justify-content: center` on a scroll container is a trap.** It pushes
+the overflow ABOVE the scroll origin, where it cannot be scrolled back to.
+The hero uses `margin: auto` for centring instead. That is why the
+`.ts-landing__inner` comment now says so.
+
+**Everything the live page had survives:** the fullscreen opt-out, the
+download progress, the launch error surface, the server-list states
+(scanning / empty / error, still distinct), the refresh button and its
+spinning state, join per server, the real How It Works copy with its full
+controls table, and the real footer links.
+
 ## The rebrand: BulletBallet (2026-10-24, planned)
 
 **The site is becoming BulletBallet.** The plan is
