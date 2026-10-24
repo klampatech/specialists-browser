@@ -107,6 +107,60 @@ is still `hl-bright.svg`. Both are brand work, not a bug fix.
 background image the player sees through their game. The new landing
 page's code rain and ring are DOM, not canvas — keep them there.
 
+### What the same investigation turned up: the framebuffer is not opaque
+
+Measured, with the canvas element's background forced to solid red and
+then solid blue: **the engine's framebuffer leaves alpha below 1 over
+large areas** — a red background bleeds into the rendered scene
+(R 76→89 in the weapon region, 76→102 over the wall), and blue bleeds
+too (B 61→74, 64→91). That is roughly **5-10% bleed**, and it is why
+the lambda looked like a *lighting* artefact rather than a logo: the
+scene is composited over whatever the canvas element carries, and the
+scene is mostly opaque, so only a faint ghost survives.
+
+**Two consequences:**
+
+1. The lambda was NOT the only thing that could show through. Any
+   future background on the canvas would too. The canvas now paints a
+   solid ground, so there is nothing to see through.
+2. **The same low alpha is a symptom, not just the cause.** Studio
+   models — the first-person viewmodel and the bots — render as **flat
+   black silhouettes** in places (Kyle, 2026-10-24: *"the lighting on
+   the weapon models looks off"*). Measured: the models are **opaque**
+   (they stay black with a red or blue canvas background), so this is a
+   **lighting** problem, not an alpha one. And it is **position
+   dependent** — the same bot renders correctly lit in one spot and
+   solid black in another.
+
+**The regression window is narrow.** The only engine change this week is
+`128551a` (2026-10-24 11:50) *"give the client a 512 MB WASM heap"*
+and `b624dd7` (12:02) *"the wasm patch must rebuild the memory
+section"*. Before 11:50 the engine had a 256 MB heap (max == initial).
+
+**The bisect rig is built.** `npm pack xash3d-fwgs@1.2.2` gives the
+original engine wasm, and **Playwright can serve it to the browser
+instead of production's** — `page.route('**/xash-*.wasm', ...)` — so the
+original and the patched engine can be compared with **no deploy**.
+First result: with the **original** wasm, a bot model renders correctly
+lit and textured. The matched patched-wasm observation (a model in
+frame) is the missing half.
+
+**Also ruled out, with evidence rather than argument:**
+- The Rust client HUD's `draw_logo` — the port's own
+  `docs/implementation/client-hud.md` says the `Logo` message *"never
+  arrives"*, so that code path cannot run.
+- The `impulse 99` toggle — `impulse 99` does reach the server and
+  toggles the message, but the message is never delivered anyway.
+- The canvas CSS background — removed and **the logo is gone**
+  (confirmed by Kyle in production), so it *was* the logo's source, but
+  it was not the lighting bug's source.
+
+**Engine cvars worth reading** (measured in production): `r_fullbright`
+= 0, `r_lighting_modulate` = 0.6 (the GoldSrc default), `r_sprite_lighting`
+= 1, `r_drawviewmodel` = 1, `r_glowshellfreq` = **2.2**. The glowshell
+is what draws the faint **white weapon outlines** — the glowshell pass
+renders the model a second time, scaled up, additively.
+
 ## The rebrand: BulletBallet (2026-10-24, planned)
 
 **The site is becoming BulletBallet.** The plan is
