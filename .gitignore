@@ -105,3 +105,9 @@ progress/grind.pid
 # (The many experimental shim builds under shim/build/ stay ignored on
 # purpose — they are artifacts, not state.)
 !tools/port/ts-server-dll/baseline/*.wasm
+
+# A capture-script artifact: the frame after the spawn attempt. It is
+# written with a neutral name on purpose -- the script cannot know
+# whether it got a first-person view or the TS main menu, and a file
+# named first-person.png holding the menu is a lie.
+docs/screenshots/after-spawn.png

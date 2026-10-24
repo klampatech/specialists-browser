@@ -13,7 +13,7 @@
     </td>
     <td align="center" valign="top" width="50%">
       <b>In game</b><br>
-      <img src="docs/screenshots/spectator.png" alt="The game running in the browser: the ts_gpc map with a bot in the chase camera holding a lit pistol, and The Specialists' own amber HUD — the weapon and its ammo, the config menu, and the kill feed" width="100%">
+      <img src="docs/screenshots/spectator.png" alt="The game running in the browser: a bot in the chase camera holding a lit Beretta, and The Specialists' own amber HUD — the weapon and its ammo, the config menu, the chat and the kill feed" width="100%">
     </td>
   </tr>
 </table>

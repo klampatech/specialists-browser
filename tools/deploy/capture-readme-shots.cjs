@@ -13,6 +13,55 @@ const URL = process.argv[2] || 'https://bulletballet.dev/';
 // `__dirname` is tools/deploy, so the repo root is two levels up — not one.
 const OUT = process.argv[3] || path.join(__dirname, '..', '..', 'docs', 'screenshots');
 
+/**
+ * How many humans the registry says are on the server right now.
+ *
+ * `null` when the registry cannot be reached — which is NOT zero. Zero
+ * would be a baseline we then compare against, and a client joining
+ * later would look like an increase even though it was not ours.
+ */
+async function countHumans() {
+  try {
+    const res = await fetch('https://bulletballet.dev/api/servers');
+    const body = await res.json();
+    // The registry returns { servers: [...] }, NOT a bare array. Treating
+    // it as one throws, the catch swallows it, and the caller reads
+    // "null" — which looks like "the registry is down" when in fact it
+    // answered perfectly well. That is how this check silently never
+    // passed the first time it ran.
+    const list = Array.isArray(body) ? body : body.servers || [];
+    return list.reduce((n, s) => n + (s.humans ?? 0), 0);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Wait until the registry reports MORE humans than before this browser
+ * joined.
+ *
+ * The page's own readiness signals do not cover this. The engine's
+ * startup output is drawn into the same canvas the game draws into, so
+ * a canvas that "has content" can be a console log rather than a game.
+ * The server's player count is a fact about the game.
+ *
+ * The comparison is against a BASELINE, not against zero: the server
+ * usually has a real player on it, and "at least one human" would be
+ * true before our client ever arrived.
+ */
+async function waitForHumanOnServer(page, timeoutMs, baseline) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const humans = await countHumans();
+    if (humans !== null && (baseline === null ? humans >= 1 : humans > baseline)) {
+      console.log(`  the server reports ${humans} human(s) (was ${baseline}) — in game`);
+      return true;
+    }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  return false;
+}
+
 (async () => {
   const browser = await chromium.launch({ args: ['--no-sandbox'] });
   const ctx = await browser.newContext({
@@ -26,6 +75,14 @@ const OUT = process.argv[3] || path.join(__dirname, '..', '..', 'docs', 'screens
   await page.waitForTimeout(6000);
   await page.screenshot({ path: path.join(OUT, 'landing.png') });
   console.log('  landing.png');
+
+  // ---- the human count BEFORE this browser joins ----
+  //
+  // The readiness check below compares against this, so it has to be
+  // taken before the join. The server usually has a real player on it,
+  // and "at least one human" would be true before our client arrived.
+  const humansBefore = await countHumans();
+  console.log(`  humans on the server before we join: ${humansBefore}`);
 
   // ---- in game ----
   await page.evaluate(() => {
@@ -46,6 +103,29 @@ const OUT = process.argv[3] || path.join(__dirname, '..', '..', 'docs', 'screens
     if (ready) break;
   }
   await page.waitForTimeout(8000);
+
+  // THE READINESS CHECK THAT MATTERS.
+  //
+  // The wasm-count check above says the modules are loaded. It does NOT
+  // say the client is in the game, and the difference is a garbage
+  // screenshot: on 2026-10-24 a run caught the engine mid-boot, still
+  // printing its startup log ("Using SDL audio driver", a hundred
+  // "unknown command" warnings, "Connecting to ..."), and the
+  // "spectator" shot became a wall of white-on-black console text. The
+  // README's hero image was a console dump.
+  //
+  // The server knows when a human is actually on it. Poll the registry
+  // and wait for one to appear. That is a fact about the game, not an
+  // inference from the page.
+  //
+  // And if the client never shows up, keep the existing screenshots. A
+  // capture script must never replace a good picture with a bad one.
+  const inGame = await waitForHumanOnServer(page, 90_000, humansBefore);
+  if (!inGame) {
+    console.log('  the client never reached the server — keeping the existing screenshots');
+    await browser.close();
+    return;
+  }
 
   // Left-click spawns the player: the client starts as a spectator
   // ("Free Chase-Camera") until the first click. A chase-camera view of
@@ -115,17 +195,23 @@ const OUT = process.argv[3] || path.join(__dirname, '..', '..', 'docs', 'screens
     // was the menu, because the spawn click had taken the client out
     // of the game.
     //
-    // The only reliable check is the pixels, and the pixels say: this
-    // spawn attempt does not work. The client ends up in the TS main
-    // menu, not in first person. The README uses the two shots it can
-    // trust (landing.png and spectator.png); the third is written with
-    // a neutral name so nobody mistakes it for a first-person view.
+    // This proxy is NOT a proof of anything. It cannot tell a moving
+    // game frame from the main menu's animated highlight, and it cannot
+    // tell a moving game frame from the spawn fade. The reliable signal
+    // is the server's human count, checked BEFORE the spawn click.
     if (before !== after) {
       console.log('  view is live');
       break;
     }
   }
-  await page.waitForTimeout(4000);
+  // Let the spawn TRANSITION finish. TS fades the client in over several
+  // seconds, and the frame during that fade is a dark screen with a
+  // spinner -- it is first person, but it is not a picture of the game.
+  //
+  // The old loop broke out at the first sign of ANY animation, and the
+  // fade is an animation, so it broke DURING the fade. A fixed settle
+  // is more predictable than asking the frame whether it is moving.
+  await page.waitForTimeout(12000);
 
   // Walk. A player who has just spawned is usually facing a wall, and a
   // screenshot of a wall is a poor hero image. `+forward` is a held
@@ -136,7 +222,15 @@ const OUT = process.argv[3] || path.join(__dirname, '..', '..', 'docs', 'screens
     await page.keyboard.up(key).catch(() => {});
     await page.waitForTimeout(500);
   }
-  await page.waitForTimeout(1200);
+  // A freshly spawned player is holding Kung-Fu (fists). A weapon slot
+  // gives the frame a real viewmodel in it -- which is the thing worth
+  // showing, because the first-person weapon is what was rendering
+  // BLACK until it was fixed.
+  for (const key of ['2', '3']) {
+    await page.keyboard.press(key).catch(() => {});
+    await page.waitForTimeout(900);
+  }
+  await page.waitForTimeout(1500);
 
   // NEUTRAL FILENAME. Do NOT call this first-person.png.
   //
@@ -154,8 +248,13 @@ const OUT = process.argv[3] || path.join(__dirname, '..', '..', 'docs', 'screens
   // that says the wrong thing.
   //
   // So the script does not guess. It writes a neutral name and a human
-  // decides what the frame actually is. (As of 2026-10-24 it is the
-  // main menu.)
+  // decides what the frame actually is.
+  //
+  // As of 2026-10-24, with the readiness check in place (wait for a
+  // human on the server BEFORE clicking to spawn), the spawn WORKS and
+  // this frame is a first-person view. Before that check existed the
+  // click landed before the client was in the game, the client dropped
+  // to the TS main menu, and this file was the MENU.
   await page.screenshot({ path: path.join(OUT, 'after-spawn.png') });
   console.log('  after-spawn.png');
 
