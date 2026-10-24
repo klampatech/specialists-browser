@@ -6,176 +6,230 @@ difference decides how the work is sequenced.
 
 ## The thing that shapes everything else
 
-**The engine's own keyboard path is dead in this WASM build.** Nothing
-drains its SDL event queue — not even the engine's own window and text
-events. `webxash/src/services/sdl-key-inject.ts` says so at the top, and
-the service self-disables after one probe.
+**The TS client is explicitly built to be driven by a browser.** That is
+not an inference — it is stated in the Rust port's own source, in
+`tools/port/tsp-rs/crates/client/src/`:
 
-So every key the player presses is translated by us into an engine
-command and pushed down `Cmd_ExecuteString`. That is `Route C`, and it
-is what `webxash/src/services/keyboard-bridge.ts` implements:
+> `ts_key <key> <1|0>`: `Key_Event` as a key press or release would,
+> reaching `HUD_Key_Event`. Unlike the dev-only `ts_dev_key` this needs
+> only `ts_dev_scriptinput 1`, **because a browser client has no other
+> way to press a key at all**.
 
-| kind | example | how it is sent |
+That is the whole input story, and it is better than the frontend
+currently realises:
+
+| what | how it works | status |
 |---|---|---|
-| held | `+forward`, `+jump`, `+duck`, `+showscores`, `+reload` | `+cmd` on keydown, `-cmd` on keyup |
-| instant | `slot1`, `use`, `impulse 100`, `messagemode`, `thirdperson` | `cmd` once, on keydown |
+| movement, fire, weapons | `Cmd_ExecuteString` with `+cmd` / `-cmd` | works today |
+| the anti-script gate | `ts_gate 200` before a gated `+cmd` | works today |
+| **any key, to the client** | **`ts_key <keynum> <1|0>`** | **exists, unused** |
+| open/close the TS menus | `ts_menu_open`, `ts_menu_close`, `ts_menu_slot` | exists, unused |
+| third person | `thirdperson` / `firstperson` | exists, works |
+| the buy menu's digits | the weapon-slot commands (`slot1`..`slot10`) | **already works** |
 
-Two consequences run through this whole list:
+The client's key number is ASCII for printable keys, so `ts_key 49 1`
+is the digit `1`, and `ts_key 27 1` is Escape.
 
-1. **We own the key map.** `keyboard-bridge.ts` is a single table. If a
-   key opens something we do not want, the fix is to remove it from the
-   table. That is cheap and certain.
-2. **We cannot intercept the engine's own UI.** The engine's GoldSrc
-   menu, its console, and the TS buy menu are all driven by the engine's
-   key handling. If the engine opens one, our DOM overlay cannot take
-   that key back — we would have to close the menu by executing an
-   engine command.
+### Two corrections to an earlier reading of this
 
-There is also a live question underneath all of it: **can the engine be
-made to see keys at all?** `sdl-key-inject.ts` decides with a
-*synchronous* probe — it pushes one event and immediately asks
-`SDL_HasEvents` whether the queue is empty. But the engine drains its
-queue on its next frame, not inside that call. **The probe is therefore
-racy, and a build that drains correctly can still be declared broken.**
-If the probe is fixed and the engine does drain, a lot of the list gets
-much easier. If it does not, the in-game options UI has to be a DOM
-overlay that never lets Escape reach the engine. Either way we need the
-answer before designing the menus, so it is the first thing in Batch A.
+Both were mine, and both were wrong:
 
----
+**The buy menu is not a trap.** The buy menu is navigated by the
+**weapon-slot buttons** — keys `1..11`, which is `slot1`..`slot10` plus
+`a`. The frontend already maps `Digit1 → slot1` … `Digit0 → slot10`, so
+pressing B opens the menu and 0-9 drives it. Kyle plays it; it works.
+The real items are that it cannot be closed with Escape, and that Kyle
+wants it gone anyway.
+
+**The SDL injection has never worked, and the probe cannot ever pass.**
+`sdl-key-inject.ts` pushes one event and then asks `SDL_HasEvents`
+whether the queue is empty. `SDL_PushEvent` puts the event *in* the
+queue, so the answer is necessarily "yes, there is an event" — the
+probe returns false, and the service disables itself forever. That is
+why the engine has never received a key event, which is why every
+client-side menu has been unreachable.
+
+**Which does not matter, because `ts_key` does the same job without the
+race, without SDL, and by design.** Fixing the SDL probe is no longer
+interesting; `ts_key` is the supported path and it is already in the
+client we ship.
+
+### One hazard this exposes
+
+`HUD_Key_Event` returns 1 for Escape when the client's own menu did not
+take it, and the source says what the engine then does:
+
+> 1 hands it to the engine, which for Escape opens the main menu
+> (newer FWGS) or runs its `cancelselect` binding (Steam GoldSrc, FWGS
+> 0.21), which sends `escape`.
+
+**So the moment we start sending Escape to the client, the engine's
+main menu — the thing Kyle wants players walled off from — becomes
+reachable.** Any work that sends Escape has to make sure the client
+consumes it, and that the engine's route is blocked.
 
 ## Batch A — the key map, and the engine's menus
 
-Everything here lives in `webxash/src/services/keyboard-bridge.ts`, plus
+Everything here lives in `webxash/src/services/keyboard-bridge.ts` plus
 one overlay component. One session, one file, one shared unknown.
 
-### A0. The diagnostic: can the engine see keys?
+### A0. Adopt `ts_key` as the client's key channel
 
-- **Now:** the drain probe in `sdl-key-inject.ts` checks the queue
-  synchronously after pushing, which cannot distinguish "the engine does
-  not drain" from "the engine drains on the next frame".
-- **Do:** fix the probe to wait a few frames (say 100ms) before asking,
-  and log the result. Then press Escape in a real browser and see
-  whether the engine's menu opens.
-- **Accept:** a recorded answer — "the engine drains, with a 100ms
-  probe" or "it does not". Either way the rest of Batch A is designed
-  against a known fact.
-- **Why first:** it decides whether the options UI is built on the
-  engine's own menu system or as a DOM overlay, and whether chat can be
-  fixed in the engine or must be replaced.
+- **Now:** the frontend sends only `Cmd_ExecuteString` commands. It
+  never sends a key to the client. The client's `ts_key` command exists
+  and is unused.
+- **Do:**
+  - set `ts_dev_scriptinput 1` at boot (the client deliberately gates
+    `ts_key` on that alone, *not* on `sv_cheats`, because
+    "`sv_cheats` is server-controlled and read-only on the client" and
+    gating on it would make the command unusable exactly where it is
+    needed);
+  - add a small helper that sends a key down/up pair, with the ASCII
+    mapping and the `K_*` constants for the non-printable ones;
+  - use it for the keys that need the **client** rather than the
+    engine: the buy menu's navigation beyond the slots, the TS menus,
+    and chat.
+- **Accept:** `ts_key` reaches `HUD_Key_Event`. The proof is the
+  client's own `ts_dev_keylog 1`, which prints a `[ts key]` line for
+  Escape — so this is verifiable without a debugger.
+- **Why first:** everything below depends on it.
 
-### A1. Stop the buy menu trapping the player
+### A1. Hide the buy menu
 
-- **Now:** `KeyB: 'buy'` is our binding. It opens the **engine's** TS
-  buy menu — a VGUI the engine owns. The engine's own key handling is
-  dead, so the player cannot dismiss it. Pressing B is a one-way door.
-- **Also now:** `webxash/src/components/TSHud.vue` has a *DOM* buy menu
-  that says "Press ESC to close" — but the Vue HUD is hidden by default
-  (`?hud=vue` only), so in production that modal does not exist, and the
-  ESC hint would not work anyway.
-- **Do:** remove `KeyB: 'buy'` from `KEY_INSTANT_CMD`, and remove the
-  `{ keys: ['B'], action: 'Buy menu — while dead or observing' }` row
-  from `TSHowToPlay.vue` — that overlay **is** mounted in the production
-  landing page, so the key is currently advertised to every player. If a
-  buy menu is wanted, it is a DOM overlay (Batch D).
-- **Accept:** pressing B does nothing. No key opens a menu the player
-  cannot leave.
-- **Effort:** minutes. **Risk:** none.
+- **Now:** `KeyB: 'buy'` opens the **engine's** TS buy menu. It is
+  navigable (the slot commands drive it) and it is **advertised to
+  every player** — `TSHowToPlay.vue` is mounted in the production
+  landing page and lists `{ keys: ['B'], action: 'Buy menu — while dead
+  or observing' }`.
+- **Do:** remove the `KeyB` binding and that row. If a buy menu is
+  wanted, it is the DOM overlay in Batch D.
+- **Accept:** B does nothing, and the UI no longer advertises it.
 
 ### A2. Remove console access
 
 - **Now:** `Backquote: 'toggleconsole'` is our binding. The console is
-  the user's escape hatch out of the game and out of the server, and it
-  is also the only route to the engine's main menu. It cannot be typed
-  into (the engine's input is dead), so today it mostly covers the
-  screen — which is its own bug.
-- **Do:** remove the `Backquote` binding, and remove the
-  `{ keys: ['`'], action: 'Developer console' }` row from
-  `TSHowToPlay.vue` — same overlay, same reason. (The `Console`
+  the user's escape hatch out of the game and out of the server, it is
+  also advertised to every player (the `` { keys: ['`'], action:
+  'Developer console' } `` row in `TSHowToPlay.vue`), and — per Kyle —
+  it may not even be typable into, because the engine's own input is
+  dead.
+- **Do:** remove the `Backquote` binding and that row. The `Console`
   checkbox in `XashLaunchOptions.vue` and the `enableConsole` options
   in `XashLoadDirectory.vue` / `XashLoadZip.vue` are **dev-only
   components that are not mounted in production**, so they are not what
   the player sees — but they should go too, so the console cannot be
-  re-enabled by a path nobody remembers.)
-- **Accept:** Backquote does nothing; no UI text advertises a console.
-- **Effort:** minutes. **Risk:** none.
+  re-enabled by a path nobody remembers.
+- **Accept:** Backquote does nothing; no production UI advertises a
+  console.
 
-### A3. Stop the user reaching the game menu / leaving the server
+### A3. Wall off the game menu — and know how it is reached today
 
-- **Now:** unverified. Escape is *not* in our key map, so it falls
-  through to `injectKey`, which refuses. On the published build that
-  means Escape does nothing — which contradicts "users can dump out to
-  the game menu". So either the SDL path works sometimes, or the menu is
-  reached another way (a mouse-driven VGUI, or an engine command).
-- **Do:** depends on A0.
-  - If the engine drains: intercept Escape in the DOM **before** the
-    engine sees it (`keydown` with `capture: true`, `stopPropagation`),
-    and use it to open our own overlay.
-  - If it does not: Escape already cannot reach the engine, and the
-    remaining work is to find and remove whatever route does open the
-    menu.
-- **Accept:** there is no reachable path from gameplay to the GoldSrc
-  or TS game menu, and no path to `disconnect`.
-- **Note:** the player must still be able to **leave** — so the options
-  overlay (A4) is the sanctioned exit, and it must not be a trap either.
+- **Now:** unverified, and this is the one thing left that needs a
+  human at the keyboard. The candidate routes are the engine's main
+  menu (Escape → `cancelselect`), the client's own VGUI menus
+  (mouse-navigable, since the mouse path works), and the client's
+  `disconnect` / `config` commands.
+- **Do:** run the diagnostic below, then remove whichever route it is.
+  Separately: `disconnect` and `config` are client commands, and
+  `ts_key` gives the browser the ability to reach client commands the
+  engine would otherwise run — so the fix has to cover **both** the
+  keyboard route and the command route.
+- **Accept:** there is no path from gameplay to the GoldSrc or TS game
+  menu, and none to `disconnect`.
+- **The hazard:** as noted above, sending Escape to the client is what
+  makes the engine's main menu reachable. This item and A4 have to be
+  designed together, not separately.
+
+#### The diagnostic
+
+Five minutes at the keyboard, in the browser, with `?debug=1`:
+
+1. **Press Escape.** Does anything appear? (The engine's main menu, the
+   TS menu, or nothing.)
+2. **Press Backquote.** Does a console appear? Then **try typing** into
+   it — Kyle has never confirmed he can. If you can type, try
+   `disconnect` and `menu_main`. If you cannot, the console is a
+   screen-covering dead end and removing the binding fixes it.
+3. **Press B**, then **1..0**. Confirm the buy menu responds (Kyle says
+   it does) and work out **how you leave it** — B again, Escape, or
+   selecting something.
+4. **Click around the TS menus with the mouse.** The mouse path works,
+   so any VGUI menu is fully navigable by mouse — including a quit
+   button. This is the most likely way out of the game.
+5. **Press Y** and type. Watch for a character appearing *and* a hotkey
+   firing at the same time — that is A5, and the log at `?debug=1`
+   shows both paths.
+
+Step 4 is the one to do first. A mouse-navigable VGUI menu with a
+disconnect button explains "dumping out of the server" with no key
+involved at all — and it would mean the fix is about **the menu's
+contents**, not about the keyboard.
 
 ### A4. The in-game options UI (Escape → settings / quit to web UI)
 
-- **Now:** nothing. There is no in-game overlay at all.
+- **Now:** nothing. There is no in-game overlay.
 - **Do:** a DOM overlay above the canvas, opened by Escape:
   - **Settings** — the client-side knobs that are safe to expose
-    (sensitivity, FOV, crosshair, name, and whatever else the engine
-    exposes as a cvar). `live-state.ts` already reads cvars by
-    executing their bare name and parsing the reply — that is the read
-    path. Writing is `exec('cvar value')`.
+    (sensitivity, FOV, crosshair, name). `live-state.ts` already reads
+    cvars by executing their bare name and parsing the reply — that is
+    the read path; writing is `exec('<cvar> <value>')`.
   - **Quit to web UI** — a deliberate, confirmed exit back to the
-    landing page. It has to release pointer lock, and it has to tell the
-    player it is leaving.
-- **Constraint:** the engine's mouse path works, the keyboard path does
-  not. So the overlay's *own* keyboard handling has to be DOM-native
-  (a real `<input>` for the name field, buttons for everything else) and
-  must not depend on the engine.
+    landing page. It has to release pointer lock, and it has to say
+    that it is leaving.
+- **Constraint:** the overlay's own keyboard handling must be
+  DOM-native (a real `<input>` for the name field, buttons for
+  everything else) and must not depend on the engine.
+- **The Escape problem:** Escape has to be stopped before the engine
+  sees it. Two options, and the answer comes from A3's diagnostic:
+  - the client consumes Escape (its menu is open) — then `ts_key 27 1`
+    is safe and the client's menu is the right place to put the
+    settings;
+  - the client does not consume it — then Escape must be intercepted
+    in the DOM (`keydown` with `capture: true`, `stopPropagation`)
+    **before** it is turned into a `ts_key`, and the engine's
+    `cancelselect` route has to be blocked another way.
 - **Accept:** Escape opens the overlay; it is fully usable; leaving
-  returns to the landing page.
-- **Effort:** the largest item in the list, and it is the one that most
-  needs the answer from A0.
+  returns to the landing page; the game menu is never reachable.
 
 ### A5. The chat / typing bug
 
 - **Now:** `KeyY: 'messagemode'` and `KeyM: 'messagemode2'` open the
   engine's chat and mic. The engine's own key handling is dead, so the
   player cannot type into them. The reported symptom — "triggers hot
-  keys AND types at the same time" — means *something* is receiving the
-  characters, which means the engine's chat input is a DOM element whose
-  keystrokes also reach our `window` handler. Our handler only steps
-  aside for `INPUT`, `TEXTAREA` and `contentEditable`
+  keys AND types at the same time" — means something *is* receiving the
+  characters while our `window` handler is also firing the hotkey. Our
+  handler only steps aside for `INPUT`, `TEXTAREA` and `contentEditable`
   (`keyboard-bridge.ts`), so a chat field that is none of those gets
   both the character and the hotkey.
 - **Do:**
-  - widen the guard in `onKeyDown` — step aside for **any** element that
-    is not the canvas when a text-entry surface is open, and track an
-    explicit "chat is open" flag rather than sniffing the target;
-  - decide whether chat is worth having at all: the engine's chat is
-    broken, so either the chat is replaced by a DOM overlay (and sent to
-    the server as a command) or `messagemode` is removed like the buy
-    menu.
+  - widen the guard — track an explicit "a text field has focus" flag
+    rather than sniffing the target, and step aside for **any**
+    element that is not the canvas while it is set;
+  - decide whether chat is worth having: with `ts_key` the browser can
+    now send real characters to the client, so chat becomes possible
+    rather than impossible. If it is wanted, the characters go through
+    `ts_key`; if it is not, `messagemode` is removed like the buy menu.
 - **Accept:** typing never fires a hotkey. If chat is kept, messages
-  reach the server; if it is not, the key does nothing.
+  reach the server.
 
-### A6. Third person
+### A6. Third person — not a bug, a rule
 
-- **Now:** `KeyX: 'thirdperson'` is mapped. In GoldSrc the command is
-  `thirdperson`; Xash3D-FWGS exposes it as the cvar `cam_thirdperson`
-  in some configurations. If the command does not exist the engine
-  prints "Unknown command" and nothing happens — which matches "can't
-  go third person anymore".
-- **Do:** one diagnostic — execute `thirdperson` and `cam_thirdperson 1`
-  and read the engine's reply (`live-state.ts` can read cvars). Then
-  bind whichever one the engine actually has.
-- **Accept:** X switches to third person, and back.
-- **Effort:** minutes once the diagnostic runs.
-
----
+- **Now:** `KeyX: 'thirdperson'` is mapped, and `thirdperson` /
+  `firstperson` are both registered by the client (`camera.rs`). The
+  command works. But the client's toggle has this guard:
+  ```rust
+  } else if crate::hud::observer() && !third {
+      return;
+  }
+  ```
+  > Otherwise an observer can leave third person but not enter it.
+- **So:** while dead or spectating, X does nothing — by design, as in
+  TS. To enter third person you have to be **alive**. In the browser
+  you spawn with a left click (fire), so the answer is "spawn first".
+- **Do:** no code change. Fix the **controls list** — it currently does
+  not mention X at all, and it should say that third person needs you
+  alive.
+- **Accept:** X switches to third person while alive, and back.
 
 ## Batch B — the launch path
 
@@ -332,16 +386,19 @@ The landing page, the store, and the server list. Shares one file
 
 | batch | why then | gate |
 |---|---|---|
-| **A** | the key map is one file, and every other item's design depends on the A0 answer | needs A0 before A3/A4/A5 |
+| **A** | the key map is one file, and every other item's design depends on A0's answer | A0 first — it is the key channel everything else uses |
 | **B** | independent of the engine, small, and B1 is a visible product change | B1 first — it is a policy flip and a unit test |
 | **C** | isolated perf work, but it touches the boot path, so do it when nothing else is in flight | measure before/after |
 | **D** | the largest build, and it reuses A4's overlay infrastructure | after A4 |
 
 Batch B has no dependencies at all and can go first if you want
-something on screen quickly. A1 and A2 are both inside Batch A and are
-one-liners — they are worth doing on their own even before the A0
-diagnostic, because **the buy menu trap and the console are real today**
-regardless of what the diagnostic says.
+something on screen quickly. A1 and A2 are both one-liners and are
+worth doing on their own even before A0 — the buy menu and the console
+are both advertised to every player today, and neither should be.
+
+**The diagnostic in A3 is worth doing before any code is written.** It
+is five minutes at the keyboard, and it decides whether A3 and A4 are
+about the keyboard or about a mouse-navigable VGUI menu.
 
 ## What is deliberately not in this list
 
