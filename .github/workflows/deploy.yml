@@ -183,26 +183,13 @@ jobs:
           # These two are tracked in git, so a clean checkout has them —
           # which is exactly why their absence means something went
           # wrong rather than that the build was always like this.
+          # (`xash-loader.ts` names them: HLClientURL and HLServerURL.)
           for f in cl_dlls/client_emscripten_wasm32.wasm dlls/hl_emscripten_wasm32.wasm; do
             if [ ! -e "dist/$f" ]; then
               echo "::error::the built bundle is missing dist/$f — the client cannot boot without it"
               exit 1
             fi
           done
-          # `/xash3d-fwgs` is fetched at runtime too, and it is NOT
-          # tracked in git (it is gitignored), so a clean CI checkout
-          # does not have it. Shipping without it leaves production
-          # unable to boot the engine.
-          #
-          # The ship step no longer deletes anything, so production keeps
-          # the copy it already has. But a FRESH server would not have
-          # it, and that is a gap. Making the build produce it is the
-          # real fix; until then, fail loudly rather than quietly ship
-          # a frontend that cannot boot.
-          if [ ! -e dist/xash3d-fwgs ]; then
-            echo "::warning::the built bundle has no dist/xash3d-fwgs — it is gitignored, so CI cannot produce it"
-            echo "::warning::production keeps its existing copy because the ship step no longer deletes"
-          fi
           echo "  built $(du -sh dist | cut -f1)"
 
       - name: Ship the frontend
@@ -211,17 +198,21 @@ jobs:
           set -euo pipefail
           # Ship IN PLACE, and never delete.
           #
-          # The build is NOT complete. `public/xash3d-fwgs`,
-          # `public/test-assets` and `public/dlls/*.wasm` are gitignored,
-          # so a clean CI checkout does not have them and the built dist
-          # is missing files the app fetches at runtime — /xash3d-fwgs is
-          # one of them.
+          # The build is not the whole story: the frontend's `public/`
+          # carries files that are gitignored and therefore absent from a
+          # clean CI checkout, so the built dist is NOT byte-identical to
+          # what production may have. The previous version of this step
+          # uploaded into a fresh staging directory and swapped it in,
+          # which DELETED anything the build did not produce.
           #
-          # The previous version of this step uploaded into a fresh
-          # staging directory and swapped it in, which DELETED those
-          # files from production: the game could no longer boot, and
-          # the deploy reported success. `rsync --delete` on a
-          # half-built tree is a way to break a working site quietly.
+          # Those particular files turned out to be vestigial — the
+          # client bundles the engine out of node_modules and never
+          # requests them (24 hours of access logs: one request for
+          # /xash3d-fwgs, and that one was me with curl). But a deploy
+          # should not be able to remove files from a live site on the
+          # strength of a build it does not fully understand, and the
+          # swap also made the step need sudo and a staging directory
+          # for no benefit.
           #
           # So: rsync over the live directory WITHOUT --delete, so
           # anything the build did not produce stays exactly where it
