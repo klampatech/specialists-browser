@@ -6,65 +6,71 @@ difference decides how the work is sequenced.
 
 ## The thing that shapes everything else
 
-**The TS client is explicitly built to be driven by a browser.** That is
-not an inference — it is stated in the Rust port's own source, in
-`tools/port/tsp-rs/crates/client/src/`:
+**Every key was being delivered twice.** That one fact explains most of
+this list, and it was measured rather than assumed.
 
-> `ts_key <key> <1|0>`: `Key_Event` as a key press or release would,
-> reaching `HUD_Key_Event`. Unlike the dev-only `ts_dev_key` this needs
-> only `ts_dev_scriptinput 1`, **because a browser client has no other
-> way to press a key at all**.
+The engine's own keyboard path works. With the TS client's own
+`ts_dev_keylog 1`, in a real Chromium against a live local server:
 
-That is the whole input story, and it is better than the frontend
-currently realises:
+```
+[ts key] HUD_Key_Event escape down=1 binding="cancelselect" -> 1
+[ts key] cancelselect: escape
+```
 
-| what | how it works | status |
-|---|---|---|
-| movement, fire, weapons | `Cmd_ExecuteString` with `+cmd` / `-cmd` | works today |
-| the anti-script gate | `ts_gate 200` before a gated `+cmd` | works today |
-| **any key, to the client** | **`ts_key <keynum> <1|0>`** | **exists, unused** |
-| open/close the TS menus | `ts_menu_open`, `ts_menu_close`, `ts_menu_slot` | exists, unused |
-| third person | `thirdperson` / `firstperson` | exists, works |
-| the buy menu's digits | the weapon-slot commands (`slot1`..`slot10`) | **already works** |
+The engine's keydown listener fires, reaches `HUD_Key_Event`, and runs
+its own bind table. The long-held belief that it was dead — recorded in
+`keyboard-bridge.ts`, in `sdl-key-inject.ts`, and in the how-to-play
+copy — was wrong.
 
-The client's key number is ASCII for printable keys, so `ts_key 49 1`
-is the digit `1`, and `ts_key 27 1` is Escape.
+And the engine's bind table (`ts/config.cfg`) already covers everything:
 
-### Two corrections to an earlier reading of this
+```
+bind "w" "+forward"     bind "s" "+back"
+bind "a" "+moveleft"    bind "d" "+moveright"
+bind "SPACE" "+jump"    bind "CTRL" "+duck"
+bind "1".."0" "slot1".."slot10"
+bind "x" "thirdperson"  bind "y" "messagemode"
+bind "b" "buy"          bind "`" "toggleconsole"
+bind "ESCAPE" "cancelselect"
+```
 
-Both were mine, and both were wrong:
+`keyboard-bridge.ts` sent the same thing again, as a command. So every
+one of those keys ran twice — once from the engine's bind table and once
+from us. That is the whole of the reported bugs:
 
-**The buy menu is not a trap.** The buy menu is navigated by the
-**weapon-slot buttons** — keys `1..11`, which is `slot1`..`slot10` plus
-`a`. The frontend already maps `Digit1 → slot1` … `Digit0 → slot10`, so
-pressing B opens the menu and 0-9 drives it. Kyle plays it; it works.
+| symptom | cause |
+|---|---|
+| "typing triggers hot keys AND types at the same time" | Y opened the chat twice, and the real keystroke typed a `y` into a chat that was already open |
+| the buy menu takes each number selection twice | `Digit1` → `slot1` from us, and `bind "1" "slot1"` from the engine |
+| third person looks broken | X ran `thirdperson` twice — on, then straight back off |
+| the backquote is a trap | `toggleconsole` twice, with a console that cannot be typed into |
 
-Two details from the client source worth knowing:
+**So the command map is deleted.** The bridge now does exactly one
+thing: open TS's anti-script gate for the keys whose native binding is
+gated, because the gate only opens on a real key event.
 
-- **Escape does not close the buy menu.** The client's own comment says
-  so: *"The buy menu takes no keys here (Escape doesn't close it)."* You
-  leave it by choosing something, by pressing 0 (back), or with the
-  mouse.
-- **The mouse drives it too.** *"CTSBuyMenu::MouseEvent runs the row
-  under the cursor on a left release … and key 10 (back) on a right
-  release."* The mouse path works, so the buy menu is fully navigable
-  by mouse — which matters for A3, because it means a VGUI menu is
-  always a way out.
+### Three corrections to earlier readings of this
 
-**The SDL injection has never worked, and the probe cannot ever pass.**
-`sdl-key-inject.ts` pushes one event and then asks `SDL_HasEvents`
-whether the queue is empty. `SDL_PushEvent` puts the event *in* the
-queue, so the answer is necessarily "yes, there is an event" — the
-probe returns false, and the service disables itself forever. That is
-why the engine has never received a key event, which is why every
-client-side menu has been unreachable.
+**The buy menu is not a trap.** It is navigated by the weapon-slot
+buttons — keys `1..11`, which is `slot1`..`slot10` plus `a`. The
+frontend mapped `Digit1 → slot1` … `Digit0 → slot10`, so B opened the
+menu and 0-9 drove it. Kyle plays it; it works. Two details from the
+client source: Escape does **not** close it ("the buy menu takes no
+keys here"), and the mouse drives it too ("runs the row under the
+cursor on a left release").
 
-**Which does not matter, because `ts_key` does the same job without the
-race, without SDL, and by design.** Fixing the SDL probe is no longer
-interesting; `ts_key` is the supported path and it is already in the
-client we ship.
+**The SDL injection never worked.** `sdl-key-inject.ts` pushes one event
+and then asks `SDL_HasEvents` whether the queue is empty.
+`SDL_PushEvent` puts the event *in* the queue, so the answer is
+necessarily "yes, there is an event" — the probe returns false and the
+service disables itself forever. The log said `REFUSED by SDL` on every
+key. It is deleted.
 
-### The hazard, and how the design dodges it
+**Typing was never blocked.** Kyle's worry was that there is no way
+around the SDL queue not draining. There was never a problem: the
+engine's own key path was carrying the keys the whole time.
+
+### The hazard this exposes
 
 `HUD_Key_Event` returns 1 for Escape when the client's own menu did not
 take it, and the source says what the engine then does:
@@ -73,169 +79,130 @@ take it, and the source says what the engine then does:
 > (newer FWGS) or runs its `cancelselect` binding (Steam GoldSrc, FWGS
 > 0.21), which sends `escape`.
 
-**So the moment we start sending Escape to the client, the engine's
-main menu — the thing Kyle wants players walled off from — becomes
-reachable.** The browser's engine is the `xash3d-fwgs` **1.2.2** npm
-build and which of the two behaviours it has was never established.
-
-The design in A3 **dodges this entirely**: Escape is intercepted in the
-DOM and never becomes an engine key, so neither behaviour can happen.
-That is why the plan does not need the question answered first.
+The browser's engine is the `xash3d-fwgs` **1.2.2** npm build and which
+of the two behaviours it has was never established. **The design in A3
+dodges this entirely**: Escape is intercepted in the DOM and never
+becomes an engine key, so neither behaviour can happen. The question
+never has to be answered.
 
 ## Batch A — the key map, and the engine's menus
 
-Everything here lives in `webxash/src/services/keyboard-bridge.ts` plus
-one overlay component. One session, one file, one shared unknown.
+**This batch is implemented and verified locally.** It is written up here
+so the reasoning survives, not because it is still to do.
 
-### A0. One measurement: is every key being delivered twice?
+Everything lives in `webxash/src/services/`, plus one overlay
+component. Branch: `webxash` @ `feat/keyboard-native-input`.
 
-- **Now:** the frontend translates keys into engine commands **and** the
-  engine may also be receiving the real key event. Kyle's report —
-  "in game typing triggers hot keys AND types at the same time" — is
-  the signature of **both** paths running at once. And Escape, which
-  is *not* in our command map, still reaches the engine: Kyle hits
-  Escape and the HL menu opens.
-- **Do:** one keypress, one log line. Load the game with `?debug=1`,
-  open devtools, and press a key that is **not** in our command map —
-  Escape is ideal. `keyboard-bridge.ts` logs the outcome:
+### A0. Delete the command map — DONE
+
+- **Was:** every DOM key was translated into an engine command and sent
+  with `Cmd_ExecuteString`, on the belief that the engine's own keyboard
+  path was dead. It is alive.
+- **Now:** the bridge sends **no commands**. The engine's bind table
+  runs. The bridge's only remaining job is opening TS's anti-script
+  gate (`ts_gate 200`) for the keys whose native binding is gated —
+  `forward`, `back`, `moveleft`, `moveright`, `jump`, `duck`, `reload`,
+  `attack` — because the gate only opens on a real key event.
+- **Also gone:** the DOM→SDL injection (`sdl-key-inject.ts`), whose drain
+  probe could never pass.
+- **Accept:** every key reaches the engine exactly once.
+
+### A1. Hide the buy menu — DONE
+
+- **Was:** `KeyB: 'buy'` in the frontend map, and a `B` row in
+  `TSHowToPlay.vue`, which **is** mounted in the production landing
+  page.
+- **Now:** removing the frontend binding is not enough — the engine
+  binds `b` to `buy` itself. The binding is cleared **in the engine's
+  bind table**, at boot:
+  ```ts
+  for (const cmd of ['bind b ""', 'bind ` ""', 'bind ~ ""', 'bind ESCAPE ""']) {
+    options.xash.Cmd_ExecuteString(cmd);
+  }
   ```
-  [key] DOWN code=Escape scancode=41 -> pushed to SDL queue
-  [key] DOWN code=Escape scancode=41 -> REFUSED by SDL
-  ```
-  - **"pushed to SDL queue"** — our injection works, and the engine
-    receives the key twice for every *mapped* key (its own event plus
-    our command).
-  - **"REFUSED by SDL"** — our injection is dead, so Escape reached
-    the engine **natively**. The engine's own DOM key handler is
-    alive, and every key is delivered twice: once by the engine, once
-    by our command bridge.
-- **Why it matters:** if the native path is alive, the fix for half of
-  this list gets much simpler. **Delete the command map and let the
-  engine's own binds do the work**, keeping only the keys we want to
-  own. The TS anti-script gate opens by itself when a real key
-  arrives — that is exactly what `HUD_Key_Event` is for — so `ts_gate`
-  can go too. The typing bug goes with it, because nothing is
-  delivered twice any more.
-- **Accept:** a recorded answer, and the key map reduced to whatever
-  the engine does not already do.
-
-### A1. Hide the buy menu
-
-- **Now:** `KeyB: 'buy'` opens the **engine's** TS buy menu. It is
-  navigable (the slot commands drive it) and it is **advertised to
-  every player** — `TSHowToPlay.vue` is mounted in the production
-  landing page and lists `{ keys: ['B'], action: 'Buy menu — while dead
-  or observing' }`.
-- **Do:** remove the `KeyB` binding and that row. If a buy menu is
-  wanted, it is the DOM overlay in Batch D.
+  That runs in `XashLoader.onAfterLoad`, which every launch path calls.
 - **Accept:** B does nothing, and the UI no longer advertises it.
 
-### A2. Remove console access — and the trap it is
+### A2. Remove console access — DONE
 
-- **Now:** `Backquote: 'toggleconsole'` is our binding, and Kyle tested
-  it: **pressing ` brings up "Press ESC to release pointer"**, and the
-  console is not usable. The sequence is:
+- **Was:** `Backquote: 'toggleconsole'` in the frontend map, plus a
+  `` ` `` row in `TSHowToPlay.vue`.
+- **Now:** cleared in the engine's bind table, same as A1.
+- **Accept:** the backquote does nothing; no production UI advertises a
+  console.
 
-  1. `toggleconsole` opens the engine's console.
-  2. The mouse is still grabbed (pointer lock), so the engine cannot
-     hand the mouse to the console and prints **"Press ESC to release
-     mouse"**.
-  3. Escape **cannot be delivered** — it is not in our key map, and the
-     SDL path is dead.
+### A3. The two-Escape design — DONE
 
-  So the player is left with a grabbed mouse, an open console, and a
-  prompt asking for a key they cannot press. **That is a trap**, and it
-  is the one trap on this list that is real today.
-
-  It is also advertised to every player: the `` { keys: ['`'], action:
-  'Developer console' } `` row in `TSHowToPlay.vue`, which **is**
-  mounted in the production landing page.
-- **Do:** remove the `Backquote` binding and that row. The `Console`
-  checkbox in `XashLaunchOptions.vue` and the `enableConsole` options
-  in `XashLoadDirectory.vue` / `XashLoadZip.vue` are **dev-only
-  components that are not mounted in production**, so they are not what
-  the player sees — but they should go too, so the console cannot be
-  re-enabled by a path nobody remembers.
-- **Accept:** Backquote does nothing; no production UI advertises a
-  console; no state can leave the player with a grabbed mouse and no
-  way out.
-
-### A3. The two-Escape design
-
-Kyle's target, and the shape of the fix:
+Kyle's target:
 
 > hit Esc once to release the mouse, then hit Esc again to show a CSS
-> style menu that lets the user change settings (character model, name,
-> other HL / TS client settings) and quit back to the Web UI
+> style menu that lets the user change settings and quit back to the Web UI
 
-**Both Escapes can be pure DOM. The engine never needs to see Escape.**
+**Both Escapes are pure DOM. The engine never sees Escape.**
 
-- **Escape #1 — release the mouse.** `document.exitPointerLock()`. That
-  is a DOM operation; the engine does not have to know about it. The
-  game keeps running behind the overlay, which is what a player
-  expects.
-- **Escape #2 — open the menu.** A Vue overlay above the canvas. Also
-  pure DOM.
-- **The engine never sees Escape.** This is the part that stops the HL
-  menu from opening, and it is a DOM-level interception:
-  ```ts
-  window.addEventListener(
-    'keydown',
-    (e) => {
-      if (e.code !== 'Escape') return;
-      e.stopImmediatePropagation();   // the engine never gets this key
-      // …release the pointer, or open/close the overlay
-    },
-    { capture: true },
-  );
-  ```
-  **Two details make this reliable:**
-  1. **Register it before the engine boots.** The engine's Emscripten
-     build registers its keydown callback on `window`
-     (`specialHTMLTargets = [0, document, window]`, target index 2).
-     Listeners on the same node fire in registration order, so ours has
-     to be first — install it at app start, not when the canvas mounts.
-  2. **Use `stopImmediatePropagation()`, not `stopPropagation()`.** In
-     the capture phase at `window`, `stopImmediatePropagation()` stops
-     the remaining listeners on that node *and* the rest of the
-     propagation, so it does not matter whether the engine registered
-     its listener with `useCapture` true or false. `stopPropagation()`
-     alone would still let a capture-phase engine listener run.
-- **What this also removes:** the need to care which FWGS behaviour
-  Escape has. The ambiguity in the previous revision — "opens the main
-  menu (newer FWGS) or runs `cancelselect` (FWGS 0.21)" — becomes
-  irrelevant, because Escape is never sent to the engine at all.
-- **Accept:** Escape never opens the HL menu, the TS menu, or the
-  console. Escape #1 releases the mouse, Escape #2 toggles the
-  overlay, and the player is never left with a grabbed mouse and no
-  way out.
+- **Escape #1** — `document.exitPointerLock()`. A short hint says what
+  to do next.
+- **Escape #2** — open the options overlay.
+- **Escape #3** — close it.
 
-### A4. The options overlay — what goes in it
+`webxash/src/services/escape-gate.ts` intercepts the key on `window`
+with `capture: true`, registered **at module load** — before the engine
+boots and registers its own listener on `window` — and calls
+`stopImmediatePropagation()`. That kills the remaining listeners on that
+node *and* the rest of the propagation, so it does not matter whether
+the engine registered with `useCapture` true or false.
 
-- **Now:** nothing. There is no in-game overlay.
-- **Do:** a DOM overlay above the canvas, opened by Escape #2:
-  - **Settings** — the client-side knobs that are safe to expose
-    (sensitivity, FOV, crosshair). `live-state.ts` already reads cvars
-    by executing their bare name and parsing the reply — that is the
-    read path; writing is `exec('<cvar> <value>')`.
-  - **Name and character** — the client registers `name`, `model` and
-    `skin` (confirmed in the client command table), so these are
-    reachable as engine commands. The exact argument syntax is worth
-    confirming before relying on it; `config` is the client's own
-    loadout menu and may be the better route.
-  - **Quit to web UI** — a deliberate, confirmed exit. It has to
-    release the pointer lock *and* navigate back to the landing page.
-    **Not a black screen** — that is today's behaviour and it is the
-    thing Kyle is complaining about.
-- **Constraint:** the overlay's own keyboard handling must be
-  DOM-native (a real `<input>` for the name field, buttons for
-  everything else) and must not depend on the engine.
-- **Pointer lock:** the overlay must take the mouse, and Escape #1
-  must give it back. The engine's own mouse handling is separate — the
-  game's look-aim needs the pointer locked, so re-locking on close has
-  to be a user gesture (a click) to satisfy the browser.
-- **Accept:** Escape opens the overlay; it is fully usable; leaving
-  returns to the landing page; the game menu is never reachable.
+The Escape sequence is a **state machine**, not a read of
+`document.pointerLockElement`: the browser also exits pointer lock on
+Escape, on its own, so reading the live state would make the first
+press look like the second.
+
+- **Verified locally:** Escape #1 released the pointer lock and the
+  engine saw **zero** `cancelselect` events; Escape #2 opened the
+  overlay with the cvars loaded; Escape #3 closed it.
+
+### A4. The options overlay — DONE
+
+`webxash/src/components/XashOptionsOverlay.vue`. DOM, so a text field in
+it is a real text field — it types instead of firing a hotkey.
+
+- **Settings** — sensitivity, FOV, volume. Read and written through the
+  engine's own console (`Cmd_ExecuteString`), with a new
+  `engine-cvars.ts` helper. Reading is a bare cvar name, which the
+  engine answers with `"sensitivity" is "1.7" ( "3" )` on stdout; the
+  loader's stdout bridge carries it to the page.
+- **Name** — `name "<n>"`, the client's own command.
+- **Third person** — a button that runs `thirdperson`.
+- **Quit to web UI** — releases the pointer lock and returns to the
+  landing page. **Not a black screen** — that was today's behaviour and
+  it is the thing Kyle complained about.
+
+### A5. The chat / typing bug — FIXED BY A0
+
+Nothing to do. The bug was the double delivery: Y opened the chat twice
+and the real keystroke typed a `y` into it. With the command map gone,
+the engine's own `bind "y" "messagemode"` runs once and the keystroke
+types once.
+
+### A6. Third person — FIXED BY A0
+
+`bind "x" "thirdperson"` is in the engine's bind table, and it works.
+It looked broken because X ran `thirdperson` twice — on, then straight
+back off.
+
+There is also a rule, not a bug: the client's toggle refuses to *enter*
+third person while you are an observer ("an observer can leave third
+person but not enter it"), so you have to be alive. The controls list
+now says so.
+
+### Still open in this batch
+
+- **In-game verification of movement and third person.** The frontend
+  changes are verified locally, but the local client could not complete
+  a connection to the local game server: GoldSrc refuses loopback
+  connects, and the Tailscale address does not reach this host's own
+  docker-published UDP port. Production is unaffected and was not
+  touched.
 
 ## Batch B — the launch path
 
