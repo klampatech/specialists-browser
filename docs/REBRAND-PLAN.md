@@ -4,10 +4,24 @@ Written 2026-10-24. This is the plan for turning the site from "The
 Specialists, a fan page" into **BulletBallet**, with a design system
 instead of a collection of one-off styles.
 
-**Status:** approved in principle (Kyle: "in general we're gonna rebrand
-everything BulletBallet"; "you can decide what looks best for the colour
-scheme"). Phase 0 — the fix Kyle wants first — is not yet named and
-gates Phase 1.
+**Status: SHIPPED — all four phases, 2026-10-24.** Phase 0 (the
+Half-Life lambda ghosting through the running game), Phase 1 (the green
+shell, the head, the brand assets), Phase 2 (the landing page), Phase 3
+(the boot screen, the connecting splash, the options overlay) and Phase 4
+(the docs sweep) all landed. webXash #10, #13, #14, #15 and #16; the
+parent repo took a pointer bump for each.
+
+This document is kept as the **record of what was decided and why**, not
+as a to-do. Where the plan and the shipped code disagree, the code is
+right and this file is the thing that needs fixing.
+
+What the plan got right: the token names were frozen and only the values
+swapped, which meant the whole shell re-skinned through one file. What it
+got wrong: it assumed the mock's code rain was animated, and it was not
+— it was twelve columns of one identical string translating ±8% of a
+120%-tall element, so the glyphs shimmered in place and never travelled.
+The shipped rain is a repeating background, because a seamless loop needs
+the pattern's period to equal the travel distance exactly.
 
 **Where the code lives:** the frontend is the **`webxash` submodule**
 (`github.com/klampatech/webXash`). Every line of UI work happens there,
