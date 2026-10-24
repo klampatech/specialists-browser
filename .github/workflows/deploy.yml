@@ -250,16 +250,25 @@ jobs:
         if: steps.changed.outputs.frontend == '1'
         run: |
           set -euo pipefail
-          built=$(ls webxash/dist/index-*.js | head -1 | xargs basename)
+          # `find -printf`, not `ls | xargs basename`: the bundle lives in
+          # dist/assets/, and when the glob matches nothing `ls` errors
+          # and `xargs basename` exits 123 — which fails the step and
+          # leaves the verdict unknown. A check that cannot answer must
+          # say so, not die.
+          built=$(find webxash/dist/assets -maxdepth 1 -name 'index-*.js' -printf '%f\n' | head -1)
           # The cache-buster matters: the CDN and Caddy both cache
           # index.html, and a stale one would compare against the bundle
           # we just replaced.
           live=$(curl -fsS --max-time 20 "https://bulletballet.dev/?v=${{ github.sha }}" \
-                 | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -1 | xargs -r basename)
-          echo "  built: $built"
+                 | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -1 | sed 's|.*/||')
+          echo "  built: ${built:-<none>}"
           echo "  live:  ${live:-<none>}"
+          if [ -z "$built" ] || [ -z "$live" ]; then
+            echo "::error::could not compare the live bundle with the one we built"
+            exit 1
+          fi
           if [ "$built" != "$live" ]; then
-            echo "::error::the live bundle (${live:-none}) is not the bundle we built ($built)"
+            echo "::error::the live bundle ($live) is not the bundle we built ($built)"
             exit 1
           fi
           echo "  the live frontend matches the build"
