@@ -558,6 +558,32 @@ impl Renderer {
             && self.set_header(wm)
         {
             self.merge_bones(wm);
+            // The `p_` weapon is the player's model merged onto the player's bones, so it
+            // inherits the player's entity state.
+            //
+            // For the LOCAL player, `V_CalcNormalRefdef` rewrites that state every frame
+            // (`view.rs`): `rendermode = kRenderTransColor` and an eased `renderamt`. That is the
+            // third-person translucency (`cl_thirdtransparency`), and the port's own note says
+            // "the local model is only drawn in third person, so that's where it shows".
+            //
+            // But the first-person viewmodel is drawn from that same entity state, so it
+            // inherited the translucent-colour mode. The server spawns players with
+            // `rendercolor = (0,0,0)` (`rules/lifecycle.rs`), and in `kRenderTransColor` the
+            // model is drawn with `light->color` -- the rendercolour, plus any dynamic light.
+            // Zero rendercolour plus zero ambient renders the weapon BLACK: its texture is
+            // multiplied away. Only a dynamic light (a muzzle flash, an explosion) added
+            // anything to `light->color`, which is why the texture flickered into view for a
+            // moment near a muzzle flash and never otherwise.
+            //
+            // Bots were fine: the server gives them `rendermode = 0`, so they never entered
+            // that mode, and their weapons drew normally.
+            //
+            // In TS the viewmodel is its own entity (`r_entity[0]`), never the player's, so it
+            // must not inherit the player's third-person render mode. Draw the weapon opaque.
+            // The entity is restored from `save` below, so the third-person body keeps its
+            // translucency.
+            self.ent().curstate.rendermode = kRenderNormal as i32;
+            self.ent().curstate.renderamt = 255;
             es::setup_lighting(lighting);
             self.render();
             self.calc_attachments();
