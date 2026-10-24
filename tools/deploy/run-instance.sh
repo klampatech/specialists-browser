@@ -26,8 +26,9 @@ NAME="ts-$N"
 # its own cycle (ts_dojo, ts_dietrich, ts_bikini); 0.23 -> 0.24 for the
 # ten-minute rotation; 0.24 -> 0.25 for the server's connect and
 # disconnect lines (the engine's own go to a log file the container
-# cannot write, so humans were invisible in the logs). The OLD tag
-# stays on the host so a rollback is one env var: TS_IMAGE=ts-server:0.24.
+# cannot write, so humans were invisible in the logs); 0.25 -> 0.26 for
+# the fifteen-minute rotation. The OLD tag stays on the host so a
+# rollback is one env var: TS_IMAGE=ts-server:0.25.
 #
 # WHY THE ROTATION NEEDS AN IMAGE
 # -------------------------------
@@ -35,7 +36,7 @@ NAME="ts-$N"
 # a live server is stomped at the next map change (measured: mp_timelimit
 # 10 at 15:39 became 3 again at the 15:48 map change). The rotation
 # therefore only sticks if it is IN the image's server.cfg.
-IMAGE="${TS_IMAGE:-ts-server:0.25}"
+IMAGE="${TS_IMAGE:-ts-server:0.26}"
 ASSETS="${TS_ASSETS:-/srv/ts-data}"
 MAXPLAYERS="${TS_MAXPLAYERS:-32}"
 MAP="${TS_MAP:-ts_casa}"
