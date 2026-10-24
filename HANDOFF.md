@@ -366,6 +366,52 @@ download progress, the launch error surface, the server-list states
 spinning state, join per server, the real How It Works copy with its full
 controls table, and the real footer links.
 
+### Rebrand Phase 3 — the boot screen, the splash, the options overlay (2026-10-24, shipped)
+
+**webXash PR #15.** Restyle only, no behaviour change.
+
+**Valve's logo is out of the product.** The "Connecting to server" splash
+was Valve's **spinning Half-Life lambda** — our own frontend asset behind
+the WASM canvas, but still the publisher's mark in a fan project. It is
+the BulletBallet mark now. `hl-spin.svg` and `hl-bright.svg` are deleted,
+and the parent's `canvas-logo.test.mjs` now guards all three Valve assets
+(`hl.svg`, `hl-spin.svg`, `hl-bright.svg`) so they cannot come back.
+Verified in a browser: `anyLambda: false`, `hlSpin: false`.
+
+**The code rain, rebuilt — Kyle's bug, and it was structural.** He
+reported: *"sometimes the lines just appear rather than always raining
+down from the top"*.
+
+A seamless loop needs the pattern's period to equal the travel distance
+**EXACTLY**. With text, the period is the glyph count times the glyph
+advance — a number that depends on the font, the font size and the
+viewport. Get it slightly wrong and a gap opens at the end of the cycle
+and the next cycle **pops** the top back in. That is what he saw.
+
+**=> The rain is a repeating BACKGROUND now.** `background-size` fixes the
+tile at an exact pixel height, the travel is that same height in pixels,
+and the strip repeats forever underneath. No measurement anywhere;
+seamless for any viewport at any size. Each column still has its own
+glyph strip, from a fixed seed.
+
+**How it was verified:** freeze two columns exactly one cycle apart and
+compare the pixels.
+
+| comparison | differing pixels |
+|---|---|
+| exactly one 10s cycle apart | **177** of 176400 |
+| 0.05s apart | **6,491** of 176400 |
+
+Those 177 are the pulse dot in the eyebrow — a different animation. The
+rain is the same picture at the start and the end of every cycle.
+
+**Also:** the boot screen gets the mark and the two-tone wordmark; the
+options overlay gets the mark and **phosphor focus rings** (the field's
+own colour plus a halo, so the focus is unmistakable without a
+browser-default blue outline). Every control stays — Identity (name, 24
+chars), Controls (sensitivity, FOV, volume), Camera (third person and
+the note that it needs you alive), Session (quit to web UI).
+
 ## The rebrand: BulletBallet (2026-10-24, planned)
 
 **The site is becoming BulletBallet.** The plan is

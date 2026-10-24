@@ -38,6 +38,8 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const WEBXASH = join(ROOT, 'webxash');
 const MAIN_CSS = join(WEBXASH, 'src', 'assets', 'main.css');
 const HL_SVG = join(WEBXASH, 'src', 'assets', 'hl.svg');
+const HL_SPIN_SVG = join(WEBXASH, 'src', 'assets', 'hl-spin.svg');
+const HL_BRIGHT_SVG = join(WEBXASH, 'src', 'assets', 'hl-bright.svg');
 
 /** The submodule has to be there for this file to mean anything. */
 function requireSubmodule() {
@@ -67,12 +69,32 @@ test('the game canvas carries no background image', () => {
   );
 });
 
-test('the Half-Life lambda asset does not come back', () => {
+test('no Valve logo asset is shipped', () => {
   requireSubmodule();
-  assert.ok(
-    !existsSync(HL_SVG),
-    'webxash/src/assets/hl.svg must not come back — it was the canvas ' +
-      'background that showed through the running game. The ' +
-      'BulletBallet mark replaces it.'
-  );
+  // Each of these was ours — a frontend asset behind the WASM canvas —
+  // and each was still Valve's mark in our product.
+  const assets = [
+    [
+      HL_SVG,
+      'it was the canvas background that showed through the running game',
+    ],
+    [
+      HL_SPIN_SVG,
+      'it was the connecting splash spinner. A fan project shipping ' +
+        "the publisher's logo is a licence-posture problem as well as a " +
+        'brand one.',
+    ],
+    [
+      HL_BRIGHT_SVG,
+      "it was the favicon — we were serving Valve's logo from our own " +
+        'domain',
+    ],
+  ];
+  for (const [file, why] of assets) {
+    assert.ok(
+      !existsSync(file),
+      `${file} must not come back — ${why}. The BulletBallet mark ` +
+        'replaces it.'
+    );
+  }
 });
