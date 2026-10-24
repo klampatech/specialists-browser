@@ -59,6 +59,54 @@ assets.bulletballet.dev  →  Cloudflare R2 (ts-assets), 493 MB in 8×64 MiB par
 The game UDP port is published straight out of Docker and deliberately does
 **not** go through Caddy — it is raw UDP, not HTTP.
 
+## The Half-Life lambda was ghosting through the game (2026-10-24)
+
+Kyle played the game and reported *"a weird visual bug... almost like
+an overlay in certain lighting conditions that shows a half life logo in
+the background"*.
+
+**It was not a lighting condition, and it was not the engine's.** The
+canvas **element** carried the logo as a CSS background:
+
+```css
+canvas { background-image: url("./hl.svg"); }
+```
+
+The engine's WebGL canvas is **transparent wherever its own pixels are
+not fully opaque**, so that background composited *through* the running
+game. It was only visible where the engine left the frame translucent —
+which is exactly why it read as a lighting artefact instead of a logo.
+
+**Proven in a real browser against production, not inferred:** boot the
+game, photograph the frame, remove the canvas background at runtime,
+photograph again. The lambda was in the first frame and gone from the
+second. Same scene, same moment, one property changed.
+
+Fixed in the `webxash` submodule (webXash PR #10): the canvas gets a
+solid ground, and `hl.svg` is deleted.
+
+**The dead machinery around it went too.** `setCanvasLoading()` /
+`clearCanvasLoading()` added and removed a `.loading` class that had
+**no CSS rule anywhere** — not in `src/`, not in the built stylesheet.
+They were no-ops, and their doc comment described the background as
+something the class controlled, so the codebase claimed a fix that had
+never happened. Deleted, with all four call sites and the loader option
+that carried it.
+
+**Guarded:** `tests/unit/canvas-logo.test.mjs` asserts the canvas rule
+paints no background image, and that `hl.svg` does not come back. It
+strips CSS comments first, because the rule carries a comment that names
+the property it must not use — a test that trips on its own
+documentation is worse than no test.
+
+**Still Valve's logo, deliberately, until the rebrand:** the
+"connecting to server" splash still uses `hl-spin.svg`, and the favicon
+is still `hl-bright.svg`. Both are brand work, not a bug fix.
+
+**The lesson for the rebrand:** any background image on the canvas is a
+background image the player sees through their game. The new landing
+page's code rain and ring are DOM, not canvas — keep them there.
+
 ## The rebrand: BulletBallet (2026-10-24, planned)
 
 **The site is becoming BulletBallet.** The plan is
@@ -532,13 +580,17 @@ the parts that are known traps.
 
 # § NEXT TASK
 
-> ## Phase 0 + Phase 1 of the BulletBallet rebrand
+> ## Phase 1 of the BulletBallet rebrand
 >
 > **Read `docs/REBRAND-PLAN.md` first.** It is the plan; this is the
 > pointer.
 >
-> **Phase 0 — the fix Kyle named on 2026-10-24.** Not yet specified in
-> writing. It gates Phase 1: ask, do not guess.
+> **Phase 0 is DONE** (2026-10-24): the Half-Life lambda that was
+> ghosting through the running game. The canvas element carried Valve's
+> logo as a CSS background and the engine's canvas is translucent
+> wherever its own pixels are not opaque, so it composited through the
+> game. Fixed in the `webxash` submodule (webXash PR #10) and guarded by
+> `tests/unit/canvas-logo.test.mjs`.
 >
 > **Phase 1 — tokens, head, brand assets.** One `webxash` PR plus one
 > pointer-bump PR here. The whole shell re-skins by **redefining the 26
@@ -548,12 +600,16 @@ the parts that are known traps.
 > the title and meta set, and the client re-asserting `document.title`
 > after boot because the engine hijacks it.
 >
-> **The two things most likely to go wrong**, both in the plan:
+> **The three things most likely to go wrong**, all in the plan:
 > 1. **Error surfaces turning green.** `--ts-signal` is used for the CTA
 >    *and* for the errors. Every error moves to a new `--ts-error` in
 >    the same change.
 > 2. **The favicon at 16px.** The mark as drawn is mush at that size; it
 >    needs a separate solid silhouette, not a downscale.
+> 3. **The connecting splash's `hl-spin.svg`.** It is still Valve's
+>    lambda, centred and large, while the client connects. Phase 1
+>    replaces it with the BB mark — and once the favicon is swapped
+>    too, that splash is the LAST place the Half-Life logo is on screen.
 >
 > **Deferred by Kyle's direction on 2026-10-24:** R1 matchmaking. The
 > front-end half (B1 — flip the comparator to "highest population that
