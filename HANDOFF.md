@@ -59,6 +59,66 @@ assets.bulletballet.dev  →  Cloudflare R2 (ts-assets), 493 MB in 8×64 MiB par
 The game UDP port is published straight out of Docker and deliberately does
 **not** go through Caddy — it is raw UDP, not HTTP.
 
+## What shipped on 2026-10-24 (afternoon): the client's heap, and the humans
+
+Two real defects were found and fixed, plus the guardrails so neither can
+come back silently.
+
+### 1. The client's WASM heap could not grow at all
+
+The published `xash3d-fwgs` 1.2.2 wasm declares **initial 4096 pages (256 MB)
+and maximum 4096 pages (256 MB)** — the maximum EQUALS the initial, so
+`WebAssembly.Memory.grow()` always failed and `emscripten_resize_heap` called
+`abortOOM`. The visible symptom was a frozen world a few hundred ms after a
+map change, with the page still showing the last frame and the engine's own
+`status` saying "no server running".
+
+Fixed by `scripts/patch-xash-memory.cjs`: **512 MB initial, 2 GB maximum**.
+Verified through real map changes in production (three server banners, zero
+OOMs).
+
+**Two bugs in the fix itself, both caught before they shipped:**
+
+- The first version wrote the new maximum into the OLD two-byte LEB128 slot.
+  65536 needs three bytes, so it was silently truncated to 0 and the module
+  failed validation ("maximum memory size (0 pages) is less than initial").
+  **That deployed and took the client down entirely.** The patcher now
+  REBUILDS the memory section when the encoding width changes, and COMPILES
+  its own output — a broken wasm fails the build instead of shipping.
+- `scripts/check-xash-wasm.cjs` now runs at the end of every build and asserts
+  the bundled engine's limits, so a bad wasm cannot reach production.
+
+### 2. The deploy's browser check did not check the engine
+
+It inferred "a player is in a game" from the **bridge's connection count** —
+which is exactly why the broken wasm sailed through a green deploy. It now
+asserts the engine's own evidence (`window.__xash` present, canvas at the
+engine's real size, server banner received). Proven both ways: with the
+corrupted wasm the check reports FAIL; with the good one, PASS.
+
+### 3. Humans were invisible in the server's logs
+
+The engine *does* log connections — but via `Log_Printf`, to a **log file**,
+and the game container cannot write one (the assets are a read-only mount).
+Bots announce themselves ("connected with skill"), which is why only bots
+ever appeared in `docker logs`. The port now prints them itself:
+
+```
+[18:09:25] [ts] Specialist connected (address 172.17.0.1:42468)
+[18:10:56] [ts] Specialist disconnected
+```
+
+Shipped as PR #38 (the port change), PR #39 (the image tag), and PR #40
+(`scripts/build-server-dll.sh` — the server DLL build needed three separate
+env fixes that the errors never explained; the script now finds all three).
+
+The game server image is `ts-server:0.25`; **`0.24` is still on the host**, so
+a rollback is one env var: `TS_IMAGE=ts-server:0.24`.
+
+**Caveat worth knowing:** the disconnect lags by ~90 seconds. It is a UDP
+drop, so the server only notices when the client's packets stop arriving.
+
+
 ## What changed since the last handoff (2026-10-21)
 
 That handoff ended with "R1.1 — the player entity" as the blocker, and a
@@ -171,7 +231,7 @@ the image is rebuilt by hand on the host**:
 ```bash
 scp tools/deploy/entrypoint.sh bb-prod:~/build/
 scp tools/deploy/config/{server.cfg,mapcycle.txt} bb-prod:~/build/config/
-ssh bb-prod 'cd ~/build && docker build -f Dockerfile.ts-server -t ts-server:0.22 .'
+ssh bb-prod 'cd ~/build && docker build -f Dockerfile.ts-server -t ts-server:0.25 .'
 ssh bb-prod '/home/ubuntu/run-instance.sh 0'     # recreates ts-0
 ```
 
