@@ -161,6 +161,73 @@ frame) is the missing half.
 is what draws the faint **white weapon outlines** — the glowshell pass
 renders the model a second time, scaled up, additively.
 
+### The first-person weapon rendered black (2026-10-24, fixed)
+
+**Symptom:** the viewmodel was a flat black silhouette — correct geometry,
+multiplied-away texture. Measured: the weapon's pixels were `(1,3,1)` across
+72% of the region.
+
+**How it was pinned down** (each step ruled something out):
+- `r_fullbright 1` lit the entire world **and** the bot standing right there
+  (body *and* held pistol) while the viewmodel stayed black. **So it was
+  never a lighting problem.**
+- `r_lightmap 0` ("disable lightmaps, get fullbright for entities") changed
+  nothing.
+- The weapon's texture flickered into view for a moment near a **muzzle
+  flash**. That was the confirming clue: only a *dynamic* light contributed
+  anything to the weapon's colour.
+- Bots' weapons were lit, through the same `draw_weapon` path — so the
+  difference had to be the entity state, not the draw path.
+
+**Cause.** The port draws the `p_` weapon merged onto the player's bones, so
+it inherits the player's entity state. For the **local** player,
+`V_CalcNormalRefdef` rewrites that state every frame (`view.rs`):
+
+```rust
+ent.curstate.rendermode = kRenderTransColor as i32;
+ent.curstate.renderamt = amt as i32;
+```
+
+That is the third-person translucency (`cl_thirdtransparency`), and the
+port's own note says *"the local model is only drawn in third person, so
+that's where it shows"*. But the first-person viewmodel is drawn from that
+same entity state, so it inherited the translucent-colour mode — and the
+server spawns players with `rendercolor = (0,0,0)`
+(`server/src/rules/lifecycle.rs`). Zero rendercolour plus zero ambient
+multiplies the weapon's texture to black.
+
+**Bots were fine:** the server gives them `rendermode = 0`, so they never
+entered that mode.
+
+**Fix** (`client/src/studio.rs`, `draw_weapon`): draw the weapon with
+`rendermode = kRenderNormal` and `renderamt = 255`. In TS the viewmodel is
+its own entity (`r_entity[0]`), never the player's, so it must not inherit
+the player's third-person render mode. The entity is restored from the saved
+copy afterwards, so the third-person body keeps its translucency.
+
+**Note the ruleset split:** `ts21` has `local_translucency() == false` (2.1's
+`V_CalcNormalRefdef` never writes the local entity's render mode) and
+`ts30` has `true`. We run **ruleset 30**, so the leak is live. A TS 2.1
+build would not have shown this at all.
+
+**Also settled along the way:**
+- The TS main-menu weapon is a **static image**, not a rendered model: two
+  shots four seconds apart differ by **65 pixels (0.01%)**, in a 22x22 box
+  that is not the weapon. An earlier claim that the menu weapon proved the
+  renderer worked was wrong, and was retracted.
+- The engine's cheat protection: `"%s is cheat protected."` and, when
+  cheats are off, it **bans the client**. The ban lives in the engine's
+  **in-memory** filesystem — no `banned.cfg` on the server, and the engine
+  has no IDBFS — so it does not survive a reload.
+- `sv_cheats` is **read-only** from the browser (`"sv_cheats is read-only."`),
+  so cheat-protected cvars (`r_lightmap`, `r_fullbright`) can only be set
+  when the **server** has `sv_cheats 1`. The frontend's own `sv_cheats 1`
+  calls can never work and are dead code.
+- To test a cheat cvar: `printf 'sv_cheats 1\n' | docker exec -i ts-0 sh -c
+  'cat > /tmp/console.pipe'` on the host, then restore it the same way. Put
+  the restore in a host-side script with a `sleep`, so it fires even if the
+  operator session dies.
+
 ## The rebrand: BulletBallet (2026-10-24, planned)
 
 **The site is becoming BulletBallet.** The plan is
