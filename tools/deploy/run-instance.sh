@@ -23,9 +23,17 @@ PORT=$((PORT_BASE + N))
 NAME="ts-$N"
 # The image tag. 0.21 -> 0.22 for the map cycle and the sixteen-bot
 # roster; 0.22 -> 0.23 for the three classic maps TS 3.0 dropped from
-# its own cycle (ts_dojo, ts_dietrich, ts_bikini). The OLD tag stays on
-# the host so a rollback is one env var: TS_IMAGE=ts-server:0.22.
-IMAGE="${TS_IMAGE:-ts-server:0.23}"
+# its own cycle (ts_dojo, ts_dietrich, ts_bikini); 0.23 -> 0.24 for the
+# ten-minute rotation. The OLD tag stays on the host so a rollback is
+# one env var: TS_IMAGE=ts-server:0.23.
+#
+# WHY THE ROTATION NEEDS AN IMAGE
+# -------------------------------
+# The engine re-execs server.cfg on every map change, so a cvar set on
+# a live server is stomped at the next map change (measured: mp_timelimit
+# 10 at 15:39 became 3 again at the 15:48 map change). The rotation
+# therefore only sticks if it is IN the image's server.cfg.
+IMAGE="${TS_IMAGE:-ts-server:0.24}"
 ASSETS="${TS_ASSETS:-/srv/ts-data}"
 MAXPLAYERS="${TS_MAXPLAYERS:-32}"
 MAP="${TS_MAP:-ts_casa}"
