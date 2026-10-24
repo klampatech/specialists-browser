@@ -21,7 +21,11 @@ N="${1:?usage: run-instance.sh <instance-number>}"
 PORT_BASE="${TS_PORT_BASE:-27015}"
 PORT=$((PORT_BASE + N))
 NAME="ts-$N"
-IMAGE="${TS_IMAGE:-ts-server:0.21}"
+# The image tag. 0.21 -> 0.22 for the map cycle and the sixteen-bot
+# roster (the entrypoint now installs tools/deploy/config/mapcycle.txt and
+# server.cfg carries mp_timelimit). The OLD tag stays on the host so a
+# rollback is one env var: TS_IMAGE=ts-server:0.21.
+IMAGE="${TS_IMAGE:-ts-server:0.22}"
 ASSETS="${TS_ASSETS:-/srv/ts-data}"
 MAXPLAYERS="${TS_MAXPLAYERS:-32}"
 MAP="${TS_MAP:-ts_casa}"

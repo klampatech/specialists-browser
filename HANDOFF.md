@@ -91,6 +91,92 @@ What was actually built in this window:
 | Orchestrator | restart unhealthy, restart degraded, scale out, scale in |
 | Bot backfill | bots yield to humans automatically |
 
+## The fleet got busier, and the maps started moving (2026-10-24)
+
+Kyle's quality-of-life pass, three items.
+
+**1. Map rotation.** The server now cycles through **The Specialists 3.0's
+own map cycle** — the one that shipped in the mod's Linux server tarball
+(`ts/mapcycle.txt`), twenty-one maps in the mod's own order. The stock
+cycle's last entry, `ctb_deadheat`, is left out: it is a Capture-The-Bomb
+map with no deathmatch spawns, so a player who landed on it in FFA would
+have nowhere to spawn and would sit in spectator until the round moved on.
+
+Two things had to be true, and both were broken first:
+
+- **The cycle file is ours.** The asset tree ships the STOCK Half-Life
+  cycle — `undertow`, `snark_pit`, `boot_camp`, `lambda_bunker`,
+  `datacore`, `stalkyard` — and the TS folder's own `mapcycle.txt` is
+  empty. Not one of those maps exists in a TS install, so the port skipped
+  every entry ("not a valid map"), ended up with an EMPTY cycle — and an
+  empty cycle is not an error. The server just kept `ts_casa` forever,
+  silently. `entrypoint.sh` now installs
+  `tools/deploy/config/mapcycle.txt` into the game directory and skips
+  the asset tree's, so there is exactly one cycle in the tree.
+- **`mp_timelimit` is the timer, and it is in MINUTES.** `roundtime` is
+  the TS *round* timer and is inert in FFA deathmatch: setting it to 30
+  and waiting a minute changed nothing at all. `mp_timelimit 3` gives a
+  three-minute match, `mp_chattime` (10s) of intermission, and then the
+  next map. The stock TS 3.0 `server.cfg` ships `mp_timelimit 30`, half
+  an hour on one map.
+
+Measured locally before shipping: the cycle advances, `ts_casa` →
+`ts_lobby` on the intermission, with the cycle file in the game directory.
+
+**2. Sixteen bots.** The roster is `16 − humans`, up from `4 − humans`.
+It lives in FOUR places — the registry's default, the registry image's
+environment, the deploy script's environment, and `server.cfg` — and
+nothing derives them from each other, so `tests/unit/bot-target.test.mjs`
+now asserts that the four copies agree.
+
+The cost is not tickrate. Measured on **every map of the rotation**, with
+the server pinned to **two cores** (the production box's whole budget,
+shared with Caddy and three Node services), the server held **100 Hz** on
+all twenty-one, with sixteen bots. The bots are cheap; the maps are what
+differ.
+
+**3. Fullscreen on launch** (in the `webxash` submodule). Clicking PLAY
+takes the page fullscreen, before the download. The **document element**
+is fullscreened, not the canvas: the options overlay and the disconnect
+panel are DOM siblings of the canvas, and a browser hides everything that
+is not a descendant of the fullscreen element.
+
+On the black-on-resize report: measured in a real browser against
+production, a viewport resize (1280x720 → 900x600) moved the canvas
+backing store, the WebGL drawing buffer and the GL viewport together, and
+the frame kept rendering — the engine tracks the size natively. What can
+still go black is a **lost WebGL context**, which some drivers do on a
+canvas resize, and that one is recoverable; the frontend watches for it
+and asks the browser to restore it.
+
+### The game server image is not deployed by the pipeline
+
+`deploy.yml` ships the frontend bundle and the three control-plane images
+(registry, orchestrator, bridge). It does **not** ship the game server
+image, and that is deliberate — the game containers are owned by the
+orchestrator, because scaling the fleet is a decision rather than a
+deployment.
+
+But the image is also where `server.cfg`, `entrypoint.sh` and the map
+cycle live, so **a change to any of them does not reach production until
+the image is rebuilt by hand on the host**:
+
+```bash
+scp tools/deploy/entrypoint.sh bb-prod:~/build/
+scp tools/deploy/config/{server.cfg,mapcycle.txt} bb-prod:~/build/config/
+ssh bb-prod 'cd ~/build && docker build -f Dockerfile.ts-server -t ts-server:0.22 .'
+ssh bb-prod '/home/ubuntu/run-instance.sh 0'     # recreates ts-0
+```
+
+The build context on the host (`~/build/`) is a staging directory, not a
+checkout: the Dockerfile, `config/`, `engine/` (fetched by
+`fetch-engine.sh`) and `server/ts_amd64_amd64.so` (the Rust port's
+compiled server DLL, built elsewhere and copied in). The image is 176 MB
+and asset-free — the game assets are a read-only volume.
+
+Recreating an instance kicks the players on it, so this is an operator
+step on purpose.
+
 ## What the first real user found
 
 Kyle's first click on prod hit a bug no test had: **PLAY downloaded the
