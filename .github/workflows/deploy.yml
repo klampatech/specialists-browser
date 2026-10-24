@@ -193,13 +193,49 @@ jobs:
           # from R2, not from the web bundle. The tracked zips in
           # public/hl are 168 MB of game content that has no business
           # being re-uploaded to the VPS on every deploy.
+          #
+          # PERMISSIONS. `/srv` is owned by root and the deploy user is
+          # `ubuntu`, so the staging directory has to be created with
+          # sudo and handed over before rsync can write into it.
+          # Without that, rsync dies with
+          #
+          #     mkdir "/srv/web.new" failed: Permission denied (13)
+          #
+          # at the LAST step of the deploy — after the build, with the
+          # old bundle still live and nothing shipped. `/srv` and `/home`
+          # are the same filesystem, so the swap below is a rename and
+          # not a copy.
+          ssh -F ~/.ssh/config prod '
+            set -euo pipefail
+            sudo rm -rf /srv/web.new
+            sudo mkdir -p /srv/web.new
+            sudo chown $(id -un):$(id -gn) /srv/web.new
+          '
           rsync -az --delete --exclude 'hl/' webxash/dist/ prod:/srv/web.new/
           ssh -F ~/.ssh/config prod '
             set -euo pipefail
-            rm -rf /srv/web.old
-            mv /srv/web /srv/web.old
-            mv /srv/web.new /srv/web
-            rm -rf /srv/web.old
+            sudo rm -rf /srv/web.old
+            sudo mv /srv/web /srv/web.old
+            # Keep the previous release''s assets. Caddy sends no
+            # Cache-Control for index.html, so a browser may serve a
+            # CACHED index.html for a while after the swap — and that
+            # cached page points at the OLD bundle name. If the old
+            # bundle is gone, the page loads nothing at all: a blank
+            # screen for whoever was mid-session. Carrying the old
+            # assets forward costs one release worth of files and
+            # `-n` means the new files win on any name collision.
+            sudo cp -an /srv/web.old/assets/. /srv/web.new/assets/ \
+              || echo "  warning: could not carry the previous assets forward"
+            # If the new directory cannot go in, put the old one back.
+            # A failed swap that leaves /srv/web missing is a DOWN site,
+            # and a down site is worse than a stale bundle.
+            if ! sudo mv /srv/web.new /srv/web; then
+              echo "  the swap failed — restoring the previous bundle"
+              sudo mv /srv/web.old /srv/web
+              exit 1
+            fi
+            sudo chown -R $(id -un):$(id -gn) /srv/web
+            sudo rm -rf /srv/web.old
             echo "  frontend swapped in"
           '
 
