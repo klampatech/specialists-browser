@@ -88,8 +88,9 @@ the whole time.
 ## Bug 2: bare `reload` aborts the wasm heap
 
 **Affects:** nothing in normal play; the bridge avoids it
-**Status:** root cause located, engine-side, unfixed
+**Status:** root cause located, engine-side, unfixed — **but the heap cap it OOMs on was raised on 2026-10-24, so this is now TESTABLE and possibly already fixed**
 **Still valid** — this one was never about the keyboard.
+**UPDATE (2026-10-24):** the client's wasm heap cap was the root cause of a *different* OOM (the map-change freeze), and it was raised from 256 MB / 256 MB to **512 MB initial / 2 GB maximum**. The published module declared `maximum == initial`, so the heap could not grow at all. A bare `reload` that aborts with `Aborted(OOM)` is very likely the same wall — but the reload probe was **not** re-run after the patch, so do NOT record this as fixed. Re-run it and either close the bug or update this line with the measurement.
 
 ### Bisected, not assumed
 
