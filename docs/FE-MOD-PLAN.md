@@ -4,6 +4,13 @@ Written 2026-10-23. Every "now" below was read out of the code in this
 repo, not assumed. Where something is unverified it says so, because the
 difference decides how the work is sequenced.
 
+**Status 2026-10-24: Batch A is shipped and verified in production.**
+The duplicate key delivery is gone from the live bundle, and Kyle
+confirmed it from the browser: *"the fixes seem to have taken as well.
+Didn't experience double presses."* Batch E (the deploy pipeline) was
+added the same day — it is what actually got the fix in front of
+players, and it was not on this list before.
+
 ## The thing that shapes everything else
 
 **Every key was being delivered twice.** That one fact explains most of
@@ -87,11 +94,13 @@ never has to be answered.
 
 ## Batch A — the key map, and the engine's menus
 
-**This batch is implemented and verified locally.** It is written up here
-so the reasoning survives, not because it is still to do.
+**This batch is shipped and verified in production.** It is written up
+here so the reasoning survives, not because it is still to do.
 
 Everything lives in `webxash/src/services/`, plus one overlay
-component. Branch: `webxash` @ `feat/keyboard-native-input`.
+component. Branch: `webxash` @ `feat/keyboard-native-input`. Merged as
+webXash#1 (the code) → specialists-browser#17 (the submodule pointer
+and this plan), then deployed by Batch E.
 
 ### A0. Delete the command map — DONE
 
@@ -195,14 +204,29 @@ third person while you are an observer ("an observer can leave third
 person but not enter it"), so you have to be alive. The controls list
 now says so.
 
-### Still open in this batch
+### Closed — the in-game verification
 
-- **In-game verification of movement and third person.** The frontend
-  changes are verified locally, but the local client could not complete
-  a connection to the local game server: GoldSrc refuses loopback
-  connects, and the Tailscale address does not reach this host's own
-  docker-published UDP port. Production is unaffected and was not
-  touched.
+The last open item in this batch was in-game verification of movement
+and third person. It is closed, in two independent ways:
+
+- **In the live bundle.** The shipped production bundle
+  (`index-BpB9lFPj.js`) contains `bind ESCAPE` and no longer contains
+  `+forward`, `slot1`, `messagemode` or `toggleconsole` — the duplicate
+  command map is simply not in the code that players are running. That
+  is the mechanism of every symptom in the table at the top, removed.
+- **In the browser.** Kyle played production on 2026-10-24: *"yup game
+  plays fine on prod"* and *"the fixes seem to have taken as well.
+  Didn't experience double presses."*
+
+The local browser check was done too, before shipping: Escape #1
+released the pointer lock with the engine seeing **zero**
+`cancelselect` events; Escape #2 opened the overlay with the cvars
+loaded; Escape #3 closed it; `B` and the backquote did nothing.
+
+**One thing that is still open, and it is not this batch's fault:** the
+browser client could not complete a connection to a *local* game server,
+so the local dev loop for gameplay changes is still not working. See
+E4.
 
 ## Batch B — the launch path
 
@@ -355,23 +379,136 @@ The landing page, the store, and the server list. Shares one file
 
 ---
 
+## Batch E — the deploy pipeline
+
+**Added 2026-10-24.** This was not on the list and it turned out to be
+the reason nothing in Batch A could reach a player. Five PRs, all
+merged, all green.
+
+### The headline
+
+**The frontend had never been deployed.** Every deploy that changed it
+went green and shipped nothing.
+
+### E1. The path filter that swallowed it — PR #18
+
+The deploy decides what to rebuild from `git diff --name-only`. The
+frontend is a git **submodule**, and a pointer move is one line in that
+diff:
+
+```
+webxash
+```
+
+— the submodule path, **no trailing slash**, and none of the files
+inside it. The rule was `grep -qE '^webxash/'`, which needs the slash.
+So a pointer move never matched, `frontend=0`, the build was skipped,
+and the deploy reported success.
+
+The decision now lives in `tools/deploy/changed-paths.cjs` with a
+fixture in `tests/unit/changed-paths.test.mjs` — a false negative there
+is invisible, so it needs one. **The frontend is now rebuilt on every
+deploy**: it is a 130 KB bundle and a one-minute build, and a path
+filter for it is exactly what ate the release. There is no filter left
+to get wrong.
+
+### E2. The ship step could not write — PR #19
+
+`/srv` is owned by root and the deploy user is `ubuntu`, which owns
+`/srv/web` but cannot create a *sibling* of it. The staging directory
+had to be created with `sudo` and handed over. It now is, and the swap
+rolls back if the new directory cannot go in — a failed swap that
+leaves `/srv/web` missing is a **down site**, which is worse than a
+stale bundle.
+
+### E3. Verifying what is actually live — PRs #20, #21
+
+After shipping, the deploy compares the bundle it built against the one
+the site is serving, and fails if they differ. It reads **both sides
+from an `index.html`** — the one it built and the one the site serves —
+because the build emits several files matching `index-*.js` and
+globbing the assets directory picks the wrong one.
+
+This is the check that would have caught E1 on the first deploy.
+
+### E4. Never delete from the live tree — PR #22
+
+Shipping now happens **in place, without `--delete`**, and `index.html`
+goes last so the page never references assets that are not there yet.
+A deploy should not be able to remove files from a live site on the
+strength of a build it does not fully understand. The build also
+asserts that the two WASM files the client fetches at runtime
+(`/cl_dlls/client_emscripten_wasm32.wasm`,
+`/dlls/hl_emscripten_wasm32.wasm`) are present, and fails if not.
+
+**Correction (PR #23):** the comment in that step originally claimed
+the swap deleted files the game needed to boot. That was wrong —
+`public/xash3d-fwgs`, `public/test-assets` and
+`public/dlls/ts_shim_*.wasm` are gitignored, but they are **vestigial
+copies**: the engine is bundled out of `node_modules` into `assets/` by
+Vite, and 24 hours of access logs show one request for
+`/xash3d-fwgs` — which was me, with curl. The files the client
+actually fetches are the two in the assertion above, and both are
+tracked in git. The step was still worth changing; the reason was
+wrong.
+
+### E5. The local dev loop for gameplay changes — OPEN
+
+The browser client could not complete a connection to a **local** game
+server. This is worth solving, because it is what makes frontend
+gameplay work safe to change.
+
+What is known:
+
+- The **transport is sound.** A browser client through the bridge runs
+  the real GoldSrc handshake — `getchallenge`, `bandwidth`, `connect` —
+  and then netchan sequence numbers. The bridge trace shows it.
+- GoldSrc **refuses a loopback** `+connect`, so the client must be
+  pointed at a non-loopback address.
+- The bridge's `--targets id=internal:port@public:port` form (with the
+  public address) is required; the older `--target` form has no public
+  address and the bridge refuses address-based lookups against it.
+- A browser on this host can reach the host's own Tailscale address,
+  but **not** the docker-published UDP port on it — the published port
+  binds inside the container's network namespace.
+
+So the remaining question is the topology: what address does the
+browser give the engine, and what does the bridge forward it to.
+
+### E6. Occupancy counts sockets, not players — OPEN
+
+The registry counts a **bridge WebSocket** as a human. Two consequences,
+both observed:
+
+- A client that opens the bridge but never completes the handshake
+  still counts as a human, for as long as the socket is up.
+- A disconnected client keeps counting for a couple of minutes.
+
+The honest number is "clients whose bridge socket is open **and** which
+have completed the handshake", and the bridge can tell that from the
+packet sequence. This also drives the bot backfill, so an over-count
+means under-filling.
+
+---
+
 ## Suggested order
 
 | batch | why then | gate |
 |---|---|---|
-| **A** | the key map is one file, and every other item's design depends on A0's answer | A0 first — one keypress decides whether the command map stays at all |
+| **A** | ~~the key map is one file, and every other item's design depends on A0's answer~~ **DONE — shipped and verified in production** | closed 2026-10-24 |
 | **B** | independent of the engine, small, and B1 is a visible product change | B1 first — it is a policy flip and a unit test |
 | **C** | isolated perf work, but it touches the boot path, so do it when nothing else is in flight | measure before/after |
-| **D** | the largest build, and it reuses A4's overlay infrastructure | after A4 |
+| **D** | the largest build, and it reuses A4's overlay infrastructure | after A4 (A4 is done, so D is unblocked) |
+| **E** | E5 is what makes local gameplay work safe to change; E6 makes the server browser honest | E5 before the next gameplay change |
 
 Batch B has no dependencies at all and can go first if you want
-something on screen quickly. A1 and A2 are both one-liners and are
-worth doing on their own even before A0 — the buy menu and the console
-are both advertised to every player today, and neither should be.
+something on screen quickly.
 
-**The diagnostic in A3 is worth doing before any code is written.** It
-is five minutes at the keyboard, and it decides whether A3 and A4 are
-about the keyboard or about a mouse-navigable VGUI menu.
+**Batch E came out of Batch A.** A was implemented and verified
+locally, and then sat undeployed for a day because the deploy had never
+shipped the frontend. The lesson worth keeping: **"it works locally"
+and "it is live" are different claims**, and the gap between them was
+invisible because every signal the pipeline produced was green.
 
 ## What is deliberately not in this list
 
