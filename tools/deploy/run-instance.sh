@@ -22,10 +22,10 @@ PORT_BASE="${TS_PORT_BASE:-27015}"
 PORT=$((PORT_BASE + N))
 NAME="ts-$N"
 # The image tag. 0.21 -> 0.22 for the map cycle and the sixteen-bot
-# roster (the entrypoint now installs tools/deploy/config/mapcycle.txt and
-# server.cfg carries mp_timelimit). The OLD tag stays on the host so a
-# rollback is one env var: TS_IMAGE=ts-server:0.21.
-IMAGE="${TS_IMAGE:-ts-server:0.22}"
+# roster; 0.22 -> 0.23 for the three classic maps TS 3.0 dropped from
+# its own cycle (ts_dojo, ts_dietrich, ts_bikini). The OLD tag stays on
+# the host so a rollback is one env var: TS_IMAGE=ts-server:0.22.
+IMAGE="${TS_IMAGE:-ts-server:0.23}"
 ASSETS="${TS_ASSETS:-/srv/ts-data}"
 MAXPLAYERS="${TS_MAXPLAYERS:-32}"
 MAP="${TS_MAP:-ts_casa}"
