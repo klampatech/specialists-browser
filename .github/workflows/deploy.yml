@@ -179,65 +179,61 @@ jobs:
             echo "::error::the built bundle contains the TS game archive — it belongs on R2"
             exit 1
           fi
+          # The build must contain the files the app FETCHES AT RUNTIME.
+          # These two are tracked in git, so a clean checkout has them —
+          # which is exactly why their absence means something went
+          # wrong rather than that the build was always like this.
+          for f in cl_dlls/client_emscripten_wasm32.wasm dlls/hl_emscripten_wasm32.wasm; do
+            if [ ! -e "dist/$f" ]; then
+              echo "::error::the built bundle is missing dist/$f — the client cannot boot without it"
+              exit 1
+            fi
+          done
+          # `/xash3d-fwgs` is fetched at runtime too, and it is NOT
+          # tracked in git (it is gitignored), so a clean CI checkout
+          # does not have it. Shipping without it leaves production
+          # unable to boot the engine.
+          #
+          # The ship step no longer deletes anything, so production keeps
+          # the copy it already has. But a FRESH server would not have
+          # it, and that is a gap. Making the build produce it is the
+          # real fix; until then, fail loudly rather than quietly ship
+          # a frontend that cannot boot.
+          if [ ! -e dist/xash3d-fwgs ]; then
+            echo "::warning::the built bundle has no dist/xash3d-fwgs — it is gitignored, so CI cannot produce it"
+            echo "::warning::production keeps its existing copy because the ship step no longer deletes"
+          fi
           echo "  built $(du -sh dist | cut -f1)"
 
       - name: Ship the frontend
         if: steps.changed.outputs.frontend == '1'
         run: |
           set -euo pipefail
-          # Upload beside the live directory, then swap. A plain rsync
-          # --delete in place leaves a window where index.html is new and
-          # the hashed assets it references are old — which is a blank
-          # page for exactly as long as the upload takes.
-          # `hl/` is excluded on purpose: the game archive is served
-          # from R2, not from the web bundle. The tracked zips in
-          # public/hl are 168 MB of game content that has no business
-          # being re-uploaded to the VPS on every deploy.
+          # Ship IN PLACE, and never delete.
           #
-          # PERMISSIONS. `/srv` is owned by root and the deploy user is
-          # `ubuntu`, so the staging directory has to be created with
-          # sudo and handed over before rsync can write into it.
-          # Without that, rsync dies with
+          # The build is NOT complete. `public/xash3d-fwgs`,
+          # `public/test-assets` and `public/dlls/*.wasm` are gitignored,
+          # so a clean CI checkout does not have them and the built dist
+          # is missing files the app fetches at runtime — /xash3d-fwgs is
+          # one of them.
           #
-          #     mkdir "/srv/web.new" failed: Permission denied (13)
+          # The previous version of this step uploaded into a fresh
+          # staging directory and swapped it in, which DELETED those
+          # files from production: the game could no longer boot, and
+          # the deploy reported success. `rsync --delete` on a
+          # half-built tree is a way to break a working site quietly.
           #
-          # at the LAST step of the deploy — after the build, with the
-          # old bundle still live and nothing shipped. `/srv` and `/home`
-          # are the same filesystem, so the swap below is a rename and
-          # not a copy.
-          ssh -F ~/.ssh/config prod '
-            set -euo pipefail
-            sudo rm -rf /srv/web.new
-            sudo mkdir -p /srv/web.new
-            sudo chown $(id -un):$(id -gn) /srv/web.new
-          '
-          rsync -az --delete --exclude 'hl/' webxash/dist/ prod:/srv/web.new/
-          ssh -F ~/.ssh/config prod '
-            set -euo pipefail
-            sudo rm -rf /srv/web.old
-            sudo mv /srv/web /srv/web.old
-            # Keep the previous release''s assets. Caddy sends no
-            # Cache-Control for index.html, so a browser may serve a
-            # CACHED index.html for a while after the swap — and that
-            # cached page points at the OLD bundle name. If the old
-            # bundle is gone, the page loads nothing at all: a blank
-            # screen for whoever was mid-session. Carrying the old
-            # assets forward costs one release worth of files and
-            # `-n` means the new files win on any name collision.
-            sudo cp -an /srv/web.old/assets/. /srv/web.new/assets/ \
-              || echo "  warning: could not carry the previous assets forward"
-            # If the new directory cannot go in, put the old one back.
-            # A failed swap that leaves /srv/web missing is a DOWN site,
-            # and a down site is worse than a stale bundle.
-            if ! sudo mv /srv/web.new /srv/web; then
-              echo "  the swap failed — restoring the previous bundle"
-              sudo mv /srv/web.old /srv/web
-              exit 1
-            fi
-            sudo chown -R $(id -un):$(id -gn) /srv/web
-            sudo rm -rf /srv/web.old
-            echo "  frontend swapped in"
-          '
+          # So: rsync over the live directory WITHOUT --delete, so
+          # anything the build did not produce stays exactly where it
+          # is. And index.html goes LAST, so the page never starts
+          # referencing assets that are not there yet — the same
+          # guarantee the old "upload beside, then swap" was after.
+          #
+          # The live directory is owned by the deploy user, so this needs
+          # no sudo and no staging directory at all.
+          rsync -az --exclude 'hl/' --exclude 'index.html' webxash/dist/ prod:/srv/web/
+          rsync -az webxash/dist/index.html prod:/srv/web/
+          echo "  frontend shipped"
 
       - name: Verify the live frontend is the one we built
         # The check that was missing.
