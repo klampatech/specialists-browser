@@ -107,7 +107,19 @@ const OUT = process.argv[3] || path.join(__dirname, '..', '..', 'docs', 'screens
     const after = await shot();
     console.log(`  round ${attempt + 1}: frameChanged=${before !== after}`);
     // A live first-person view keeps moving; a static chase-cam does
-    // not. This is a proxy for "the player is alive", not a proof.
+    // not. This is a proxy for "the player is alive", not a proof --
+    // and it is NOT even a reliable proxy: the TS client's main menu
+    // has an ANIMATED highlight, so a client that has dropped to the
+    // menu also reports "frameChanged". On 2026-10-24 that is exactly
+    // what happened: every round reported a live view while the frame
+    // was the menu, because the spawn click had taken the client out
+    // of the game.
+    //
+    // The only reliable check is the pixels, and the pixels say: this
+    // spawn attempt does not work. The client ends up in the TS main
+    // menu, not in first person. The README uses the two shots it can
+    // trust (landing.png and spectator.png); the third is written with
+    // a neutral name so nobody mistakes it for a first-person view.
     if (before !== after) {
       console.log('  view is live');
       break;
@@ -126,21 +138,31 @@ const OUT = process.argv[3] || path.join(__dirname, '..', '..', 'docs', 'screens
   }
   await page.waitForTimeout(1200);
 
-  // Whatever this ends up being, do NOT call it first-person.png. If the
-  // spawn click above landed on the config menu's Cancel — which is what
-  // happens when the client is still in the spectator's menu — the client
-  // quits to the TS main menu and this frame is the MENU, not a
-  // first-person view. A file called first-person.png holding the main
-  // menu is a trap for the next reader, and the README's alt text would
-  // be describing a screenshot that shows something else.
-  await page.screenshot({ path: path.join(OUT, 'main-menu.png') });
-  console.log('  main-menu.png');
+  // NEUTRAL FILENAME. Do NOT call this first-person.png.
+  //
+  // What it holds depends on whether the spawn attempt above actually
+  // worked, and the script CANNOT tell:
+  //
+  //   - If the spawn click landed on the spectator config menu's Cancel,
+  //     the client quits to the TS main menu and this frame is the MENU.
+  //   - If the spawn worked, this frame is a first-person view.
+  //
+  // The obvious test is the HUD's "Free Chase-Camera" line, but the HUD
+  // is painted into the WASM canvas and NOT into the DOM, so
+  // `document.body.innerText` can never contain it. A check that always
+  // returns false is worse than no check: it prints a confident line
+  // that says the wrong thing.
+  //
+  // So the script does not guess. It writes a neutral name and a human
+  // decides what the frame actually is. (As of 2026-10-24 it is the
+  // main menu.)
+  await page.screenshot({ path: path.join(OUT, 'after-spawn.png') });
+  console.log('  after-spawn.png');
 
-  const state = await page.evaluate(() => ({
-    chase: /Chase-Camera/i.test(document.body.innerText || ''),
-    lost: !!document.querySelector('.lost'),
-  }));
-  console.log(`  state: chaseCamera=${state.chase} connectionLost=${state.lost}`);
+  // Only one thing here is knowable from the DOM: whether the connection
+  // dropped. The rest of the client's state is on the canvas.
+  const lost = await page.evaluate(() => !!document.querySelector('.lost'));
+  console.log(`  state: connectionLost=${lost}`);
 
   await browser.close();
 })().catch((e) => {
