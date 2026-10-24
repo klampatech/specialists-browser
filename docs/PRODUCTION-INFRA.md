@@ -285,6 +285,35 @@ value back. Guessing here is expensive: three of them fail silently.
 `ts_bot_quota` is independent of `maxplayers`: it stayed at 4 while maxplayers
 went to 32. Bots are filler in a 32-slot server, which is the intended shape.
 
+### Map rotation
+
+The server cycles through **The Specialists 3.0's own map cycle**, taken
+from the mod's Linux server tarball (`ts/mapcycle.txt`), twenty-one maps
+in the mod's own order. `ctb_deadheat` is the one entry left out: it is
+a Capture-The-Bomb map with no deathmatch spawns, so a player who landed
+on it in FFA would have nowhere to spawn.
+
+Two things had to be true, and both were broken first:
+
+- **The cycle file is ours.** The asset tree ships the stock Half-Life
+  cycle — `undertow`, `snark_pit`, `boot_camp`, `lambda_bunker`,
+  `datacore`, `stalkyard` — and none of those maps exists in a TS
+  install. The port skips every entry it cannot resolve ("not a valid
+  map") and ends up with an **empty cycle**, which is not an error: the
+  server keeps one map forever and says nothing. The TS folder's own
+  `mapcycle.txt` is empty for the same reason. `entrypoint.sh` copies
+  `tools/deploy/config/mapcycle.txt` into the game directory and skips
+  the asset tree's, so there is exactly one cycle in the tree.
+- **`mp_timelimit` is the timer, and it is in MINUTES.** `roundtime` is
+  the TS *round* timer and is inert in FFA deathmatch — setting it to 30
+  and waiting a minute changes nothing at all. `mp_timelimit 3` gives a
+  three-minute match, `mp_chattime` (10s) of intermission, and then the
+  next map. The stock TS 3.0 `server.cfg` ships `mp_timelimit 30`, which
+  is half an hour on one map.
+
+The first map of the cycle is not the map the server boots on
+(`ts_casa`), so the first rotation is a change rather than a repeat.
+
 ### Two bugs that cost the most time
 
 **A missing `-p` on `docker run`.** `EXPOSE` in the Dockerfile is
@@ -542,18 +571,31 @@ The signal is **sustained** tickrate shortfall, not a single sample.
 
 ### Bot policy
 
-Keep a few bots so a lone player has something to fight, and get out of
-the way as humans arrive. Bots cost server CPU and add nothing.
+Keep the arena busy so a lone player has something to fight, and get out
+of the way as humans arrive. Bots cost server CPU and add nothing.
 
 ```
-humans 0 -> 4 bots        humans 2 -> 2 bots
-humans 1 -> 3 bots        humans 4 -> 0 bots
+humans 0 -> 16 bots       humans 2 -> 14 bots
+humans 1 -> 15 bots       humans 16 -> 0 bots
 ```
 
 A2S counts bots as players, so the A2S reply's bot count is what makes
-this possible. Verified live: a browser joined, the registry saw
-`humans=1 bots=3`, applied `ts_bot_quota 3`, and the server culled a bot.
-When the player left, the quota went back to 4.
+this possible. Verified live at a roster of 4: a browser joined, the
+registry saw `humans=1 bots=3`, applied `ts_bot_quota 3`, and the server
+culled a bot. When the player left, the quota went back to 4.
+
+**The roster is sixteen now** (2026-10-24), and the number lives in four
+places — the registry's default, the registry image's environment, the
+deploy script's environment, and `server.cfg`. Nothing derives them from
+each other, so `tests/unit/bot-target.test.mjs` asserts that the four
+copies agree; a change to one of them used to be invisible in the other
+three.
+
+**What sixteen bots cost:** nothing measurable in tickrate. Measured on
+every map of the rotation with the server pinned to two cores — the
+production box's whole budget, shared with Caddy and three Node services
+— the server held **100 Hz** on all of them. The bots are cheap; the MAPS
+are what differ, and the heavy ones are worth watching.
 
 ### Orchestrator (`orchestrator:0.1`)
 
@@ -636,8 +678,13 @@ CPU-bound:  2 vCores / ~0.35-0.40 core per instance under real load
 
 **They disagree, and CPU is the one that binds.** The RAM figure is an
 upper bound even on its own terms: 365.5 MB was measured with four bots
-and no players, and a 32-player instance carries far more entity state,
-snapshots and per-client buffers.
+and no players, and the roster is now **sixteen** — so the per-instance
+figure is stale in the direction that matters. A 32-player instance also
+carries far more entity state, snapshots and per-client buffers.
+
+The CPU figure is the one that was measured the hard way, and the answer
+was reassuring: sixteen bots on two pinned cores held 100 Hz on every map
+of the rotation. Bot AI is not the cost; the maps and the humans are.
 
 ### The verdict
 

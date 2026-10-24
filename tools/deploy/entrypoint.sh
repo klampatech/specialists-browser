@@ -59,6 +59,17 @@ mkdir -p "$GAME_TS/dlls"
 cp /srv/config/gameinfo.txt "$GAME_TS/gameinfo.txt"
 cp /srv/config/server.cfg   "$GAME_TS/server.cfg"
 
+# Our map cycle. The asset tree ships the STOCK Half-Life one — undertow,
+# snark_pit, boot_camp, lambda_bunker, datacore, stalkyard — and not one of
+# those maps exists in a TS install. The port reads that file, skips every
+# entry it cannot find ("not a valid map"), and ends up with an empty cycle:
+# the server runs one map forever and says nothing about it. The TS one in
+# the asset folder is empty, for the same reason.
+#
+# So ours is copied in, and the asset tree's is excluded from the symlink
+# loop below. One mapcycle.txt in the tree, and it is the one we shipped.
+cp /srv/config/mapcycle.txt "$GAME_TS/mapcycle.txt"
+
 # FWGS's dlopen path is amd64-aware and looks for this exact name. The
 # built artifact is libts.so; renaming here keeps the cargo name honest.
 cp /srv/server/ts_amd64_amd64.so "$GAME_TS/dlls/ts_amd64_amd64.so"
@@ -70,12 +81,18 @@ for entry in "$ASSETS/ts"/*; do
   name="$(basename "$entry")"
   # Never shadow our own files if the asset folder happens to carry them.
   case "$name" in
-    gameinfo.txt|server.cfg|dlls) continue ;;
+    gameinfo.txt|server.cfg|dlls|mapcycle.txt) continue ;;
   esac
   ln -sfn "$entry" "$GAME_TS/$name"
 done
 for entry in "$ASSETS/valve"/*; do
   [ -e "$entry" ] || continue
+  # The stock Half-Life map cycle lives here (undertow, snark_pit, ...).
+  # The engine searches the game dir first, but leaving a second
+  # mapcycle.txt in the tree is a trap for the next person reading this.
+  case "$(basename "$entry")" in
+    mapcycle.txt) continue ;;
+  esac
   ln -sfn "$entry" "$GAME_VALVE/$(basename "$entry")"
 done
 

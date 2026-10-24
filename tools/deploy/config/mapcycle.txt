@@ -1,0 +1,59 @@
+// The map cycle for the TS servers.
+//
+// WHERE THIS LIST COMES FROM
+// --------------------------
+// This is The Specialists 3.0's OWN cycle, taken verbatim from the mod's
+// own Linux server tarball (ts/mapcycle.txt). It is not a list someone
+// invented for this deployment: it is the rotation a TS 3.0 server shipped
+// with, which is the closest thing to "what the popular ones used to be".
+//
+// The one thing left out is ctb_deadheat, the last entry in the stock
+// list. It is a Capture-The-Bomb map and it has no deathmatch spawns at
+// all, so a player who lands on it in FFA has nowhere to spawn and ends
+// up a spectator until the round rotates away. The stock cycle shipped it
+// because the stock server ran CTB.
+//
+// WHAT THIS FILE REPLACES
+// -----------------------
+// The asset tree carries the STOCK Half-Life cycle (undertow, snark_pit,
+// boot_camp, lambda_bunker, datacore, stalkyard) and a TS one that is
+// empty. Not one of those maps exists in a TS install, so the port skips
+// every entry it cannot resolve and ends up with an EMPTY cycle — which is
+// not an error. The server just keeps one map forever. That is why this
+// file exists, and why entrypoint.sh copies it into the game directory
+// instead of letting the asset tree provide one.
+//
+// FORMAT
+// ------
+// One map per line. A line may carry a rules buffer after the map name:
+//
+//     ts_lobby
+//     ts_casa \minplayers\2\maxplayers\8
+//
+// The map name is resolved by the engine, so it has to be a map that is in
+// the TS install. `//` starts a comment.
+//
+// The order is the rotation order, and the first entry is what the first
+// rotation lands on. The server boots on ts_casa, which is entry 9 here,
+// so the first change is a different map rather than the same one twice.
+ts_hammertime
+ts_antrodome
+ts_kissmeyerbasic
+ts_central
+ts_wyndham
+ts_henny2
+ts_rundown
+ts_neobaroque
+ts_casa
+ts_lobbyduel
+ts_supertimor
+ts_faculty
+ts_trident
+ts_panzibar
+ts_gpc
+ts_awaken
+ts_heresy
+ts_lobby
+ts_metro
+ts_frigid
+ts_theatre

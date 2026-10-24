@@ -257,9 +257,43 @@ Three policies, all of them settled rather than accidental:
   180s cooldown before touching the same instance again.
 - **An instance is down only after three consecutive failed probes.** One
   missed UDP probe must not restart a healthy server with players on it.
-- **Bots yield to humans.** The bot roster is `4 − humans`, scaled by the
+- **Bots yield to humans.** The bot roster is `16 − humans`, scaled by the
   registry and applied with `ts_bot_quota`. A lone player has something to
-  fight; a full server has nobody in the way.
+  fight; a full server has nobody in the way. Sixteen bots on a 32-slot
+  server is filler, not a fill: the humans still have room.
+
+### Map rotation
+
+The server cycles through **The Specialists 3.0's own map cycle** — the
+one that shipped in the mod's Linux server tarball, twenty-one maps, in
+the mod's own order:
+
+```
+ts_hammertime  ts_antrodome  ts_kissmeyerbasic  ts_central  ts_wyndham
+ts_henny2      ts_rundown     ts_neobaroque       ts_casa     ts_lobbyduel
+ts_supertimor  ts_faculty     ts_trident          ts_panzibar ts_gpc
+ts_awaken      ts_heresy      ts_lobby            ts_metro    ts_frigid
+ts_theatre
+```
+
+The stock cycle's last entry, `ctb_deadheat`, is left out: it is a
+Capture-The-Bomb map with no deathmatch spawns, so a player who landed on
+it in FFA would have nowhere to spawn and would sit in spectator until
+the round moved on.
+
+Two things make the rotation work, and both were broken before:
+
+- **The cycle file is ours.** The asset tree ships the stock Half-Life
+  one — `undertow`, `snark_pit`, `boot_camp`, … — and not one of those
+  maps exists in a TS install. The port skips every entry it cannot
+  resolve and ends up with an **empty cycle**, which is not an error: the
+  server just keeps one map forever, silently. `entrypoint.sh` copies
+  `tools/deploy/config/mapcycle.txt` into the game directory so there is
+  exactly one cycle in the tree, and it is the right one.
+- **`mp_timelimit` is the timer that ends the match, in MINUTES.**
+  `roundtime` is the TS *round* timer and is inert in FFA deathmatch, so
+  setting it and waiting changes nothing at all. `mp_timelimit 3` gives a
+  three-minute match, ten seconds of intermission, and then the next map.
 
 ### Capacity
 
@@ -272,8 +306,15 @@ Three policies, all of them settled rather than accidental:
 
 The bounds disagree and **CPU is the one that binds**. The RAM figure is
 an upper bound even on its own terms: 365.5 MB was measured with four bots
-and no players. The number that would move it is a real 32-player
-instance, which is the metric we do not have yet.
+and no players, and the roster is now **sixteen** — so the per-instance
+figure is stale in the direction that matters. The number that would move
+it is a real 32-player instance, which is the metric we do not have yet.
+
+What the sixteen-bot roster does NOT cost is tickrate: measured on every
+map of the rotation with the server pinned to **two cores** (the
+production box has two vCores, shared with Caddy and three Node
+services), the server held **100 Hz** on all of them. The bots are cheap;
+the maps are what differ.
 
 ---
 
@@ -336,7 +377,7 @@ player is told when the server goes away.
 | `tools/port/tsp-rs/` | Vendored Rust port of TS gameplay |
 | `tools/port/tsp-rs/crates/ts30/`, `ts21/` | TS 3.0 / 2.1 rulesets |
 | `tools/port/tsp-rs/scripts/` | Build, deploy, server, bridge, and probe scripts |
-| `tools/deploy/` | Container images, Caddy config, instance runner, e2e tests |
+| `tools/deploy/` | Container images, Caddy config, instance runner, e2e tests, and `config/` — `server.cfg` and the map cycle |
 | `tools/assets/` | Archive splitter and R2 uploader |
 | `services/registry/` | The fleet registry |
 | `services/orchestrator/` | The fleet orchestrator |
@@ -469,7 +510,7 @@ button was broken, and every run passed.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | PR, push to main | Typecheck, build, 67 unit tests, builds all three service images |
+| `ci.yml` | PR, push to main | Typecheck, build, 79 unit tests, builds all three service images |
 | `pr-required.yml` | push to main | Fails a commit that did not come from a pull request |
 | `deploy.yml` | push to main | Ships to production, then verifies it in a real browser |
 
@@ -483,7 +524,7 @@ request.
 npm test          # the regression suite
 ```
 
-67 tests, and **every one corresponds to a bug that reached production**.
+79 tests, and **every one corresponds to a bug that reached production**.
 That is the design rule: a test earns its place by locking in a failure
 we actually had. The A2S bot count's byte offset, the bridge's
 allowlist, the empty-map-versus-unknown distinction in the human count,

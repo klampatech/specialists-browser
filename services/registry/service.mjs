@@ -52,7 +52,7 @@
  *   TS_RECOVER_RATIO       recover above this fraction   default 0.95
  *   TS_DEGRADE_SUSTAIN_MS  how long degradation persists default 30000
  *   TS_ACTION_COOLDOWN_MS  min gap between actions       default 120000
- *   TS_BOT_TARGET          bots kept when no humans      default 4
+ *   TS_BOT_TARGET          bots kept when no humans      default 16
  *   REGISTRY_DOCKER        set to 0 to disable docker access
  */
 
@@ -85,7 +85,7 @@ const DEGRADE_RATIO = num(process.env.TS_DEGRADE_RATIO, 0.85);
 const RECOVER_RATIO = num(process.env.TS_RECOVER_RATIO, 0.95);
 const DEGRADE_SUSTAIN_MS = num(process.env.TS_DEGRADE_SUSTAIN_MS, 30_000);
 const ACTION_COOLDOWN_MS = num(process.env.TS_ACTION_COOLDOWN_MS, 120_000);
-const BOT_TARGET = num(process.env.TS_BOT_TARGET, 4);
+const BOT_TARGET = num(process.env.TS_BOT_TARGET, 16);
 
 /**
  * The port range the fleet can occupy.

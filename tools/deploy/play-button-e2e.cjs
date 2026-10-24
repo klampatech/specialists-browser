@@ -48,6 +48,31 @@ function bridgeLive() {
   console.log('  clicking the PLAY button (.ts-landing__play)');
   await page.click('.ts-landing__play');
 
+  // Fullscreen. The page is supposed to take the screen when the player
+  // enters the game, and the request has to be made INSIDE the click —
+  // that is the only moment a browser grants it. A request made later,
+  // after the first await, is refused.
+  //
+  // The check is "the document element is the fullscreen element", not
+  // "the canvas is": the options overlay and the disconnect panel are DOM
+  // siblings of the canvas, and a browser hides everything that is not a
+  // descendant of the fullscreen element.
+  await page.waitForTimeout(2000);
+  const fs = await page
+    .evaluate(() => ({
+      enabled: !!document.fullscreenEnabled,
+      element: document.fullscreenElement
+        ? document.fullscreenElement.tagName
+        : null,
+    }))
+    .catch(() => ({ enabled: false, element: null }));
+  // A browser that cannot do fullscreen at all cannot be tested for it.
+  const fullscreenOk = !fs.enabled || fs.element === 'HTML';
+  console.log(
+    `  fullscreen: supported=${fs.enabled} element=${fs.element || 'none'} ` +
+      `(${fullscreenOk ? 'PASS' : 'FAIL'})`
+  );
+
   // Watch for the failure mode Kyle hit: the CONNECTION LOST overlay.
   let lost = null;
   let peak = 0;
@@ -74,8 +99,12 @@ function bridgeLive() {
   }
 
   console.log(`  bridge peak live connections: ${peak}`);
-  const ok = peak >= 1 && !lost;
-  console.log(`  VERDICT: ${ok ? 'PASS' : 'FAIL'} — PLAY ${ok ? 'reaches the server' : 'does not reach the server'}`);
+  const ok = peak >= 1 && !lost && fullscreenOk;
+  console.log(
+    `  VERDICT: ${ok ? 'PASS' : 'FAIL'} — PLAY ${
+      ok ? 'reaches the server' : 'does not reach the server'
+    }${fullscreenOk ? '' : ', and did not go fullscreen'}`
+  );
   if (errors.length) {
     console.log(`  console errors: ${errors.length}`);
     errors.slice(0, 5).forEach((e) => console.log(`    ${e}`));
