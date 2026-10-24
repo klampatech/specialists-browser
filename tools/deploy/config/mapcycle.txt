@@ -2,26 +2,45 @@
 //
 // WHERE THIS LIST COMES FROM
 // --------------------------
-// This is The Specialists 3.0's OWN cycle, taken verbatim from the mod's
-// own Linux server tarball (ts/mapcycle.txt). It is not a list someone
-// invented for this deployment: it is the rotation a TS 3.0 server shipped
-// with, which is the closest thing to "what the popular ones used to be".
+// The first twenty-one entries are The Specialists 3.0's OWN cycle,
+// taken verbatim from the mod's own Linux server tarball
+// (ts/mapcycle.txt). It is not a list someone invented for this
+// deployment: it is the rotation a TS 3.0 server shipped with, which is
+// the closest thing to "what the popular ones used to be".
 //
-// The one thing left out is ctb_deadheat, the last entry in the stock
-// list. It is a Capture-The-Bomb map and it has no deathmatch spawns at
-// all, so a player who lands on it in FFA has nowhere to spawn and ends
-// up a spectator until the round rotates away. The stock cycle shipped it
-// because the stock server ran CTB.
+// The last three are the classics that TS 3.0 DROPPED from its default
+// rotation while still shipping them as maps:
+//
+//   ts_dojo      "the Construct dojo" — the Matrix dojo recreation,
+//                called out among the best maps ever designed for the
+//                HL engine. In the official TS 2.0 cycle.
+//   ts_dietrich  "Dietrich's penthouse hideout from Face/Off" — the
+//                Castor Troy penthouse, one of the headline
+//                film-accurate recreations. In the official TS 2.0 cycle.
+//   ts_bikini    the seaside villa; still in the tsmod.net rotation.
+//
+// They were in TS 2.0's cycle and 3.0 kept the maps but dropped them
+// from the default file, so a "historically faithful" cycle has to name
+// them explicitly. They are at the end, so the mod's own order is
+// untouched.
+//
+// WHAT IS LEFT OUT
+// ----------------
+// ctb_deadheat is the stock cycle's last entry and it is NOT here: it is
+// a Capture-The-Bomb map with no deathmatch spawns at all, so a player
+// who lands on it in FFA has nowhere to spawn and ends up a spectator
+// until the round rotates away. The stock cycle shipped it because the
+// stock server ran CTB.
 //
 // WHAT THIS FILE REPLACES
 // -----------------------
-// The asset tree carries the STOCK Half-Life cycle (undertow, snark_pit,
-// boot_camp, lambda_bunker, datacore, stalkyard) and a TS one that is
-// empty. Not one of those maps exists in a TS install, so the port skips
-// every entry it cannot resolve and ends up with an EMPTY cycle — which is
-// not an error. The server just keeps one map forever. That is why this
-// file exists, and why entrypoint.sh copies it into the game directory
-// instead of letting the asset tree provide one.
+// The asset tree carries the STOCK Half-Life cycle (undertow,
+// snark_pit, boot_camp, lambda_bunker, datacore, stalkyard) and a TS
+// one that is empty. Not one of those maps exists in a TS install, so
+// the port skips every entry it cannot resolve and ends up with an EMPTY
+// cycle — which is not an error. The server just keeps one map forever.
+// That is why this file exists, and why entrypoint.sh copies it into the
+// game directory instead of letting the asset tree provide one.
 //
 // FORMAT
 // ------
@@ -57,3 +76,6 @@ ts_lobby
 ts_metro
 ts_frigid
 ts_theatre
+ts_dojo
+ts_dietrich
+ts_bikini

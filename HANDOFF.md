@@ -97,10 +97,17 @@ Kyle's quality-of-life pass, three items.
 
 **1. Map rotation.** The server now cycles through **The Specialists 3.0's
 own map cycle** — the one that shipped in the mod's Linux server tarball
-(`ts/mapcycle.txt`), twenty-one maps in the mod's own order. The stock
-cycle's last entry, `ctb_deadheat`, is left out: it is a Capture-The-Bomb
-map with no deathmatch spawns, so a player who landed on it in FFA would
-have nowhere to spawn and would sit in spectator until the round moved on.
+(`ts/mapcycle.txt`), twenty-one maps in the mod's own order — plus the
+three classics TS 3.0 dropped from its default file while still shipping
+them: `ts_dojo` (the Construct dojo), `ts_dietrich` (the Face/Off
+penthouse) and `ts_bikini` (the seaside villa). All three were in the
+official 2.0 cycle, so a historically faithful rotation has to name them
+explicitly.
+
+The stock cycle's last entry, `ctb_deadheat`, is left out: it is a
+Capture-The-Bomb map with no deathmatch spawns, so a player who landed on
+it in FFA would have nowhere to spawn and would sit in spectator until
+the round moved on.
 
 Two things had to be true, and both were broken first:
 
