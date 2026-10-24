@@ -199,11 +199,33 @@ multiplies the weapon's texture to black.
 **Bots were fine:** the server gives them `rendermode = 0`, so they never
 entered that mode.
 
-**Fix** (`client/src/studio.rs`, `draw_weapon`): draw the weapon with
-`rendermode = kRenderNormal` and `renderamt = 255`. In TS the viewmodel is
-its own entity (`r_entity[0]`), never the player's, so it must not inherit
-the player's third-person render mode. The entity is restored from the saved
-copy afterwards, so the third-person body keeps its translucency.
+**The render mode multiplies the colour — confirmed by the port's own
+motion-blur ghost**, which draws with `kRenderTransColor` and a
+`rendercolor` of `(player, 0, 1)` (`client/src/effects/mblur.rs`). So a
+`rendercolor` of `(0,0,0)` in that mode *is* a zero multiplier.
+
+**Fix** (`client/src/studio.rs`, `draw_model`): the view model is its own
+entity in TS (`r_entity[0]`), never the local player's, so it must not
+inherit the local player's third-person translucency. For a view-model
+entity, force `rendermode = kRenderNormal`, `renderamt = 255` and a white
+`rendercolor`.
+
+**THE FIRST ATTEMPT WAS IN THE WRONG FUNCTION, and it is worth recording.**
+The first fix went into `draw_weapon` — the **third-person** weapon, drawn
+merged onto the player's bones. It compiled, built, deployed, and changed
+nothing: the first-person view model does not go through `draw_weapon` at
+all. It goes through `draw_model` (the SDK's `StudioDrawModel`), which is
+the generic model path — and that is where `es::is_view_model` is checked.
+
+**How the view model actually gets the local player's state:** the engine
+copies the local player's entity state onto the view-model entity, so the
+client's per-frame override in `view.rs` (`rendermode = kRenderTransColor`,
+an eased `renderamt`) lands on the weapon as well.
+
+**Still open:** the browser client cannot be driven into first person from
+the harness — `ts_respawn` reports *"sent respawn"* but the client stays in
+Free Chase-Camera, and when a session does reach first person it draws **no
+view model at all**. So the fix has to be confirmed by a human.
 
 **Note the ruleset split:** `ts21` has `local_translucency() == false` (2.1's
 `V_CalcNormalRefdef` never writes the local entity's render mode) and
