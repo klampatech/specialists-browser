@@ -25,6 +25,13 @@ withdrawn keyboard root cause is gone from it, both screenshots were
 re-captured from the live site, and the test count and the submodule branch
 now match the repo.
 
+**Brand:** the BulletBallet rebrand is **COMPLETE** — all four phases of
+`docs/REBRAND-PLAN.md` shipped on 2026-10-24 (webXash #13, #14, #15, and
+the docs sweep). Green shell, amber game: the shell is phosphor green, the
+game keeps TS's own amber. **Valve's logo is out of the product entirely**
+— the canvas background, the connecting splash and the favicon were all
+ours, and all three are the BB mark now, with a unit test guarding them.
+
 ## The one-line version
 
 **It works in production.** A browser at `https://bulletballet.dev` pulls the
@@ -865,15 +872,16 @@ what it does not yet do is retain them over time. Until it does, the
 "8 instances" figure is a budget, not a measurement, and the extrapolation
 from one busy server cannot be made.
 
-### R3. FE polish + the web UI re-brand — **ACTIVE (2026-10-24)**
+### R3. FE polish + the web UI re-brand — **DONE (2026-10-24)**
 
-The rebrand is specced: **`docs/REBRAND-PLAN.md`**. BulletBallet, green
-shell + amber game, phased into four shippable steps. Phase 0 is the fix
-Kyle named on 2026-10-24; Phase 1 is the token swap, the head and the
-brand assets.
+The rebrand is **complete**. `docs/REBRAND-PLAN.md` planned it in four
+shippable steps and all four shipped: Phase 0 (the Half-Life lambda
+ghosting through the running game), Phase 1 (the green shell, the head and
+the brand assets), Phase 2 (the landing page), Phase 3 (the boot screen,
+the connecting splash and the options overlay), Phase 4 (the docs sweep).
 
 Kyle's other identified FE tweaks (Batch B/C/D in
-`docs/FE-MOD-PLAN.md`) ride along where they are free.
+`docs/FE-MOD-PLAN.md`) are still open — see § NEXT TASK.
 
 ### R4. Single-player depth (the old R2–R7, on the fallback path)
 
@@ -885,40 +893,50 @@ the parts that are known traps.
 
 # § NEXT TASK
 
-> ## Phase 1 of the BulletBallet rebrand
+> ## E5 — the local dev loop for gameplay changes
 >
-> **Read `docs/REBRAND-PLAN.md` first.** It is the plan; this is the
-> pointer.
+> **Read `docs/FE-MOD-PLAN.md` § E5 first.** It is the full write-up;
+> this is the pointer.
 >
-> **Phase 0 is DONE** (2026-10-24): the Half-Life lambda that was
-> ghosting through the running game. The canvas element carried Valve's
-> logo as a CSS background and the engine's canvas is translucent
-> wherever its own pixels are not opaque, so it composited through the
-> game. Fixed in the `webxash` submodule (webXash PR #10) and guarded by
-> `tests/unit/canvas-logo.test.mjs`.
+> **Why this one.** A browser client cannot complete a connection to a
+> **local** game server. Until that is fixed, every gameplay change has
+> to be verified against **production** — where a bug reaches real
+> players instead of a test server. Two of this month's fixes (the black
+> first-person viewmodel, the ghosting lambda) had to be proved in
+> production because there was nowhere else to prove them.
 >
-> **Phase 1 — tokens, head, brand assets.** One `webxash` PR plus one
-> pointer-bump PR here. The whole shell re-skins by **redefining the 26
-> token values in `src/assets/ts-theme.css`** — the components follow,
-> because only 6 files consume them. Plus: the BB mark extracted at
-> three sizes, the favicon replaced (it is Half-Life's lambda today),
-> the title and meta set, and the client re-asserting `document.title`
-> after boot because the engine hijacks it.
+> **What is already known** (E5 has all of it written down):
+> - the **transport is sound** — a browser client through the bridge runs
+>   the real GoldSrc handshake (`getchallenge`, `bandwidth`, `connect`)
+>   and then netchan sequence numbers;
+> - GoldSrc **refuses a loopback** `+connect`, so the client must be
+>   pointed at a non-loopback address;
+> - the bridge's `--targets id=internal:port@public:port` form is
+>   required — the older `--target` form has no public address and the
+>   bridge refuses address-based lookups against it;
+> - a browser on this host reaches the host's own Tailscale address but
+>   **not** the docker-published UDP port on it, because the published
+>   port binds inside the container's network namespace.
 >
-> **The three things most likely to go wrong**, all in the plan:
-> 1. **Error surfaces turning green.** `--ts-signal` is used for the CTA
->    *and* for the errors. Every error moves to a new `--ts-error` in
->    the same change.
-> 2. **The favicon at 16px.** The mark as drawn is mush at that size; it
->    needs a separate solid silhouette, not a downscale.
-> 3. **The connecting splash's `hl-spin.svg`.** It is still Valve's
->    lambda, centred and large, while the client connects. Phase 1
->    replaces it with the BB mark — and once the favicon is swapped
->    too, that splash is the LAST place the Half-Life logo is on screen.
+> **So the remaining question is the topology:** what address does the
+> browser give the engine, and what does the bridge forward it to.
 >
-> **Deferred by Kyle's direction on 2026-10-24:** R1 matchmaking. The
-> front-end half (B1 — flip the comparator to "highest population that
-> is not full") is still cheap and independent, and can ride along.
+> **The alternatives**, if E5 turns out to be a rabbit hole:
+> - **C1 — the unzip off the main thread.** The 493 MB archive is
+>   inflated on the main thread, and that is the loading stutter: the
+>   most user-visible thing left. Isolated work, and it needs numbers
+>   before and after, not a feeling.
+> - **Batch D — the menus** (buy menu, pre-game setup, client-side
+>   knobs) as DOM overlays over live engine state. The largest build,
+>   and it reuses A4's overlay infrastructure.
+> - **B1 — the matchmaking comparator** (flip to "highest population
+>   that is not full"). Cheap, pure-function, unit-testable — but
+>   **deferred by Kyle on 2026-10-24**.
+>
+> **Rebrand phases 0–4 are DONE** (2026-10-24): the Half-Life lambda
+> ghosting through the running game, the green shell, the landing page,
+> the boot screen, the connecting splash, the options overlay, and the
+> docs sweep.
 
 ---
 

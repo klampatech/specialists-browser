@@ -270,32 +270,36 @@ The landing page, the store, and the server list. Shares one file
 - **Risk:** medium-low. The engine's aspect ratio and mouse look both
   depend on the canvas size, so this needs a browser test.
 
-### B3. Favicon
+### B3. Favicon — DONE (2026-10-24)
 
-- **Now:** there **is** an icon — `webxash/index.html` points at
-  `/src/assets/hl-bright.svg`, which is the **Half-Life logo**. So this
-  is not "add a favicon", it is "stop shipping Half-Life's logo under
-  our own domain", which matters for the brand and possibly for the
-  licence posture.
-- **Do:** blocked on the logo. Ship a deliberate placeholder now — a
-  dark square with the `bulletballet` mark in the current signal colour
-  (`--ts-signal`) — so it does not look like an oversight, then swap it
-  for the real one when the brand lands.
-- **Accept:** the tab shows a bulletballet icon, not Half-Life's.
-- **Related, same file:** `<title>` is `The Specialists` and needs to
-  become `bulletballet`.
+- **Was:** `webxash/index.html` pointed at `/src/assets/hl-bright.svg`,
+  which is the **Half-Life logo** — shipping the publisher's mark under
+  our own domain.
+- **Now:** `/src/assets/brand/bb-favicon.svg`. It is a **separate
+  drawing**, not a downscale of the mark: the mark is 6.8:1 and at 16px
+  the counters smear into a blob, so the favicon is one solid chunky
+  cartridge on the void ground. `hl-bright.svg` is **deleted**, and
+  `tests/unit/canvas-logo.test.mjs` now guards all three Valve assets
+  so they cannot come back.
+- **Also in the same file:** `<title>` is now `BulletBallet`, and
+  `src/services/brand.ts` re-asserts it after boot, because the engine
+  hijacks `document.title` the moment it starts.
 
-### B4. Rebrand
+### B4. Rebrand — DONE (2026-10-24)
 
-- **Now:** "in progress from Claude" per Kyle — the brand identity work
-  is separate and will follow.
-- **Do:** apply the identity across the surface — names, copy, the
-  loading screen, the in-game options overlay, the favicon, the page
-  title, and the server hostname (`bulletballet TS` is the A2S name, so
-  it needs to be set where the server config lives, not just in the UI).
-- **Note for whoever picks this up:** the **server** advertises the
-  name. Rebranding the front end alone leaves `bulletballet TS` in the
-  server browser. That is a server-side change.
+- **Was:** "in progress from Claude" per Kyle.
+- **Now:** all four phases shipped, planned in `docs/REBRAND-PLAN.md`:
+  1. tokens, head, brand assets (webXash #13)
+  2. the landing page (webXash #14)
+  3. the boot screen, the connecting splash, the options overlay
+     (webXash #15)
+  4. docs and this sweep
+- **The server-side half:** the A2S name is `bulletballet TS` and it is
+  set where the server config lives, so the server browser advertises
+  the brand without the front end having to pretend.
+- **What stayed the mod's:** the game's own art — the HUD, the
+  scoreboard, the menus. Those are the game's, and the plan's rule was
+  green shell, amber game.
 
 ---
 
@@ -496,7 +500,7 @@ means under-filling.
 | batch | why then | gate |
 |---|---|---|
 | **A** | ~~the key map is one file, and every other item's design depends on A0's answer~~ **DONE — shipped and verified in production** | closed 2026-10-24 |
-| **B** | independent of the engine, small, and B1 is a visible product change | B1 first — it is a policy flip and a unit test |
+| **B** | independent of the engine, small, and B1 is a visible product change | B1 first — it is a policy flip and a unit test. **B2's browser half, B3 and B4 are DONE** |
 | **C** | isolated perf work, but it touches the boot path, so do it when nothing else is in flight | measure before/after |
 | **D** | the largest build, and it reuses A4's overlay infrastructure | after A4 (A4 is done, so D is unblocked) |
 | **E** | E5 is what makes local gameplay work safe to change; E6 makes the server browser honest | E5 before the next gameplay change |
@@ -516,7 +520,10 @@ invisible because every signal the pipeline produced was green.
   based.
 - **Removing game content.** Deferred at Kyle's request until the maps
   and gameplay are decided.
-- **Native SDL input.** If A0 shows the engine cannot drain its queue,
-  the whole design routes around it (DOM overlays and engine commands
-  only). That is a bigger constraint than it looks and it shapes A3, A4
-  and A5 — but it does not block B, C or D.
+- **Native SDL input.** **Not needed, and the premise is gone.** A0
+  found the engine's key path *works* — the original belief that it
+  "never drains its queue" was **withdrawn**, and the real bug was ours:
+  the front end also translated every DOM key into an engine command, so
+  every key ran twice. A0 deleted the command map. The upstream defect
+  that is still real is a **bare `reload`** aborting the WASM heap, which
+  the front end sidesteps with the held `+reload`/`-reload` pair.
