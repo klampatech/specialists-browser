@@ -11,7 +11,7 @@
     </td>
     <td align="center" valign="top" width="50%">
       <b>In game</b><br>
-      <img src="docs/screenshots/spectator.png" alt="The game running in the browser: the ts_casa map rendering, a character model, the TS weapon HUD, and the buy menu" width="100%">
+      <img src="docs/screenshots/spectator.png" alt="The game running in the browser: the ts_casa map rendering, two character models, the TS weapon HUD across the top, and the buy/config menu open on the left" width="100%">
     </td>
   </tr>
 </table>
@@ -40,6 +40,9 @@
 - **Changing the CI or the deploy?** Read
   [`docs/CI-CD.md`](./docs/CI-CD.md) — including the two traps that have
   already broken a build.
+- **Looking for the open work?** Read
+  [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md) — the front end and mod
+  work list, grouped into batches, with the reasoning and the order.
 
 ---
 
@@ -52,8 +55,10 @@ None of them is obvious, and each one cost a debugging round.
    code, not a JavaScript reimplementation.
 2. **A WebSocket↔UDP bridge**, because a browser cannot emit UDP and the
    engine's network stack speaks it natively.
-3. **A command bridge**, because the published WASM build never drains its
-   SDL event queue and no keyboard event reaches the game.
+3. **The engine's own key path**, used as it is. The engine does receive
+   DOM keys and runs its own bind table — that was measured, not assumed.
+   The front end's job is to stay out of the way, and to keep Escape away
+   from the engine entirely.
 4. **A gate fix in the port**, because TS deliberately refuses to run nine
    button commands unless a physical keypress opened them.
 
@@ -113,32 +118,56 @@ the bridge *where* to send a packet; only the floor says whether it is
 refused **before** the handshake, with a plain 403, because a connection
 that opens and then closes reads to the client as "connected".
 
-### 3. The command bridge
+### 3. The keyboard path
 
-The published `xash.wasm` never calls `SDL_PollEvent`, so nothing drains
-the SDL queue: a pushed `SDL_KeyboardEvent` is *accepted* (returns `1`)
-and then sits there forever, alongside the engine's own window and
-audio-device events. No key event ever reaches `HUD_Key_Event`.
+The engine's keyboard works. With the TS client's own `ts_dev_keylog 1`, in
+a real Chromium against a live server:
 
-So `keyboard-bridge.ts` listens for DOM keys directly and execs engine
-**commands** through `Cmd_ExecuteString`. This covers movement, weapon
-slots, the scoreboard, the console toggle, and spawn.
+```
+[ts key] HUD_Key_Event escape down=1 binding="cancelselect" -> 1
+[ts key] cancelselect: escape
+```
 
-**Its ceiling:** anything implemented as a client-DLL *key handler* —
-clicking an item in the buy menu, typing into the console — stays
-unreachable. That is structural, not a bug, and it is upstream's to fix.
+The engine's `keydown` listener fires, reaches `HUD_Key_Event`, and runs
+its own bind table — `ts/config.cfg` already binds movement, weapon
+slots, chat, third person, reload and use.
 
-Two things about this bridge that are easy to get backwards:
+The long-held belief that the engine never sees a key was **wrong**, and
+it cost a bug: the front end *also* translated every DOM key into an
+engine command, so every key ran twice. That is the whole of "typing
+triggers hot keys AND types at the same time" — Y opened the chat twice,
+and the real keystroke typed a `y` into a chat that was already open —
+and of third person looking broken, because X ran `thirdperson` twice, on
+then straight back off.
 
-- **Held vs instant.** `+showscores`/`-showscores` is a button and must be
-  held; `toggleconsole` is a plain action and must be sent **bare**.
-  `Cmd_ExecuteString` looks up `argv[0]` literally, so sending
-  `+toggleconsole` prints `Unknown command: +toggleconsole`. Probe both
-  spellings; the two tables are not derivable from each other.
-- **Grep both wasms.** Engine-owned commands (`showscores`,
-  `toggleconsole`) live in `xash.wasm`; client-DLL commands (`slot1`,
-  `buy`) live in the client wasm. A missing symbol from one binary is not
-  evidence the command doesn't exist.
+So there is no command map any more. What the front end still does:
+
+- **Nothing, for most keys.** The engine's bind table runs them.
+- **Opens TS's anti-script gate** for the gated button commands it handles
+  (movement, jump, duck, reload), and releases the held command on key-up
+  (see §4).
+- **Bridges the two mouse buttons** — `attack` and `attack2`.
+- **Keeps Escape away from the engine.** `escape-gate.ts` intercepts the
+  key on `window` with `capture: true`, registered at module load —
+  before the engine boots and registers its own listener — and calls
+  `stopImmediatePropagation()`. Escape #1 releases the pointer lock,
+  Escape #2 opens the options overlay, Escape #3 closes it. It is a
+  state machine rather than a read of `document.pointerLockElement`,
+  because the browser exits pointer lock on Escape on its own, which
+  would make the first press look like the second.
+
+Four entries are cleared in the engine's own bind table at boot
+(`xash-loader.ts`): **`b`** (the buy/config menu), **the backquote and
+`~`** (the console), and **Escape** — the last one as a second line of
+defence behind the DOM interception. The buy menu is still the client's
+own menu: it opens when the client is an observer (on join, and after a
+death) and is navigated with the weapon-slot keys. Pressing **B** does
+nothing.
+
+Two things are still out of reach, and neither is a bug in the front end:
+**typing into the console** (the console is disabled outright), and a
+**bare `reload`**, which aborts the WASM heap — see
+[`docs/UPSTREAM-ISSUES.md`](./docs/UPSTREAM-ISSUES.md).
 
 ### 4. `ts_gate` — the anti-script gate
 
@@ -152,15 +181,15 @@ fn gate_open() -> bool { REAL_KEY.0.get() || !input_gate() || dev_input_allowed(
 
 `+attack +attack2 +alt2 +reload +forward +back +moveleft +moveright +jump`
 
-With the SDL path dead, `HUD_Key_Event` never runs, so `REAL_KEY` is never
-set and **all nine are discarded silently** — no error, no log. Firing did
-nothing at all. Movement only looked healthy because the non-gated movement
-bindings take a different path.
+`REAL_KEY` is set for the frame a keypress happens in, and `HUD_Frame`
+re-arms it afterwards. A gated command that arrives without it is
+**discarded silently** — no error, no log — which is why the gate is worth
+an explicit look rather than a guess.
 
 `ts_gate <1-500>` sets `REAL_KEY` for the current frame, the same lifetime
 a real keypress gives it. The bridge calls it immediately before any gated
-command. It is **not** a blanket bypass: bounded duration, caller is the
-bridge, and `HUD_Frame` re-arms the gate exactly as before.
+command it sends. It is **not** a blanket bypass: bounded duration, caller
+is the bridge, and `HUD_Frame` re-arms the gate exactly as before.
 
 ---
 
@@ -287,10 +316,15 @@ player is told when the server goes away.
   `SharedArrayBuffer`: Chrome and Edge are fine, Firefox 119+, Safari 18+.
 - **The player count lags by up to two minutes** after someone leaves — the
   server holds the slot until its own timeout fires.
-- **Blocked upstream** (see [`docs/UPSTREAM-ISSUES.md`](./docs/UPSTREAM-ISSUES.md)):
-  client-DLL menus needing `HUD_Key_Event` (clicking buy-menu items),
-  console text input (needs SDL text events), and a bare `reload` that
-  aborts the wasm heap on first call.
+- **The console is disabled**, on purpose: its binding is cleared at boot
+  and nothing in the front end opens it. Typing into it is therefore not
+  possible, not merely awkward.
+- **A bare `reload` aborts the WASM heap.** The front end uses the held
+  `+reload` / `-reload` pair and never hits it; the engine defect is
+  still there. [`docs/UPSTREAM-ISSUES.md`](./docs/UPSTREAM-ISSUES.md)
+  also carries the keyboard root cause that was **withdrawn** — the
+  instrument was wrong, and that draft report must not be filed as
+  written.
 
 ---
 
@@ -298,7 +332,7 @@ player is told when the server goes away.
 
 | Path | What it is |
 |---|---|
-| `webxash/` | Vue frontend + the WASM engine (git submodule, branch `phase-0-stub-fix`) |
+| `webxash/` | Vue frontend + the WASM engine (git submodule, branch `feat/keyboard-native-input`) |
 | `tools/port/tsp-rs/` | Vendored Rust port of TS gameplay |
 | `tools/port/tsp-rs/crates/ts30/`, `ts21/` | TS 3.0 / 2.1 rulesets |
 | `tools/port/tsp-rs/scripts/` | Build, deploy, server, bridge, and probe scripts |
@@ -326,8 +360,8 @@ tools/port/tsp-rs/scripts/start-ts-server.sh
 # 2. WebSocket↔UDP bridge (WS 27017)
 tools/port/tsp-rs/scripts/start-bridge.sh
 
-# 3. Frontend (Vite)
-cd webxash && npm run dev
+# 3. Frontend (Vite) — a bun project; there is no npm lockfile
+cd webxash && bun install && bun run dev
 ```
 
 Then open the Vite URL with the connect address:
@@ -343,6 +377,15 @@ cannot occlude the real one).
 **The app is served from `/`, not `/webXash/`.** The Vite `base` has to
 match where it is actually served, or the entry module 404s and the page
 renders blank with an empty console.
+
+> **One thing that does not work yet:** a browser client cannot complete a
+> connection to a *local* game server. GoldSrc refuses a loopback
+> `+connect`, and a browser on this host cannot reach the
+> docker-published UDP port. The transport itself is proven — the real
+> handshake runs through the bridge — so it is a topology problem, not a
+> broken bridge. Until it is fixed, gameplay changes are verified against
+> production rather than against a local server. It is tracked as **E5**
+> in [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md).
 
 ---
 
@@ -426,7 +469,7 @@ button was broken, and every run passed.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | PR, push to main | Typecheck, build, 36 unit tests, builds all three images |
+| `ci.yml` | PR, push to main | Typecheck, build, 67 unit tests, builds all three service images |
 | `pr-required.yml` | push to main | Fails a commit that did not come from a pull request |
 | `deploy.yml` | push to main | Ships to production, then verifies it in a real browser |
 
@@ -440,7 +483,7 @@ request.
 npm test          # the regression suite
 ```
 
-36 tests, and **every one corresponds to a bug that reached production**.
+67 tests, and **every one corresponds to a bug that reached production**.
 That is the design rule: a test earns its place by locking in a failure
 we actually had. The A2S bot count's byte offset, the bridge's
 allowlist, the empty-map-versus-unknown distinction in the human count,
@@ -457,12 +500,32 @@ negative are all covered.
 
 ---
 
+## What is next
+
+The open work is tracked in [`HANDOFF.md`](./HANDOFF.md) (`§ NEXT TASK`)
+and [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md). The short version:
+
+- **Matchmaking** — the policy is decided (the fullest server that is not
+  full); the implementation is not. The browser currently sorts the
+  opposite way.
+- **The local dev loop** — a browser client cannot connect to a local game
+  server yet, and that is what makes gameplay work safe to iterate on.
+- **Loading performance** — the 493 MB archive is inflated on the main
+  thread; the inflate wants to be in a worker.
+- **Menus** — the buy menu, pre-game setup and client-side knobs, as DOM
+  overlays over live engine state.
+- **The re-brand** — names, copy, favicon, and the server's own A2S name.
+
+---
+
 ## Deliberately not done
 
 **CheerpX.** The original plan ran TS's closed-source x86 DLLs unmodified
 via an x86 emulator in WASM. Shipping a Rust port instead removed the
 emulator, the dual-mode build, and a whole class of "is it the port or is
 it CheerpX?" ambiguity.
+
+**Matchmaking by skill.** Explicitly out of scope — not ELO-based.
 
 ---
 
