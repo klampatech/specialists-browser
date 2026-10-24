@@ -76,15 +76,43 @@ function bridgeLive() {
   // Watch for the failure mode Kyle hit: the CONNECTION LOST overlay.
   let lost = null;
   let peak = 0;
+  // The engine's own proof that it is in a game: the server's banner.
+  // The bridge's connection count is an INFERENCE — the engine can fail
+  // to start (a wasm that does not validate, say) while the page and
+  // the bridge are perfectly healthy, and a deploy that only counted
+  // connections would call that a pass.
+  let banner = null;
+  page.on('console', (m) => {
+    const t = m.text();
+    if (/Server #\d+/.test(t) && !banner) banner = t.trim().slice(0, 80);
+  });
+  let engineUp = false;
+  let heapBytes = 0;
   for (let i = 0; i < 40; i++) {
     await new Promise((r) => setTimeout(r, 3000));
     const state = await page
-      .evaluate(() => ({
-        lost: !!document.querySelector('.lost'),
-        lostBody: (document.querySelector('.lost__body') || {}).textContent,
-        err: (document.querySelector('.ts-landing__error') || {}).textContent,
-        wasm: performance.getEntriesByType('resource').filter((r) => r.name.endsWith('.wasm')).length,
-      }))
+      .evaluate(() => {
+        const lost = !!document.querySelector('.lost');
+        const lostBody = (document.querySelector('.lost__body') || {}).textContent;
+        const err = (document.querySelector('.ts-landing__error') || {}).textContent;
+        const wasm = performance.getEntriesByType('resource').filter((r) => r.name.endsWith('.wasm')).length;
+        // THE ENGINE IS ACTUALLY RUNNING?
+        const em = window.__xash && window.__xash.em;
+        const canvas = document.getElementById('canvas');
+        let heap = 0;
+        try {
+          heap = em && em.HEAPU8 && em.HEAPU8.buffer ? em.HEAPU8.buffer.byteLength : 0;
+        } catch (e) {}
+        return {
+          lost,
+          lostBody,
+          err,
+          wasm,
+          engine: !!window.__xash,
+          canvas: canvas ? [canvas.width, canvas.height] : null,
+          heap,
+        };
+      })
       .catch(() => ({}));
     if (state.lost && !lost) {
       lost = state.lostBody;
@@ -94,12 +122,24 @@ function bridgeLive() {
       console.log(`  >>> landing error: ${state.err}`);
       break;
     }
+    // The canvas at the engine's real size means the engine took the
+    // canvas over; the heap is the WASM memory it allocated. Both are
+    // direct evidence, not an inference from a connection count.
+    if (state.engine && state.canvas && state.canvas[0] > 300 && state.heap > 0) {
+      engineUp = true;
+      heapBytes = state.heap;
+    }
     const live = await bridgeLive();
     if (live > peak) peak = live;
   }
 
   console.log(`  bridge peak live connections: ${peak}`);
-  const ok = peak >= 1 && !lost && fullscreenOk;
+  console.log(
+    `  engine running: ${engineUp ? 'yes' : 'NO'}` +
+      (engineUp ? ` (canvas at the engine's size, heap ${(heapBytes / 1048576).toFixed(0)}MB)` : '') +
+      `, server banner: ${banner ? `"${banner}"` : 'NONE'}`
+  );
+  const ok = peak >= 1 && !lost && fullscreenOk && engineUp && !!banner;
   console.log(
     `  VERDICT: ${ok ? 'PASS' : 'FAIL'} — PLAY ${
       ok ? 'reaches the server' : 'does not reach the server'
