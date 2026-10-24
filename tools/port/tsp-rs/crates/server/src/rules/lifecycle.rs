@@ -32,11 +32,27 @@ const HLDM_MODELS: [&str; 9] = ["barney", "gina", "gman", "helmet", "hgrunt", "r
 
 /// `ClientConnect`: notify `ts_playeramount`, `CHalfLifeMultiplay::ClientConnected` (0xcf59c:
 /// the voice manager), then accept. `CHalfLifeRules::ClientConnected` (0xde794) only accepts.
-pub fn client_connect(e: *mut edict_t, _name: &CStr, _addr: &CStr) -> bool {
+pub fn client_connect(e: *mut edict_t, name: &CStr, addr: &CStr) -> bool {
     crate::entities::ts::player_amount_changed(true);
     if !state::single_player() {
         super::voice::client_connected(e);
     }
+    // The console is what `docker logs` shows. The engine's own
+    // connection line goes to a log FILE (Log_Printf), and the game
+    // container cannot write one — the assets are a read-only mount and
+    // the game directory has nowhere to put it. So without this, a human
+    // connecting was INVISIBLE in production: the logs showed bots,
+    // timeouts and the map cycle, and never a player. The bots announce
+    // themselves ("connected with skill"), which is why only they ever
+    // showed up.
+    engine().alert(
+        ALERT_TYPE::at_console,
+        &format!(
+            "[ts] {} connected (address {})\n",
+            name.to_string_lossy(),
+            addr.to_string_lossy()
+        ),
+    );
     true
 }
 
@@ -49,6 +65,21 @@ pub fn client_disconnect(e: *mut edict_t) {
     let game_over = state::with(|g| g.game_over);
     let eng = engine();
     let idx = eng.index_of(e);
+    // The console is what `docker logs` shows (see `client_connect`): the
+    // engine's own disconnect line goes to a log file the game container
+    // cannot write, so a human leaving was as invisible as a human
+    // arriving. Bots are labelled, so a busy bot churn does not read as
+    // a player leaving.
+    let who = netname(e);
+    let is_bot = crate::world::with::<Player, bool>(e, |p| p.is_bot == 1).unwrap_or(false);
+    eng.alert(
+        ALERT_TYPE::at_console,
+        &format!(
+            "[ts] {}{} disconnected\n",
+            if is_bot { "bot " } else { "" },
+            String::from_utf8_lossy(&who)
+        ),
+    );
     if !game_over {
         let name = netname(e);
         msg::say_all(idx, &shared::bformat!("- {} has left the game\n", name));
