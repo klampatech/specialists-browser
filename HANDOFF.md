@@ -16,9 +16,14 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-23, commit `d144550` (**PRODUCTION — the game is live at https://bulletballet.dev**)
+**As of:** 2026-10-24, `main` (**PRODUCTION — the game is live at https://bulletballet.dev**)
 **Active path:** webXash (Xash3D-FWGS WASM **client**) + the real TS server as a WASM **dedicated server** in a container
 **Goal:** ~~playable The Specialists in the browser~~ — **met.** Real assets, real gameplay, real dedicated server, public URL.
+
+**Docs:** the README was refreshed against production on 2026-10-24. The
+withdrawn keyboard root cause is gone from it, both screenshots were
+re-captured from the live site, and the test count and the submodule branch
+now match the repo.
 
 ## The one-line version
 
