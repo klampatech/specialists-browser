@@ -103,21 +103,56 @@ jobs:
             base=$(git rev-parse HEAD~1)
           fi
           echo "  comparing against $base"
-          git diff --name-only "$base" HEAD > /tmp/changed.txt
+          git diff --name-only "$base" HEAD > /tmp/parent-changed.txt
           echo "  changed files:"
-          sed 's/^/    /' /tmp/changed.txt
+          sed 's/^/    /' /tmp/parent-changed.txt
 
-          frontend=0
-          services=0
-          if grep -qE '^webxash/' /tmp/changed.txt; then frontend=1; fi
-          if grep -qE '^(services/|tools/port/tsp-rs/scripts/ts-udp-bridge|tools/deploy/Dockerfile.bridge|webxash/vite-a2s-plugin)' /tmp/changed.txt; then
-            services=1
+          # The submodule's INTERIOR.
+          #
+          # A pointer move is ONE line in the parent's diff — "webxash" —
+          # and it says nothing about what changed inside it. The old rule
+          # matched '^webxash/' (with a slash) and so never matched a
+          # pointer move: the frontend build was skipped, the deploy went
+          # green, and the old bundle kept serving. That is how the
+          # keyboard fix merged without ever reaching production.
+          #
+          # So when the pointer moves, diff the submodule itself and hand
+          # its interior paths to the decision.
+          : > /tmp/submodule-changed.txt
+          submodule_diff_unknown=0
+          if grep -qx 'webxash' /tmp/parent-changed.txt; then
+            old=$(git rev-parse "$base:webxash" 2>/dev/null || echo "")
+            new=$(git rev-parse "HEAD:webxash" 2>/dev/null || echo "")
+            echo "  the webxash submodule moved: ${old:0:7} -> ${new:0:7}"
+            if [ -n "$old" ] && [ -n "$new" ]; then
+              # The submodule is a shallow clone, so the OLD commit may
+              # not be in it. Fetch it before deciding we cannot see.
+              if ! git -C webxash cat-file -e "$old^{commit}" 2>/dev/null; then
+                git -C webxash fetch --depth=500 origin "$old" 2>/dev/null || true
+              fi
+              if git -C webxash cat-file -e "$old^{commit}" 2>/dev/null; then
+                git -C webxash diff --name-only "$old" "$new" > /tmp/submodule-changed.txt \
+                  || submodule_diff_unknown=1
+              else
+                submodule_diff_unknown=1
+              fi
+            else
+              submodule_diff_unknown=1
+            fi
+            echo "  changed inside the submodule:"
+            sed 's/^/    /' /tmp/submodule-changed.txt
+            # `if`, not `&&`: under `set -e` a failing test at the end of a
+            # step is the step's exit status, and the step would fail.
+            if [ "$submodule_diff_unknown" = "1" ]; then
+              echo "  (could not read the submodule's interior — rebuilding the images to be safe)"
+            fi
           fi
 
-          echo "frontend=$frontend" >> "$GITHUB_OUTPUT"
-          echo "services=$services" >> "$GITHUB_OUTPUT"
-          echo "  frontend changed: $frontend"
-          echo "  services changed: $services"
+          node tools/deploy/changed-paths.cjs \
+            --parent /tmp/parent-changed.txt \
+            --submodule /tmp/submodule-changed.txt \
+            --unknown "$submodule_diff_unknown" | tee -a "$GITHUB_OUTPUT"
+          echo "  decided: $(grep -E '^(frontend|services)=' "$GITHUB_OUTPUT" | tr '\n' ' ')"
 
       # ── the frontend ──────────────────────────────────────────────────
       - name: Set up bun
@@ -167,6 +202,31 @@ jobs:
             rm -rf /srv/web.old
             echo "  frontend swapped in"
           '
+
+      - name: Verify the live frontend is the one we built
+        # The check that was missing.
+        #
+        # The deploy was green for a merge that changed the frontend, and
+        # production was still serving the previous bundle — because the
+        # build step had been skipped and nothing ever compared what was
+        # built against what is live. A green deploy and a live site are
+        # different claims; this one compares them.
+        if: steps.changed.outputs.frontend == '1'
+        run: |
+          set -euo pipefail
+          built=$(ls webxash/dist/index-*.js | head -1 | xargs basename)
+          # The cache-buster matters: the CDN and Caddy both cache
+          # index.html, and a stale one would compare against the bundle
+          # we just replaced.
+          live=$(curl -fsS --max-time 20 "https://bulletballet.dev/?v=${{ github.sha }}" \
+                 | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -1 | xargs -r basename)
+          echo "  built: $built"
+          echo "  live:  ${live:-<none>}"
+          if [ "$built" != "$live" ]; then
+            echo "::error::the live bundle (${live:-none}) is not the bundle we built ($built)"
+            exit 1
+          fi
+          echo "  the live frontend matches the build"
 
       # ── the control plane ─────────────────────────────────────────────
       - name: Build the service images
