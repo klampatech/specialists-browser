@@ -250,12 +250,19 @@ jobs:
         if: steps.changed.outputs.frontend == '1'
         run: |
           set -euo pipefail
-          # `find -printf`, not `ls | xargs basename`: the bundle lives in
-          # dist/assets/, and when the glob matches nothing `ls` errors
-          # and `xargs basename` exits 123 — which fails the step and
-          # leaves the verdict unknown. A check that cannot answer must
-          # say so, not die.
-          built=$(find webxash/dist/assets -maxdepth 1 -name 'index-*.js' -printf '%f\n' | head -1)
+          # Compare the PAGE'S OWN reference, not a glob of the assets
+          # directory. The build emits several files matching
+          # index-*.js — lazily-loaded chunks alongside the main bundle —
+          # and globbing picks whichever sorts first, which is not
+          # necessarily the one the page loads. The question is "does
+          # the page the player gets reference the bundle we built",
+          # and the page's own script tag answers it.
+          #
+          # `sed` rather than `xargs basename`: with no match, xargs
+          # runs basename with no operand and exits 123, which is a
+          # failure with no explanation attached.
+          built=$(grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' webxash/dist/index.html \
+                 | head -1 | sed 's|.*/||')
           # The cache-buster matters: the CDN and Caddy both cache
           # index.html, and a stale one would compare against the bundle
           # we just replaced.
