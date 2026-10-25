@@ -268,7 +268,7 @@ Three policies, all of them settled rather than accidental:
 
 The server cycles through **The Specialists 3.0's own map cycle** — the
 one that shipped in the mod's Linux server tarball, twenty-one maps, in
-the mod's own order — plus the three classics TS 3.0 dropped from its
+the mod's own order — plus the two classics TS 3.0 dropped from its
 default file while still shipping them:
 
 ```
@@ -276,19 +276,22 @@ ts_hammertime  ts_antrodome  ts_kissmeyerbasic  ts_central  ts_wyndham
 ts_henny2      ts_rundown     ts_neobaroque       ts_casa     ts_lobbyduel
 ts_supertimor  ts_faculty     ts_trident          ts_panzibar ts_gpc
 ts_awaken      ts_heresy      ts_lobby            ts_metro    ts_frigid
-ts_theatre     ts_dojo        ts_dietrich         ts_bikini
+ts_theatre     ts_dietrich     ts_bikini
 ```
 
-- **`ts_dojo`** — "the Construct dojo", the Matrix dojo recreation,
-  called out among the best maps ever designed for the HL engine.
 - **`ts_dietrich`** — "Dietrich's penthouse hideout from *Face/Off*", the
   Castor Troy penthouse; one of the headline film-accurate recreations.
 - **`ts_bikini`** — the seaside villa, still in the tsmod.net rotation.
 
-All three were in TS 2.0's cycle and 3.0 kept the maps but dropped them
-from the default file, so a historically faithful cycle has to name them
+Both were in TS 2.0's cycle and 3.0 kept the maps but dropped them from
+the default file, so a historically faithful cycle has to name them
 explicitly. `ts_lobby` — "the first and probably most popular map of the
 game", the Matrix lobby — is in there too, as the mod's own cycle has it.
+
+`ts_dojo` — the Matrix dojo recreation, and one of the best maps ever
+designed for the HL engine — **was** in that list, and was taken out on
+2026-10-24: it is hard on the eyes and laggy to play. A rotation is a
+serving decision, not a monument.
 
 The stock cycle's last entry, `ctb_deadheat`, is left out: it is a
 Capture-The-Bomb map with no deathmatch spawns, so a player who landed on
