@@ -1,0 +1,8 @@
+# The Rust version the port is built and tested with.
+#
+# It was unpinned, which meant CI and a developer machine could be on
+# different compilers — and the port is Rust 2024, so it needs a
+# reasonably recent one. The version here is the one the workspace
+# builds and tests clean on.
+[toolchain]
+channel = "1.95.0"
