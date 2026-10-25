@@ -458,6 +458,29 @@ for its active step, so the product has one marker language.
 
 **The fold is unchanged and still passes** at 1280×720 and 1440×900.
 
+### The port's Rust test suite could not compile (2026-10-24, fixed)
+
+`cargo test -p ts-client` failed to build the test target: five errors in
+`crates/client/src/plugins/offers/fetch.rs` -- `Path` not in scope twice,
+`write_all` on a `TcpStream` three times. The test module was missing
+`std::io::Write` and `std::path::Path`.
+
+**Why it matters more than it looks:** the whole port's test suite --
+**433 tests** -- could not be run at all, because the test target would
+not compile. It went unnoticed because **no CI step runs cargo at all**:
+the pipeline's three jobs are the frontend typecheck/build, the Node unit
+suite, and the Docker image build. The image build compiles the port's
+*library*, never its tests, so a broken test target is invisible to it.
+
+The suite is green now (433 passed, 0 failed) -- which is a real
+verification of the port, not just a compile fix.
+
+**STILL OPEN:** nothing runs it. `cargo test -p ts-client` needs
+`FWGS_DIR` (the xash3d-fwgs headers) and `LIBCLANG_PATH`; the CI already
+fetches the engine for the image build, so a job that runs the port's
+tests is a small addition -- it is just not free in CI minutes, and the
+trade-off is a call to make rather than one to make silently.
+
 ### The buy menu could not be reopened (2026-10-24, fixed)
 
 Kyle's report: *"while dead, after you accidentally close the buy menu
