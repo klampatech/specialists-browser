@@ -70,6 +70,16 @@ fi
     tools/deploy/fetch-engine.sh (which leaves one in /tmp/xash3d-fwgs)."
 export FWGS_DIR
 
+# The bindgen call needs public/build.h, which xash3d-fwgs GENERATES at
+# wscript time -- a fresh checkout does not have it, and without it the
+# build dies with "'build.h' file not found".
+#
+# The port's wasm build writes it; this script has to as well, or a clean
+# machine cannot build the port at all. It is idempotent, and the same
+# stub serves a native build and a wasm32 one: the pointer width is
+# chosen by the C preprocessor from the clang target, not by this script.
+bash "$ROOT/scripts/gen-fwgs-stub.sh" "$FWGS_DIR/public/build.h" >/dev/null
+
 say "test.sh: LIBCLANG_PATH=$LIBCLANG_PATH"
 say "test.sh: FWGS_DIR=$FWGS_DIR"
 
