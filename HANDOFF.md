@@ -458,6 +458,24 @@ for its active step, so the product has one marker language.
 
 **The fold is unchanged and still passes** at 1280×720 and 1440×900.
 
+**The invocation, exactly:** `scripts/test.sh` -- it finds a libclang
+that actually *resolves* and a FWGS checkout, and runs the client suite
+(433 tests). From a clean environment, with nothing set:
+
+```
+scripts/test.sh                 # the client suite
+scripts/test.sh -p ts-server    # anything else cargo accepts
+```
+
+**The trap that made it necessary.** `LIBCLANG_PATH` defaulted to
+`~/.local/lib`, which `install-libclang.sh` filled with symlinks into a
+download directory **under `/tmp`**. When `/tmp` got cleaned the symlinks
+went broken, and bindgen said *"Unable to find libclang"* while the
+files were plainly there -- because it does not follow a broken symlink
+to discover that it is broken. The extraction now lives in
+`~/.local/cache/libclang-dl`, and `install-libclang.sh` says so when a
+link does not resolve.
+
 ### The port's Rust test suite could not compile (2026-10-24, fixed)
 
 `cargo test -p ts-client` failed to build the test target: five errors in
