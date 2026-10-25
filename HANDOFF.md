@@ -510,17 +510,17 @@ it doesn't reopen."*
    buy menu again after the player closes it with `"0 Cancel"`. The engine
    **did** execute that file: every one of TS's binds is in the engine's
    bind table, including the ones that differ from the stock Half-Life
-   table. One line of sixty-three never took.
-2. The engine executes the game's config **after** the client library's
-   `Initialize` (from the boot log: `Dll loaded for game "Half-Life"`,
-   `execing skill.cfg`, `[ts] client: Rust TS client library
-   initialized`, `execing config.cfg`), and TS's config starts with
-   `unbindall` -- so whatever was bound before it is wiped. A bind made
-   **after** the config sticks; one made before does not.
-3. The bind therefore has to be made after the config, and the client
-   library cannot: `client_cmd` sends the command to the **SERVER**, not
-   to the engine's local command buffer. The shell can -- it has the
-   engine's `Cmd_ExecuteString`.
+   table.
+2. **We removed the bind ourselves.** `webxash/src/services/xash-loader.ts`
+   ran `bind b ""` at boot -- a leftover from the "stop sending every key
+   twice" fix, when the frontend still SENT `"buy"` itself and the
+   engine's own bind had to be cleared so the menu did not open twice.
+   When that command map was deleted, the unbind was left behind, and the
+   buy menu lost its key. The engine's table said `"b" = ""` because WE
+   emptied it.
+3. The client library cannot fix it either: `client_cmd` sends the
+   command to the **SERVER**, not to the engine's local command buffer.
+   The shell can -- it has the engine's `Cmd_ExecuteString`.
 
 **THE MEASUREMENT** (the engine's bind table, asked directly in the
 browser's console):
@@ -534,15 +534,22 @@ browser's console):
 "g" = "useitems"    "MOUSE3" = "+alt1"
 ```
 
-**WHAT IS NOT ESTABLISHED:** why that one line does not take. The engine
-does not drop binds to commands it does not know -- `"g"` -> `"useitems"`
-survives and nothing in the port implements `"useitems"` -- re-executing
-the config does not set it either, and nobody ever unbound it: there is
-no `unbind` in the port or the frontend, in any commit.
+**THE FIX, in two parts:** `webxash/src/services/xash-loader.ts` no
+longer clears `"b"` (the game's own config is the source of truth for its
+own keys), and it binds `"b"` to `"buy"` on the frame after the engine
+starts, and again at +2s -- so the key works even if the config's line is
+ever disturbed.
 
-**THE FIX:** `webxash/src/services/xash-loader.ts` binds `"b"` to `"buy"`
-on the frame after the engine starts, and again at +2s in case the config
-ran later.
+**WHAT I GOT WRONG FIRST, because it is the obvious wrong answer:** I
+concluded that the config's own `bind "b" "buy"` line "never took", and
+built a story around the engine executing the config after the client's
+`Initialize` and TS's config starting with `unbindall`. That story was
+wrong: the config's line took, and then WE removed it. **The evidence was
+in the project's own skill file all along** -- it had the answer, in one
+sentence, and I did not read it before theorising for an hour. The lesson
+is the one the repo already teaches about withdrawn claims: *the file
+that carries the claim is read more often than the file that retracts it*
+-- which cuts both ways. A skill file is a claim too, and it was RIGHT.
 
 **VERIFIED** in a real browser against production: `b` opens the menu,
 `0` closes it, `b` opens it again -- photographed at each step.
