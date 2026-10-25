@@ -419,6 +419,45 @@ browser-default blue outline). Every control stays — Identity (name, 24
 chars), Controls (sensitivity, FOV, volume), Camera (third person and
 the note that it needs you alive), Session (quit to web UI).
 
+### Rebrand polish — a calmer rain, and a How It Works you can read (2026-10-24)
+
+**webXash PR #17.** Kyle's notes on the shipped page.
+
+**The rain was too fast, and that was the motion sickness.** It travelled
+1216px in 10–16 seconds — **76–121 px/second**. A full screen of glyphs
+moving at a hundred pixels a second is a lot of motion, and no part of
+the effect needed that. It is 18–31 seconds now: **39–67 px/second**,
+measured at 67.6 in the browser. A drift rather than a fall.
+
+**And it now fades hard from the top down.** The old mask was fully
+opaque from 14% to 76% of the screen, so the rain hit the hero at full
+strength with nothing between. The mask falls away as it descends, so
+the wordmark, the lede and the PLAY button sit on a calm field — and the
+lower half of the screen is where a moving eye is worst served by. Base
+opacity 0.2 → 0.17.
+
+**The CRT matrix text.** The glyph set is weighted towards **half-width
+katakana** — a column of dense, angular, half-width characters reads as
+terminal output; a column of Latin letters reads as a spreadsheet. Each
+glyph also gets a **phosphor halo with the core left crisp**
+(`drop-shadow(0 0 3px)`), which is what a real phosphor does and what
+flat text does not.
+
+**The copy.**
+- `Scene 01 / Half-Life 1 · running in a browser` → `The Specialists Mod / Half-Life 1 · running in a browser`
+- `Tactical deathmatch with the original ruleset — …` → `The Specialists Mod 3.0 with the original ruleset — …`
+
+**The How It Works tab.** The three cards had a paragraph of four
+sentences each. Now: **ten bullets, twelve highlighted terms**
+(`Rust reimplementation`, `WebAssembly`, `game DLL`, `cannot emit UDP`,
+`WebSocket↔UDP proxy`, `byte-for-byte`, `binds them itself`, `Nothing is
+translated`). The highlights are written as `**asterisks**` in the source
+and split at render time, so the copy stays plain text — no markup in a
+string literal. The bullet marker is the same `▸` the boot screen uses
+for its active step, so the product has one marker language.
+
+**The fold is unchanged and still passes** at 1280×720 and 1440×900.
+
 ## The rebrand: BulletBallet (2026-10-24, planned)
 
 **The site is becoming BulletBallet.** The plan is
