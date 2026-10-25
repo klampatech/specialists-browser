@@ -18,7 +18,14 @@ DEST="${LIBCLANG_PATH:-/home/kyle/.local/lib}"
 mkdir -p "$DEST"
 
 # Use whatever version is already extracted; if absent, download.
-SCRATCH=/tmp/libclang-dl
+#
+# NOT under /tmp: the symlinks this script creates point INTO the extracted
+# library, and a /tmp that gets cleaned leaves them broken. bindgen then
+# says "Unable to find libclang" -- while the files are plainly there --
+# because it does not follow a broken symlink to discover that. That is
+# not a failure anyone can diagnose from the message, so the extraction
+# lives somewhere durable.
+SCRATCH="${LIBCLANG_SCRATCH:-$HOME/.local/cache/libclang-dl}"
 if [[ ! -f $SCRATCH/extracted2/usr/lib/x86_64-linux-gnu/libclang-19.so.19 ]]; then
     mkdir -p $SCRATCH/extracted2
     cd $SCRATCH
@@ -49,3 +56,11 @@ ln -sf "$LIB" "$DEST/libclang-19.so"
 ln -sf "$LIB" "$DEST/libclang-19.so.19"
 echo "install-libclang.sh: linked libclang.so -> $LIB"
 ls -la "$DEST"/libclang*
+# A link that does not resolve is worse than no link: bindgen reports a
+# missing libclang and not a broken one. Say so here, where it can be
+# acted on.
+for f in "$DEST"/libclang.so "$DEST"/libclang-19.so; do
+    if [[ ! -e "$f" ]]; then
+        echo "install-libclang.sh: WARNING $f does not resolve" >&2
+    fi
+done
