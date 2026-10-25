@@ -162,8 +162,13 @@ jobs:
           submodules: recursive
 
       - name: Rust
-        # The port's own rust-toolchain.toml is authoritative; this action
-        # reads it rather than picking a version of its own.
+        # The port's own rust-toolchain.toml pins the version (1.95.0).
+        # This action installs `stable` as the default, and rustup then
+        # reads rust-toolchain.toml when cargo runs inside the port's
+        # directory, so the PINNED version is what compiles the tests --
+        # verified in the run log: "the missing active toolchain
+        # 1.95.0-x86_64-unknown-linux-gnu has been auto-installed".
+        # The cost is a second toolchain download (stable, then 1.95.0).
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache the cargo registry and the build directory
