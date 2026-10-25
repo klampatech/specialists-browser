@@ -203,23 +203,37 @@ async function consoleAsk(container, command, pattern, timeoutMs = 6_000) {
 /* ------------------------------------------------------------------ */
 
 /**
- * Read an instance's live tickrate and bot quota from its console.
+ * Read an instance's live tickrate, bot quota and map timer from its console.
  *
  * Returns null when the console cannot be reached — the instance is then
  * reported as unhealthy on metrics, which is a different signal from "the
  * instance is down" (A2S would still answer).
+ *
+ * `mp_timeleft` is the seconds left on the current map. It is the TS
+ * server's own cvar, rewritten every frame by the port's Think, and the
+ * engine echoes it exactly like the tickrate:
+ *
+ *     "mp_timelimit" is "15"
+ *     "mp_timeleft" is "253"
+ *
+ * (Verified against the live server's console, not inferred: `mp_timeleft`
+ * is registered with FCVAR_SERVER|FCVAR_UNLOGGED, and the engine still
+ * answers a query for it — UNLOGGED only means "do not log it when it
+ * changes".)
  */
 async function collectMetrics(instance) {
   if (!USE_DOCKER) return null;
   try {
-    const [tick, quota] = await Promise.all([
+    const [tick, quota, timeLeft] = await Promise.all([
       consoleAsk(instance.container, 'sys_ticrate', /"sys_ticrate"\s+is\s+"(\d+)"/),
       consoleAsk(instance.container, 'ts_bot_quota', /"ts_bot_quota"\s+is\s+"(\d+)"/),
+      consoleAsk(instance.container, 'mp_timeleft', /"mp_timeleft"\s+is\s+"(\d+)"/),
     ]);
     if (!tick) return null;
     return {
       tickrate: parseInt(tick[1], 10),
       botQuota: quota ? parseInt(quota[1], 10) : null,
+      mapSecondsLeft: timeLeft ? parseInt(timeLeft[1], 10) : null,
     };
   } catch {
     return null;
@@ -468,6 +482,11 @@ async function pollMetrics() {
         instance.metricsAt = now;
         instance.tickrate = metrics.tickrate;
         instance.botQuota = metrics.botQuota;
+        // The seconds left on this map, as the server itself counts them.
+        // Null means the console did not answer for it, which is a
+        // missing fact rather than a zero.
+        instance.mapSecondsLeft =
+          typeof metrics.mapSecondsLeft === 'number' ? metrics.mapSecondsLeft : null;
 
         // A2S counts bots as players, but its player count also includes
         // slots that have not timed out yet. The bridge knows how many
@@ -524,6 +543,10 @@ function publicView(row) {
     publicAddress: row.publicAddress,
     tickrate: row.tickrate ?? null,
     targetTickrate: TARGET_TICKRATE,
+    // Seconds left on the current map. The browser counts this down
+    // locally from `metricsAt`, so a 20-second poll does not make the
+    // countdown jump in 20-second steps.
+    mapSecondsLeft: typeof row.mapSecondsLeft === 'number' ? row.mapSecondsLeft : null,
     degrading: Boolean(row.degradation?.sustained),
     responsive: row.responsive !== false,
     consecutiveFailures: row.consecutiveFailures ?? 0,

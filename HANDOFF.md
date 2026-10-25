@@ -458,6 +458,87 @@ for its active step, so the product has one marker language.
 
 **The fold is unchanged and still passes** at 1280×720 and 1440×900.
 
+### The lighting question (2026-10-24, investigated — NOT fixed)
+
+Kyle asked whether the work that stopped the player models rendering
+black changed the level's lighting or shadows. **It did not.** Here is the
+proof, and here is what is actually wrong.
+
+**1. The wasm's source delta is exactly the viewmodel fix.** The client
+wasm in production until 2026-10-24 16:11 was built on 2026-10-21 22:04
+(`webxash` `e7bc58d`). The live one was built at 16:33. The whole source
+delta is two commits: `0f93432` (fix #1, in `draw_weapon`) and `31ba308`
+(fix #2, in `draw_model`, which **reverts** fix #1). The net is one
+function. And `tools/port/tsp-rs/scripts/build-wasm.sh` last changed on
+2026-10-21 12:25 — **before both builds** — so the flags and the toolchain
+are the same.
+
+**2. The level is not drawn by the port.** The BSP, its lightmaps, the
+dynamic lights and the shadow pass are the **engine's** (`xash.wasm`), and
+the engine's wasm has not been touched since the 512 MB heap patch — which
+is memory, not rendering. The port draws studio models: players, weapons,
+entities. And it never writes an `r_*` lighting cvar; it only *reads*
+`r_drawviewmodel`, `r_drawentities` and `cl_motionblur`.
+
+**3. The fix's scope is one entity, at one moment.** `draw_model` sets
+`rendermode = kRenderNormal`, `renderamt = 255` and a white `rendercolor`
+on **the view-model entity** (`r_entity[0]`), at draw time. It does not
+touch the local player's state, the entity list, or any cvar. The viewmodel
+is drawn after the world.
+
+**=> The level's lighting, shadows and colours did not change.**
+
+**4. The one global change from today: the canvas backdrop.** The old
+canvas rule was `background-image: url("./hl.svg")` with **no
+background-colour**, and `body` had no background either — so the canvas
+composited over the browser's default **white**. Phase 1 added
+`body { background: var(--ts-void) }` (#010a04). Measured on a live frame,
+the backdrop moves the median static pixel by about **4/255** and the
+translucent regions by more. Real, and small.
+
+**5. What IS wrong: the player models are still black.** In a live
+`ts_theatre` frame the level is lit correctly — the tree, the blossoms, the
+building, the path — and **both characters are solid black silhouettes**;
+1044 sampled pixels average RGB **[0.7, 0.66, 0.62]**. They stay black
+with *any* backdrop, so this is a **lighting** problem and not an alpha
+one, which is what § "the framebuffer is not opaque" already concluded.
+
+**This is the same defect the viewmodel had, on the path we did not fix.**
+The viewmodel fix forces `kRenderNormal` + `renderamt 255` + a white
+rendercolour on the view-model entity **only**. The player models still get
+the local player's third-person translucency state — `rendermode =
+kRenderTransColor` and an eased `renderamt`, written every frame by
+`view.rs` — and the server spawns players with `rendercolor = (0,0,0)`, a
+zero multiplier.
+
+**=> The open work: the same override for the player models, carefully.**
+The local player's own third-person fade is *intentional* (it fades when
+you are close to yourself), so the override has to distinguish "the local
+player's own model" from "everyone else".
+
+**6. The engine has its own Half-Life lambda.** Not the CSS one we removed
+— the engine's console/loading screen draws a big grey lambda, centred.
+Proven: with the canvas's CSS background forced to solid red and
+`background-image: none !important`, the lambda was still there in a black
+frame. **There were two lambdas.** The CSS one was the ghosting bug and it
+is fixed; this one shows during startup, before the client's own boot
+screen takes over.
+
+**THE MEASUREMENT RECIPE**, so this can be repeated instead of re-derived:
+
+- **The frame's own motion is the control, and it is not optional.** The
+  camera moves; without a same-backdrop control pair, a 15% swing in the
+  medians is just the game.
+- **Compare only the pixels that did NOT move between the two control
+  shots.** Mask them out, then measure the difference on what is left.
+- **A static frame measures nothing.** The engine's console/loading screen
+  is static, so every shot is identical and every number comes out zero —
+  which reads as "no effect" when in fact nothing was being measured.
+- **Verify the CSS actually applied** (read the computed style) before
+  believing a null result.
+- `readPixels` on the engine's canvas returns **zeros**: WebGL clears the
+  drawing buffer after presenting. Take screenshots; do not read back.
+
 ## The rebrand: BulletBallet (2026-10-24, planned)
 
 **The site is becoming BulletBallet.** The plan is
@@ -627,11 +708,14 @@ Kyle's quality-of-life pass, three items.
 **1. Map rotation.** The server now cycles through **The Specialists 3.0's
 own map cycle** — the one that shipped in the mod's Linux server tarball
 (`ts/mapcycle.txt`), twenty-one maps in the mod's own order — plus the
-three classics TS 3.0 dropped from its default file while still shipping
-them: `ts_dojo` (the Construct dojo), `ts_dietrich` (the Face/Off
-penthouse) and `ts_bikini` (the seaside villa). All three were in the
-official 2.0 cycle, so a historically faithful rotation has to name them
-explicitly.
+classics TS 3.0 dropped from its default file while still shipping them:
+`ts_dietrich` (the Face/Off penthouse) and `ts_bikini` (the seaside
+villa). Both were in the official 2.0 cycle, so a historically faithful
+rotation has to name them explicitly.
+
+**`ts_dojo` was in that list and was taken out on 2026-10-24** — Kyle:
+*"it was hard on the eyes and pretty laggy to play in"*. A rotation is a
+serving decision, not a monument.
 
 The stock cycle's last entry, `ctb_deadheat`, is left out: it is a
 Capture-The-Bomb map with no deathmatch spawns, so a player who landed on

@@ -8,12 +8,9 @@
 // deployment: it is the rotation a TS 3.0 server shipped with, which is
 // the closest thing to "what the popular ones used to be".
 //
-// The last three are the classics that TS 3.0 DROPPED from its default
+// The last two are the classics that TS 3.0 DROPPED from its default
 // rotation while still shipping them as maps:
 //
-//   ts_dojo      "the Construct dojo" — the Matrix dojo recreation,
-//                called out among the best maps ever designed for the
-//                HL engine. In the official TS 2.0 cycle.
 //   ts_dietrich  "Dietrich's penthouse hideout from Face/Off" — the
 //                Castor Troy penthouse, one of the headline
 //                film-accurate recreations. In the official TS 2.0 cycle.
@@ -23,6 +20,13 @@
 // from the default file, so a "historically faithful" cycle has to name
 // them explicitly. They are at the end, so the mod's own order is
 // untouched.
+//
+// ts_dojo WAS in that list — "the Construct dojo", the Matrix dojo
+// recreation, and one of the best maps ever designed for the HL engine.
+// Kyle took it out of the rotation on 2026-10-24: it is hard on the eyes
+// and it is laggy to play. A rotation is a serving decision, not a
+// monument, and a map that is unpleasant to look at and unpleasant to
+// play in does not earn its place in the list of what we serve.
 //
 // WHAT IS LEFT OUT
 // ----------------
@@ -76,6 +80,5 @@ ts_lobby
 ts_metro
 ts_frigid
 ts_theatre
-ts_dojo
 ts_dietrich
 ts_bikini

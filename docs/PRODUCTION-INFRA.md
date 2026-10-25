@@ -289,11 +289,14 @@ went to 32. Bots are filler in a 32-slot server, which is the intended shape.
 
 The server cycles through **The Specialists 3.0's own map cycle**, taken
 from the mod's Linux server tarball (`ts/mapcycle.txt`), twenty-one maps
-in the mod's own order, plus the three classics that 3.0 dropped from its
-default file while still shipping them: `ts_dojo` (the Construct dojo),
-`ts_dietrich` (the Face/Off penthouse) and `ts_bikini` (the seaside
-villa) — all three were in the official 2.0 cycle, so a historically
-faithful rotation has to name them explicitly.
+in the mod's own order, plus the two classics that 3.0 dropped from its
+default file while still shipping them: `ts_dietrich` (the Face/Off
+penthouse) and `ts_bikini` (the seaside villa) — both were in the official
+2.0 cycle, so a historically faithful rotation has to name them
+explicitly.
+
+`ts_dojo` was the third, and was taken out on 2026-10-24: it is hard on
+the eyes and laggy to play.
 
 `ctb_deadheat` is the one entry left out: it is a Capture-The-Bomb map
 with no deathmatch spawns, so a player who landed on it in FFA would have
