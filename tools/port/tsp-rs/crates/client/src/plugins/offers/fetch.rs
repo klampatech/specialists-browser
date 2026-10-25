@@ -247,8 +247,13 @@ pub(crate) mod tests {
     use super::*;
     use crate::plugins::offers::flow::Transport;
     use std::collections::BTreeMap;
-    use std::io::BufRead;
+    // `Write` for the test server's `write_all` on its TcpStream, `Path`
+    // for the install job's directory argument. Both were missing, which
+    // meant the whole test target would not compile -- and so the port's
+    // test suite could not be run at all.
+    use std::io::{BufRead, Write};
     use std::net::TcpListener;
+    use std::path::Path;
 
     /// A tiny HTTP/1.1 server on 127.0.0.1 serving `files` (path → body), for the tests; 404
     /// for the rest. Returns the base URL.
