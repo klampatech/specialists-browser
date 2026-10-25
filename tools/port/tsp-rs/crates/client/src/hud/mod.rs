@@ -685,25 +685,6 @@ pub fn init() {
     tfc::hook();
     statusbar::hook();
     register_commands();
-
-    // TS's config.cfg binds "b" to "buy" -- the key that opens the buy
-    // menu AGAIN after the player has closed it ("0 Cancel"). That bind
-    // is missing from the engine's bind table in the browser, so the buy
-    // menu could be opened when the server opened it (the Spectator
-    // message) and never again: close it and nothing brings it back.
-    //
-    // Every other TS bind IS there -- x -> thirdperson, f -> firemode,
-    // t -> drop, z -> usepowerup, g -> useitems, 0 -> slot10, MOUSE3 ->
-    // +alt1 -- so this is one line of the game's config that never took,
-    // and re-executing the config does not set it either. What the engine
-    // does with the line is not established; a runtime bind sticks, the
-    // key works, and the menu reopens.
-    //
-    // Bound here, after the engine has executed the game's config, so
-    // the game's own line cannot undo it. `client_cmd` is the documented
-    // channel for a command to the engine's command buffer -- the same
-    // one the version userinfo uses.
-    e.client_cmd("bind b buy\n");
     // `CHudGeiger::Init` (`0x1001f450`) seeds the CRT's `rand`: `srand(time(NULL))`.
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as u32);
     with(|h| *h = Hud { crt: message::CrtRand(seed), ..Hud::default() });
