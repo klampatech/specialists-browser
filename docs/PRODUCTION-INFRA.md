@@ -1,6 +1,6 @@
 # Production Infrastructure
 
-**Status:** provisioned, hardened, partially wired. Asset delivery live; game plane still local.
+**Status:** provisioned, hardened, partially wired. Asset delivery live; **game plane live** on the OVH VPS (`bb-prod` → `vps-eebb5e11-vps-ovh-us`; `ts-0` on `ts-server:0.26`, healthy — measured 2026-10-25). The game-server *image* is still built by hand, outside the deploy pipeline.
 
 Everything here is **measured**, not estimated, except where explicitly marked `UNVERIFIED`.
 
