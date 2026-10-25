@@ -458,6 +458,72 @@ for its active step, so the product has one marker language.
 
 **The fold is unchanged and still passes** at 1280×720 and 1440×900.
 
+### The buy menu could not be reopened (2026-10-24, fixed)
+
+Kyle's report: *"while dead, after you accidentally close the buy menu
+it doesn't reopen."*
+
+**THE MECHANISM, in three steps.**
+
+1. TS's own `config.cfg` binds `"b"` to `"buy"` -- the key that opens the
+   buy menu again after the player closes it with `"0 Cancel"`. The engine
+   **did** execute that file: every one of TS's binds is in the engine's
+   bind table, including the ones that differ from the stock Half-Life
+   table. One line of sixty-three never took.
+2. The engine executes the game's config **after** the client library's
+   `Initialize` (from the boot log: `Dll loaded for game "Half-Life"`,
+   `execing skill.cfg`, `[ts] client: Rust TS client library
+   initialized`, `execing config.cfg`), and TS's config starts with
+   `unbindall` -- so whatever was bound before it is wiped. A bind made
+   **after** the config sticks; one made before does not.
+3. The bind therefore has to be made after the config, and the client
+   library cannot: `client_cmd` sends the command to the **SERVER**, not
+   to the engine's local command buffer. The shell can -- it has the
+   engine's `Cmd_ExecuteString`.
+
+**THE MEASUREMENT** (the engine's bind table, asked directly in the
+browser's console):
+
+```
+"b" = ""            <- no binding
+"w" = "+forward"    "1" = "slot1"    "5" = "slot5"
+"x" = "thirdperson" "f" = "firemode" "t" = "drop"
+"z" = "usepowerup"  "q" = "+alt1"     "0" = "slot10"
+"6" = "slot6"       "k" = "+voicerecord" "h" = "impulse 201"
+"g" = "useitems"    "MOUSE3" = "+alt1"
+```
+
+**WHAT IS NOT ESTABLISHED:** why that one line does not take. The engine
+does not drop binds to commands it does not know -- `"g"` -> `"useitems"`
+survives and nothing in the port implements `"useitems"` -- re-executing
+the config does not set it either, and nobody ever unbound it: there is
+no `unbind` in the port or the frontend, in any commit.
+
+**THE FIX:** `webxash/src/services/xash-loader.ts` binds `"b"` to `"buy"`
+on the frame after the engine starts, and again at +2s in case the config
+ran later.
+
+**VERIFIED** in a real browser against production: `b` opens the menu,
+`0` closes it, `b` opens it again -- photographed at each step.
+
+**THE FIRST ATTEMPT WAS WRONG, AND THE WAY IT WAS WRONG IS WORTH
+RECORDING:** it bound the key from the client library, which sent
+`bind b buy` to the **server**. The server has no `bind` command, so it
+did nothing at all, and the wasm had to be rebuilt and reverted. A bind
+that goes to the wrong command buffer looks exactly like a bind that
+does not work.
+
+**Two things that made the measurement hard, worth knowing:**
+
+- **The engine's console opens by itself in the browser** and keeps the
+  keyboard while it is open, so a scripted keypress is typed into the
+  console instead of reaching the game. The symptom is a keypress that
+  appears to do nothing at all.
+- **Clicking the canvas is `+attack`,** which joins the game -- and then
+  the player is alive, and the buy menu (which is for the dead) is
+  correctly not open. A test that clicks the canvas is testing the wrong
+  state.
+
 ### The lighting question (2026-10-24, investigated — NOT fixed)
 
 Kyle asked whether the work that stopped the player models rendering
