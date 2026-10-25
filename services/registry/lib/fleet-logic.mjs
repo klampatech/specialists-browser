@@ -37,14 +37,72 @@ export function desiredBotQuota(humans, botTarget) {
 }
 
 /**
+ * The bridge's TARGET id for one instance.
+ *
+ * WHY THIS EXISTS (2026-10-24)
+ * ---------------------------
+ *
+ * The bridge keys its live-connection map by TARGET id, which comes from
+ * its own configuration: `default=127.0.0.1:27015 (public 40.160.225.81:27015)`.
+ * The registry was looking that map up by INSTANCE id (`ts-0`).
+ *
+ * Those two names are not the same string, so the lookup always missed,
+ * `?? 0` turned the miss into zero, and the published human count was
+ * PERMANENTLY ZERO while people were playing. The count only read 1 when
+ * the registry's bridge fetch timed out and it fell back to A2S
+ * arithmetic by accident.
+ *
+ * The bot policy is derived from this number, so the fleet's bot roster
+ * was being decided from a number that always read zero.
+ *
+ * The bridge's target id is the thing that names a game server, and the
+ * instance's internal address is what the bridge dials, so the two can
+ * be matched. The bridge publishes its targets in the same /health
+ * payload as the map it keys them by.
+ *
+ * @param targets  the bridge's `targets` list, e.g.
+ *                 ["default=127.0.0.1:27015 (public 40.160.225.81:27015)"]
+ * @param host     the instance's internal host, as the bridge dials it
+ * @param port     the instance's internal port
+ * @returns the target id, or undefined when the bridge does not serve
+ *          that address
+ */
+export function bridgeTargetIdFor({ targets, host, port }) {
+  if (!Array.isArray(targets)) return undefined;
+  const want = `${host}:${port}`;
+  for (const entry of targets) {
+    if (typeof entry !== 'string') continue;
+    const eq = entry.indexOf('=');
+    if (eq === -1) continue;
+    const id = entry.slice(0, eq).trim();
+    let addr = entry.slice(eq + 1).trim();
+    // "127.0.0.1:27015 (public 40.160.225.81:27015)" -> "127.0.0.1:27015"
+    const at = addr.indexOf(' (');
+    if (at !== -1) addr = addr.slice(0, at).trim();
+    if (addr === want) return id;
+  }
+  return undefined;
+}
+
+/**
  * How many humans are on this instance, and where did that number come from?
  *
  * @param bridgeLive  the bridge's `liveByTarget` map, or null if the
  *                    bridge could not be reached. `{}` means "reachable,
  *                    and there is nobody here".
+ * @param bridgeTargetId  the key this instance appears under in
+ *                    `bridgeLive` — the bridge's TARGET id, which is not
+ *                    the instance id. See `bridgeTargetIdFor`.
  */
-export function resolveHumanCount({ bridgeLive, instanceId, players, bots }) {
-  const live = bridgeLive ? (bridgeLive[instanceId] ?? 0) : null;
+export function resolveHumanCount({
+  bridgeLive,
+  instanceId,
+  bridgeTargetId,
+  players,
+  bots,
+}) {
+  const key = bridgeTargetId ?? instanceId;
+  const live = bridgeLive ? (bridgeLive[key] ?? 0) : null;
   return {
     humans: live !== null ? live : Math.max(0, (players ?? 0) - (bots ?? 0)),
     source: live !== null ? 'bridge' : 'a2s',

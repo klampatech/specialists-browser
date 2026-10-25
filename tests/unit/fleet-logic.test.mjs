@@ -21,7 +21,11 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { desiredBotQuota, resolveHumanCount } from '../../services/registry/lib/fleet-logic.mjs';
+import {
+  bridgeTargetIdFor,
+  desiredBotQuota,
+  resolveHumanCount,
+} from '../../services/registry/lib/fleet-logic.mjs';
 
 test('the bot roster yields to humans, one for one', () => {
   assert.equal(desiredBotQuota(0, 4), 4);
@@ -90,6 +94,102 @@ test('another instance\'s browser count is not this instance\'s', () => {
   const r = resolveHumanCount({
     bridgeLive: { 'ts-1': 5 },
     instanceId: 'ts-0',
+    players: 1,
+    bots: 0,
+  });
+  assert.equal(r.humans, 0);
+  assert.equal(r.source, 'bridge');
+});
+
+/**
+ * THE TARGET-ID MISMATCH (2026-10-24)
+ * -----------------------------------
+ *
+ * The bridge keys its live-connection map by TARGET id and the registry
+ * looked it up by INSTANCE id, so the lookup always missed and the
+ * published human count was permanently zero — while people were playing.
+ * The count only read 1 when the bridge fetch timed out and the A2S
+ * fallback caught it by accident.
+ *
+ * These tests are the ones that would have caught it.
+ */
+
+// The real shape, from the bridge's /health.
+const BRIDGE_TARGETS = ['default=127.0.0.1:27015 (public 40.160.225.81:27015)'];
+
+test('the bridge target id is found by the address the bridge dials', () => {
+  assert.equal(
+    bridgeTargetIdFor({ targets: BRIDGE_TARGETS, host: '127.0.0.1', port: 27015 }),
+    'default'
+  );
+});
+
+test('a target with no public address is still found', () => {
+  assert.equal(
+    bridgeTargetIdFor({ targets: ['ts-0=127.0.0.1:27016'], host: '127.0.0.1', port: 27016 }),
+    'ts-0'
+  );
+});
+
+test('an address the bridge does not serve has no target id', () => {
+  assert.equal(
+    bridgeTargetIdFor({ targets: BRIDGE_TARGETS, host: '127.0.0.1', port: 27099 }),
+    undefined
+  );
+});
+
+test('a missing or malformed target list has no target id', () => {
+  assert.equal(bridgeTargetIdFor({ targets: null, host: '127.0.0.1', port: 27015 }), undefined);
+  assert.equal(bridgeTargetIdFor({ targets: [], host: '127.0.0.1', port: 27015 }), undefined);
+  assert.equal(
+    bridgeTargetIdFor({ targets: ['no-equals-sign'], host: '127.0.0.1', port: 27015 }),
+    undefined
+  );
+});
+
+test('the human count is read under the bridge TARGET id', () => {
+  // The exact situation that broke it: the map is keyed "default", the
+  // instance is "ts-0", and looking the instance id up finds nothing.
+  const r = resolveHumanCount({
+    bridgeLive: { default: 3 },
+    instanceId: 'ts-0',
+    bridgeTargetId: 'default',
+    players: 19,
+    bots: 16,
+  });
+  assert.equal(r.humans, 3, 'three browsers are connected');
+  assert.equal(r.source, 'bridge');
+});
+
+test('without the target id the instance id is still used', () => {
+  // Backwards compatibility: a bridge that keys by instance id.
+  const r = resolveHumanCount({
+    bridgeLive: { 'ts-0': 2 },
+    instanceId: 'ts-0',
+    players: 7,
+    bots: 4,
+  });
+  assert.equal(r.humans, 2);
+  assert.equal(r.source, 'bridge');
+});
+
+test('a reachable bridge with no browsers means zero humans, even via the target id', () => {
+  const r = resolveHumanCount({
+    bridgeLive: {},
+    instanceId: 'ts-0',
+    bridgeTargetId: 'default',
+    players: 4,
+    bots: 4,
+  });
+  assert.equal(r.humans, 0);
+  assert.equal(r.source, 'bridge');
+});
+
+test('another target\'s browsers are not this instance\'s', () => {
+  const r = resolveHumanCount({
+    bridgeLive: { default: 0, other: 5 },
+    instanceId: 'ts-0',
+    bridgeTargetId: 'default',
     players: 1,
     bots: 0,
   });

@@ -62,6 +62,7 @@ import { queryServer } from '../../webxash/vite-a2s-plugin.mjs';
 import { probeWithRetry, timeoutForAttempt } from './lib/a2s-retry.mjs';
 import { classifyProbeFailure, nextFailureCount, shouldRefreshSeenAt } from './lib/liveness.mjs';
 import {
+  bridgeTargetIdFor,
   desiredBotQuota as computeBotQuota,
   resolveHumanCount,
 } from './lib/fleet-logic.mjs';
@@ -316,6 +317,10 @@ const BRIDGE_URL = process.env.BRIDGE_URL || '';
 // re-introduce the ghost problem for exactly the case the bridge was
 // added to fix (an empty server).
 let bridgeLiveByTarget = null;
+// The bridge's own target list, from the same payload. The live map is
+// keyed by TARGET id ("default"), not by instance id ("ts-0"), so this
+// is what turns an instance into the key its count lives under.
+let bridgeTargets = null;
 
 async function fetchBridgeLive() {
   if (!BRIDGE_URL) return null;
@@ -327,6 +332,7 @@ async function fetchBridgeLive() {
     if (!res.ok) return null;
     const body = await res.json();
     bridgeLiveByTarget = body.liveByTarget || {};
+    bridgeTargets = Array.isArray(body.targets) ? body.targets : null;
     return bridgeLiveByTarget;
   } catch {
     return null;
@@ -497,6 +503,11 @@ async function pollMetrics() {
         const count = resolveHumanCount({
           bridgeLive: bridgeLiveByTarget,
           instanceId: instance.id,
+          bridgeTargetId: bridgeTargetIdFor({
+            targets: bridgeTargets,
+            host: HOST,
+            port: instance.port,
+          }),
           players: instance.players,
           bots: instance.bots,
         });
