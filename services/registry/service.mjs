@@ -61,6 +61,8 @@ import { execFile } from 'node:child_process';
 import { queryServer } from '../../webxash/vite-a2s-plugin.mjs';
 import { probeWithRetry, timeoutForAttempt } from './lib/a2s-retry.mjs';
 import { classifyProbeFailure, nextFailureCount, shouldRefreshSeenAt } from './lib/liveness.mjs';
+import { updateRow, updateRowIfCurrent } from './lib/registry-rows.mjs';
+import { LOG_TAIL_LINES, findAnswerAfterMarker } from './lib/console-log.mjs';
 import {
   desiredBotQuota as computeBotQuota,
   resolveHumanCount,
@@ -143,17 +145,19 @@ function sh(cmd, args, { input, timeoutMs = 15_000 } = {}) {
   });
 }
 
-/** Current size of a container's combined log, in bytes. */
-async function logSize(container) {
-  const { stdout } = await sh('bash', ['-lc', `docker logs ${container} 2>&1 | wc -c`]);
-  return parseInt(stdout.trim(), 10) || 0;
-}
-
-/** Log content written since `offset` bytes. */
-async function logsSince(container, offset) {
+/**
+ * The tail of a container's log.
+ *
+ * `docker logs --tail N` reads BACKWARDS from the end of the log, so
+ * this costs the same whether the log is 1KB or 1GB. The old
+ * byte-offset read (`docker logs | tail -c +N`) streamed the ENTIRE
+ * log every time, which is what made the metrics poll slow enough to
+ * lose its race against the A2S poll. See lib/console-log.mjs.
+ */
+async function logTail(container) {
   const { stdout } = await sh('bash', [
     '-lc',
-    `docker logs ${container} 2>&1 | tail -c +${offset + 1}`,
+    `docker logs --tail ${LOG_TAIL_LINES} ${container} 2>&1`,
   ]);
   return stdout;
 }
@@ -170,29 +174,22 @@ async function consoleWrite(container, command) {
 /**
  * Ask the engine something and read the answer.
  *
- * The engine answers on stdout, so the reply is found by diffing the
- * container log from the offset taken before the command was written.
- *
- * `echo` is used as a marker first. The engine echoes the marker back
- * immediately, so the answer is unambiguously the first thing after it —
- * without it, a value could be confused with unrelated log output that
- * happened to contain the same digits.
+ * The engine answers on stdout, so the reply is found by looking for
+ * the marker that was echoed back. The marker is written first and
+ * echoed by the engine immediately, so the answer is unambiguously the
+ * first thing after it — without it, a value could be confused with
+ * unrelated log output that happened to contain the same digits.
  */
 async function consoleAsk(container, command, pattern, timeoutMs = 6_000) {
-  const offset = await logSize(container);
   const marker = `TSREG${Date.now().toString(36)}`;
   await consoleWrite(container, `echo ${marker}`);
   await consoleWrite(container, command);
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const text = await logsSince(container, offset);
-    const at = text.indexOf(marker);
-    if (at !== -1) {
-      const after = text.slice(at + marker.length);
-      const m = after.match(pattern);
-      if (m) return m;
-    }
+    const text = await logTail(container);
+    const m = findAnswerAfterMarker(text, marker, pattern);
+    if (m) return m;
     await new Promise((r) => setTimeout(r, 250));
   }
   return null;
@@ -405,8 +402,9 @@ async function pollA2S() {
         });
         const existing = registry.get(id);
         if (result) {
-          registry.set(id, {
-            ...existing,
+          // MUTATE the row, do not replace it. Replacing it orphans any
+          // reference another poll is holding - see lib/registry-rows.mjs.
+          updateRow(registry, id, {
             ...result,
             container: `${PREFIX}-${port - PORT_BASE}`,
             seenAt: Date.now(),
@@ -431,8 +429,7 @@ async function pollA2S() {
           });
           const failures = nextFailureCount(classification, existing.consecutiveFailures ?? 0);
           const down = failures >= FAILURES_BEFORE_DOWN;
-          registry.set(id, {
-            ...existing,
+          updateRow(registry, id, {
             // "Seen" means "we know it is there", not "A2S answered".
             // When the console proves the server is alive but A2S is
             // quiet, the entry must NOT age out — otherwise the
@@ -472,21 +469,32 @@ async function pollMetrics() {
     await Promise.all(
       [...registry.values()].map(async (instance) => {
         const metrics = await collectMetrics(instance);
+        // The A2S poll may have run while we were waiting on the
+        // console. Write through the row that is CURRENTLY in the map,
+        // and only if this row is still it - otherwise the write lands
+        // on an orphan and the tickrate is silently lost. See
+        // lib/registry-rows.mjs.
+        const current = registry.get(instance.id);
+        if (current !== instance) return;
         if (!metrics) {
-          instance.metricsOk = false;
-          instance.metricsAt = now;
-          instance.tickrate = null;
+          updateRowIfCurrent(registry, instance, {
+            metricsOk: false,
+            metricsAt: now,
+            tickrate: null,
+          });
           return;
         }
-        instance.metricsOk = true;
-        instance.metricsAt = now;
-        instance.tickrate = metrics.tickrate;
-        instance.botQuota = metrics.botQuota;
-        // The seconds left on this map, as the server itself counts them.
-        // Null means the console did not answer for it, which is a
-        // missing fact rather than a zero.
-        instance.mapSecondsLeft =
-          typeof metrics.mapSecondsLeft === 'number' ? metrics.mapSecondsLeft : null;
+        updateRowIfCurrent(registry, instance, {
+          metricsOk: true,
+          metricsAt: now,
+          tickrate: metrics.tickrate,
+          botQuota: metrics.botQuota,
+          // The seconds left on this map, as the server itself counts them.
+          // Null means the console did not answer for it, which is a
+          // missing fact rather than a zero.
+          mapSecondsLeft:
+            typeof metrics.mapSecondsLeft === 'number' ? metrics.mapSecondsLeft : null,
+        });
 
         // A2S counts bots as players, but its player count also includes
         // slots that have not timed out yet. The bridge knows how many
@@ -500,8 +508,10 @@ async function pollMetrics() {
           players: instance.players,
           bots: instance.bots,
         });
-        instance.humans = count.humans;
-        instance.humansSource = count.source;
+        updateRowIfCurrent(registry, instance, {
+          humans: count.humans,
+          humansSource: count.source,
+        });
 
         const d = evaluateDegradation(instance, metrics.tickrate, now);
         instance.degradation = d;

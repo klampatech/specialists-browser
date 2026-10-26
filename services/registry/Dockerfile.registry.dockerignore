@@ -6,4 +6,6 @@
 !services/registry/lib/fleet-logic.mjs
 !services/registry/lib/a2s-retry.mjs
 !services/registry/lib/liveness.mjs
+!services/registry/lib/registry-rows.mjs
+!services/registry/lib/console-log.mjs
 !webxash/vite-a2s-plugin.mjs
