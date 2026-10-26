@@ -16,7 +16,7 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-24, `main` (**PRODUCTION — the game is live at https://bulletballet.dev**)
+**As of:** 2026-10-26, `main` (**PRODUCTION — the game is live at https://bulletballet.dev**)
 **Active path:** webXash (Xash3D-FWGS WASM **client**) + the real TS server as a WASM **dedicated server** in a container
 **Goal:** ~~playable The Specialists in the browser~~ — **met.** Real assets, real gameplay, real dedicated server, public URL.
 
@@ -571,6 +571,86 @@ does not work.
   the player is alive, and the buy menu (which is for the dead) is
   correctly not open. A test that clicks the canvas is testing the wrong
   state.
+
+### Ctrl+W threw a "Leave site?" dialog mid-match (2026-10-26, fixed)
+
+Kyle's report, verbatim: *"While playing fullscreen, i noticed if i hit
+CTRL + a movement key (like WASD) it would trigger a browser modal to
+confirm if I wanted to leave the page or stay. Not sure what hotkey it's
+technically triggering for the browser to try and leave the page, but we
+should probably block that so users can crouch and not get popups (very
+distracting)."*
+
+**THE CHORD IS Ctrl+W** -- the browser's "close this tab". The movement
+keys are WASD, and `w` is forward, so "crouch + move forward" is
+literally Ctrl+W.
+
+**THE MECHANISM, in three steps:**
+
+1. **Chromium RESERVES Ctrl+W.** The W keydown is never dispatched to
+   the renderer, so no DOM handler can cancel it. Measured: a Ctrl+W
+   chord delivers the `ControlLeft` keydown and nothing else.
+2. **The browser then attempts the close**, which fires `beforeunload`.
+3. **OUR OWN unload guard cancels that** -- `webxash/src/services/
+   xash-loader.ts` calls `preventDefault()` + `returnValue = false`, and
+   *that* is what makes Chrome ask "Leave site?". The dialog is ours, not
+   the browser's.
+
+**THE MEASUREMENT** (real Chromium, real X11 chords, 2026-10-26). A
+Playwright/CDP key event bypasses browser accelerators entirely and
+cannot see any of this, so every reading below came from real `xdotool`
+chords into a headed Chromium:
+
+| chord | keydown reaches the page? | |
+|---|---|---|
+| Ctrl+W, Ctrl+T, Ctrl+N, Ctrl+Tab | **no** | reserved -- only `navigator.keyboard.lock()` can free them |
+| Ctrl+R, Ctrl+S, Ctrl+D, Ctrl+F, Ctrl+P, Ctrl+O, Ctrl+0..9, Alt+Left/Right | yes | a DOM gate can cancel them |
+
+**THE FIX, in two halves:**
+
+1. A DOM gate -- a capture-phase `keydown` listener that calls
+   `preventDefault()` for the chords Chromium delivers.
+2. `navigator.keyboard.lock()` for the chords Chromium reserves, so they
+   reach the page and the same gate can cancel them.
+
+The gate calls `preventDefault()` and **not** `stopImmediatePropagation()`,
+so the engine still receives the key -- the bind table has `bind "CTRL"
+"+duck"` and `bind "w" "+forward"`, so Ctrl+W is duck+forward *in the
+game*. It is safe to `preventDefault` a key the engine needs: the
+engine's key event struct carries `ctrlKey`/`shiftKey`/`altKey`/
+`metaKey` and the key/code, and has **no `defaultPrevented` field at
+all** (checked in the generated `xash.js` glue and in `xash.wasm`).
+
+**Escape stays OUT of the locked set.** Locking Escape changes what a tap
+of Escape does -- the tap then reaches the page and fullscreen is *not*
+left -- and the game's two-step Escape (press 1 releases the mouse, press
+2 opens the options overlay) is built on the browser consuming that tap.
+Measured: with and without the lock, a tap of Escape behaves identically.
+
+**THE LOCK IS RE-ASSERTED, NOT TAKEN ONCE AND TRUSTED.** Chromium drops
+it when the document loses focus, and it does not always say so:
+opening a second window and coming back drops it with **no event at
+all** -- not `visibilitychange`, not `blur`, not `focus`. The trigger is
+the modifier keydown, which always reaches the page even when the chord
+it starts is reserved, so the lock is re-taken at the exact moment the
+player starts crouching. Measured: `lock()` resolves in about 1 ms, and
+a chord fired with a 0 ms gap between the `ControlLeft` keydown and the
+W keydown still arrived.
+
+**VERIFIED** against the shipped module (bundled by bun as the app's
+build bundles it, driven with real X11 chords): Ctrl+W, Ctrl+Shift+W,
+Ctrl+R, Ctrl+S, Ctrl+T, Ctrl+N, Ctrl+1, Ctrl+Tab and Alt+Left all
+produce no dialog, no reload, no tab switch and no closed tab, and the
+engine still receives the key; a bare W and a bare A pass through
+untouched; Escape still leaves fullscreen; the lock survives a
+backgrounding round-trip. 13/13.
+
+**WHERE THE FIX LIVES:** `webxash/src/services/browser-chords.ts` (the
+chord sets -- pure data, no imports, so the parent's unit suite can read
+them) and `webxash/src/services/browser-chord-gate.ts` (the gate and the
+lock). The gate is armed exactly as long as the unload guard is
+installed, and disarmed with it, so the landing page keeps its normal
+browser shortcuts.
 
 ### The lighting question (2026-10-24, investigated — NOT fixed)
 
