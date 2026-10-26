@@ -47,11 +47,31 @@ DOCKER_GID="$(getent group docker | cut -d: -f3)"
 
 log() { echo "  $*"; }
 
+# ── log rotation ────────────────────────────────────────────────────────────
+# Every container on this host logs through docker's `json-file` driver,
+# and the default for that driver is ONE file with NO size limit. The
+# control-plane containers are quiet (the registry and the orchestrator
+# measured 4 KB after 18 hours), so this is not urgent for them — but the
+# game server's log, created by run-instance.sh, grows at 268 bytes/second
+# (measured 2026-10-26), and the two paths must not drift apart: a
+# rotation rule that lives in one script and not the other is a rule that
+# will be half-applied the next time somebody edits the other one.
+#
+# These are CREATE-TIME options — `docker update` cannot change them, so
+# they only take effect when the container is (re)created. That is exactly
+# what this script does: it replaces every container.
+LOG_MAX_SIZE="${TS_LOG_MAX_SIZE:-10m}"
+LOG_MAX_FILE="${TS_LOG_MAX_FILE:-3}"
+
 replace() {
   local name="$1"; shift
   log "recreating $name"
   docker rm -f "$name" >/dev/null 2>&1 || true
-  docker run -d --name "$name" --restart unless-stopped "$@" >/dev/null
+  docker run -d --name "$name" --restart unless-stopped \
+    --log-driver json-file \
+    --log-opt max-size="$LOG_MAX_SIZE" \
+    --log-opt max-file="$LOG_MAX_FILE" \
+    "$@" >/dev/null
 }
 
 # ── the registry: the fleet's source of truth ────────────────────────────

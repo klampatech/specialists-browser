@@ -25,6 +25,15 @@ withdrawn keyboard root cause is gone from it, both screenshots were
 re-captured from the live site, and the test count and the submodule branch
 now match the repo.
 
+**Container logs:** every container on the production host now rotates
+its docker log (`json-file`, 10 MB x 3 files per container). Before
+2026-10-26 nothing rotated it and the game server's log grew at
+268 bytes/second — ~22 MB/day, forever. The fix also closed a delivery
+bug that would have made it inert: the script that creates the game
+servers was never shipped by the deploy, and a bind mount pins the
+inode, so an updated script is invisible until the orchestrator is
+recreated. See the section below.
+
 **Brand:** the BulletBallet rebrand is **COMPLETE** — all four phases of
 `docs/REBRAND-PLAN.md` shipped on 2026-10-24 (webXash #13, #14, #15, and
 the docs sweep). Green shell, amber game: the shell is phosphor green, the
@@ -651,6 +660,76 @@ them) and `webxash/src/services/browser-chord-gate.ts` (the gate and the
 lock). The gate is armed exactly as long as the unload guard is
 installed, and disarmed with it, so the landing page keeps its normal
 browser shortcuts.
+
+### The game server's log grew without bound (2026-10-26, fixed)
+
+Every container on the production host logs through docker's `json-file`
+driver, and the default for that driver is **one file with no size
+limit**. Nothing rotated it.
+
+**MEASURED ON PRODUCTION (2026-10-26):** `ts-0`'s log was 25 MB after 22
+hours and growing at **268 bytes/second** — about **22 MB/day** from a
+single instance, for as long as the container lives. The control-plane
+containers were quiet by comparison (registry and orchestrator: 4 KB
+after 18 hours), so the game server is the one that mattered. The disk
+was at 25% (9.1 GB of 38 GB), so this was not yet an emergency — it is
+a slow leak in a thing that is supposed to be bounded.
+
+**WHY IT WAS NOT ONLY A DISK PROBLEM.** The registry reads the engine's
+console out of this log, and it reads BACKWARDS from the end
+(`docker logs --tail`, see `services/registry/lib/console-log.mjs`)
+because a full read is O(entire log) — 51 seconds against a 5.4 MB log.
+That fix made the read cheap, but a log that never stops growing is
+still a log that gets more expensive to read, more expensive to store,
+and more expensive to page through when someone is debugging a stuck
+server. Measured on production: a full `docker logs ts-0` took 1.2 s
+against the 25 MB log; `--tail 2000` took 27 ms.
+
+**THE FIX.** `--log-opt max-size=10m --log-opt max-file=3` on the
+`docker run` that creates each container — 30 MB per instance, about a
+day and a half of the measured growth, and eight instances cannot
+approach the disk. The two scripts that create containers are
+`tools/deploy/run-instance.sh` (the game servers) and
+`tools/deploy/deploy-services.sh` (the control plane), and they now use
+the same limit so the rule cannot drift apart.
+
+**TWO DELIVERY BUGS THAT WOULD HAVE MADE THE FIX INERT.** Both were
+found by asking "how does this file actually get to the host?", and
+neither is visible in a diff:
+
+1. **`run-instance.sh` was never shipped by the deploy.** Only
+   `deploy-services.sh` was scp'd to the host, so the script that
+   creates every game server had to be copied **by hand**. A fix to it
+   could be merged, reviewed, CI-green, and still never touch a running
+   container. The deploy now ships both, and `changed-paths.cjs`
+   classifies both as services changes — before, a change to either
+   script did not even trigger the control-plane rebuild that would
+   have shipped it.
+2. **A bind mount pins the inode.** The orchestrator bind-mounts
+   `run-instance.sh` from the host, so replacing the file on the host
+   is **not visible inside the running container** (measured: the
+   container's copy kept the old inode and the old size while the host's
+   file changed underneath it). The orchestrator would have kept running
+   the old script. It only picks the new one up when the container is
+   recreated — which the deploy does, in the right order: ship, then
+   recreate.
+
+**VERIFIED**, against real docker, not a mock: a container created with
+the exact flag construction the script uses records
+`{"Type":"json-file","Config":{"max-file":"3","max-size":"10m"}}`;
+after writing far past the limit the log directory holds three files
+totalling 137 KB against a 192 KB budget; and `docker logs --tail N`
+still returns the newest lines **and still spans the rotated files in
+order** — the registry's marker-then-answer contract depends on that
+ordering, and it survives rotation. A `docker logs` read of a rotated
+container was checked for the same reason.
+
+**WHAT THIS DOES NOT DO.** Log options are CREATE-TIME options:
+`docker update` cannot change them. A container that is already running
+keeps its unbounded log until it is recreated, so the 25 MB file on
+`ts-0` stays until that container is replaced. That is deliberate —
+recreating the game server kicks every player on it — so it is left to
+the orchestrator's own scale cycle rather than forced.
 
 ### The lighting question (2026-10-24, investigated — NOT fixed)
 
