@@ -152,3 +152,61 @@ jobs:
             fi
           done
           echo "  all three images are asset-free"
+
+  port:
+    name: Port — the Rust client and server tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Rust
+        # The port's own rust-toolchain.toml pins the version (1.95.0).
+        # This action installs `stable` as the default, and rustup then
+        # reads rust-toolchain.toml when cargo runs inside the port's
+        # directory, so the PINNED version is what compiles the tests --
+        # verified in the run log: "the missing active toolchain
+        # 1.95.0-x86_64-unknown-linux-gnu has been auto-installed".
+        # The cost is a second toolchain download (stable, then 1.95.0).
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache the cargo registry and the build directory
+        # The cold build is the whole cost of this job, so caching it is
+        # the difference between ~40 seconds and several minutes.
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/port/tsp-rs/target
+          key: port-cargo-${{ hashFiles('tools/port/tsp-rs/Cargo.lock') }}
+          restore-keys: port-cargo-
+
+      - name: libclang
+        # crates/goldsrc-sys's build script runs bindgen, which needs
+        # libclang. Without it the port does not compile, and the error
+        # says "Unable to find libclang" whether or not the files are
+        # there. scripts/test.sh finds this copy under /usr/lib/llvm-*/lib.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libclang-dev
+
+      - name: The engine headers
+        # crates/goldsrc-sys's build script needs the xash3d-fwgs headers
+        # and panics with "FWGS headers not found" without them. The
+        # port's own build scripts clone the same tree to the same place.
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/FWGS/xash3d-fwgs.git /tmp/xash3d-fwgs
+
+      - name: The port's tests
+        # 1,624 tests across the client, the server, the two ruleset
+        # versions and the shared layer. None of them ran in CI before
+        # 2026-10-24: nothing in the pipeline compiled the port at all.
+        #
+        # The release profile, because that is the profile the port
+        # ships in.
+        working-directory: tools/port/tsp-rs
+        run: scripts/test.sh --workspace --release

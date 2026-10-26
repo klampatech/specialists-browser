@@ -1,0 +1,15 @@
+# The port vendors two files from The Specialists 2.1 byte for byte:
+# bots21.txt and bot_say21.txt. They are Windows files, so they are CRLF,
+# and the port's own comment promises "byte for byte".
+#
+# core.autocrlf is "input", which normalises CRLF to LF when a file is
+# added. That silently changed these two files when they were vendored:
+# the blob in the repository has LF, while the working copy of anyone who
+# vendored them still has CRLF. So a fresh clone builds a port whose
+# embedded bot texts are not the upstream bytes -- and a test that checks
+# those bytes fails on every machine except the one that vendored them.
+#
+# -text turns the normalisation off for them, so the bytes in the
+# repository are the bytes in every checkout, on every platform.
+tools/port/tsp-rs/crates/ts21/data/bots21.txt -text
+tools/port/tsp-rs/crates/ts21/data/bot_say21.txt -text
