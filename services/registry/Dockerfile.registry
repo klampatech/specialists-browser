@@ -27,6 +27,14 @@ COPY services/registry/service.mjs /app/services/registry/service.mjs
 COPY services/registry/lib/fleet-logic.mjs /app/services/registry/lib/fleet-logic.mjs
 COPY services/registry/lib/a2s-retry.mjs /app/services/registry/lib/a2s-retry.mjs
 COPY services/registry/lib/liveness.mjs /app/services/registry/lib/liveness.mjs
+# The rows are MUTATED in place, never replaced, so a concurrent poll
+# cannot orphan a writer. That rule is in its own module so a unit
+# test can hold the line against a well-meaning refactor.
+COPY services/registry/lib/registry-rows.mjs /app/services/registry/lib/registry-rows.mjs
+# The console is read from the tail of the log, not from a byte offset
+# over the whole thing. The whole-log read is O(size), and the game
+# server's log grows without bound.
+COPY services/registry/lib/console-log.mjs /app/services/registry/lib/console-log.mjs
 
 # The registry imports queryServer() from the Vite plugin rather than
 # reimplementing A2S: the GoldSrc handshake rules are easy to get subtly
