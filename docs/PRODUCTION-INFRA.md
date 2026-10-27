@@ -202,8 +202,16 @@ Two things fall out of it:
 1. **The bot quota gives way to humans automatically.** `ts_bot_quota`
    went 16 → 12 → 9 as humans arrived. The fleet makes room for people
    by removing bots, which is the right behaviour and worth knowing.
-2. **The map change looks like it drops every client, but a single
-   client handles it in ONE SECOND.** The server logs
+2. **The map change is not broken - it is seamless, and a single
+   client handles it in ONE SECOND.**
+
+   > **Kyle, playing it (2026-10-27):** *"the way the map changes doesn't
+   > seem broken at all (in fact it works seemlessly and very quickly in my
+   > experience)."* A real player's lived experience, and it agrees with the
+   > instrumented measurement. **Treat the map change as working, not as an
+   > open problem.**
+
+   The server logs
    `CHANGE LEVEL: ts_wyndham` when the 15-minute `mp_timeleft` expires.
    Measured against the live server:
 
