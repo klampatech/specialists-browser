@@ -1,6 +1,6 @@
 # Production Infrastructure
 
-**Status:** provisioned, hardened, partially wired. Asset delivery live; **game plane live** on the OVH VPS (`bb-prod` → `vps-eebb5e11-vps-ovh-us`; `ts-0` on `ts-server:0.26`, healthy — measured 2026-10-25). The game-server *image* is still built by hand, outside the deploy pipeline.
+**Status:** provisioned, hardened, partially wired. Asset delivery live; **game plane live** on the OVH VPS (`bb-prod` → `vps-eebb5e11-vps-ovh-us`; `ts-0` on `ts-server:0.26`, healthy — measured 2026-10-25; bandwidth and CPU measured with 8 real browsers 2026-10-27, see §3.1). The game-server *image* is still built by hand, outside the deploy pipeline.
 
 Everything here is **measured**, not estimated, except where explicitly marked `UNVERIFIED`.
 
@@ -11,7 +11,7 @@ Everything here is **measured**, not estimated, except where explicitly marked `
 | Decision | Choice | Why |
 |---|---|---|
 | Object storage | **Cloudflare R2** | Egress is free. At 1,000 new players the payload costs **$0.36/mo on R2 vs ~$47 on S3**. That single number decided it. |
-| Game/bridge host | **OVHcloud VPS-1 2027 LocalZone** | Unmetered traffic, 500 Mbps, $6.54/mo. |
+| Game/bridge host | **OVHcloud VPS-1 2027 LocalZone** | Unmetered traffic, 500 Mbps (symmetric — up *and* down), $6.54/mo. Measured: 354 Mbit/s down, 643 Mbit/s up. |
 | Region | **Dallas (`US-EAST-LZ-DAL`)** | Nearest to the US population centre; measured closer than Vint Hill VA from every major US metro. |
 | Canonical domain | **`bulletballet.dev`** | HSTS-preloaded → browsers force HTTPS before the first packet. The WASM build needs a secure context anyway (`crypto.subtle`, COOP/COEP). |
 | Vanity alias | **`bulletballet.party`** *(pending registration)* | 301 → `.dev`. Cheap-and-flat renewal ($5.18/yr). |
@@ -46,7 +46,9 @@ disk      38 GB total, 34 GB free
 SSH alias bb-prod / bulletballet
 ```
 
-⚠️ **Latency caveat:** the developer's egress is `47.190.115.49`, **Plano, Texas** — ~30 miles from the box. Measured RTT to the VPS is **4.26 ms**. Every timing observed from this machine is a best case, not a representative player experience. Re-measure from a real remote client before trusting any latency claim.
+⚠️ **Latency caveat:** the developer's egress is `47.190.115.49`, **Plano, Texas** — ~30 miles from the box. Measured RTT to the VPS is **4–6 ms** (ICMP, re-measured 2026-10-27; the earlier 4.26 ms figure was one sample). Every timing observed from this machine is a best case, not a representative player experience. Re-measure from a real remote client before trusting any latency claim.
+
+**And a second caveat, bigger than the first:** a latency measurement taken from inside the browser page that runs the game is **not a network measurement** — the page's main thread is saturated by the engine (§3.1). Measure from an idle page, or from outside the browser.
 
 ---
 
@@ -95,11 +97,306 @@ The architecture doc modelled **64 slots per VM** (8 instances × 8 players). Wi
 32-player instances that is **4× the capacity per box** — 256. One VPS-1 covers a
 long way past what a starting audience needs.
 
+### Real clients: measured bandwidth and CPU (2026-10-27)
+
+**This answers caveat 1 above, with real clients.** Measured against
+production: 8 real Chromium browsers, each with its own context and its
+own 493 MB archive download, connecting to the live server at
+`https://bulletballet.dev/`. The game server was not restarted, reconfigured
+or otherwise touched.
+
+#### What each player actually costs
+
+| | measured | 32 players |
+|---|---|---|
+| **game traffic, server → client** | **114 kbit/s** per human (median at N=4; range 85–150) | **3.7 Mbit/s** |
+| game traffic, client → server | 3.2 kbit/s per human | 103 kbit/s |
+| **cold start, from the VPS** | **~26 MiB** (engine WASM + web bundle) | 830 MiB if all 32 arrive at once |
+| **cold start, the 493 MB archive** | **0 bytes from the VPS** | 0 bytes — it is Cloudflare R2 |
+| server CPU | **17% of 2 vCores** at 4 humans + 14 bots | — |
+
+**Bandwidth is not the constraint. The VPS's 500 Mbps has roughly 100× the
+headroom 32 players need** (3.7 Mbit/s of 500). The 493 MB archive is
+served by Cloudflare R2 and never touches the VPS — confirmed from Caddy's
+own access log, which shows **zero** bytes for `/hl/`. The only thing the
+VPS serves per cold player is ~26 MiB of engine and bundle.
+
+**How the per-player rate was derived, and why it is trustworthy.** The
+bridge counts every byte it forwards, so `bytesToClient` is the players'
+traffic exactly. The per-player rate is that counter's rate divided by the
+A2S human count, taken only from **steady-state samples** — the samples
+where the human count had not just changed. The samples immediately after
+a join are excluded: a joining player triggers a full state dump (up to
+651 kbit/s for a few seconds) and that is a **one-off per player**, not a
+per-player-second rate, so it must not be averaged in.
+
+At the highest concurrency reached (4 humans), 6 steady-state samples give
+**85–150 kbit/s per player, median 114**.
+
+**The bound, so the projection is not just a best case.** Taking the
+worst single-player rate ever observed (651 kbit/s) and scaling it to 32
+players gives 20.8 Mbit/s — **4.2% of the 500 Mbps plan**. Every basis of
+the projection (median, p95, worst-observed) lands under 5% of the
+available bandwidth. The conclusion does not depend on which one you
+believe.
+
+#### The number that was wrong: "500 Mbps down"
+
+Kyle's recollection was 500 Mbps **down**. The plan is in fact **500 Mbps
+public bandwidth, unmetered traffic** — OVH's VPS-1 2027 LocalZone, and
+bandwidth is symmetric, so it is 500 up as well. Measured on the box:
+
+| direction | measured | note |
+|---|---|---|
+| download | **44.2 MB/s = 354 Mbit/s** | to Hetzner (Europe) |
+| upload | **80.4 MB/s = 643 Mbit/s** | to Cloudflare anycast, Dallas |
+| upload, 1 stream to Europe | 3.7 MB/s = 30 Mbit/s | path-limited, not port-limited |
+| upload, 16 streams to Europe | 11.6 MB/s = 93 Mbit/s | scales with concurrency |
+
+The single-stream upload figure is the trap: one TCP stream to Europe
+measures ~30 Mbit/s, which looks like a slow port and is not. The port
+does 643 Mbit/s to a nearby anycast address. **Measure upload with
+parallel streams, or to a nearby endpoint, or you will measure the
+transatlantic path instead of the server.**
+
+#### The finding that matters more than bandwidth
+
+**"The registry says 8 humans" is not "8 people are playing."**
+
+The 8 browsers opened 8 WebSockets on the bridge, and the bridge counted
+all 8 as live connections — which is what the registry republishes as
+`humans` (`humansSource: "bridge"`). But the **game server's own A2S reply
+said 0 humans**, and the bridge's byte counters were frozen. The sockets
+were open and idle; the players were not in the game yet, because the
+client downloads its 493 MB archive first and only then boots the engine
+and joins.
+
+The distinction is not academic: the two numbers disagree by 8, and only
+one of them is the player count. A load test that trusts the registry
+measures a pre-game connection and reports **0.00 Mbit/s** — which is
+exactly what the first version of this test did. The game server's A2S
+count is the authoritative one.
+
+There is a second, worse version of the same thing here: the registry
+reports `humans` from the bridge's socket count, and A2S `players`
+**includes bots**, so the human count is `players − bots` (A2S layout,
+verified byte by byte: `appId(2) players(1) maxPlayers(1) bots(1)`).
+
+#### What 8 browsers actually did
+
+Timeline from the instrumented run, all on one clock:
+
+```
+   t  live  a2sHumans  down B/s   up B/s
+  30s      2          0          0        0     connecting, archive downloading
+  35s      2          1     13612    891     the first player IS in the game
+  68s      4          2     24180   1428
+  99s      4          4     32717   1230     4 humans in the game
+ 148s      4          4     50452   1138     steady state
+ 153s      4          0     33700   1138     the map changed — everyone dropped
+ 158s+     4..8       0          0      ~0     sockets open, nobody in the game
+```
+
+Two things fall out of it:
+
+1. **The bot quota gives way to humans automatically.** `ts_bot_quota`
+   went 16 → 12 → 9 as humans arrived. The fleet makes room for people
+   by removing bots, which is the right behaviour and worth knowing.
+2. **The map change is not broken - it is seamless, and a single
+   client handles it in ONE SECOND.**
+
+   > **Kyle, playing it (2026-10-27):** *"the way the map changes doesn't
+   > seem broken at all (in fact it works seemlessly and very quickly in my
+   > experience)."* A real player's lived experience, and it agrees with the
+   > instrumented measurement. **Treat the map change as working, not as an
+   > open problem.**
+
+   The server logs
+   `CHANGE LEVEL: ts_wyndham` when the 15-minute `mp_timeleft` expires.
+   Measured against the live server:
+
+   ```
+   [01:54:47] CHANGE LEVEL: ts_wyndham
+   [01:54:48] [ts] Specialist connected (address 172.17.0.1:60968)
+   ```
+
+   **One second**, same address — the client reconnected on its own, the
+   WebSocket never closed, and the page never reloaded. So the map
+   change is *not* a disconnection event, and the client's
+   `connectionLost` path never fires for it.
+
+   The client's own console shows the mechanism, timestamped to the same
+   second as the server's `CHANGE LEVEL`:
+
+   ```
+   [20:54:48] [xash-stdout] reconnecting...
+   [20:54:48] [xash-stdout] Connecting to 40.160.225.81:27015... (retry #1)
+   ```
+
+   The **engine** detects the level change and re-runs its connect
+   handshake at the game-protocol level. Nothing above the engine
+   notices: the page did not reload (one navigation for the whole run),
+   the WebSocket stayed open, and the `connectionLost` overlay never
+   appeared. A player sees the map change and keeps playing.
+
+   The 8-browser run seemed to contradict this: after its map change
+   the A2S human count went to 0 and the bridge's downstream counter
+   froze for **135 seconds**, with `liveConnections` still at 8 the
+   whole time. That is *not* the map change breaking the clients — it
+   is 8 clients on a 16-core box that was already at **load average
+   14** re-establishing their sessions, and the game's own log for
+   that window shows the clients reappearing one at a time
+   (`Specialist connected` at 01:31:48, 01:33:45, 01:34:36, 01:35:28).
+
+   The server's log for that window also shows the real client-side
+   failure mode, which is *not* the map change: **`Specialist timed
+   out`** — the client stops sending and the server drops it, three
+   times in four minutes. A client that stops talking to the server
+   is the thing to investigate, and it is a different bug from the
+   map change.
+
+   **Reproduced with 8 clients, and the recovery does happen.** A second
+   instrumented run (8 browsers, watching across `CHANGE LEVEL:
+   ts_henny2`) saw the same frozen counter and the same 0 humans, and
+   the clients staggered back over several minutes: the server logged
+   `Specialist connected` at 02:16:18 and 02:16:41, and the registry
+   eventually reported **humans=8** — all eight in the game. So the
+   map change is survivable, and the 135 seconds is the start of a
+   slow recovery rather than a permanent break.
+
+   **What makes it slow is the TEST BOX, not the server.** During the
+   run, one Chromium **GPU process was spinning at 566% CPU** — the
+   software rasteriser, a headless-only artifact — while the 16-core
+   box sat at **load average 14** with 8 WASM engines competing for
+   it. A *fresh* client launched against the same server at the same
+   moment got in immediately and received live game data. And the
+   bridge held **8 live WebSockets and 18 UDP sessions to the game
+   server** while A2S reported 0 humans — the transport was healthy;
+   the engines were not pulling.
+
+   The lesson for the measurement: **8 browsers on one box is not 8
+   players.** The server was never the bottleneck, and the numbers from
+   a saturated test machine must not be read as server behaviour.
+
+   **A note on the probe itself.** Late in the single-client run, the
+   probe's own `page.evaluate` calls started failing ("page gone") for
+   ~120 s — the page was so busy it could not answer a trivial
+   JavaScript call. That is the same main-thread starvation the
+   event-loop-lag measurement found (4.1 ms idle → 154.5 ms in game),
+   showing up as a measurement tool losing its grip. It is a reminder
+   that a saturated client distorts not only the game but anything
+   measured from inside the page.
+
+**Tickrate held at 100 throughout** — avg 100, min 100, target 100, with
+`responsive=true` and `metricsOk=true` — including across the map change.
+The server's own CPU sat at 15–18% of the 2 vCores with 4 humans and 14
+bots fighting.
+
+#### The latency number was measuring the wrong thing
+
+The first run reported a browser→bridge→server round trip of
+**111–136 ms median**, and that number was wrong. It was not the
+network.
+
+The measurement ran from inside the page that was also running the
+WASM engine at 100 tick, using `onmessage` — which the browser
+delivers on the **main thread**, the same thread the engine's render
+and simulation loop run on. Every reply waited behind the engine.
+
+Three measurements, same browser, same server, same code path:
+
+| | measured | what it is |
+|---|---|---|
+| page **idle**, before join | **31.6 ms** | the network + the server |
+| page **running the game** | **112.2 ms** | the same path, plus the page competing with itself |
+| **event-loop lag** (`setTimeout(0)`), idle | **4.1 ms** | an idle page services a callback in 4 ms |
+| **event-loop lag**, in game | **154.5 ms** (max 252) | the main thread is ~150 ms behind |
+
+So the 111–136 ms was ~80 ms of the page waiting for its own engine.
+What a player feels on the wire is the **~32 ms** figure — and that is
+itself mostly the server's tick (below).
+
+**A latency measurement taken from inside the page the game runs in is
+not a network measurement.** The idle-page number is the one to trust.
+
+#### Where the remaining ~30 ms goes
+
+| | median | p95 |
+|---|---|---|
+| ICMP to the VPS (the wire) | 4–6 ms | — |
+| **UDP A2S over loopback, on the VPS** (server alone, no network) | **10.0–10.8 ms** | 30 ms |
+| UDP A2S from this machine | 11 ms | 63 ms |
+
+The loopback histogram is the tell: **29 of 32 samples landed in the
+5–15 ms bucket.** A 100 Hz tick is 10 ms, and an A2S query is answered
+on the tick boundary — so the answer arrives at the next tick. The
+server **is** hitting its 100 Hz target; the median answer time is
+exactly one tick.
+
+The tail (p95 30 ms, occasional 50–60 ms) is late ticks. And pairing
+each slow round trip with an ICMP to the same host proved it is the
+server, not the wire: **24 of 26 slow samples had a perfectly healthy
+4–5 ms ICMP**, and only one coincided with a network spike.
+
+#### What this does NOT say
+
+- **4 humans is the most that were ever simultaneously in the game.** The
+  8 browsers all connected, but only 4 had joined at the peak before the
+  map rotated. So the 114 kbit/s per player is measured at N=4, not
+  N=8, and per-player cost rises with player count — the server sends
+  each client a bigger snapshot when there is more to see. The 32-player
+  32-player projection is therefore an **extrapolation, not a measurement** —
+  though scaling even the worst observed per-player rate to 32 lands at
+  4.2% of the 500 Mbps, so the conclusion is not sensitive to it.
+- **The measurement ran from Plano, Texas**, 30 miles from the box
+  (RTT 4.26 ms) — the same caveat as §2. Latency from a real remote
+  player is not represented.
+- **The tickrate was never stressed.** 100 Hz on 2 shared vCores at 17%
+  says nothing about 100 Hz at 32 humans.
+- **The ~150 ms of event-loop lag in the browser is a CLIENT finding, and
+  it was not investigated further.** The main thread cannot service a
+  callback for 150 ms while the engine runs, so the page is starved for
+  anything that is not the simulation — and any measurement taken from
+  inside the page is inflated by it. Whether a player *feels* it (their
+  input, their HUD, their audio) is a separate question from whether the
+  network is slow, and it was not answered here. **This is the most
+  likely thing to actually hurt a player, and it is worth a look.**
+- **`sv_maxrate` is unset**, so the server's own bandwidth ceiling is the
+  engine default. That default was not read out of the running server
+  (the console pipe did not answer for it), so it is `UNVERIFIED`.
+
+#### What to do about it
+
+**Nothing about bandwidth.** 32 players need 3.7 Mbit/s of the 500 the
+plan has, and the 493 MB archive is free and off the VPS. If someone
+later worries about bandwidth, the number to check is the VPS's
+**CPU** (RAM already binds at 8 instances) and the **2 vCores'** ability
+to hold tickrate 100 at 32 humans — which is measured and unmeasured
+respectively.
+
+**But there IS something worth chasing, and it is not the server.** The
+client's main thread is **~150 ms behind** while the engine runs
+(event-loop lag: 4.1 ms idle → 154.5 ms in game). That is a browser
+client starving itself, on the player's machine, and it is a far more
+plausible cause of "the game feels bad" than a 500 Mbps port with 3.85
+Mbit/s of traffic on it. The server answers a query in one 10 ms tick
+and the wire is 4–6 ms. The player's own browser is the slow part.
+
+**The two things to measure next, in order:**
+1. **Does a player feel the 150 ms?** (input lag, HUD lag, audio
+   underruns.) That is a client problem and it is the one with the
+   evidence behind it.
+2. **Tickrate 100 at 32 humans** on the 2 vCores — the server-side
+   unknown, and the only remaining capacity question.
+
 ### Caveats — what would make this wrong
 
-1. **Bots are not players.** A bot client sends no network traffic. 32 humans add
-   per-client packet parsing and delta encoding every tick. Direction unknown,
-   additive cost likely.
+1. ~~**Bots are not players.**~~ **ANSWERED 2026-10-27** — see §3.1. Real
+   clients: a human costs **114 kbit/s** of server→client traffic and no
+   measurable server CPU beyond the bot it displaces. The bot quota gives way
+   automatically (16 → 9 as humans arrived), so humans and bots are not
+   additive. Per-player cost still rises with player count, so the
+   32-player figure is an extrapolation from a peak of 4.
 2. **`ts_casa` is a small map.** Entity count drives AI and touch-test cost. A
    larger map costs more per player.
 3. **The measurement ran on different silicon.** Test host: Ryzen 7 5700U
