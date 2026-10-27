@@ -1,6 +1,6 @@
 # Production Infrastructure
 
-**Status:** provisioned, hardened, partially wired. Asset delivery live; **game plane live** on the OVH VPS (`bb-prod` → `vps-eebb5e11-vps-ovh-us`; `ts-0` on `ts-server:0.26`, healthy — measured 2026-10-25). The game-server *image* is still built by hand, outside the deploy pipeline.
+**Status:** provisioned, hardened, partially wired. Asset delivery live; **game plane live** on the OVH VPS (`bb-prod` → `vps-eebb5e11-vps-ovh-us`; `ts-0` on `ts-server:0.26`, healthy — measured 2026-10-25; bandwidth and CPU measured with 8 real browsers 2026-10-27, see §3.1). The game-server *image* is still built by hand, outside the deploy pipeline.
 
 Everything here is **measured**, not estimated, except where explicitly marked `UNVERIFIED`.
 
@@ -11,7 +11,7 @@ Everything here is **measured**, not estimated, except where explicitly marked `
 | Decision | Choice | Why |
 |---|---|---|
 | Object storage | **Cloudflare R2** | Egress is free. At 1,000 new players the payload costs **$0.36/mo on R2 vs ~$47 on S3**. That single number decided it. |
-| Game/bridge host | **OVHcloud VPS-1 2027 LocalZone** | Unmetered traffic, 500 Mbps, $6.54/mo. |
+| Game/bridge host | **OVHcloud VPS-1 2027 LocalZone** | Unmetered traffic, 500 Mbps (symmetric — up *and* down), $6.54/mo. Measured: 354 Mbit/s down, 643 Mbit/s up. |
 | Region | **Dallas (`US-EAST-LZ-DAL`)** | Nearest to the US population centre; measured closer than Vint Hill VA from every major US metro. |
 | Canonical domain | **`bulletballet.dev`** | HSTS-preloaded → browsers force HTTPS before the first packet. The WASM build needs a secure context anyway (`crypto.subtle`, COOP/COEP). |
 | Vanity alias | **`bulletballet.party`** *(pending registration)* | 301 → `.dev`. Cheap-and-flat renewal ($5.18/yr). |
@@ -95,11 +95,138 @@ The architecture doc modelled **64 slots per VM** (8 instances × 8 players). Wi
 32-player instances that is **4× the capacity per box** — 256. One VPS-1 covers a
 long way past what a starting audience needs.
 
+### Real clients: measured bandwidth and CPU (2026-10-27)
+
+**This answers caveat 1 above, with real clients.** Measured against
+production: 8 real Chromium browsers, each with its own context and its
+own 493 MB archive download, connecting to the live server at
+`https://bulletballet.dev/`. The game server was not restarted, reconfigured
+or otherwise touched.
+
+#### What each player actually costs
+
+| | measured | 32 players |
+|---|---|---|
+| **game traffic, server → client** | **120 kbit/s** per human | **3.85 Mbit/s** |
+| game traffic, client → server | 3.2 kbit/s per human | 103 kbit/s |
+| **cold start, from the VPS** | **~26 MiB** (engine WASM + web bundle) | 830 MiB if all 32 arrive at once |
+| **cold start, the 493 MB archive** | **0 bytes from the VPS** | 0 bytes — it is Cloudflare R2 |
+| server CPU | **17% of 2 vCores** at 4 humans + 14 bots | — |
+
+**Bandwidth is not the constraint. The VPS's 500 Mbps has roughly 100× the
+headroom 32 players need** (3.85 Mbit/s of 500). The 493 MB archive is
+served by Cloudflare R2 and never touches the VPS — confirmed from Caddy's
+own access log, which shows **zero** bytes for `/hl/`. The only thing the
+VPS serves per cold player is ~26 MiB of engine and bundle.
+
+#### The number that was wrong: "500 Mbps down"
+
+Kyle's recollection was 500 Mbps **down**. The plan is in fact **500 Mbps
+public bandwidth, unmetered traffic** — OVH's VPS-1 2027 LocalZone, and
+bandwidth is symmetric, so it is 500 up as well. Measured on the box:
+
+| direction | measured | note |
+|---|---|---|
+| download | **44.2 MB/s = 354 Mbit/s** | to Hetzner (Europe) |
+| upload | **80.4 MB/s = 643 Mbit/s** | to Cloudflare anycast, Dallas |
+| upload, 1 stream to Europe | 3.7 MB/s = 30 Mbit/s | path-limited, not port-limited |
+| upload, 16 streams to Europe | 11.6 MB/s = 93 Mbit/s | scales with concurrency |
+
+The single-stream upload figure is the trap: one TCP stream to Europe
+measures ~30 Mbit/s, which looks like a slow port and is not. The port
+does 643 Mbit/s to a nearby anycast address. **Measure upload with
+parallel streams, or to a nearby endpoint, or you will measure the
+transatlantic path instead of the server.**
+
+#### The finding that matters more than bandwidth
+
+**"The registry says 8 humans" is not "8 people are playing."**
+
+The 8 browsers opened 8 WebSockets on the bridge, and the bridge counted
+all 8 as live connections — which is what the registry republishes as
+`humans` (`humansSource: "bridge"`). But the **game server's own A2S reply
+said 0 humans**, and the bridge's byte counters were frozen. The sockets
+were open and idle; the players were not in the game yet, because the
+client downloads its 493 MB archive first and only then boots the engine
+and joins.
+
+The distinction is not academic: the two numbers disagree by 8, and only
+one of them is the player count. A load test that trusts the registry
+measures a pre-game connection and reports **0.00 Mbit/s** — which is
+exactly what the first version of this test did. The game server's A2S
+count is the authoritative one.
+
+There is a second, worse version of the same thing here: the registry
+reports `humans` from the bridge's socket count, and A2S `players`
+**includes bots**, so the human count is `players − bots` (A2S layout,
+verified byte by byte: `appId(2) players(1) maxPlayers(1) bots(1)`).
+
+#### What 8 browsers actually did
+
+Timeline from the instrumented run, all on one clock:
+
+```
+   t  live  a2sHumans  down B/s   up B/s
+  30s      2          0          0        0     connecting, archive downloading
+  35s      2          1     13612    891     the first player IS in the game
+  68s      4          2     24180   1428
+  99s      4          4     32717   1230     4 humans in the game
+ 148s      4          4     50452   1138     steady state
+ 153s      4          0     33700   1138     the map changed — everyone dropped
+ 158s+     4..8       0          0      ~0     sockets open, nobody in the game
+```
+
+Two things fall out of it:
+
+1. **The bot quota gives way to humans automatically.** `ts_bot_quota`
+   went 16 → 12 → 9 as humans arrived. The fleet makes room for people
+   by removing bots, which is the right behaviour and worth knowing.
+2. **The map change drops every client.** At t=153s the map rotated and
+   the A2S human count went to 0 while the sockets stayed open. The
+   server log shows `Specialist disconnected` for each one. The clients
+   reconnect on their own, but the window where the registry reports
+   humans and the server reports none is real and lasts until they are
+   back.
+
+**Tickrate held at 100 throughout** — avg 100, min 100, target 100, with
+`responsive=true` and `metricsOk=true` — including across the map change.
+The server's own CPU sat at 15–18% of the 2 vCores with 4 humans and 14
+bots fighting.
+
+#### What this does NOT say
+
+- **4 humans is the most that were ever simultaneously in the game.** The
+  8 browsers all connected, but only 4 had joined at the peak before the
+  map rotated. So the 120 kbit/s per player is measured at N=4, not
+  N=8, and per-player cost rises with player count — the server sends
+  each client a bigger snapshot when there is more to see. The 32-player
+  projection is therefore an **extrapolation, not a measurement**.
+- **The measurement ran from Plano, Texas**, 30 miles from the box
+  (RTT 4.26 ms) — the same caveat as §2. Latency from a real remote
+  player is not represented.
+- **The tickrate was never stressed.** 100 Hz on 2 shared vCores at 17%
+  says nothing about 100 Hz at 32 humans.
+- **`sv_maxrate` is unset**, so the server's own bandwidth ceiling is the
+  engine default. That default was not read out of the running server
+  (the console pipe did not answer for it), so it is `UNVERIFIED`.
+
+#### What to do about it
+
+**Nothing about bandwidth.** 32 players need 3.85 Mbit/s of the 500 the
+plan has, and the 493 MB archive is free and off the VPS. If someone
+later worries about bandwidth, the number to check is the VPS's
+**CPU** (RAM already binds at 8 instances) and the **2 vCores'** ability
+to hold tickrate 100 at 32 humans — which is measured and unmeasured
+respectively.
+
 ### Caveats — what would make this wrong
 
-1. **Bots are not players.** A bot client sends no network traffic. 32 humans add
-   per-client packet parsing and delta encoding every tick. Direction unknown,
-   additive cost likely.
+1. ~~**Bots are not players.**~~ **ANSWERED 2026-10-27** — see §3.1. Real
+   clients: a human costs **120 kbit/s** of server→client traffic and no
+   measurable server CPU beyond the bot it displaces. The bot quota gives way
+   automatically (16 → 9 as humans arrived), so humans and bots are not
+   additive. Per-player cost still rises with player count, so the
+   32-player figure is an extrapolation from a peak of 4.
 2. **`ts_casa` is a small map.** Entity count drives AI and touch-test cost. A
    larger map costs more per player.
 3. **The measurement ran on different silicon.** Test host: Ryzen 7 5700U
