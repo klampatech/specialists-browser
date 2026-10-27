@@ -109,17 +109,36 @@ or otherwise touched.
 
 | | measured | 32 players |
 |---|---|---|
-| **game traffic, server → client** | **120 kbit/s** per human | **3.85 Mbit/s** |
+| **game traffic, server → client** | **114 kbit/s** per human (median at N=4; range 85–150) | **3.7 Mbit/s** |
 | game traffic, client → server | 3.2 kbit/s per human | 103 kbit/s |
 | **cold start, from the VPS** | **~26 MiB** (engine WASM + web bundle) | 830 MiB if all 32 arrive at once |
 | **cold start, the 493 MB archive** | **0 bytes from the VPS** | 0 bytes — it is Cloudflare R2 |
 | server CPU | **17% of 2 vCores** at 4 humans + 14 bots | — |
 
 **Bandwidth is not the constraint. The VPS's 500 Mbps has roughly 100× the
-headroom 32 players need** (3.85 Mbit/s of 500). The 493 MB archive is
+headroom 32 players need** (3.7 Mbit/s of 500). The 493 MB archive is
 served by Cloudflare R2 and never touches the VPS — confirmed from Caddy's
 own access log, which shows **zero** bytes for `/hl/`. The only thing the
 VPS serves per cold player is ~26 MiB of engine and bundle.
+
+**How the per-player rate was derived, and why it is trustworthy.** The
+bridge counts every byte it forwards, so `bytesToClient` is the players'
+traffic exactly. The per-player rate is that counter's rate divided by the
+A2S human count, taken only from **steady-state samples** — the samples
+where the human count had not just changed. The samples immediately after
+a join are excluded: a joining player triggers a full state dump (up to
+651 kbit/s for a few seconds) and that is a **one-off per player**, not a
+per-player-second rate, so it must not be averaged in.
+
+At the highest concurrency reached (4 humans), 6 steady-state samples give
+**85–150 kbit/s per player, median 114**.
+
+**The bound, so the projection is not just a best case.** Taking the
+worst single-player rate ever observed (651 kbit/s) and scaling it to 32
+players gives 20.8 Mbit/s — **4.2% of the 500 Mbps plan**. Every basis of
+the projection (median, p95, worst-observed) lands under 5% of the
+available bandwidth. The conclusion does not depend on which one you
+believe.
 
 #### The number that was wrong: "500 Mbps down"
 
@@ -245,10 +264,12 @@ server, not the wire: **24 of 26 slow samples had a perfectly healthy
 
 - **4 humans is the most that were ever simultaneously in the game.** The
   8 browsers all connected, but only 4 had joined at the peak before the
-  map rotated. So the 120 kbit/s per player is measured at N=4, not
+  map rotated. So the 114 kbit/s per player is measured at N=4, not
   N=8, and per-player cost rises with player count — the server sends
   each client a bigger snapshot when there is more to see. The 32-player
-  projection is therefore an **extrapolation, not a measurement**.
+  32-player projection is therefore an **extrapolation, not a measurement** —
+  though scaling even the worst observed per-player rate to 32 lands at
+  4.2% of the 500 Mbps, so the conclusion is not sensitive to it.
 - **The measurement ran from Plano, Texas**, 30 miles from the box
   (RTT 4.26 ms) — the same caveat as §2. Latency from a real remote
   player is not represented.
@@ -268,7 +289,7 @@ server, not the wire: **24 of 26 slow samples had a perfectly healthy
 
 #### What to do about it
 
-**Nothing about bandwidth.** 32 players need 3.85 Mbit/s of the 500 the
+**Nothing about bandwidth.** 32 players need 3.7 Mbit/s of the 500 the
 plan has, and the 493 MB archive is free and off the VPS. If someone
 later worries about bandwidth, the number to check is the VPS's
 **CPU** (RAM already binds at 8 instances) and the **2 vCores'** ability
@@ -293,7 +314,7 @@ and the wire is 4–6 ms. The player's own browser is the slow part.
 ### Caveats — what would make this wrong
 
 1. ~~**Bots are not players.**~~ **ANSWERED 2026-10-27** — see §3.1. Real
-   clients: a human costs **120 kbit/s** of server→client traffic and no
+   clients: a human costs **114 kbit/s** of server→client traffic and no
    measurable server CPU beyond the bot it displaces. The bot quota gives way
    automatically (16 → 9 as humans arrived), so humans and bots are not
    additive. Per-player cost still rises with player count, so the
