@@ -67,6 +67,13 @@ START_MAP="${TS_MAP:-$DEFAULT_MAP}"
 # and the server silently never comes up. A file plus `tail -F` has
 # neither failure mode, and the same `echo cmd > file` interface.
 CONSOLE="$ROOT/engine.console"
+# Remove it first, then create a fresh regular file. The production
+# entrypoint (tools/deploy/entrypoint.sh) creates its console as a FIFO
+# with `mkfifo`, and if a FIFO is ever left at this path then
+# `: > "$CONSOLE"` blocks FOREVER waiting for a reader that never comes
+# — the script hangs with no output and no error, and the server never
+# starts. `rm -f` first so a stale FIFO cannot do that.
+rm -f "$CONSOLE"
 : > "$CONSOLE"
 
 setsid bash -c "tail -n +1 -F '$CONSOLE' | ./xash -dedicated -dev -game ts \
