@@ -46,7 +46,9 @@ disk      38 GB total, 34 GB free
 SSH alias bb-prod / bulletballet
 ```
 
-⚠️ **Latency caveat:** the developer's egress is `47.190.115.49`, **Plano, Texas** — ~30 miles from the box. Measured RTT to the VPS is **4.26 ms**. Every timing observed from this machine is a best case, not a representative player experience. Re-measure from a real remote client before trusting any latency claim.
+⚠️ **Latency caveat:** the developer's egress is `47.190.115.49`, **Plano, Texas** — ~30 miles from the box. Measured RTT to the VPS is **4–6 ms** (ICMP, re-measured 2026-10-27; the earlier 4.26 ms figure was one sample). Every timing observed from this machine is a best case, not a representative player experience. Re-measure from a real remote client before trusting any latency claim.
+
+**And a second caveat, bigger than the first:** a latency measurement taken from inside the browser page that runs the game is **not a network measurement** — the page's main thread is saturated by the engine (§3.1). Measure from an idle page, or from outside the browser.
 
 ---
 
@@ -193,6 +195,52 @@ Two things fall out of it:
 The server's own CPU sat at 15–18% of the 2 vCores with 4 humans and 14
 bots fighting.
 
+#### The latency number was measuring the wrong thing
+
+The first run reported a browser→bridge→server round trip of
+**111–136 ms median**, and that number was wrong. It was not the
+network.
+
+The measurement ran from inside the page that was also running the
+WASM engine at 100 tick, using `onmessage` — which the browser
+delivers on the **main thread**, the same thread the engine's render
+and simulation loop run on. Every reply waited behind the engine.
+
+Three measurements, same browser, same server, same code path:
+
+| | measured | what it is |
+|---|---|---|
+| page **idle**, before join | **31.6 ms** | the network + the server |
+| page **running the game** | **112.2 ms** | the same path, plus the page competing with itself |
+| **event-loop lag** (`setTimeout(0)`), idle | **4.1 ms** | an idle page services a callback in 4 ms |
+| **event-loop lag**, in game | **154.5 ms** (max 252) | the main thread is ~150 ms behind |
+
+So the 111–136 ms was ~80 ms of the page waiting for its own engine.
+What a player feels on the wire is the **~32 ms** figure — and that is
+itself mostly the server's tick (below).
+
+**A latency measurement taken from inside the page the game runs in is
+not a network measurement.** The idle-page number is the one to trust.
+
+#### Where the remaining ~30 ms goes
+
+| | median | p95 |
+|---|---|---|
+| ICMP to the VPS (the wire) | 4–6 ms | — |
+| **UDP A2S over loopback, on the VPS** (server alone, no network) | **10.0–10.8 ms** | 30 ms |
+| UDP A2S from this machine | 11 ms | 63 ms |
+
+The loopback histogram is the tell: **29 of 32 samples landed in the
+5–15 ms bucket.** A 100 Hz tick is 10 ms, and an A2S query is answered
+on the tick boundary — so the answer arrives at the next tick. The
+server **is** hitting its 100 Hz target; the median answer time is
+exactly one tick.
+
+The tail (p95 30 ms, occasional 50–60 ms) is late ticks. And pairing
+each slow round trip with an ICMP to the same host proved it is the
+server, not the wire: **24 of 26 slow samples had a perfectly healthy
+4–5 ms ICMP**, and only one coincided with a network spike.
+
 #### What this does NOT say
 
 - **4 humans is the most that were ever simultaneously in the game.** The
@@ -206,6 +254,14 @@ bots fighting.
   player is not represented.
 - **The tickrate was never stressed.** 100 Hz on 2 shared vCores at 17%
   says nothing about 100 Hz at 32 humans.
+- **The ~150 ms of event-loop lag in the browser is a CLIENT finding, and
+  it was not investigated further.** The main thread cannot service a
+  callback for 150 ms while the engine runs, so the page is starved for
+  anything that is not the simulation — and any measurement taken from
+  inside the page is inflated by it. Whether a player *feels* it (their
+  input, their HUD, their audio) is a separate question from whether the
+  network is slow, and it was not answered here. **This is the most
+  likely thing to actually hurt a player, and it is worth a look.**
 - **`sv_maxrate` is unset**, so the server's own bandwidth ceiling is the
   engine default. That default was not read out of the running server
   (the console pipe did not answer for it), so it is `UNVERIFIED`.
@@ -218,6 +274,21 @@ later worries about bandwidth, the number to check is the VPS's
 **CPU** (RAM already binds at 8 instances) and the **2 vCores'** ability
 to hold tickrate 100 at 32 humans — which is measured and unmeasured
 respectively.
+
+**But there IS something worth chasing, and it is not the server.** The
+client's main thread is **~150 ms behind** while the engine runs
+(event-loop lag: 4.1 ms idle → 154.5 ms in game). That is a browser
+client starving itself, on the player's machine, and it is a far more
+plausible cause of "the game feels bad" than a 500 Mbps port with 3.85
+Mbit/s of traffic on it. The server answers a query in one 10 ms tick
+and the wire is 4–6 ms. The player's own browser is the slow part.
+
+**The two things to measure next, in order:**
+1. **Does a player feel the 150 ms?** (input lag, HUD lag, audio
+   underruns.) That is a client problem and it is the one with the
+   evidence behind it.
+2. **Tickrate 100 at 32 humans** on the 2 vCores — the server-side
+   unknown, and the only remaining capacity question.
 
 ### Caveats — what would make this wrong
 
