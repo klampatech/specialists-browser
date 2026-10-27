@@ -75,6 +75,76 @@ test('the model list is split on the team groups, not flattened by hand', () => 
   assert.equal(groups.length, 7);
 });
 
+// ─── The pre-join modal must not trap the player ─────────────────────────
+
+test('confirming the identity modal clears the guard that opened it', () => {
+  // THE BUG (found 2026-10-27, on the branch, before it shipped):
+  //
+  //   `launch()` re-checks `identityRequired` before it connects, and
+  //   that check is what OPENS the modal:
+  //
+  //     Play    -> launch() -> identityRequired is true -> open modal
+  //     confirm -> onIdentityConfirm() -> launch() AGAIN
+  //            -> identityRequired is STILL true -> open the modal AGAIN
+  //
+  //   The modal re-opened on top of itself, forever, and the player
+  //   could NEVER get into the game. The flag was only recomputed in
+  //   `onMounted` from localStorage, so within a session it never
+  //   changed.
+  //
+  //   The only escape was to tick "remember me" and reload the page —
+  //   which is not what "remember me" means, and which a first-time
+  //   player has no way to know about.
+  //
+  // So the confirm handler MUST clear the guard. The guard means
+  // "the player has not been asked yet", and after they confirm they
+  // HAVE been asked.
+  const confirm = landing.match(
+    /function onIdentityConfirm\(\)\s*\{([\s\S]*?)\n\}/,
+  );
+  assert.ok(confirm, 'onIdentityConfirm is not defined');
+  assert.match(
+    confirm[1],
+    /identityRequired\.value\s*=\s*false/,
+    'onIdentityConfirm must clear identityRequired, or the modal re-opens forever',
+  );
+});
+
+test('the identity guard is not recomputed on every launch', () => {
+  // The guard is derived from the saved identity in `onMounted`, and
+  // from nowhere else. If it were recomputed inside `launch()`, the
+  // confirm handler's clearing of it would be undone on the very next
+  // step, and the modal would open again.
+  const onMounted = landing.match(/onMounted\(\(\)\s*=>\s*\{([\s\S]*?)\n\}\);/);
+  assert.ok(onMounted, 'onMounted is not defined');
+  assert.match(
+    onMounted[1],
+    /identityRequired\.value\s*=/,
+    'the guard must be seeded from the saved identity on mount',
+  );
+
+  const launchFn = landing.match(/async function launch\([^)]*\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(launchFn, 'launch is not defined');
+  assert.doesNotMatch(
+    launchFn[1],
+    /identityRequired\.value\s*=/,
+    'launch must not recompute the guard — that would undo the confirm',
+  );
+});
+
+test('the identity modal offers a model for every model the server knows', () => {
+  // The modal's cards are the seven models, and each one has a
+  // thumbnail rendered FROM the model. A model with no thumbnail is a
+  // broken card, so the two lists have to agree.
+  const imgs = [...modal.matchAll(/:src="`\/models\/\$\{m\}\.png`"/g)];
+  assert.equal(
+    imgs.length,
+    1,
+    'each model card must render its thumbnail from the model',
+  );
+  assert.match(modal, /alt="`\$\{m\} character preview`"/, 'the thumbnail needs alt text');
+});
+
 // ─── The name field ───────────────────────────────────────────────────────
 
 test('the options overlay focuses the name input when it opens', () => {
