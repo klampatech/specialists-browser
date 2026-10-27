@@ -60,8 +60,17 @@ export function createCollector({ dataFile, logReader, now = () => Date.now() })
   let board = emptyBoard();
   let dirty = false;
   let loaded = false;
-  /** The map each instance is currently on, for the MVP window. */
-  let currentMap = '';
+  /**
+   * The map each INSTANCE is currently on, for the MVP window.
+   *
+   * Per instance, not one value for the fleet: each server rotates its
+   * own map on its own clock, so the fleet is routinely running two or
+   * three maps at once. One shared value made every poll of the second
+   * instance look like a map change, and the MVP was awarded over and
+   * over for a single map (9 MVPs for one player's 10 kills — the
+   * measured count, in tests/unit/leaderboard.test.mjs).
+   */
+  const instanceMaps = new Map();
 
   /**
    * Load the saved board.
@@ -89,32 +98,34 @@ export function createCollector({ dataFile, logReader, now = () => Date.now() })
   async function ingest(instanceId, logText, map) {
     await load();
     const kills = parseKillLines(logText);
-    const counted = applyKills(board, kills);
+    const counted = applyKills(board, kills, instanceId);
     if (counted.length) dirty = true;
 
-    // A map change closes the MVP window: the player with the most
-    // kills on the map that just ended gets the MVP, and the next
-    // map starts fresh.
-    if (map && currentMap && map !== currentMap) {
-      closeMvpWindow(board, map);
-      dirty = true;
+    // A map change closes THAT server's MVP window: the player with
+    // the most kills on the map that just ended gets the MVP, and the
+    // next map starts fresh.
+    if (map) {
+      const prev = instanceMaps.get(instanceId);
+      if (prev && prev !== map) {
+        closeMvpWindow(board, map, instanceId);
+        dirty = true;
+      }
+      instanceMaps.set(instanceId, map);
     }
-    if (map) currentMap = map;
 
     return counted.length;
   }
 
   /**
    * Note who is on the server right now, for the time-seen estimate.
+   *
+   * The names are the console's player list. The bots are dropped by
+   * `notePresence`, which knows the names the kill log flagged — the
+   * console's list does not say who is a bot.
    */
   async function observe(names, map) {
     await load();
     notePresence(board, names, now());
-    if (map && currentMap && map !== currentMap) {
-      closeMvpWindow(board, map);
-      dirty = true;
-    }
-    if (map) currentMap = map;
     dirty = true;
   }
 

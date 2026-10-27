@@ -62,7 +62,7 @@ import { queryServer } from '../../webxash/vite-a2s-plugin.mjs';
 import { probeWithRetry, timeoutForAttempt } from './lib/a2s-retry.mjs';
 import { classifyProbeFailure, nextFailureCount, shouldRefreshSeenAt } from './lib/liveness.mjs';
 import { updateRow, updateRowIfCurrent } from './lib/registry-rows.mjs';
-import { LOG_TAIL_LINES, findAnswerAfterMarker } from './lib/console-log.mjs';
+import { LOG_TAIL_LINES, findAnswerAfterMarker, textAfterMarker } from './lib/console-log.mjs';
 import {
   desiredBotQuota as computeBotQuota,
   resolveHumanCount,
@@ -82,6 +82,15 @@ const PORT_BASE = num(process.env.TS_PORT_BASE, 27015);
 const PREFIX = process.env.TS_CONTAINER_PREFIX || 'ts';
 const PIPE = process.env.TS_CONSOLE_PIPE || '/tmp/console.pipe';
 const USE_DOCKER = bool(process.env.REGISTRY_DOCKER, true);
+
+/**
+ * How long to wait for the engine to answer a console question.
+ *
+ * The answer arrives on the container's log, so the wait is for the
+ * engine to have processed the command and echoed the reply — not for
+ * a socket to say something.
+ */
+const CONSOLE_TIMEOUT_MS = num(process.env.REGISTRY_CONSOLE_TIMEOUT_MS, 6_000);
 
 const TARGET_TICKRATE = num(process.env.TS_TARGET_TICKRATE, 100);
 const DEGRADE_RATIO = num(process.env.TS_DEGRADE_RATIO, 0.85);
@@ -218,21 +227,65 @@ async function readKillLog(container) {
 /**
  * The players currently on an instance, by name.
  *
- * Read from the engine's console rather than A2S, because A2S counts
- * bots as players and the leaderboard is about people. The
- * `ts_status` output carries the name, and the bot's names are
- * recognisable, but the AUTHORITATIVE bot flag is in the kill log's
- * authid — so the names here are only used to tell WHO IS HERE, and
- * the bot test is applied to the kills themselves.
+ * WHY THIS READS THE CONTAINER'S LOG AND NOT THE EXEC'S OUTPUT
+ * ------------------------------------------------------------
+ * The engine answers on its own STDOUT, which is the container's log.
+ * The `docker exec` that writes the command into the console FIFO
+ * produces NO output of its own — measured on production: 0 bytes.
+ * So the answer has to be read back out of `docker logs`, exactly as
+ * `consoleAsk` does for the cvars.
+ *
+ * The marker makes the answer unambiguous: the engine echoes it, and
+ * the player list is everything after it. Without the marker, a stale
+ * list from an earlier poll would be indistinguishable from this one.
+ *
+ * The names are the players' netnames — the same strings the kill log
+ * uses — so a presence sighting and a kill can be joined on one key.
+ * The list does NOT say who is a bot; the kill log's `<ID_BOT>` authid
+ * is the only authoritative marker, and the collector drops the bots
+ * by name.
  */
 async function readPlayerNames(container) {
-  const { stdout } = await sh('bash', [
-    '-lc',
-    `docker exec -i ${container} sh -c 'cat > ${PIPE}' <<< 'ts_status' 2>/dev/null; true`,
-  ]);
+  const marker = `TSREG${Date.now().toString(36)}`;
+  await consoleWrite(container, `echo ${marker}`);
+  await consoleWrite(container, 'ts_status');
+
+  const deadline = Date.now() + CONSOLE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const text = await logTail(container);
+    const after = textAfterMarker(text, marker);
+    if (after != null) {
+      const names = parseStatusPlayers(after);
+      if (names.length) return names;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return [];
+}
+
+/**
+ * The player names in a `ts_status` dump.
+ *
+ * The real line, from production:
+ *
+ *   [17:40:20] [ts]  #1 Bot Neo 81       alive hp=85 ar=100 frags=11 ...
+ *
+ * The state is `alive`, `dead` or `observer` — and a DEAD player is
+ * still connected, so it counts as present. (The first implementation
+ * matched only `alive|observer`, so every dead player dropped out of
+ * the presence list and their time-seen was wrong.)
+ *
+ * The name is padded to a fixed column width by the engine, so the
+ * capture stops at the state word and the trailing spaces are not
+ * part of the name.
+ */
+export function parseStatusPlayers(text) {
   const names = [];
-  for (const line of stdout.split('\n')) {
-    const m = /#\d+\s+(.+?)\s+(alive|observer)\s/.exec(line);
+  for (const line of text.split('\n')) {
+    // The console prefix is a timestamp, and the engine's colour
+    // escapes can precede it, so the match is anchored on the
+    // command's own marker rather than on the start of the line.
+    const m = /\[ts\]\s+#\d+\s+(.+?)\s+(alive|dead|observer)\s+hp=/.exec(line);
     if (m) names.push(m[1].trim());
   }
   return names;
@@ -259,6 +312,24 @@ async function pollLeaderboard() {
         // still contribute.
       }
     }
+    // The presence pass.
+    //
+    // This was NEVER CALLED, and that is why the "time seen" column
+    // was always zero: the collector had the code, and the registry
+    // simply never asked for it. The names are read per instance and
+    // passed to `observe`, which drops the bots by name (the kill
+    // log's `<ID_BOT>` authid is the only authoritative marker).
+    const names = [];
+    for (const instance of registry.values()) {
+      if (!instance.container) continue;
+      try {
+        names.push(...(await readPlayerNames(instance.container)));
+      } catch {
+        // A server that cannot be asked contributes no sightings; the
+        // others still do.
+      }
+    }
+    if (names.length) await leaderboard.observe(names);
     await leaderboard.persist();
   } finally {
     leaderboardInFlight = false;

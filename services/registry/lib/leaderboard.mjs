@@ -142,12 +142,29 @@ export function stampOf(line) {
 }
 
 /**
- * A stable ID for a kill, so the same kill in two overlapping log
- * tails is counted once.
+ * The kill ID is a stable identity for a kill, so the same kill in two
+ * overlapping log tails is counted once.
  */
 export function killId(kill) {
   return [kill.stamp, kill.killer, kill.victim, kill.weapon].join('|');
 }
+
+/**
+ * The port's bot names.
+ *
+ * The quota bots are named "Bot <Name>" — the port's own tooling
+ * (xtask) looks for exactly this prefix — and a HUMAN could name
+ * themselves "Bob" or "Botanical", so the match is anchored on the
+ * prefix followed by a space.
+ *
+ * This is the SECOND bot signal, not the only one: the kill log's
+ * `<ID_BOT>` authid is authoritative, but it lags, because the port
+ * re-creates its quota bots on every map change with fresh names
+ * ("Bot Neo 81" one map, "Bot Neo 97" the next — measured on
+ * production). A bot that has just spawned is not in the log yet, and
+ * without this it would be counted as a person.
+ */
+const BOT_NAME_RE = /^Bot\s/;
 
 /**
  * The leaderboard's state.
@@ -163,10 +180,40 @@ export function emptyBoard() {
     players: {},
     /** Kill IDs already counted, so an overlapping tail cannot double-count. */
     seenKills: [],
-    /** The map the current MVP window covers. */
-    currentMap: '',
-    /** The leading kills in the current window, for the MVP award. */
-    windowKills: {},
+    /**
+     * The MVP window, PER INSTANCE.
+     *
+     * A map change is a property of ONE server: each server rotates its
+     * own map on its own clock, so the fleet is routinely running two or
+     * three maps at once. The first implementation kept ONE `currentMap`
+     * and ONE `windowKills` for the whole fleet, and the collector closed
+     * the window whenever an instance's map differed from that shared
+     * value — which, with two instances on two maps, was every poll.
+     *
+     * The measured consequence: a player with 10 kills in one map was
+     * handed 9 MVPs (tests/unit/leaderboard.test.mjs has the count).
+     *
+     * So the window is keyed by instance id:
+     *
+     *   windows[instanceId] = { map: string, kills: { [name]: number } }
+     *
+     * and `kills` is the fleet-wide total, which is what the leaderboard
+     * shows.
+     */
+    windows: {},
+    /**
+     * The names the kill log has seen to be BOTS.
+     *
+     * The kill log's authid is the authoritative bot marker (`<ID_BOT>`),
+     * and it is the only one: A2S counts bots as players, and the
+     * console's player list does not say who is a bot either.
+     *
+     * This set is what keeps the "time seen" column honest. Without it,
+     * every bot on the server would be given a time-seen row, and the
+     * leaderboard would fill up with sixteen bots named "Bot Neo 49" and
+     * friends — the exact thing the bot test exists to prevent.
+     */
+    botNames: [],
     /** The last time each player was seen, for the time-played estimate. */
     lastSeen: {},
   };
@@ -179,7 +226,7 @@ export function emptyBoard() {
  * collectors writing the same object would otherwise lose each
  * other's updates.
  */
-export function applyKills(board, kills) {
+export function applyKills(board, kills, instanceId = '') {
   const counted = [];
   for (const kill of kills) {
     const id = killId(kill);
@@ -190,8 +237,18 @@ export function applyKills(board, kills) {
       const p = playerOf(board, kill.killer);
       p.kills += 1;
       p.lastKillAt = kill.stamp || p.lastKillAt;
-      // The MVP window counts the same kills, separately.
-      board.windowKills[kill.killer] = (board.windowKills[kill.killer] || 0) + 1;
+      // The MVP window counts the same kills, per instance.
+      const w = windowOf(board.windows, instanceId);
+      w.kills[kill.killer] = (w.kills[kill.killer] || 0) + 1;
+    }
+    // Remember who the log says is a bot, so the "time seen" column can
+    // leave them out. The authid is the authoritative marker; the name
+    // is what the presence list has to be matched against.
+    if (kill.killerIsBot && kill.killer && !board.botNames.includes(kill.killer)) {
+      board.botNames.push(kill.killer);
+    }
+    if (kill.victimIsBot && kill.victim && !board.botNames.includes(kill.victim)) {
+      board.botNames.push(kill.victim);
     }
     board.seenKills.push(id);
     counted.push(kill);
@@ -228,9 +285,41 @@ export function playerOf(board, name) {
  * A player who appears once and vanishes contributes nothing, which
  * is the honest answer: the registry cannot know how long they were
  * here for.
+ *
+ * BOTS ARE LEFT OUT, and that is the point of the function being here
+ * at all. The console's player list does not say who is a bot — the
+ * kill log's `<ID_BOT>` authid is the only authoritative marker — so
+ * the caller passes the names it KNOWS to be people, and the ones the
+ * log has flagged as bots are dropped here.
+ *
+ * Without that filter the leaderboard fills up with the fleet's
+ * sixteen bots, each with a time-seen row and zero kills, and the
+ * column that is supposed to show people shows the machine.
  */
 export function notePresence(board, names, now) {
-  const nameset = new Set(names);
+  // The bots are dropped HERE, by name. Two signals, because one alone
+  // is not enough:
+  //
+  //   - the kill log's `<ID_BOT>` authid, which is AUTHORITATIVE but
+  //     LAGS: the port's quota bots are re-created on every map change
+  //     with a fresh name ("Bot Neo 81" one map, "Bot Neo 97" the
+  //     next — measured on production), so a bot that has just spawned
+  //     is unknown to the log until it first kills, and until then it
+  //     would be counted as a person.
+  //
+  //   - the port's own naming convention. The quota bots are named
+  //     "Bot <Name>" (the port's own tooling looks for the `Bot `
+  //     prefix), so a name that starts with it is a bot even before it
+  //     has killed anyone.
+  //
+  // Filtering in the collector alone would not be enough: this
+  // function is what banks the time, and a bot that got here would
+  // carry a time-seen row and appear on the leaderboard with zero
+  // kills. The fleet runs sixteen bots; the leaderboard is about
+  // people.
+  const bots = new Set(board.botNames);
+  const people = names.filter((n) => !bots.has(n) && !BOT_NAME_RE.test(n));
+  const nameset = new Set(people);
   for (const name of Object.keys(board.players)) {
     const p = board.players[name];
     const here = nameset.has(name);
@@ -248,31 +337,99 @@ export function notePresence(board, names, now) {
     const p = playerOf(board, name);
     if (p.firstSeen == null) p.firstSeen = now;
     p.lastSeen = now;
+    // A player who was NOT in the board before this sighting never
+    // went through the loop above, so their sighting time is set here.
+    //
+    // Without this, the FIRST interval of every new player is dropped:
+    // their first sighting left `lastSeenAt` null, so the second
+    // sighting had no gap to bank and the third banked from the second
+    // instead. A player who joins and stays is credited with one
+    // polling interval less than they were there for — for every
+    // player who had not yet scored a kill (a player who HAD killed
+    // was already in the board, and so was fine).
+    if (p.lastSeenAt == null) p.lastSeenAt = now;
   }
 }
 
 /**
- * Close the MVP window and award it.
+ * The MVP window, tracked PER INSTANCE.
  *
- * Called when the map changes: the player with the most kills in the
- * window that just ended gets an MVP, and the window resets.
+ * WHY THIS IS NOT ONE GLOBAL WINDOW
+ * ---------------------------------
+ * The fleet runs several servers, and each server changes map on its own
+ * clock. The first implementation kept a single `currentMap` and a single
+ * `windowKills` for the whole fleet, and the collector called
+ * `closeMvpWindow` whenever an instance's map differed from that shared
+ * value.
  *
- * Returns the name of the MVP, or null when nobody scored.
+ * That awards an MVP per MAP CHANGE PER INSTANCE, not per map change. With
+ * two instances on two different maps, every poll of the second instance
+ * looked like a map change, so the window was closed and reopened on
+ * every poll: a player with 10 kills in one map was handed 9 MVPs (the
+ * measured count, in tests/unit/leaderboard.test.mjs).
+ *
+ * A map change is a property of ONE server, so the window is too: the
+ * kills that count toward a server's MVP are the ones that happened on
+ * that server, since its last map change.
+ *
+ * So the window is keyed by instance id:
+ *
+ *   windows[instanceId] = { map: string, kills: { [playerName]: number } }
  */
-export function closeMvpWindow(board, nextMap) {
+
+/**
+ * The window for one instance, created on first use.
+ */
+export function windowOf(windows, instanceId, map) {
+  let w = windows[instanceId];
+  if (!w) {
+    w = { map: map || '', kills: {} };
+    windows[instanceId] = w;
+  }
+  if (map) w.map = map;
+  return w;
+}
+
+/**
+ * Close ONE instance's window and award it.
+ *
+ * Returns the MVP's name, or null when nobody scored. The instance's
+ * window's kills are emptied; other instances' windows are untouched.
+ */
+export function closeInstanceWindow(windows, instanceId) {
+  const w = windows[instanceId];
+  if (!w) return null;
   let best = null;
   let bestKills = 0;
-  for (const [name, kills] of Object.entries(board.windowKills)) {
+  for (const [name, kills] of Object.entries(w.kills)) {
     if (kills > bestKills) {
       best = name;
       bestKills = kills;
     }
   }
+  w.kills = {};
+  return best;
+}
+
+/**
+ * Close the MVP window and award it.
+ *
+ * Called when a server changes map: the player with the most kills in the
+ * window that just ended gets an MVP, and the window resets.
+ *
+ * The window is per instance — see the note above `windowOf`. The
+ * `instanceId` is which server's window to close; the award goes to the
+ * player who led THAT server's window.
+ *
+ * Returns the name of the MVP, or null when nobody scored.
+ */
+export function closeMvpWindow(board, nextMap, instanceId = '') {
+  const best = closeInstanceWindow(board.windows, instanceId);
   if (best) {
     playerOf(board, best).mvps += 1;
   }
-  board.currentMap = nextMap || board.currentMap;
-  board.windowKills = {};
+  const w = windowOf(board.windows, instanceId);
+  if (nextMap) w.map = nextMap;
   return best;
 }
 
@@ -309,5 +466,22 @@ export function mergeBoard(saved, live) {
   const seen = new Set(live.seenKills);
   for (const id of saved.seenKills || []) seen.add(id);
   live.seenKills = [...seen];
+  // The bot names, so the "time seen" filter survives the restart.
+  // Without this, every bot would be back on the leaderboard with a
+  // time-seen row until the next kill was logged.
+  const bots = new Set(live.botNames || []);
+  for (const name of saved.botNames || []) bots.add(name);
+  live.botNames = [...bots];
+  // The MVP windows. A window in progress when the registry stopped
+  // is a window in progress when it comes back: the kills in it were
+  // real, and losing them would hand the map's MVP to the wrong
+  // player (or to nobody).
+  for (const [id, w] of Object.entries(saved.windows || {})) {
+    const cur = live.windows[id] || (live.windows[id] = { map: w.map || '', kills: {} });
+    for (const [name, kills] of Object.entries(w.kills || {})) {
+      cur.kills[name] = (cur.kills[name] || 0) + kills;
+    }
+    if (!cur.map && w.map) cur.map = w.map;
+  }
   return live;
 }

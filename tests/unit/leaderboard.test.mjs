@@ -213,3 +213,154 @@ test('a kill counted before a restart is not counted again after it', () => {
 
   assert.equal(playerOf(live, 'KYLE').kills, 1, 'the kill was counted again after the restart');
 });
+
+// ─── The fleet runs several maps at once ─────────────────────────────────
+
+test('two servers on two maps do not hand out an MVP every poll', () => {
+  // THE BUG THIS LOCKS DOWN.
+  //
+  // Each server rotates its own map on its own clock, so the fleet is
+  // routinely running two or three maps at once. The first
+  // implementation kept ONE map and ONE window for the whole fleet, so
+  // every poll of the second server looked like a map change: the
+  // window was closed and reopened, and the MVP was awarded again.
+  //
+  // Measured: 5 polls of 2 servers on 2 maps handed one player 9 MVPs
+  // for a single map. The player had 10 kills.
+  const board = emptyBoard();
+  const killsFor = (who, second) =>
+    `10/27/2026 - 15:40:${String(second).padStart(2, '0')}: "${who}<1><A><1>" killed "Bot A<2><ID_BOT><2>" with "m4a1"`;
+
+  // Server ts-0 is on dm_hill, ts-1 is on dm_riverside. Each poll
+  // ingests both, in that order.
+  for (let poll = 0; poll < 5; poll++) {
+    applyKills(board, parseKillLines(killsFor('KYLE', poll * 2)), 'ts-0');
+    applyKills(board, parseKillLines(killsFor('KYLE', poll * 2 + 1)), 'ts-1');
+  }
+  assert.equal(playerOf(board, 'KYLE').kills, 10, 'the kills were not counted');
+
+  // Neither server changed map, so NO MVP has been awarded — not one,
+  // let alone nine.
+  assert.equal(
+    playerOf(board, 'KYLE').mvps,
+    0,
+    'MVPs were awarded without any server changing map',
+  );
+});
+
+test('a server changing map awards exactly one MVP', () => {
+  const board = emptyBoard();
+  const killsFor = (who, second) =>
+    `10/27/2026 - 15:40:${String(second).padStart(2, '0')}: "${who}<1><A><1>" killed "Bot A<2><ID_BOT><2>" with "m4a1"`;
+
+  applyKills(board, parseKillLines(killsFor('KYLE', 1)), 'ts-0');
+  // The window's map is set when the first kill lands.
+  board.windows['ts-0'].map = 'dm_hill';
+  applyKills(board, parseKillLines(killsFor('KYLE', 2)), 'ts-0');
+
+  // ts-0 rotated to a new map: that closes ITS window and awards one.
+  closeMvpWindow(board, 'dm_riverside', 'ts-0');
+  assert.equal(playerOf(board, 'KYLE').mvps, 1);
+
+  // A second server changing map must not award anything: its own
+  // window is empty.
+  closeMvpWindow(board, 'dm_riverside', 'ts-1');
+  assert.equal(playerOf(board, 'KYLE').mvps, 1, 'a second MVP was awarded for another server');
+});
+
+test("one server's window does not leak into another's", () => {
+  const board = emptyBoard();
+  const killsFor = (who, second) =>
+    `10/27/2026 - 15:40:${String(second).padStart(2, '0')}: "${who}<1><A><1>" killed "Bot A<2><ID_BOT><2>" with "m4a1"`;
+
+  applyKills(board, parseKillLines(killsFor('KYLE', 1)), 'ts-0');
+  applyKills(board, parseKillLines(killsFor('OTHER', 2)), 'ts-1');
+
+  // ts-0 closes: KYLE led ts-0's window, so KYLE gets the MVP.
+  closeMvpWindow(board, 'dm_riverside', 'ts-0');
+  assert.equal(playerOf(board, 'KYLE').mvps, 1);
+  assert.equal(playerOf(board, 'OTHER').mvps, 0, 'OTHER was given the MVP for another server');
+});
+
+// ─── Bots ─────────────────────────────────────────────────────────────────
+
+test('the kill log teaches the board which names are bots', () => {
+  const board = emptyBoard();
+  applyKills(board, parseKillLines(REAL_KILL));
+  assert.ok(board.botNames.includes('Bot Niobe'), 'the bot was not remembered');
+  assert.ok(board.botNames.includes('Bot Ghost'), 'the bot victim was not remembered');
+  assert.ok(!board.botNames.includes('KYLE'), 'a human was remembered as a bot');
+});
+
+test('a human is not remembered as a bot', () => {
+  const board = emptyBoard();
+  applyKills(board, parseKillLines(HUMAN_KILL));
+  assert.ok(!board.botNames.includes('KYLE'));
+});
+
+test('the bot names survive a restart', () => {
+  // Without this, every bot is back on the leaderboard with a
+  // time-seen row after the registry restarts, until the next kill is
+  // logged.
+  const saved = emptyBoard();
+  applyKills(saved, parseKillLines(REAL_KILL));
+
+  const live = emptyBoard();
+  mergeBoard(saved, live);
+  assert.ok(live.botNames.includes('Bot Niobe'), 'the bot was forgotten by the restart');
+});
+
+// ─── The presence list ───────────────────────────────────────────────────
+
+test('a bot gets no time-seen row', () => {
+  // The console's player list does not say who is a bot, so the
+  // registry filters by the names the kill log flagged. Without the
+  // filter the leaderboard fills up with the fleet's sixteen bots.
+  const board = emptyBoard();
+  applyKills(board, parseKillLines(REAL_KILL));
+  const bots = new Set(board.botNames);
+
+  notePresence(board, ['Bot Niobe'], 1_000_000);
+  notePresence(board, ['Bot Niobe'], 1_120_000);
+  assert.equal(playerOf(board, 'Bot Niobe').timeSeen, 0, 'a bot was given a time seen');
+
+  notePresence(board, ['KYLE'], 1_000_000);
+  notePresence(board, ['KYLE'], 1_120_000);
+  assert.equal(playerOf(board, 'KYLE').timeSeen, 120, 'a human was not given a time seen');
+});
+
+test('a bot the kill log has not seen yet is still not a person', () => {
+  // The port re-creates its quota bots on every map change with fresh
+  // names — "Bot Neo 81" one map, "Bot Neo 97" the next (measured on
+  // production) — so a bot that has just spawned is NOT in the kill
+  // log yet. The port's own naming convention is what catches it.
+  const board = emptyBoard();
+  assert.equal(board.botNames.length, 0, 'the log already knew this bot');
+
+  notePresence(board, ['Bot Neo 97'], 1_000_000);
+  notePresence(board, ['Bot Neo 97'], 1_120_000);
+  assert.equal(
+    playerOf(board, 'Bot Neo 97').timeSeen,
+    0,
+    'a newly spawned bot was counted as a person',
+  );
+});
+
+test('a human whose name starts with Bot is not thrown away', () => {
+  // The prefix has to be followed by a space: "Botanical" and "Bobby"
+  // are people.
+  const board = emptyBoard();
+  notePresence(board, ['Botanical'], 1_000_000);
+  notePresence(board, ['Botanical'], 1_120_000);
+  assert.equal(playerOf(board, 'Botanical').timeSeen, 120, 'a human was dropped by the bot filter');
+});
+
+test('a player who joins and stays is credited their whole time', () => {
+  // The first sighting has to set the sighting time, or the interval
+  // between the first and second sighting is dropped and the player is
+  // credited one polling interval less than they were there for.
+  const board = emptyBoard();
+  notePresence(board, ['KYLE'], 1_000_000);
+  notePresence(board, ['KYLE'], 1_120_000);
+  assert.equal(playerOf(board, 'KYLE').timeSeen, 120, 'the first interval was dropped');
+});
