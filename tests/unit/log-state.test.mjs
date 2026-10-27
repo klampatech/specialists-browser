@@ -204,3 +204,44 @@ test('the kill-log state module is in the registry image', () => {
     'the log-state module must be COPYed into the registry image',
   );
 });
+
+test('every module the registry copies is also ALLOWED by the dockerignore', () => {
+  // The build context is allowlisted: `.dockerignore` starts with `**`
+  // (everything excluded) and then re-includes each file the image
+  // needs. So a module that is COPYed but not re-included is NOT IN
+  // THE IMAGE — and the build fails with a checksum error.
+  //
+  // That is not hypothetical: this exact omission shipped once
+  // already (the leaderboard's own modules, commit 514934a), and it
+  // happened AGAIN with the log-state module — the Dockerfile copied
+  // it, the allowlist did not, and the Docker build failed.
+  //
+  // The two lists are kept in step HERE, so the next module added
+  // cannot be silently left out.
+  const dockerfile = readFileSync(
+    join(ROOT, 'services', 'registry', 'Dockerfile.registry'),
+    'utf8',
+  );
+  const dockerignore = readFileSync(
+    join(ROOT, 'services', 'registry', 'Dockerfile.registry.dockerignore'),
+    'utf8',
+  );
+
+  // Every path the Dockerfile copies out of the repo.
+  const copied = [...dockerfile.matchAll(/^COPY\s+(\S+)\s+\S+$/gm)].map((m) => m[1]);
+  assert.ok(copied.length >= 5, 'the Dockerfile should copy several files');
+
+  // Every path the allowlist re-includes.
+  const allowed = new Set(
+    [...dockerignore.matchAll(/^!(\S+)$/gm)].map((m) => m[1]),
+  );
+
+  const missing = copied.filter((p) => !allowed.has(p));
+  assert.deepEqual(
+    missing,
+    [],
+    `these files are COPYed into the registry image but not allowed by ` +
+      'Dockerfile.registry.dockerignore, so the build will fail: ' +
+      missing.join(', '),
+  );
+});
