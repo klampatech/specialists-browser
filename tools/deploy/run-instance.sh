@@ -41,6 +41,34 @@ ASSETS="${TS_ASSETS:-/srv/ts-data}"
 MAXPLAYERS="${TS_MAXPLAYERS:-32}"
 MAP="${TS_MAP:-ts_casa}"
 
+# ── log rotation ────────────────────────────────────────────────────────────
+# The game server's log grows without bound. Measured on production
+# 2026-10-26: 268 bytes/second, so ~22 MB/day from a single instance, and
+# the file grows for as long as the container lives. Nothing rotated it.
+#
+# It is not only a disk problem. The registry reads the engine's console
+# out of this log, and it reads BACKWARDS from the end (`docker logs
+# --tail`, see services/registry/lib/console-log.mjs) because a full read
+# is O(entire log) — 51 seconds against a 5.4 MB log. That fix made the
+# read cheap, but a log that never stops growing is still a log that
+# eventually costs more to read, more to store, and more to page through
+# when someone is debugging a stuck server.
+#
+# `json-file` with no options is the docker default: one file, no limit.
+# `max-size` + `max-file` bound it to a fixed number of files of a fixed
+# size each, and the OLDEST is dropped when a new one is rotated in.
+#
+# These are CREATE-TIME options: `docker update` cannot change them, so
+# a container that is already running keeps its unbounded log until it is
+# recreated. That is why the rotation is set HERE, where the container is
+# created, rather than somewhere that hopes to fix it later.
+#
+# 10m x 3 = 30 MB per instance, which is about a day and a half of the
+# measured growth: long enough to debug yesterday's incident, short
+# enough that eight instances cannot fill a 38 GB disk.
+LOG_MAX_SIZE="${TS_LOG_MAX_SIZE:-10m}"
+LOG_MAX_FILE="${TS_LOG_MAX_FILE:-3}"
+
 [ -d "$ASSETS" ] || { echo "asset volume missing: $ASSETS" >&2; exit 1; }
 [ -f "$ASSETS/ts/maps/$MAP.bsp" ] || {
   echo "map $MAP not found under $ASSETS/ts/maps — the volume looks incomplete" >&2
@@ -52,6 +80,9 @@ docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d \
   --name "$NAME" \
   --restart unless-stopped \
+  --log-driver json-file \
+  --log-opt max-size="$LOG_MAX_SIZE" \
+  --log-opt max-file="$LOG_MAX_FILE" \
   -p "$PORT:$PORT/udp" \
   -e TS_INSTANCE="$N" \
   -e TS_PORT_BASE="$PORT_BASE" \

@@ -48,9 +48,23 @@
  * `webxash/vite-a2s-plugin.mjs` is in the list because the BRIDGE image
  * embeds it — the A2S parser that talks to the game server is not only
  * part of the web bundle.
+ *
+ * `tools/deploy/run-instance.sh` and `tools/deploy/deploy-services.sh`
+ * are in the list because THEY ARE WHAT CREATES THE CONTAINERS. The
+ * deploy ships them to the host and runs them there, so a change to
+ * either is a change to how every container on the box is created — the
+ * log rotation lives in exactly those two files, and a rotation rule
+ * that never reaches the host is not a rule at all.
+ *
+ * This was a live chicken-and-egg bug: `run-instance.sh` was not even
+ * SHIPPED by the deploy (only `deploy-services.sh` was — measured on the
+ * production host, 2026-10-26), so it had to be copied by hand, and
+ * nothing in the deploy classified a change to either script as needing
+ * the control plane rebuilt. A fix to the container definition could be
+ * merged, reviewed, CI-green and still never touch a running container.
  */
 const SERVICES_PATTERN =
-  /^(services\/|tools\/port\/tsp-rs\/scripts\/ts-udp-bridge|tools\/deploy\/Dockerfile\.bridge|webxash\/vite-a2s-plugin)/;
+  /^(services\/|tools\/port\/tsp-rs\/scripts\/ts-udp-bridge|tools\/deploy\/Dockerfile\.bridge|tools\/deploy\/(run-instance|deploy-services)\.sh|webxash\/vite-a2s-plugin)/;
 
 /**
  * Classify a change.

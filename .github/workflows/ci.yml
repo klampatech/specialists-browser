@@ -109,6 +109,26 @@ jobs:
           done < <(find services tools -name '*.mjs' -o -name '*.cjs' | grep -v node_modules | sort)
           exit $failed
 
+      - name: Syntax-check every shell script
+        # The SHELL scripts are the ones that create every container on
+        # the production host, and they were not checked at all: the step
+        # above only looks for .mjs and .cjs. A syntax error in
+        # run-instance.sh means no game server can start, and nothing in
+        # CI would have said so.
+        run: |
+          set -euo pipefail
+          failed=0
+          while IFS= read -r f; do
+            if bash -n "$f" 2>/dev/null; then
+              echo "  ok   $f"
+            else
+              echo "  FAIL $f"
+              bash -n "$f" 2>&1 | head -5 || true
+              failed=1
+            fi
+          done < <(find services tools -name '*.sh' | grep -v node_modules | sort)
+          exit $failed
+
       - name: Unit tests
         # Every one of these corresponds to a bug that reached production.
         run: node --test tests/unit/*.test.mjs

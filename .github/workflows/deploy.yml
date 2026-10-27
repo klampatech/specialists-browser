@@ -297,10 +297,23 @@ jobs:
         if: steps.changed.outputs.services == '1'
         run: |
           set -euo pipefail
+          # BOTH scripts that create containers ship here. `run-instance.sh`
+          # creates the GAME servers and the orchestrator bind-mounts it
+          # from the host, so it has to be on the host — it used to be
+          # copied by hand, which meant the container definition could be
+          # changed in the repo and never reach production.
+          #
+          # The order matters: the orchestrator is recreated BELOW, and it
+          # bind-mounts /home/ubuntu/run-instance.sh. A bind mount pins
+          # the INODE, so a replaced file is not visible inside the
+          # running container (measured 2026-10-26) — the orchestrator
+          # would keep running the old script until it is recreated. The
+          # recreate below re-does the mount, so the new file is picked up.
           scp -F ~/.ssh/config tools/deploy/deploy-services.sh prod:/home/ubuntu/deploy-services.sh
+          scp -F ~/.ssh/config tools/deploy/run-instance.sh prod:/home/ubuntu/run-instance.sh
           ssh -F ~/.ssh/config prod '
             set -euo pipefail
-            chmod +x /home/ubuntu/deploy-services.sh
+            chmod +x /home/ubuntu/deploy-services.sh /home/ubuntu/run-instance.sh
             REGISTRY_IMAGE=registry:'"${{ github.sha }}"' \
             ORCHESTRATOR_IMAGE=orchestrator:'"${{ github.sha }}"' \
             BRIDGE_IMAGE=ts-bridge:'"${{ github.sha }}"' \
