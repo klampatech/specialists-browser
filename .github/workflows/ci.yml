@@ -131,7 +131,14 @@ jobs:
 
       - name: Unit tests
         # Every one of these corresponds to a bug that reached production.
-        run: node --test tests/unit/*.test.mjs
+        #
+        # --experimental-strip-types lets a test import the repo's
+        # TypeScript directly (src/mod/mdl-bones.ts), so the bone
+        # transform is tested against the same file the renderer uses
+        # rather than against a copy of it. Node 22 runs TypeScript
+        # this way only behind the flag; Node 23+ has it on by
+        # default, and the flag is still accepted there.
+        run: node --experimental-strip-types --test tests/unit/*.test.mjs
 
   docker:
     name: Docker — the images still build

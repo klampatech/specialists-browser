@@ -16,7 +16,8 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-26, `main` (**PRODUCTION — the game is live at https://bulletballet.dev**)
+**As of:** 2026-10-27, `feat/player-identity` (PR #80 — **open, CI green,
+awaiting Kyle's review**; NOT merged, NOT deployed)
 **Active path:** webXash (Xash3D-FWGS WASM **client**) + the real TS server as a WASM **dedicated server** in a container
 **Goal:** ~~playable The Specialists in the browser~~ — **met.** Real assets, real gameplay, real dedicated server, public URL.
 
@@ -24,6 +25,119 @@
 withdrawn keyboard root cause is gone from it, both screenshots were
 re-captured from the live site, and the test count and the submodule branch
 now match the repo.
+
+**HANDOFF.md was stale when this session started.** It still said "As of:
+2026-10-26" and its § NEXT TASK still pointed at E5, because the work
+since then was never written down. The sections below are the ones that
+changed on 2026-10-27; everything else in this file is still accurate.
+
+## The leaderboard, and the three bugs that made it empty
+
+PR #80 adds a global leaderboard: the engine's own kill log, folded
+across the fleet, with the bots left out. Three defects meant it
+displayed nothing useful, and all three are fixed and covered by tests:
+
+| # | Defect | Symptom | Fix |
+|---|---|---|---|
+| 1 | `observe()` existed but was **never called** | the "time seen" column was always `0` | the presence pass is wired into `pollLeaderboard()` |
+| 2 | `readPlayerNames()` read `docker exec` stdout | **0 bytes** — the answer is on the container's log, not the exec's | write a marker, run `ts_status`, read the answer back out of `docker logs` |
+| 3 | one MVP window for the whole **fleet** | 10 kills → 9 MVPs, because each instance changes map on its own clock | per-instance MVP windows, persisted across restarts |
+
+The bots were the other half of it. A bot is told from a person by the
+kill log's `<ID_BOT>` authid — but a bot that has not been in the kill
+log yet is not recognisable that way, and the fleet's bots are RECREATED
+with fresh names on a map change. So two signals are used: the authid,
+and the `Bot ` netname prefix.
+
+**Verified against production, not against a fixture.** 3,000 lines of the
+live server's log: 378 kills parsed, **0 bot leaderboard rows, 0 bot
+presence rows**.
+
+## `log 1` is not `log on`, and that is why the kill log was empty
+
+The single most important thing found on 2026-10-27.
+
+`log` is a **command**, not a cvar: `log on` / `log off`. The server.cfg
+had `log 1` — a command with an argument the engine does not understand,
+so it does **nothing at all**. It neither turns the log on nor turns it
+off. It reads like it should work, which is why it sat there looking
+correct.
+
+Measured on production, 2026-10-27:
+
+- the container was **restarted at 16:24:55** and the kill lines stopped
+  dead, and did **not** come back on their own;
+- a probe container with `log 1` produced **0 kill lines in 30 seconds**;
+- a probe container with `log on` produced **3 in the same 30 seconds**;
+- and `log on` written into the console pipe at runtime took a probe from
+  **0 kill lines to 9**.
+
+The engine answers the `log` command with its state
+(`currently logging` / `not currently logging`), so the registry now
+**asks the engine and turns the log on when it is off**
+(`services/registry/lib/log-state.mjs`). That is a self-heal: it survives
+container restarts, which a config file does not.
+
+**The trap in that reply:** "not currently logging" **contains** the
+substring "currently logging", so a naive search finds it in both
+replies and concludes logging is always on.
+
+**And the config could not have reached production anyway.** `server.cfg`
+is baked into the `ts-server` image, and the pipeline does not build
+that image (its payload is the Rust port's compiled DLL, a build
+artifact that is deliberately not committed) — so the game image is built
+**by hand** on the host. A `log on` that is correct in the repo and
+absent in production is the same class of bug as a route that lives in
+the repo and is installed by hand: it drifts.
+
+So the game server's config is now a **mounted volume**
+(`/srv/ts-config` → `/srv/config:ro`), the deploy **ships** it, and a
+change under `tools/deploy/config/` **triggers** the services deploy. The
+image keeps its baked-in copy as the fallback for a container started by
+hand.
+
+## The deploy was going to fail on its next run
+
+`deploy-services.sh` did `mkdir -p /srv/ts-leaderboard` — but `/srv` is
+root-owned and the deploy runs as `ubuntu`, so it failed with
+"Permission denied", and under `set -e` that killed the deploy before a
+single container was replaced. It now uses `sudo`, and the directory is
+owned by the registry's uid (10004) rather than being world-writable.
+
+The Caddyfile replacement was checked and is **safe**: the live
+`/etc/caddy/Caddyfile` is byte-identical to the repo's.
+
+## The character thumbnails are rendered from the model
+
+The character picker showed the model **names**; it now shows the models.
+
+A studio model's vertices are stored in **bone-local space** — each
+vertex names a bone, and its coordinates are relative to that bone's
+origin. Rendering them without applying the bones' transforms gives an
+**exploded** model: limbs in the wrong place, the figure a heap of
+disconnected pieces.
+
+`src/mod/mdl-bones.ts` implements the transform, and it is the same
+computation the engine's own renderer does:
+
+- the rotation order is `R = Rz(c) · Ry(b) · Rx(a)`;
+- a bone's world rotation is `world_rot[parent] · R_i`;
+- a bone's world position is `world_rot[parent] · pos_i + world_pos[parent]`
+  — the local offset is **rotated by the parent's rotation first**;
+  doing it the other way round puts the hands 10.8 units away.
+
+**Verified against the Rust port** (`tools/port/tsp-rs`), which is the
+authoritative implementation: every bone's world position, a bone's full
+3×4 matrix, and a real vertex transformed through it all match, and the
+union of every model's transformed vertices reproduces the bounding box
+the `.mdl` **declares** for each of its sequences to within 0.01 units.
+That last one is the real proof — the declared per-sequence boxes are
+the model's own statement of where its geometry ends up.
+
+`tools/render-thumbnails.mjs` renders one 256×256 PNG per model from the
+real `.mdl`, the real geometry and the real skin, via headless Chromium
+(SwiftShader — there is no GPU here). All seven render as coherent,
+assembled figures.
 
 **Container logs:** every container on the production host now rotates
 its docker log (`json-file`, 10 MB x 3 files per container). Before
@@ -1378,6 +1492,49 @@ the parts that are known traps.
 
 # § NEXT TASK
 
+> ## The PR #80 review, and then the deploy that has never been tested
+>
+> **Read the PR first.** `feat/player-identity` (PR #80) is **open, CI
+> green, and awaiting Kyle's review.** Nothing in this session was
+> merged, and nothing was deployed — the agent never approves a PR and
+> never merges one.
+>
+> **What is on the branch now** (all of it verified, see § CURRENT
+> STATE):
+>
+> - the leaderboard's three defects fixed (empty time-seen, the
+>   console read that returned 0 bytes, and the fleet-wide MVP window
+>   that awarded 9 MVPs for 10 kills);
+> - the bots excluded on two signals, so the board shows people;
+> - the registry now **turns the kill log on itself** when the engine
+>   says it is off — the fix that survives a container restart;
+> - the game server's config is a **mounted volume the deploy ships**,
+>   so `log on` can actually reach production;
+> - the deploy's `mkdir` failure fixed (it would have killed the next
+>   deploy outright);
+> - the character thumbnails, **rendered from the real models**, with
+>   the bone transform verified against the Rust port.
+>
+> **What is left before the deploy can be trusted:**
+>
+> 1. **Kyle reviews and approves PR #80.** The agent does not.
+> 2. **The config is read at container start.** So a game container
+>    that is ALREADY running keeps its old config, and the kill log on
+>    it stays off until the orchestrator next creates one. That is
+>    exactly why the registry's self-heal exists: it catches a running
+>    instance within 15 seconds without touching it.
+> 3. **The deploy has never run with these changes.** The Caddyfile
+>    swap, the sudo `mkdir`, the config volume and the registry image
+>    are all new to the pipeline. The first run is the risky one.
+>
+> **The one thing to watch in the first deploy:** the registry's
+> self-heal writes `log on` into every game server's console when the
+> engine reports it is off. That is safe (the engine answers `log` with
+> its state, and the answer is cached), but it is new behaviour and it
+> should be watched rather than assumed.
+>
+> ---
+>
 > ## E5 — the local dev loop for gameplay changes
 >
 > **Read `docs/FE-MOD-PLAN.md` § E5 first.** It is the full write-up;
@@ -1422,6 +1579,30 @@ the parts that are known traps.
 > ghosting through the running game, the green shell, the landing page,
 > the boot screen, the connecting splash, the options overlay, and the
 > docs sweep.
+>
+> ---
+>
+> ### The research behind the bone transform
+>
+> The bone transform (`src/mod/mdl-bones.ts`) was derived from the Rust
+> port's own renderer, and the derivation is reproducible:
+>
+> - the reference is `tools/port/tsp-rs/crates/client/src/studio.rs`
+>   (`setup_bones`, `write_bones`, `calc_blended`) and
+>   `crates/client/src/studio/model.rs`;
+> - the Euler order `R = Rz(c)·Ry(b)·Rx(a)` was confirmed
+>   NUMERICALLY against that renderer: with this order the reproduction
+>   error was 0.0, and the two nearest alternatives were off by 0.30 and
+>   1.88;
+> - the binding check is the model's own **declared** per-sequence
+>   bounding boxes, reproduced to within 0.01 units.
+>
+> **A note on how the numbers were obtained.** The research agent was
+> cut off by an API rate limit before it could write its summary, but
+> its work was recoverable from its transcript and its probe output —
+> which is where the ground truth in `tests/unit/mdl-bones.test.mjs`
+> comes from. The numbers in the test are FULL-PRECISION values, so the
+> test does not depend on a model file being present.
 
 ---
 

@@ -35,6 +35,10 @@ COPY services/registry/lib/registry-rows.mjs /app/services/registry/lib/registry
 # over the whole thing. The whole-log read is O(size), and the game
 # server's log grows without bound.
 COPY services/registry/lib/console-log.mjs /app/services/registry/lib/console-log.mjs
+# The kill log's own on/off state, and the rule for reading the
+# engine's reply. See lib/log-state.mjs for why `log 1` in server.cfg
+# is not the same thing as logging being on.
+COPY services/registry/lib/log-state.mjs /app/services/registry/lib/log-state.mjs
 
 # The leaderboard. The numbers are the part that has to be RIGHT, and
 # they are the part that is easy to get subtly wrong — counting a bot

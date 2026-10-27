@@ -63,6 +63,7 @@ import { probeWithRetry, timeoutForAttempt } from './lib/a2s-retry.mjs';
 import { classifyProbeFailure, nextFailureCount, shouldRefreshSeenAt } from './lib/liveness.mjs';
 import { updateRow, updateRowIfCurrent } from './lib/registry-rows.mjs';
 import { LOG_TAIL_LINES, findAnswerAfterMarker, textAfterMarker } from './lib/console-log.mjs';
+import { LOG_ON, parseLogState } from './lib/log-state.mjs';
 import {
   desiredBotQuota as computeBotQuota,
   resolveHumanCount,
@@ -292,6 +293,118 @@ export function parseStatusPlayers(text) {
 }
 
 /**
+ * Turn the engine's kill log on, if it is off.
+ *
+ * WHY THE REGISTRY HAS TO DO THIS
+ * -------------------------------
+ * The leaderboard's numbers come from the engine's kill log, and the
+ * engine only writes it when its logging is ON. In server.cfg the
+ * setting is a COMMAND — `log on`, not `log 1` — and `log 1` is a
+ * command with an argument the engine does not understand, so it does
+ * nothing at all. It neither turns the log on nor turns it off.
+ *
+ * Measured on production, 2026-10-27: the container was restarted at
+ * 16:24:55 and the kill lines stopped dead. They did not come back on
+ * their own; they came back only when `log on` was typed into the
+ * console by hand. A leaderboard that depends on a human remembering
+ * to do that after every restart is a leaderboard that is empty half
+ * the time.
+ *
+ * So the registry asks the engine, and fixes it when the answer is
+ * "off". The engine answers `log` on stdout with the usage line and
+ * then its state, and the state is read with the same marker trick the
+ * other console questions use.
+ *
+ * THE CONDITION IS NOT "NO KILL LINES"
+ * ------------------------------------
+ * It would be simpler to notice that the kill log is empty and turn
+ * logging on. That is wrong: a quiet server legitimately has no kills,
+ * and turning the log on for a server that is already logging is a
+ * pointless write to every instance every poll. The engine is asked
+ * instead, so the question is answered by the thing that knows.
+ *
+ * AND IT IS ONLY RE-ASKED EVERY SO OFTEN
+ * --------------------------------------
+ * Asking the engine is a console round-trip, so the answer is cached
+ * for a short while. But the cache must NOT be allowed to hide a
+ * container restart, and that is the subtle part:
+ *
+ * `docker restart` keeps the container and its LOG FILE, so the kill
+ * lines from before the restart are still in the tail that the
+ * registry reads. A check of the form "the kill log has lines in it,
+ * so logging must be on" would therefore keep saying ON forever after
+ * a restart — while the engine, restarted with its config re-read,
+ * is writing nothing. Measured on production: the container was
+ * restarted at 16:24:55 and the kill lines stopped dead.
+ *
+ * So the CACHED ANSWER IS ONLY CACHED, never inferred from the kill
+ * log, and it is re-checked on a timer. The engine is asked again
+ * every LOG_CHECK_MS, and a restart is caught within that window
+ * however quiet the server is.
+ */
+const logState = new Map();
+
+/**
+ * How long the engine's answer is trusted.
+ *
+ * Short enough that a restart is caught quickly, long enough that
+ * the console is not asked on every poll.
+ */
+const LOG_CHECK_MS = num(process.env.REGISTRY_LOG_CHECK_MS, 15_000);
+
+/** Ask the engine whether its logging is on. */
+async function readLogState(container) {
+  const marker = `TSREG${Date.now().toString(36)}`;
+  await consoleWrite(container, `echo ${marker}`);
+  await consoleWrite(container, 'log');
+
+  const deadline = Date.now() + CONSOLE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const text = await logTail(container);
+    const after = textAfterMarker(text, marker);
+    if (after != null) {
+      const state = parseLogState(after);
+      if (state) return state;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return null;
+}
+
+/**
+ * Make sure an instance is writing its kill log.
+ *
+ * @returns {Promise<'on'|'off'|null>} the state after the attempt
+ */
+async function ensureKillLog(container) {
+  const known = logState.get(container);
+  const now = Date.now();
+  if (known && now - known.checkedAt < LOG_CHECK_MS) {
+    return known.state;
+  }
+
+  const state = await readLogState(container);
+  const checkedAt = Date.now();
+  if (state == null) {
+    // The engine did not answer. It is not known to be off, and it is
+    // not known to be on, so nothing is changed. The previous answer
+    // is kept, with a fresh timestamp, so a server that is merely
+    // quiet is not re-asked on every poll.
+    logState.set(container, { state: known?.state ?? null, checkedAt });
+    return null;
+  }
+  if (state === LOG_ON) {
+    logState.set(container, { state: LOG_ON, checkedAt });
+    return LOG_ON;
+  }
+
+  // Off. Turn it on.
+  await consoleWrite(container, 'log on');
+  logState.set(container, { state: LOG_ON, checkedAt });
+  return LOG_ON;
+}
+
+/**
  * Fold the fleet's kill logs into the leaderboard.
  *
  * Every instance is read, and every instance's kills land in the
@@ -310,6 +423,20 @@ async function pollLeaderboard() {
       } catch {
         // An instance that cannot be read is skipped; the others
         // still contribute.
+      }
+      // The kill log has to be ON for any of the above to have read
+      // anything, and it is off by default after a container restart.
+      //
+      // This is asked of the ENGINE rather than inferred from the kill
+      // log being empty: `docker restart` keeps the container's log
+      // file, so the tail still holds the kill lines from BEFORE the
+      // restart and an empty-tail test would say "logging is on"
+      // forever while the engine writes nothing. The engine knows.
+      try {
+        await ensureKillLog(instance.container);
+      } catch {
+        // A server that cannot be asked contributes nothing here; the
+        // others still do.
       }
     }
     // The presence pass.

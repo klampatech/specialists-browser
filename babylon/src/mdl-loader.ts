@@ -17,6 +17,7 @@
 
 import { Color3, Mesh, RawTexture, StandardMaterial, Texture, TransformNode, Vector3 } from "@babylonjs/core";
 import type { MdlDecodedSubModel, MdlModel, MdlTriangleVertex } from "../../src/mod/mdl-parser";
+import { computeBoneMatrices, transformPoint, type Mat34 } from "../../src/mod/mdl-bones";
 
 /** A built body part: root TransformNode + per-sub-model meshes. */
 export interface BuiltBodyPart {
@@ -48,7 +49,11 @@ interface SubMeshBuilder {
   indices: number[];
 }
 
-function buildSubMeshes(sub: MdlDecodedSubModel, submodelIndex: number): SubMeshBuilder[] {
+function buildSubMeshes(
+  sub: MdlDecodedSubModel,
+  submodelIndex: number,
+  boneMatrices: Mat34[],
+): SubMeshBuilder[] {
   // For each unique skinRef in this sub-model's meshes, collect
   // all triangle vertices into one big list. (One Babylon sub-mesh
   // per texture, sharing a material.)
@@ -74,7 +79,28 @@ function buildSubMeshes(sub: MdlDecodedSubModel, submodelIndex: number): SubMesh
       const vx = sub.vertices[v.vertIndex * 3 + 0];
       const vy = sub.vertices[v.vertIndex * 3 + 1];
       const vz = sub.vertices[v.vertIndex * 3 + 2];
-      const pos = gsrcToBabylon(vx, vy, vz);
+
+      // THE BONE TRANSFORM.
+      //
+      // A studio model's vertices are stored in BONE-LOCAL space —
+      // each vertex names the bone it hangs off, and its coordinates
+      // are relative to that bone's origin. Drawing them where they
+      // are puts every vertex at its bone's origin, and the model
+      // comes out EXPLODED.
+      //
+      // So each vertex is transformed by its bone's world matrix
+      // before it becomes a world-space position. The matrices come
+      // from computeBoneMatrices(), which implements the same
+      // computation the engine's own renderer does — see
+      // src/mod/mdl-bones.ts for the algorithm and its verification
+      // against the Rust port.
+      const boneIndex = sub.boneIndices[v.vertIndex] ?? 0;
+      const bone = boneMatrices[boneIndex];
+      const world = bone
+        ? transformPoint(bone, [vx, vy, vz])
+        : ([vx, vy, vz] as [number, number, number]);
+
+      const pos = gsrcToBabylon(world[0], world[1], world[2]);
       builder.positions.push(pos.x, pos.y, pos.z);
       // Use the bone's "up" vector as a placeholder normal — the
       // .mdl has a per-vertex normal index that maps to a table,
@@ -111,6 +137,10 @@ export function buildMdlMeshes(
   const builtTextures: Texture[] = [];
   const textureByIndex = new Map<number, Texture>();
 
+  // The bones' world transforms, computed once and used by every
+  // vertex of every sub-model. See src/mod/mdl-bones.ts.
+  const boneMatrices = computeBoneMatrices(mdl.bones);
+
   // Build all texture objects (RawTexture — RGBA8 from a flat pixel buffer)
   for (let i = 0; i < mdl.textures.length; i++) {
     const t = mdl.textures[i];
@@ -139,7 +169,7 @@ export function buildMdlMeshes(
 
     for (let sp = 0; sp < mdl.subModels[bp].length; sp++) {
       const sub = mdl.subModels[bp][sp];
-      const builders = buildSubMeshes(sub, sp);
+      const builders = buildSubMeshes(sub, sp, boneMatrices);
 
       // One Babylon Mesh per texture in this sub-model
       for (const builder of builders) {

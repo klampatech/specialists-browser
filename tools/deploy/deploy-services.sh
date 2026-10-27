@@ -55,8 +55,17 @@ DOCKER_GID="$(getent group docker | cut -d: -f3)"
 # created, and it has to be WRITABLE by the registry's user: docker
 # creates a missing bind-mount source as root, and then the registry
 # cannot write its board to it.
-mkdir -p "$LEADERBOARD_DIR"
-chmod 0777 "$LEADERBOARD_DIR" 
+#
+# It is created with SUDO because /srv is root-owned and this script
+# runs as the deploy user. Without the sudo, `mkdir` fails with
+# "Permission denied" and — because the script runs under `set -e` —
+# the whole deploy dies before a single container is replaced. The
+# registry's uid is 10004 (see Dockerfile.registry), and the board has
+# to survive the container being replaced, so it is OWNED by that uid
+# rather than left world-writable.
+sudo mkdir -p "$LEADERBOARD_DIR"
+sudo chown 10004:10004 "$LEADERBOARD_DIR"
+sudo chmod 0755 "$LEADERBOARD_DIR"
 
 log() { echo "  $*"; }
 

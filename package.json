@@ -3,7 +3,7 @@
   "private": true,
   "description": "The Specialists running in a browser tab, against a real dedicated server.",
   "scripts": {
-    "test": "node --test tests/unit/*.test.mjs",
-    "test:ci": "node --test tests/unit/*.test.mjs && for f in $(find services tools -name '*.mjs' -o -name '*.cjs' | grep -v node_modules); do node --check \"$f\" || exit 1; done"
+    "test": "node --experimental-strip-types --test tests/unit/*.test.mjs",
+    "test:ci": "node --experimental-strip-types --test tests/unit/*.test.mjs && for f in $(find services tools -name '*.mjs' -o -name '*.cjs' | grep -v node_modules); do node --check \"$f\" || exit 1; done"
   }
 }
