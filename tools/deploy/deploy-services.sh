@@ -42,8 +42,21 @@ ORCHESTRATOR_IMAGE="${ORCHESTRATOR_IMAGE:-orchestrator:0.3}"
 BRIDGE_IMAGE="${BRIDGE_IMAGE:-ts-bridge:0.6}"
 
 ASSETS="${ASSETS:-/srv/ts-data}"
+
+# Where the leaderboard's board lives. It is a VOLUME, not a path
+# inside the container: a container that is replaced loses its
+# filesystem, and a leaderboard that resets every time the control
+# plane is redeployed is not a leaderboard.
+LEADERBOARD_DIR="${LEADERBOARD_DIR:-/srv/ts-leaderboard}"
 RUN_INSTANCE="${RUN_INSTANCE:-/home/ubuntu/run-instance.sh}"
 DOCKER_GID="$(getent group docker | cut -d: -f3)"
+
+# The leaderboard's directory. It has to exist before the container is
+# created, and it has to be WRITABLE by the registry's user: docker
+# creates a missing bind-mount source as root, and then the registry
+# cannot write its board to it.
+mkdir -p "$LEADERBOARD_DIR"
+chmod 0777 "$LEADERBOARD_DIR" 
 
 log() { echo "  $*"; }
 
@@ -96,6 +109,8 @@ replace registry \
   -e TS_BOT_TARGET=16 \
   -e TS_HOST=127.0.0.1 \
   -e TS_PUBLIC=40.160.225.81 \
+  -e LEADERBOARD_DATA=/data/leaderboard.json \
+  -v "$LEADERBOARD_DIR:/data" \
   "$REGISTRY_IMAGE"
 
 # ── the orchestrator: the decision maker ─────────────────────────────────

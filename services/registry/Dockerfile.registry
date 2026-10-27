@@ -36,6 +36,13 @@ COPY services/registry/lib/registry-rows.mjs /app/services/registry/lib/registry
 # server's log grows without bound.
 COPY services/registry/lib/console-log.mjs /app/services/registry/lib/console-log.mjs
 
+# The leaderboard. The numbers are the part that has to be RIGHT, and
+# they are the part that is easy to get subtly wrong — counting a bot
+# as a person, double-counting a kill across two log tails — so the
+# logic lives in its own modules and is unit-tested there.
+COPY services/registry/lib/leaderboard.mjs /app/services/registry/lib/leaderboard.mjs
+COPY services/registry/lib/leaderboard-collector.mjs /app/services/registry/lib/leaderboard-collector.mjs
+
 # The registry imports queryServer() from the Vite plugin rather than
 # reimplementing A2S: the GoldSrc handshake rules are easy to get subtly
 # wrong and impossible to notice until a server browser silently shows the

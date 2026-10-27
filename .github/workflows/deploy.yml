@@ -311,9 +311,19 @@ jobs:
           # recreate below re-does the mount, so the new file is picked up.
           scp -F ~/.ssh/config tools/deploy/deploy-services.sh prod:/home/ubuntu/deploy-services.sh
           scp -F ~/.ssh/config tools/deploy/run-instance.sh prod:/home/ubuntu/run-instance.sh
+          # The Caddyfile too. It is the site's only front door, and a
+          # route that lives in the repo but is installed by hand is a
+          # route that drifts: the /api/leaderboard route was added in
+          # the repo and would not have existed in production.
+          scp -F ~/.ssh/config tools/deploy/config/Caddyfile prod:/home/ubuntu/Caddyfile
           ssh -F ~/.ssh/config prod '
             set -euo pipefail
             chmod +x /home/ubuntu/deploy-services.sh /home/ubuntu/run-instance.sh
+            # Caddy validates before it reloads, so a bad Caddyfile
+            # fails the deploy instead of taking the site down.
+            sudo cp /home/ubuntu/Caddyfile /etc/caddy/Caddyfile
+            sudo caddy validate --config /etc/caddy/Caddyfile
+            sudo systemctl reload caddy
             REGISTRY_IMAGE=registry:'"${{ github.sha }}"' \
             ORCHESTRATOR_IMAGE=orchestrator:'"${{ github.sha }}"' \
             BRIDGE_IMAGE=ts-bridge:'"${{ github.sha }}"' \

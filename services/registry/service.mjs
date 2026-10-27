@@ -67,6 +67,7 @@ import {
   desiredBotQuota as computeBotQuota,
   resolveHumanCount,
 } from './lib/fleet-logic.mjs';
+import { createCollector } from './lib/leaderboard-collector.mjs';
 
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const bool = (v, d) => (v === undefined || v === '' ? d : v === '1' || v === 'true');
@@ -88,6 +89,23 @@ const RECOVER_RATIO = num(process.env.TS_RECOVER_RATIO, 0.95);
 const DEGRADE_SUSTAIN_MS = num(process.env.TS_DEGRADE_SUSTAIN_MS, 30_000);
 const ACTION_COOLDOWN_MS = num(process.env.TS_ACTION_COOLDOWN_MS, 120_000);
 const BOT_TARGET = num(process.env.TS_BOT_TARGET, 16);
+
+/**
+ * The leaderboard.
+ *
+ * `LEADERBOARD_DATA` is where the board is kept. It has to be on a
+ * VOLUME, not in the container's filesystem: a container that is
+ * replaced loses its filesystem, and a leaderboard that resets every
+ * time the control plane is redeployed is not a leaderboard.
+ *
+ * `LEADERBOARD_POLL_MS` is how often the kill log is read. The log
+ * is read from the tail, so consecutive reads overlap and the board
+ * remembers every kill it has already counted.
+ */
+const LEADERBOARD_DATA = process.env.LEADERBOARD_DATA || '/data/leaderboard.json';
+const LEADERBOARD_POLL_MS = num(process.env.LEADERBOARD_POLL_MS, 10_000);
+/** The log lines to read per poll. Enough to cover the gap between polls. */
+const LEADERBOARD_LOG_LINES = num(process.env.LEADERBOARD_LOG_LINES, 2000);
 
 /**
  * The port range the fleet can occupy.
@@ -118,6 +136,15 @@ function portRange() {
 }
 
 const PORTS = portRange();
+
+/**
+ * The leaderboard collector.
+ *
+ * It is created with no log reader and no map source at first; both
+ * are set up below, because the log reader needs the Docker helpers
+ * that are defined further down.
+ */
+const leaderboard = createCollector({ dataFile: LEADERBOARD_DATA });
 
 /** id -> instance record. Kept until it goes stale. */
 const registry = new Map();
@@ -169,6 +196,73 @@ async function consoleWrite(container, command) {
     ['exec', '-i', container, 'sh', '-c', `cat > ${PIPE}`],
     { input: `${command}\n` },
   );
+}
+
+/**
+ * Read an instance's kill log.
+ *
+ * The kill lines are in the container's stdout, because that is where
+ * the engine writes them (`log on`). The tail is generous, because
+ * consecutive reads overlap and the board deduplicates; a tail that
+ * is too small would MISS kills, which is the one failure mode that
+ * cannot be corrected later.
+ */
+async function readKillLog(container) {
+  const { stdout } = await sh('bash', [
+    '-lc',
+    `docker logs --tail ${LEADERBOARD_LOG_LINES} ${container} 2>&1`,
+  ]);
+  return stdout;
+}
+
+/**
+ * The players currently on an instance, by name.
+ *
+ * Read from the engine's console rather than A2S, because A2S counts
+ * bots as players and the leaderboard is about people. The
+ * `ts_status` output carries the name, and the bot's names are
+ * recognisable, but the AUTHORITATIVE bot flag is in the kill log's
+ * authid — so the names here are only used to tell WHO IS HERE, and
+ * the bot test is applied to the kills themselves.
+ */
+async function readPlayerNames(container) {
+  const { stdout } = await sh('bash', [
+    '-lc',
+    `docker exec -i ${container} sh -c 'cat > ${PIPE}' <<< 'ts_status' 2>/dev/null; true`,
+  ]);
+  const names = [];
+  for (const line of stdout.split('\n')) {
+    const m = /#\d+\s+(.+?)\s+(alive|observer)\s/.exec(line);
+    if (m) names.push(m[1].trim());
+  }
+  return names;
+}
+
+/**
+ * Fold the fleet's kill logs into the leaderboard.
+ *
+ * Every instance is read, and every instance's kills land in the
+ * SAME board — a global leaderboard spans the fleet, not one server.
+ */
+let leaderboardInFlight = false;
+async function pollLeaderboard() {
+  if (leaderboardInFlight || !USE_DOCKER) return;
+  leaderboardInFlight = true;
+  try {
+    for (const instance of registry.values()) {
+      if (!instance.container) continue;
+      try {
+        const log = await readKillLog(instance.container);
+        await leaderboard.ingest(instance.id, log, instance.map);
+      } catch {
+        // An instance that cannot be read is skipped; the others
+        // still contribute.
+      }
+    }
+    await leaderboard.persist();
+  } finally {
+    leaderboardInFlight = false;
+  }
 }
 
 /**
@@ -600,6 +694,36 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (url.pathname === '/api/leaderboard') {
+    // The global leaderboard: total kills, time seen and MVPs per
+    // player, across the WHOLE fleet.
+    //
+    // "time seen" is a lower bound, not an exact play time — the
+    // registry can only measure the time it SAW a player, and the
+    // port has no connected-time counter. The name says so, because
+    // a number that means something else is a lie in a column
+    // heading.
+    const rows = await leaderboard.rows();
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(
+      JSON.stringify({
+        players: rows.map((p) => ({
+          name: p.name,
+          kills: p.kills,
+          mvps: p.mvps,
+          timeSeen: p.timeSeen,
+        })),
+        // So the UI can say what the numbers are, and so a caller
+        // can tell an empty board from a broken one.
+        source: 'engine kill log',
+        timeSeenNote: 'time the registry observed a player online',
+        updatedAt: Date.now(),
+      }),
+    );
+    return;
+  }
+
   if (url.pathname === '/api/registry') {
     const rows = [...registry.values()].sort((a, b) =>
       a.id.localeCompare(b.id, undefined, { numeric: true }),
@@ -645,6 +769,12 @@ server.listen(Number(bindPort), bindHost, () => {
 
 const pollTimer = setInterval(pollA2S, POLL_MS);
 const metricsTimer = setInterval(pollMetrics, METRICS_MS);
+
+// The leaderboard's own poll. It is separate from the A2S and metrics
+// polls because it reads the LOG, which is a different kind of read:
+// it is much bigger, and it must not be able to delay the fleet's
+// health checks.
+const leaderboardTimer = setInterval(pollLeaderboard, LEADERBOARD_POLL_MS);
 pollTimer.unref?.();
 metricsTimer.unref?.();
 
