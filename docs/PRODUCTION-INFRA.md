@@ -202,12 +202,59 @@ Two things fall out of it:
 1. **The bot quota gives way to humans automatically.** `ts_bot_quota`
    went 16 → 12 → 9 as humans arrived. The fleet makes room for people
    by removing bots, which is the right behaviour and worth knowing.
-2. **The map change drops every client.** At t=153s the map rotated and
-   the A2S human count went to 0 while the sockets stayed open. The
-   server log shows `Specialist disconnected` for each one. The clients
-   reconnect on their own, but the window where the registry reports
-   humans and the server reports none is real and lasts until they are
-   back.
+2. **The map change looks like it drops every client, but a single
+   client handles it in ONE SECOND.** The server logs
+   `CHANGE LEVEL: ts_wyndham` when the 15-minute `mp_timeleft` expires.
+   Measured against the live server:
+
+   ```
+   [01:54:47] CHANGE LEVEL: ts_wyndham
+   [01:54:48] [ts] Specialist connected (address 172.17.0.1:60968)
+   ```
+
+   **One second**, same address — the client reconnected on its own, the
+   WebSocket never closed, and the page never reloaded. So the map
+   change is *not* a disconnection event, and the client's
+   `connectionLost` path never fires for it.
+
+   The 8-browser run seemed to contradict this: after its map change
+   the A2S human count went to 0 and the bridge's downstream counter
+   froze for **135 seconds**, with `liveConnections` still at 8 the
+   whole time. That is *not* the map change breaking the clients — it
+   is 8 clients on a 16-core box that was already at **load average
+   14** re-establishing their sessions, and the game's own log for
+   that window shows the clients reappearing one at a time
+   (`Specialist connected` at 01:31:48, 01:33:45, 01:34:36, 01:35:28).
+
+   The server's log for that window also shows the real client-side
+   failure mode, which is *not* the map change: **`Specialist timed
+   out`** — the client stops sending and the server drops it, three
+   times in four minutes. A client that stops talking to the server
+   is the thing to investigate, and it is a different bug from the
+   map change.
+
+   **Reproduced with 8 clients, and the recovery does happen.** A second
+   instrumented run (8 browsers, watching across `CHANGE LEVEL:
+   ts_henny2`) saw the same frozen counter and the same 0 humans, and
+   the clients staggered back over several minutes: the server logged
+   `Specialist connected` at 02:16:18 and 02:16:41, and the registry
+   eventually reported **humans=8** — all eight in the game. So the
+   map change is survivable, and the 135 seconds is the start of a
+   slow recovery rather than a permanent break.
+
+   **What makes it slow is the TEST BOX, not the server.** During the
+   run, one Chromium **GPU process was spinning at 566% CPU** — the
+   software rasteriser, a headless-only artifact — while the 16-core
+   box sat at **load average 14** with 8 WASM engines competing for
+   it. A *fresh* client launched against the same server at the same
+   moment got in immediately and received live game data. And the
+   bridge held **8 live WebSockets and 18 UDP sessions to the game
+   server** while A2S reported 0 humans — the transport was healthy;
+   the engines were not pulling.
+
+   The lesson for the measurement: **8 browsers on one box is not 8
+   players.** The server was never the bottleneck, and the numbers from
+   a saturated test machine must not be read as server behaviour.
 
 **Tickrate held at 100 throughout** — avg 100, min 100, target 100, with
 `responsive=true` and `metricsOk=true` — including across the map change.
