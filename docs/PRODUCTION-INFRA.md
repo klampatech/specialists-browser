@@ -217,6 +217,20 @@ Two things fall out of it:
    change is *not* a disconnection event, and the client's
    `connectionLost` path never fires for it.
 
+   The client's own console shows the mechanism, timestamped to the same
+   second as the server's `CHANGE LEVEL`:
+
+   ```
+   [20:54:48] [xash-stdout] reconnecting...
+   [20:54:48] [xash-stdout] Connecting to 40.160.225.81:27015... (retry #1)
+   ```
+
+   The **engine** detects the level change and re-runs its connect
+   handshake at the game-protocol level. Nothing above the engine
+   notices: the page did not reload (one navigation for the whole run),
+   the WebSocket stayed open, and the `connectionLost` overlay never
+   appeared. A player sees the map change and keeps playing.
+
    The 8-browser run seemed to contradict this: after its map change
    the A2S human count went to 0 and the bridge's downstream counter
    froze for **135 seconds**, with `liveConnections` still at 8 the
@@ -255,6 +269,15 @@ Two things fall out of it:
    The lesson for the measurement: **8 browsers on one box is not 8
    players.** The server was never the bottleneck, and the numbers from
    a saturated test machine must not be read as server behaviour.
+
+   **A note on the probe itself.** Late in the single-client run, the
+   probe's own `page.evaluate` calls started failing ("page gone") for
+   ~120 s — the page was so busy it could not answer a trivial
+   JavaScript call. That is the same main-thread starvation the
+   event-loop-lag measurement found (4.1 ms idle → 154.5 ms in game),
+   showing up as a measurement tool losing its grip. It is a reminder
+   that a saturated client distorts not only the game but anything
+   measured from inside the page.
 
 **Tickrate held at 100 throughout** — avg 100, min 100, target 100, with
 `responsive=true` and `metricsOk=true` — including across the map change.
