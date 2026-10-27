@@ -731,6 +731,95 @@ keeps its unbounded log until it is recreated, so the 25 MB file on
 recreating the game server kicks every player on it — so it is left to
 the orchestrator's own scale cycle rather than forced.
 
+### The engine rendered at the viewport's resolution (2026-10-27, fixed)
+
+The "150 ms" in the 2026-10-27 capacity report was **never server
+latency**. It was the engine's own render frame time.
+
+**WHAT WAS MEASURED.** The engine renders **AT the browser viewport's
+resolution** — always. Its `vid_width`/`vid_height` cvars and the canvas
+backing store tracked the viewport exactly at every size tried, and the
+engine's frame count equalled the browser's `requestAnimationFrame` rate
+at every size: the engine draws one frame per animation frame and the
+main thread is blocked for all of it. That is mechanically what a 150 ms
+event-loop lag is.
+
+| viewport | engine render res | engine frames/s |
+|---|---|---|
+| 640x480 | 640x480 | 69.5 |
+| 1280x720 | 1280x720 | 30.2 |
+| 1920x1080 | 1920x1080 | 8.6 |
+| 2560x1440 | 2560x1440 | 4.5 |
+
+One headless Chromium against production, **software rasteriser** — so the
+absolute frame rates are pessimistic; a real GPU is faster. The SHAPE is
+the point: the frame cost is the pixel count.
+
+**THE PRODUCTION A/B**, viewport 2560x1440 throughout, engine mode varied
+with `vid_setmode <w> <h>`:
+
+| engine mode | rAF/s | event-loop lag med | p95 |
+|---|---|---|---|
+| 2560x1440 | 11.20 | 88.4 ms | 233.5 ms |
+| 1920x1080 | 21.92 | 55.7 ms | 97.0 ms |
+| 1280x720 | 38.83 | 28.7 ms | 56.9 ms |
+| 640x360 | 60.04 | 13.6 ms | 37.4 ms |
+
+**THE TRAP: THE ENGINE RE-SYNCS ITS RESOLUTION TO THE WINDOW.** SDL's
+resize event → `VID_SaveWindowSize` → `R_SaveVideoMode` rewrites the
+engine's `width`, `height`, `vid_width` and `vid_height` from the new
+window size. A forced 1280x720 did **not** survive the viewport growing
+to 2560x1440 — the engine went back to 2560x1440 and the frame rate fell
+from 16.2/s to 0.4/s. So the resolution has to be **re-applied after every
+resize**, not just set once at boot.
+
+**WHAT SHIPPED.**
+
+- `webxash/src/services/video-settings.ts` — **the policy, and nothing
+  else.** Detects the display, resolves the player's choice to a render
+  resolution, and produces the engine's launch args and the `vid_setmode`
+  command. **No imports, on purpose:** the parent's unit suite imports
+  this `.ts` directly through node's type stripping, the same constraint
+  `browser-chords.ts` is written under.
+- `webxash/src/services/xash-loader.ts` — `-width`/`-height` in the
+  engine's argv, so the **first** frame is already right and not just the
+  second; plus a post-boot `vid_setmode` and a +1500 ms retry for the
+  case where the video system was not up yet.
+- `webxash/src/services/fullscreen.ts` — the existing resize watchdog
+  re-applies the resolution, because the engine throws it away on every
+  resize.
+- `webxash/src/stores/store.ts` — the `renderResolution` preference,
+  persisted.
+- `webxash/src/components/XashLaunchOptions.vue` — a "Render resolution"
+  selector in the launch options.
+- `tests/unit/video-settings.test.mjs` — 21 tests over the real policy
+  and the wiring. `npm test` is **132/132**; `bunx vue-tsc --noEmit` is
+  clean.
+
+**THE DEFAULT IS 1080p.** `auto` takes the display's CSS resolution
+capped at a **1920x1080** pixel budget, aspect preserved. HiDPI is
+deliberately **not** multiplied by `devicePixelRatio` — that would be
+four times the fill rate for 320x240 art. The browser upscales the
+canvas (the canvas is `width: 100vw; height: 100vh`, so its CSS size is
+independent of its backing store). `display` in the selector is the
+uncapped native resolution.
+
+**A LANDMINE THE FIRST VERSION WALKED INTO.** The resize watchdog is
+installed at import time, before the Vue app exists, so it hears the
+resize events that happen while the engine is still booting. The engine's
+command pool does not exist until its first frame, and a command sent
+before that makes the **engine** raise its own fatal error — measured:
+`_Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)`,
+surfaced at the JavaScript side as the bare value `Infinity` thrown out
+of `Cmd_ExecuteString`. The render-resolution module now stays
+**disarmed** until the loader says the engine is up.
+
+**THE FULLSCREEN QUESTION — THE BORDERLESS OBSERVATION DOES NOT HELP.**
+The engine's own borderless mode takes the **DISPLAY**'s resolution, which
+is *more* pixels, not fewer. The mode that honours a forced resolution is
+the engine's **windowed** mode; the browser's own fullscreen is what fills
+the screen.
+
 ### The lighting question (2026-10-24, investigated — NOT fixed)
 
 Kyle asked whether the work that stopped the player models rendering

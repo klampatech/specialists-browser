@@ -409,6 +409,102 @@ and the wire is 4–6 ms. The player's own browser is the slow part.
 **Bottom line: 8 is a defensible plan, not a promise.** Item 1 is the one that could
 move the number, and it is only answerable with real clients.
 
+### The 150 ms of client lag: ANSWERED (2026-10-28)
+
+The 2026-10-27 capacity/latency report measured a **154.5 ms event-loop
+lag** in the game page and could not explain it. It is answered now, and
+the answer is not what it looked like:
+
+**The 150 ms was never server latency. It was the engine's own render
+frame time**, during which the page's main thread cannot service
+anything else.
+
+The cause: **the engine renders at the browser viewport's resolution.**
+Always. Its `vid_width`/`vid_height` cvars and the canvas backing store
+tracked the viewport exactly at every size tried, and the engine's frame
+count equalled the browser's `requestAnimationFrame` rate at every size —
+the engine draws one frame per animation frame and the main thread is
+blocked for all of it. That is mechanically what a 150 ms event-loop lag
+*is*.
+
+| viewport | engine render res | engine frames/s | event-loop lag (med) |
+|---|---|---|---|
+| 640×480 | 640×480 | 69.5 | 58.8 ms |
+| 1280×720 | 1280×720 | 30.2 | 112.5 ms |
+| 1920×1080 | 1920×1080 | 8.6 | 235.7 ms |
+| 2560×1440 | 2560×1440 | 4.5 | 360.5 ms |
+
+One headless Chromium against production, on the **software rasteriser**,
+so the absolute frame rates are far worse than a real GPU gives. The
+*shape* — cost proportional to pixels — is not an artefact of that. 14.4
+ms/frame at 640×480, 222 ms/frame at 2560×1440, roughly linear.
+
+So Kyle's "some FPS hits when I go full screen" is this, and it is fully
+explained: going fullscreen makes the viewport the size of the display,
+the engine follows the viewport, and the frame cost goes with the pixel
+count.
+
+#### The fix: render smaller, let the browser upscale
+
+The canvas is `width: 100vw; height: 100vh`
+(`webxash/src/assets/main.css`), so its CSS size is independent of its
+backing store. Forcing the engine to a smaller mode and letting the
+browser scale the canvas up gives the frames straight back:
+
+| engine mode (viewport 2560×1440) | rAF/s | event-loop lag (med / p95) |
+|---|---|---|
+| 2560×1440 | 11.20 | 88.4 ms / 233.5 ms |
+| 1920×1080 | 21.92 | 55.7 ms / 97.0 ms |
+| 1280×720 | 38.83 | 28.7 ms / 56.9 ms |
+| 640×360 | 60.04 | 13.6 ms / 37.4 ms |
+
+The engine's own switches do it: `vid_setmode <w> <h>` at runtime, and
+`-width`/`-height` on the command line — the engine creates its window at
+that size during renderer init, so the first frame is already right.
+
+**The one trap, and it is the whole reason this needs three moving
+parts: the engine re-syncs to the window on every resize.** SDL's resize
+event calls `VID_SaveWindowSize`, which calls `R_SaveVideoMode`, which
+rewrites `width`, `height`, `vid_width` and `vid_height` from the new
+window size. Measured: a forced 1280×720 did **not** survive the
+viewport growing to 2560×1440 — the engine went back to 2560×1440 and
+the frame rate fell from 16.2/s to **0.4/s**. So the resolution has to
+be **re-applied after every resize**, not just set once at boot.
+
+**What shipped (2026-10-28):**
+
+| piece | where | what it does |
+|---|---|---|
+| the policy | `webxash/src/services/video-settings.ts` | display → render resolution; `auto` caps at 1080p, `display` is the display's own size |
+| the launch arguments | `webxash/src/services/xash-loader.ts` | `-width`/`-height` on the engine's argv, so the first frame is right |
+| the post-boot apply | `webxash/src/services/xash-loader.ts` | `vid_setmode` once the renderer is up |
+| the re-apply | `webxash/src/services/fullscreen.ts` | the resize watchdog puts it back after every resize |
+| the player's control | `webxash/src/components/XashLaunchOptions.vue` | a "Render resolution" selector; `auto` by default |
+
+A **HiDPI display is deliberately not rendered at its device
+resolution.** `screen.width` reports CSS pixels (1512 on a 14" Retina
+MacBook, not 3024), and rendering at the device resolution would cost
+four times the fill rate for a game whose art is 320×240 — while the
+browser upscales the canvas anyway.
+
+**Verified in a real browser**, against the locally-built frontend and
+the production game server: the engine drifts to the viewport's
+resolution on a resize (measured at **+300 ms**, before the watchdog's
+400 ms debounce) and the watchdog pulls it back — canvas backing store
+**1920×1080**, GL drawing buffer 1920, GL viewport 1920×1080, with the
+canvas CSS size still 2560×1440, so the browser upscales. See
+`tests/unit/video-settings.test.mjs` for the policy and the wiring.
+
+**A landmine that the first version walked into.** The resize watchdog is
+installed at import time, before the Vue app exists, so it hears the
+resize events that happen while the engine is still booting. The engine's
+command pool does not exist until its first frame, and a command sent
+before that makes the **engine** raise its own fatal error — measured:
+`_Mem_Alloc: pool == NULL (alloc at ../engine/common/cmd.c:638)`,
+surfaced at the JavaScript side as the bare value `Infinity` thrown out
+of `Cmd_ExecuteString`. The render-resolution module now stays
+**disarmed** until the loader says the engine is up.
+
 ---
 
 ## 4. Access
