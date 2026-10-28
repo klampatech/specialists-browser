@@ -27,8 +27,13 @@ NAME="ts-$N"
 # ten-minute rotation; 0.24 -> 0.25 for the server's connect and
 # disconnect lines (the engine's own go to a log file the container
 # cannot write, so humans were invisible in the logs); 0.25 -> 0.26 for
-# the fifteen-minute rotation. The OLD tag stays on the host so a
-# rollback is one env var: TS_IMAGE=ts-server:0.25.
+# the fifteen-minute rotation; 0.26 -> 0.27 for the console FIFO, which
+# the entrypoint had open READ-WRITE — that made PID 1 a second reader
+# on the pipe, and the kernel could hand a console command to it, where
+# it was consumed and DISCARDED. Measured on production before the
+# fix: a console question never answered in 25 seconds, 2 times out of
+# 12. After it: 12 of 12 answered, in 32-269ms. The OLD tag stays on the
+# host so a rollback is one env var: TS_IMAGE=ts-server:0.26.
 #
 # WHY THE ROTATION NEEDS AN IMAGE
 # -------------------------------
@@ -36,7 +41,7 @@ NAME="ts-$N"
 # a live server is stomped at the next map change (measured: mp_timelimit
 # 10 at 15:39 became 3 again at the 15:48 map change). The rotation
 # therefore only sticks if it is IN the image's server.cfg.
-IMAGE="${TS_IMAGE:-ts-server:0.26}"
+IMAGE="${TS_IMAGE:-ts-server:0.27}"
 ASSETS="${TS_ASSETS:-/srv/ts-data}"
 MAXPLAYERS="${TS_MAXPLAYERS:-32}"
 MAP="${TS_MAP:-ts_casa}"
