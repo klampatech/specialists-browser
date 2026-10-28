@@ -41,6 +41,8 @@
  * human would press PLAY again; so does this.
  */
 const { loadPlaywright } = require('./lib/browser.cjs');
+const { confirmIdentity } = require('./lib/identity-modal.cjs');
+const { waitForFleet } = require('./lib/fleet.cjs');
 const { chromium } = loadPlaywright();
 
 const { publicHumans } = require('./lib/prod-state.cjs');
@@ -108,13 +110,59 @@ function bridgeLive() {
 
     // The PLAY button specifically. NOT a Join button.
     await page.waitForSelector('.ts-landing__play', { timeout: 30_000 });
+
+    // Wait for the fleet to answer before pressing PLAY.
+    //
+    // The registry's public list goes empty for about thirty seconds at
+    // a time, and while it is empty PLAY has no target: the button does
+    // nothing and the landing page says "No servers answered. Check
+    // back in a moment — the fleet may be restarting." A human waits for
+    // that to pass. The gate has to as well, or it reports a FAIL that
+    // is about the fleet's mood and not about the build.
+    const fleet = await waitForFleet(page);
+    console.log(
+      `  the fleet: ${fleet.servers} server(s) after ${Math.round(fleet.waitedMs / 1000)}s`
+    );
+    if (!fleet.ok) {
+      console.log('  no server answered — the fleet is not offering anything to join');
+      result = { ok: false, fullscreenOk: false, buyBound: false };
+      continue;
+    }
+
     console.log('  clicking the PLAY button (.ts-landing__play)');
     await page.click('.ts-landing__play');
+
+    // The pre-join identity modal.
+    //
+    // PLAY does not connect any more. It asks for a name and a
+    // character first, and the launch happens after the player confirms.
+    //
+    // A test that clicks PLAY and waits for the handshake is testing a
+    // flow nobody takes — and on 2026-10-28 that is exactly what this
+    // gate did: the deploy went red on a game that worked perfectly,
+    // and the red was about the TEST, not the player.
+    console.log('  answering the pre-join identity modal');
+    const identity = await confirmIdentity(page, 'CIPlayer');
+    if (!identity.appeared) {
+      // The launch never started, so there is nothing to wait for. Say
+      // so and take the next attempt — a human would press PLAY again.
+      console.log('  the pre-join identity modal never appeared — PLAY never launched');
+      result = { ok: false, fullscreenOk: false, buyBound: false };
+      if (attempt < ATTEMPTS) {
+        console.log('  trying again');
+      }
+      continue;
+    }
 
     // Fullscreen. The page is supposed to take the screen when the
     // player enters the game, and the request has to be made INSIDE the
     // click — that is the only moment a browser grants it. A request
     // made later, after the first await, is refused.
+    //
+    // The click that matters is the CONFIRM, not the PLAY click: the
+    // modal's confirm handler starts the launch, and the launch asks
+    // for fullscreen at its very top. So this check has to come after
+    // the modal is answered, not after PLAY is pressed.
     //
     // The check is "the document element is the fullscreen element", not
     // "the canvas is": the options overlay and the disconnect panel are

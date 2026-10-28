@@ -15,6 +15,8 @@
 const dgram = require('node:dgram');
 const { publicHumans } = require('./lib/prod-state.cjs');
 const { loadPlaywright } = require('./lib/browser.cjs');
+const { confirmIdentity } = require('./lib/identity-modal.cjs');
+const { waitForFleet } = require('./lib/fleet.cjs');
 const { chromium } = loadPlaywright();
 
 const URL = process.argv[2] || 'https://bulletballet.dev/';
@@ -97,17 +99,70 @@ async function bootPlayer(browser, label) {
 
   await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 60_000 });
 
+  // Wait for the fleet to answer, and for a server row to offer a Join
+  // button. The registry's public list goes empty for about thirty
+  // seconds at a time, and with no server there is no Join button and
+  // no way in — a human waits for that to pass.
+  //
+  // This is not hypothetical: on 2026-10-28 this test failed exactly
+  // this way, with its player sitting on the landing page showing
+  // "SCANNING FOR SERVERS…" and the gate reporting "0 browser(s)
+  // connected".
+  const fleet = await waitForFleet(page);
+  console.log(
+    `  ${label}: the fleet: ${fleet.servers} server(s) after ${Math.round(fleet.waitedMs / 1000)}s`
+  );
+  if (!fleet.ok) {
+    return {
+      ctx,
+      page,
+      logs,
+      booted: false,
+      note: 'the fleet offered no server to join',
+    };
+  }
+
   // Click JOIN once the button exists.
   await page
     .waitForFunction(
       () => [...document.querySelectorAll('button')].some((b) => /join/i.test(b.textContent || '')),
-      { timeout: 30_000 },
+      { timeout: 60_000 },
     )
     .catch(() => {});
   await page.evaluate(() => {
-    const b = [...document.querySelectorAll('button')].find((x) => /join/i.test(x.textContent || ''));
+    // BY CLASS first: the landing page's own per-server Join button.
+    // The identity modal's confirm button also says "Join as <name>",
+    // so a search by text alone can find the wrong one — and clicking
+    // it without a name would launch the game as nobody.
+    const own = document.querySelector('.ts-server__join');
+    const fallback = [...document.querySelectorAll('button')].find(
+      (x) => /join/i.test(x.textContent || '') && !x.closest('.ident')
+    );
+    const b = own || fallback;
     if (b) b.click();
   });
+
+  // The pre-join identity modal.
+  //
+  // Join does not connect any more either: it asks for a name and a
+  // character first, and the launch happens after the player confirms.
+  // Without this step the page sits in front of the modal and the
+  // engine never boots — which is what happened on 2026-10-28, when
+  // this test was written against the old flow and the deploy's own
+  // gate went red on a working game.
+  console.log(`  ${label}: answering the pre-join identity modal`);
+  const identity = await confirmIdentity(page, label);
+  if (!identity.appeared) {
+    // The launch never started, so the engine will never boot. Waiting
+    // out the 240s wasm timeout would only prove what is already known.
+    return {
+      ctx,
+      page,
+      logs,
+      booted: false,
+      note: 'the pre-join identity modal never appeared',
+    };
+  }
 
   // Wait for the engine to boot: several WASM modules loaded AND the
   // loading overlay gone.
