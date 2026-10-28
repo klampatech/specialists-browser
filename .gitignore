@@ -20,9 +20,8 @@ out/
 *.local
 
 # Game asset symlinks (live in _runtime_assets/, not in repo)
-babylon/public/sounds
-babylon/public/models
-babylon/public/maps
+# The Babylon viewer's symlinks went with the viewer; the frontend's
+# assets are served from R2 (see docs/ASSET-DELIVERY.md).
 
 # Editor / OS
 .vscode/

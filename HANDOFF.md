@@ -16,11 +16,26 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-27, `feat/player-identity` — **two open PRs: webXash #24
-(frontend) then specialists-browser #80 (pointer + leaderboard backend).
-Both CI green, awaiting Kyle's review**; NOT merged, NOT deployed
+**As of:** 2026-10-28, `main` — **the character picker and the pre-join
+identity modal are LIVE in production.** webXash #25 and
+specialists-browser #81 were merged (the latter as `c12dba3`), then #82
+(the deploy gate) and #83 (the console-FIFO fix) were merged on
+2026-10-28. The game server image is `ts-server:0.27`.
 **Active path:** webXash (Xash3D-FWGS WASM **client**) + the real TS server as a WASM **dedicated server** in a container
 **Goal:** ~~playable The Specialists in the browser~~ — **met.** Real assets, real gameplay, real dedicated server, public URL.
+
+**The console FIFO was eating commands (fixed 2026-10-28).** The
+registry's proof of life is a question written into the game server's
+console FIFO. The entrypoint held that pipe open **read-write**, which
+made PID 1 a second reader on it — so the kernel could hand a command to
+PID 1, where it was consumed and DISCARDED. Measured on production: a
+console question **never answered in 25 seconds, 2 times out of 12**, and
+a failed console read is read as "the server is down", so three in a row
+marked the instance stale and emptied the whole public server list. Two
+fixes: the registry now asks again when the marker never appears
+(`services/registry/lib/console-ask.mjs`), and the entrypoint holds a
+write-only descriptor instead. After the roll: **12 of 12 answered, in
+32-269ms.** See #83.
 
 **Docs:** the README was refreshed against production on 2026-10-24. The
 withdrawn keyboard root cause is gone from it, both screenshots were
@@ -141,11 +156,16 @@ vertex bbox reaches neither. `src/mod/mdl-parser.ts`'s `readVertexPositions`
 reads 3 floats at a **12-byte stride**, but studio **v10**'s vertex
 record is **28 bytes** (`co` 12 + `normals` 12 + `boneIndices[2]` 4).
 
-**So the 3D path is parked, not deleted.** `tools/render-thumbnails.mjs`,
-`babylon/thumbnail.html` and `babylon/src/thumbnail.ts` are still there. If
-the path is ever picked up, the order of work is: (1) read the vertices at
-the right stride so the vertex space and the bone space agree, (2) apply
-the bone **delta** rather than the world matrix, (3) only then the
+**So the 3D path is DELETED, not parked.** `tools/render-thumbnails.mjs`,
+`babylon/` and the `babylon-shot.js` harness were removed on 2026-10-28:
+nothing in the pipeline built them, nothing referenced them, and the
+character picker ships the game's own portrait art instead. The branch
+`experimental/babylon-port` is still parked at tag `babylon-port-frozen`
+if anyone ever wants the history back.
+
+If the path is ever picked up again, the order of work is: (1) read the
+vertices at the right stride so the vertex space and the bone space agree,
+(2) apply the bone **delta** rather than the world matrix, (3) only then the
 **two-bone blend + weight** that `studiovert_t.boneIndices[2]` carries —
 that matters for **animated** poses, not for a static bind-pose thumbnail,
 where every vertex's rest position is the same regardless of which bones

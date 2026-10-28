@@ -332,50 +332,54 @@ what to do.
 
 ### Repo layout
 
+This tree is the repo **as it is**. It used to be the repo as it was
+*planned* — it described a `src/scene/`, `src/player/`, `src/server/` and a
+top-level `public/` that never existed, and it did not mention the frontend
+submodule or the control plane. If you are here to check what is where,
+this is the map; if it is out of date again, fix it in the same PR that
+made it out of date.
+
 ```
 .
 ├── HANDOFF.md              # Current state + next task. READ THIS FIRST.
 ├── SPEC.md                 # Living design spec. (this file)
 ├── AGENTS.md               # Implicit contract for any agent touching the repo.
 ├── README.md               # Orients new humans/agents to the project.
+├── webxash/                # The FRONTEND — a git submodule (the Vue client).
+│                           # The pipeline builds and ships THIS, not the repo.
 ├── docs/                   # Extended design docs, research notes.
-│   ├── option-d-scope.md   # Phase 1 (Option D, ACTIVE) full design doc.
-│   ├── option-c-scope.md   # Phase 1 (Option C) — fallback if Option D fails.
+│   ├── option-d-scope.md   # The AI-decompile design doc (Option D — what shipped).
+│   ├── option-c-scope.md   # The Babylon reimplementation (Option C) — rejected.
 │   ├── phase-1-scope.md    # Phase 1 (Option B CheerpX) — superseded.
 │   └── cheats/             # One-shot reference docs.
-├── tools/                  # Smoke scripts, dispatch prompts, build scripts.
-│   ├── decompile/          # Option D: AI decompile artifacts
-│   │   ├── analysis/       # readelf/objdump output for each function
-│   │   ├── prompts/        # Claude prompt templates
-│   │   ├── chunks/         # Function-level chunks fed to Claude
-│   │   └── output/         # Decompiled TS output
-│   ├── convert-bsp.ts      # dev tool: BSP → glTF (Phase 1.5, only if needed)
-│   ├── convert-mdl.ts      # dev tool: MDL → glTF (Phase 1.5, only if needed)
-│   ├── patch_gnu_stack.py  # ELF patcher used in CheerpX PoC (kept for reference)
+├── tools/                  # Build scripts, deploy tooling, decompile pipeline.
+│   ├── decompile/          # Option D: the AI decompile pipeline.
+│   │   ├── analysis/       # readelf/objdump output for the binary.
+│   │   ├── prompts/        # The prompt templates.
+│   │   ├── chunks/         # Function-level chunks fed to the model.
+│   │   ├── cross-vendor/   # The impl + review pair for each function.
+│   │   ├── output/         # The canonical decompiled TS — src/mod/ imports this.
+│   │   └── references/     # The GoldSrc reference notes.
+│   ├── deploy/             # The production deploy: Dockerfiles, gates, config.
+│   ├── port/               # The Rust port of the server DLL.
 │   ├── .codex-prompts/     # .codex-prompt-prN-*.md dispatch notes
-│   │                        # (Kyle pastes these into T3 sessions).
-│   └── smokes/             # tier-1 (unit), tier-2 (headless),
-│                            # tier-3 (real-browser) smoke scripts.
-├── src/                    # TypeScript source (Phase 1+).
-│   ├── main.ts             # Entry point.
-│   ├── scene/              # Babylon.js scene setup, lighting, materials.
-│   ├── player/             # Player controller, camera, input.
-│   ├── weapons/            # Weapon system, viewmodels, firing.
-│   ├── bots/               # Bot AI (basic Phase 1, advanced Phase 2).
-│   ├── hud/                # HTML overlay (health, ammo, crosshair).
-│   ├── server/             # Listen server in Web Worker.
-│   ├── mod/                # Decompiled TS mod gameplay (Option D output).
+│   │                       # (Kyle pastes these into T3 sessions).
+│   └── smokes/             # The tier-3 manual smoke records.
+├── src/                    # TypeScript source.
+│   ├── bridge/             # The bridge: the engine's side of the browser.
+│   │   └── engine.ts
+│   └── mod/                # Decompiled TS mod gameplay (Option D output).
 │   │   ├── interface.ts    # GoldSrc interface (GiveFnptrsToDll, etc.)
 │   │   ├── slowmo.ts       # CTSSlowMotion, CTSSlowMotionPoint
 │   │   ├── weapons.ts      # CTSGun, CTSGunUci
-│   │   ├── bots.ts         # Bot AI logic
-│   │   ├── damage.ts       # Damage system
-│   │   └── scoring.ts      # Scoring system
-│   └── assets/             # Asset loaders (glTF, WAD, WAV, SPR).
-├── public/                 # Static assets served at /.
-│   └── runtime-assets/     # Symlink to /home/kyle/Development/specialists-browser/_runtime_assets/
-│                            # (so the page can fetch converted files at runtime)
-└── .github/                # CI workflows (Phase 2+).
+│   │   ├── scoring.ts      # Scoring system
+│   │   └── decomp.ts       # Re-exports the canonical bodies from
+│   │                       # tools/decompile/output/ — that is where they live.
+├── services/               # The control plane.
+│   ├── registry/           # The fleet registry: A2S, console, leaderboard.
+│   └── orchestrator/       # The fleet orchestrator: scale out/in, restarts.
+├── tests/unit/             # The unit suite.
+└── .github/                # CI + deploy workflows.
 ```
 
 ### Branch + commit discipline
