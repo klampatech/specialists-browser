@@ -20,7 +20,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -133,16 +133,35 @@ test('the identity guard is not recomputed on every launch', () => {
 });
 
 test('the identity modal offers a model for every model the server knows', () => {
-  // The modal's cards are the seven models, and each one has a
-  // thumbnail rendered FROM the model. A model with no thumbnail is a
-  // broken card, so the two lists have to agree.
+  // The modal's cards are the seven models, and each one shows that
+  // model's portrait from the game's own art. A model with no picture is
+  // a broken card, so the two lists have to agree.
   const imgs = [...modal.matchAll(/:src="`\/models\/\$\{m\}\.png`"/g)];
   assert.equal(
     imgs.length,
     1,
-    'each model card must render its thumbnail from the model',
+    'each model card must render the model\'s portrait',
   );
-  assert.match(modal, /alt="`\$\{m\} character preview`"/, 'the thumbnail needs alt text');
+  assert.match(modal, /alt="`\$\{m\} character preview`"/, 'the portrait needs alt text');
+});
+
+test('every model has a portrait picture to show', () => {
+  requireSubmodule();
+  // These are the GAME'S OWN portraits: the .bmp that ships beside each
+  // model, with the flat backdrop made transparent.
+  //
+  // They were 3D renders once. The renderer applied each bone's
+  // bind-pose world matrix to vertices that already carried their bind
+  // position, so the position was added twice: one gordon vertex moved
+  // 67.7 units on a 22-unit character, and the heads floated with the
+  // hands detached from the arms. So a card with no portrait is not a
+  // cosmetic gap - it is the shape of the bug that shipped.
+  const models = ['seal', 'merc', 'gordon', 'laurence', 'agent', 'hitman', 'castor'];
+  for (const m of models) {
+    const p = join(WEBXASH, 'public', 'models', `${m}.png`);
+    assert.ok(existsSync(p), `no portrait for ${m} at ${p}`);
+    assert.ok(statSync(p).size > 1024, `the portrait for ${m} is suspiciously small`);
+  }
 });
 
 // ─── The name field ───────────────────────────────────────────────────────

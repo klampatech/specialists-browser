@@ -16,8 +16,9 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-27, `feat/player-identity` (PR #80 — **open, CI green,
-awaiting Kyle's review**; NOT merged, NOT deployed)
+**As of:** 2026-10-27, `feat/player-identity` — **two open PRs: webXash #24
+(frontend) then specialists-browser #80 (pointer + leaderboard backend).
+Both CI green, awaiting Kyle's review**; NOT merged, NOT deployed
 **Active path:** webXash (Xash3D-FWGS WASM **client**) + the real TS server as a WASM **dedicated server** in a container
 **Goal:** ~~playable The Specialists in the browser~~ — **met.** Real assets, real gameplay, real dedicated server, public URL.
 
@@ -107,37 +108,55 @@ owned by the registry's uid (10004) rather than being world-writable.
 The Caddyfile replacement was checked and is **safe**: the live
 `/etc/caddy/Caddyfile` is byte-identical to the repo's.
 
-## The character thumbnails are rendered from the model
+## The character picker shows the game's own portraits (2026-10-27)
 
-The character picker showed the model **names**; it now shows the models.
+The picker used to show the model **names**; it now shows the models, as
+**the game's own portrait art**. `ts/models/player/<name>/<name>.bmp` is a
+164x200 palette-indexed portrait of the character — head and shoulders,
+front facing, in the game's art style — and **not** a UV atlas. The flat
+backdrop is made transparent so the character sits on the panel rather
+than on a grey card. All seven ship in `webxash/public/models/*.png`.
 
-A studio model's vertices are stored in **bone-local space** — each
-vertex names a bone, and its coordinates are relative to that bone's
-origin. Rendering them without applying the bones' transforms gives an
-**exploded** model: limbs in the wrong place, the figure a heap of
-disconnected pieces.
+**It was a 3D render, and the 3D render was wrong.**
+`tools/render-thumbnails.mjs` drove the Babylon MDL loader to render each
+model. The loader applied each bone's **bind-pose world matrix** to
+vertices that already carried their bind position, so the position was
+added a **second** time:
 
-`src/mod/mdl-bones.ts` implements the transform, and it is the same
-computation the engine's own renderer does:
+- one gordon vertex moves **67.7 units** on a character whose raw vertex
+  extents are **22.0 x 12.1 x 14.6 units** — **3.1x its own height**, in a
+  single vertex;
+- the visible result was a **head floating above the shoulders** and
+  **hands detached from the arms** on every model.
 
-- the rotation order is `R = Rz(c) · Ry(b) · Rx(a)`;
-- a bone's world rotation is `world_rot[parent] · R_i`;
-- a bone's world position is `world_rot[parent] · pos_i + world_pos[parent]`
-  — the local offset is **rotated by the parent's rotation first**;
-  doing it the other way round puts the hands 10.8 units away.
+`src/mod/mdl-bones.ts` is **not** the bug — its bone matrices do match the
+Rust port's. The bug was *applying* them: a renderer wants the bone
+**delta** (`worldCurrent x inverse(worldBind)`), which is the **identity**
+at the bind pose. Dropping the transform does fix the detachment — and
+then the figures **lie on their side**, which exposes the second,
+independent problem: the bones and the vertices are not in the same
+coordinate space in this file. The 3ds Max Biped chain runs along **+X**
+(the head bone at X~26) with the root bone at **Z=39.5**, while the raw
+vertex bbox reaches neither. `src/mod/mdl-parser.ts`'s `readVertexPositions`
+reads 3 floats at a **12-byte stride**, but studio **v10**'s vertex
+record is **28 bytes** (`co` 12 + `normals` 12 + `boneIndices[2]` 4).
 
-**Verified against the Rust port** (`tools/port/tsp-rs`), which is the
-authoritative implementation: every bone's world position, a bone's full
-3×4 matrix, and a real vertex transformed through it all match, and the
-union of every model's transformed vertices reproduces the bounding box
-the `.mdl` **declares** for each of its sequences to within 0.01 units.
-That last one is the real proof — the declared per-sequence boxes are
-the model's own statement of where its geometry ends up.
+**So the 3D path is parked, not deleted.** `tools/render-thumbnails.mjs`,
+`babylon/thumbnail.html` and `babylon/src/thumbnail.ts` are still there. If
+the path is ever picked up, the order of work is: (1) read the vertices at
+the right stride so the vertex space and the bone space agree, (2) apply
+the bone **delta** rather than the world matrix, (3) only then the
+**two-bone blend + weight** that `studiovert_t.boneIndices[2]` carries —
+that matters for **animated** poses, not for a static bind-pose thumbnail,
+where every vertex's rest position is the same regardless of which bones
+influence it.
 
-`tools/render-thumbnails.mjs` renders one 256×256 PNG per model from the
-real `.mdl`, the real geometry and the real skin, via headless Chromium
-(SwiftShader — there is no GPU here). All seven render as coherent,
-assembled figures.
+**What the earlier verification actually checked, and why it passed a broken
+render:** it checked the bone **matrices** against the Rust port (correct)
+and one vertex pushed through one matrix (also correct). It never checked
+the **final composed transform**. The "reproduces the declared bounding
+box to within 0.01 units" claim cannot have measured what it says either:
+this model's v10 header bbox fields read `0,0,0`-`0,0,0`.
 
 **Container logs:** every container on the production host now rotates
 its docker log (`json-file`, 10 MB x 3 files per container). Before
@@ -1494,10 +1513,13 @@ the parts that are known traps.
 
 > ## The PR #80 review, and then the deploy that has never been tested
 >
-> **Read the PR first.** `feat/player-identity` (PR #80) is **open, CI
-> green, and awaiting Kyle's review.** Nothing in this session was
-> merged, and nothing was deployed — the agent never approves a PR and
-> never merges one.
+> **Read the PR first.** There are **TWO** open PRs, and the order
+> matters: **`klampatech/webXash` #24** (the frontend) FIRST, then
+> **`klampatech/specialists-browser` #80** (the submodule pointer plus the
+> leaderboard backend). #80 pins #24's branch head, which is not on
+> webXash `main` yet. Both are **open, CI green, and awaiting Kyle's
+> review.** Nothing here was merged, and nothing was deployed — the agent
+> never approves a PR and never merges one.
 >
 > **What is on the branch now** (all of it verified, see § CURRENT
 > STATE):
@@ -1512,8 +1534,12 @@ the parts that are known traps.
 >   so `log on` can actually reach production;
 > - the deploy's `mkdir` failure fixed (it would have killed the next
 >   deploy outright);
-> - the character thumbnails, **rendered from the real models**, with
->   the bone transform verified against the Rust port.
+> - the character picker shows the **game's own portraits** — the .bmp
+>   that ships beside each model, with the flat backdrop made
+>   transparent. The 3D render it replaced was wrong (a bone's bind
+>   position was applied twice: 67.7 units of displacement on a 22-unit
+>   character, heads floating, hands detached); it is parked, not
+>   deleted. See § CURRENT STATE.
 >
 > **What is left before the deploy can be trusted:**
 >
