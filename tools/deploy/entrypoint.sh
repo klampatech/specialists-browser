@@ -147,20 +147,40 @@ echo "entrypoint: assets=$(ls -1 "$GAME_TS" | wc -l) entries in game dir, $(ls -
 # read the tickrate that the autoscale trigger is defined against. Retrofitting
 # a supervisor into a running fleet is worse than designing it in now.
 #
-# Pattern is the same as the dev-host setup (start-ts-server.sh): a named pipe
-# whose reader is wired to the engine's stdin. The pipe is opened read-write so
-# it never reports EOF to the reader just because no writer is attached yet.
+# Pattern is the same as the dev-host setup (start-ts-server.sh): a named
+# pipe whose reader is wired to the engine's stdin.
 #
 #   printf 'ts_status\n' | docker exec -i ts-0 sh -c 'cat > /tmp/console.pipe'
 #
 # It lives in /tmp rather than /srv because /srv is root-owned and the engine
 # runs as an unprivileged user that cannot create files there. /tmp is world
 # writable inside the container, which is the right scope for a runtime pipe.
+#
+# WHY THE WRITE END IS OPENED *AFTER* THE READER, AND WRITE-ONLY
+# -----------------------------------------------------------------
+# A FIFO delivers what is written to it to exactly ONE waiting reader. So
+# the number of readers matters: if this shell holds the pipe open
+# READ-WRITE, then PID 1 is a reader as well as the `cat` below, and the
+# kernel may hand a command to PID 1's descriptor — where it is consumed
+# and DISCARDED. The engine never sees it, never echoes it, and never
+# answers.
+#
+# That was measured on production: a single console question NEVER
+# answered in 25 seconds, 2 times out of 12, and the registry's own
+# three-in-parallel pattern missed the tickrate in 2 rounds out of 10.
+# A failed console read is read as "the server is down", so three in a
+# row marked the instance stale and emptied the public server list — a
+# dead PLAY button for every player in that window.
+#
+# So: the reader starts first, and this shell then holds a WRITE-ONLY
+# descriptor. Holding a write end is what stops the reader from seeing
+# EOF when nobody is writing (the original reason for opening it at all),
+# and a write-only descriptor is not a reader, so the command can only
+# ever reach the `cat`.
 
 CONSOLE=/tmp/console.pipe
 rm -f "$CONSOLE"
 mkfifo "$CONSOLE"
-exec 3<>"$CONSOLE"
 
 # cat, not tail -F: tail is built for regular files and file rotation, and on
 # a FIFO it does not reliably stream. cat has the correct blocking semantics —
@@ -173,6 +193,11 @@ cat "$CONSOLE" \
   &
 
 ENGINE=$!
+
+# The reader is up, so this cannot block for long: it waits only until
+# `cat` has opened the pipe for reading.
+exec 3>"$CONSOLE"
+
 # PID 1 is this shell, so SIGTERM from `docker stop` lands here. Forward it or
 # the container takes the full 10s grace period to die every single time.
 trap 'kill -TERM "$ENGINE" 2>/dev/null; wait "$ENGINE" 2>/dev/null; exit 0' TERM INT

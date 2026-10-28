@@ -62,7 +62,8 @@ import { queryServer } from '../../webxash/vite-a2s-plugin.mjs';
 import { probeWithRetry, timeoutForAttempt } from './lib/a2s-retry.mjs';
 import { classifyProbeFailure, nextFailureCount, shouldRefreshSeenAt } from './lib/liveness.mjs';
 import { updateRow, updateRowIfCurrent } from './lib/registry-rows.mjs';
-import { LOG_TAIL_LINES, findAnswerAfterMarker, textAfterMarker } from './lib/console-log.mjs';
+import { LOG_TAIL_LINES, textAfterMarker } from './lib/console-log.mjs';
+import { askConsole } from './lib/console-ask.mjs';
 import { LOG_ON, parseLogState } from './lib/log-state.mjs';
 import {
   desiredBotQuota as computeBotQuota,
@@ -473,18 +474,17 @@ async function pollLeaderboard() {
  * unrelated log output that happened to contain the same digits.
  */
 async function consoleAsk(container, command, pattern, timeoutMs = 6_000) {
-  const marker = `TSREG${Date.now().toString(36)}`;
-  await consoleWrite(container, `echo ${marker}`);
-  await consoleWrite(container, command);
-
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const text = await logTail(container);
-    const m = findAnswerAfterMarker(text, marker, pattern);
-    if (m) return m;
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  return null;
+  // The retry lives in lib/console-ask.mjs, and WHY it is there is in
+  // that file's header: a command can be swallowed by the wrong reader
+  // on the console FIFO, and it was measured on production never
+  // answering at all in 2 of 12 single questions.
+  return askConsole({
+    write: (line) => consoleWrite(container, line),
+    read: () => logTail(container),
+    command,
+    pattern,
+    timeoutMs,
+  });
 }
 
 /* ------------------------------------------------------------------ */
