@@ -41,10 +41,20 @@ RUN set -eux; \
 
 COPY services/orchestrator/package.json /app/package.json
 COPY services/orchestrator/service.mjs /app/services/orchestrator/service.mjs
-# Slot selection lives in a separate module so it can be unit-tested: the
-# original "highest + 1" logic walked off the end of the port range.
-COPY services/orchestrator/lib/slot.mjs /app/services/orchestrator/lib/slot.mjs
-COPY services/orchestrator/lib/restart-clock.mjs /app/services/orchestrator/lib/restart-clock.mjs
+# The orchestrator's modules, each one its own file so a unit test can
+# hold its own line:
+#
+#   slot.mjs          slot selection: the original "highest + 1" logic
+#                     walked off the end of the port range.
+#   restart-clock.mjs when a restart is allowed, and how long an
+#                     instance has been unresponsive.
+#
+# ONE COPY for the whole directory, not one COPY per file — the same
+# reason as the registry's Dockerfile. A per-file COPY means adding a
+# module means remembering to add a line here, and forgetting it ships an
+# image whose service.mjs cannot import it. That is how the registry's
+# image was broken on 2026-10-28.
+COPY services/orchestrator/lib/ /app/services/orchestrator/lib/
 
 ENV ORCH_BIND=127.0.0.1:8090 \
     REGISTRY_URL=http://127.0.0.1:8081/api/registry \
