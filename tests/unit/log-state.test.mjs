@@ -193,15 +193,21 @@ test('the kill-log state module is in the registry image', () => {
   // module that fails at runtime — and the registry container is
   // replaced by the deploy, so it fails in production and nowhere
   // else. This exact bug happened with the leaderboard's own modules
-  // (commit 514934a).
+  // (commit 514934a), and AGAIN with console-ask.mjs on 2026-10-28.
+  //
+  // The whole lib/ directory is copied now, so the module is in the
+  // image because its directory is. The general guard for both
+  // services — every module imported, every module copied, every
+  // module allowed by the .dockerignore — is
+  // tests/unit/service-image-files.test.mjs.
   const dockerfile = readFileSync(
     join(ROOT, 'services', 'registry', 'Dockerfile.registry'),
     'utf8',
   );
   assert.match(
     dockerfile,
-    /COPY services\/registry\/lib\/log-state\.mjs/,
-    'the log-state module must be COPYed into the registry image',
+    /COPY services\/registry\/lib\//,
+    'the registry image must copy the whole lib/ directory',
   );
 });
 
@@ -229,7 +235,10 @@ test('every module the registry copies is also ALLOWED by the dockerignore', () 
 
   // Every path the Dockerfile copies out of the repo.
   const copied = [...dockerfile.matchAll(/^COPY\s+(\S+)\s+\S+$/gm)].map((m) => m[1]);
-  assert.ok(copied.length >= 5, 'the Dockerfile should copy several files');
+  assert.ok(
+    copied.includes('services/registry/lib/'),
+    'the Dockerfile should copy the lib/ directory',
+  );
 
   // Every path the allowlist re-includes.
   const allowed = new Set(

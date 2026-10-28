@@ -21,31 +21,39 @@ WORKDIR /app
 
 COPY services/registry/package.json /app/package.json
 COPY services/registry/service.mjs /app/services/registry/service.mjs
-# The bot policy and the human-source decision live in a separate module
-# so they can be unit-tested. Both were wrong at some point and both
-# bugs were invisible from the outside.
-COPY services/registry/lib/fleet-logic.mjs /app/services/registry/lib/fleet-logic.mjs
-COPY services/registry/lib/a2s-retry.mjs /app/services/registry/lib/a2s-retry.mjs
-COPY services/registry/lib/liveness.mjs /app/services/registry/lib/liveness.mjs
-# The rows are MUTATED in place, never replaced, so a concurrent poll
-# cannot orphan a writer. That rule is in its own module so a unit
-# test can hold the line against a well-meaning refactor.
-COPY services/registry/lib/registry-rows.mjs /app/services/registry/lib/registry-rows.mjs
-# The console is read from the tail of the log, not from a byte offset
-# over the whole thing. The whole-log read is O(size), and the game
-# server's log grows without bound.
-COPY services/registry/lib/console-log.mjs /app/services/registry/lib/console-log.mjs
-# The kill log's own on/off state, and the rule for reading the
-# engine's reply. See lib/log-state.mjs for why `log 1` in server.cfg
-# is not the same thing as logging being on.
-COPY services/registry/lib/log-state.mjs /app/services/registry/lib/log-state.mjs
 
-# The leaderboard. The numbers are the part that has to be RIGHT, and
-# they are the part that is easy to get subtly wrong — counting a bot
-# as a person, double-counting a kill across two log tails — so the
-# logic lives in its own modules and is unit-tested there.
-COPY services/registry/lib/leaderboard.mjs /app/services/registry/lib/leaderboard.mjs
-COPY services/registry/lib/leaderboard-collector.mjs /app/services/registry/lib/leaderboard-collector.mjs
+# The registry's modules, each one its own file so a unit test can hold
+# its own line:
+#
+#   fleet-logic.mjs           the bot policy and the human-source decision.
+#                             Both were wrong at some point and both bugs
+#                             were invisible from the outside.
+#   a2s-retry.mjs             A2S, with retries and backoff.
+#   liveness.mjs              what "down" means, and the failure counter.
+#   registry-rows.mjs         the rows are MUTATED in place, never replaced,
+#                             so a concurrent poll cannot orphan a writer.
+#   console-log.mjs           the console is read from the tail of the log,
+#                             not from a byte offset over the whole thing.
+#   log-state.mjs             the kill log's own on/off state, and the rule
+#                             for reading the engine's reply.
+#   leaderboard.mjs           the numbers have to be RIGHT, and they are
+#                             easy to get subtly wrong.
+#   leaderboard-collector.mjs
+#   console-ask.mjs           asking the engine a question — and asking
+#                             AGAIN when the command was swallowed by the
+#                             console FIFO.
+#
+# ONE COPY for the whole directory, not one COPY per file.
+#
+# It used to be one per file, so that each module could carry a comment
+# saying why it is a separate module. That is a good reason for a module
+# to exist and a terrible reason for a build to break: adding a module
+# meant remembering to add a line here, and forgetting it shipped an
+# image whose service.mjs could not import it. That is exactly what
+# happened with lib/console-ask.mjs on 2026-10-28 — the registry
+# crash-looped in production and the deploy caught it. The comments
+# above now live here instead, where the build can see them.
+COPY services/registry/lib/ /app/services/registry/lib/
 
 # The registry imports queryServer() from the Vite plugin rather than
 # reimplementing A2S: the GoldSrc handshake rules are easy to get subtly

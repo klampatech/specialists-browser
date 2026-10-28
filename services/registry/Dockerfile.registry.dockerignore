@@ -1,14 +1,27 @@
 # Build context for the registry image.
+#
+# The context is ALLOWLISTED: `**` excludes everything, and then each
+# thing the image needs is re-included. That is deliberate — the
+# repository root is 1.1 GB of game assets, and an image that carries
+# them is slow to build and leaks content.
+#
+# The registry's modules are re-included as a DIRECTORY, not one line
+# per file. With one line per file, adding a module meant remembering
+# to add a line HERE as well as to the Dockerfile, and forgetting
+# either one ships an image that cannot start:
+#
+#   - the Dockerfile copies it but the allowlist does not → the build
+#     fails with a checksum error (the leaderboard's modules, commit
+#     514934a; the log-state module, later the same day);
+#   - neither list mentions it → the build succeeds, the image is
+#     missing the module, and the registry crash-loops in production
+#     with ERR_MODULE_NOT_FOUND (console-ask.mjs, 2026-10-28).
+#
+# One directory re-include means a new module is in the image because
+# it exists, not because somebody remembered.
 **
 !services/registry/Dockerfile.registry
 !services/registry/package.json
 !services/registry/service.mjs
-!services/registry/lib/fleet-logic.mjs
-!services/registry/lib/a2s-retry.mjs
-!services/registry/lib/liveness.mjs
-!services/registry/lib/registry-rows.mjs
-!services/registry/lib/console-log.mjs
-!services/registry/lib/log-state.mjs
-!services/registry/lib/leaderboard.mjs
-!services/registry/lib/leaderboard-collector.mjs
+!services/registry/lib/
 !webxash/vite-a2s-plugin.mjs

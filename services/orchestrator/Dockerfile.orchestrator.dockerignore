@@ -1,7 +1,12 @@
 # Build context for the orchestrator image.
+#
+# The context is ALLOWLISTED: `**` excludes everything, and then each
+# thing the image needs is re-included. See the registry's
+# .dockerignore for why the module directory is re-included as a
+# directory rather than one line per file — adding a module must not
+# mean remembering to update two lists.
 **
 !services/orchestrator/Dockerfile.orchestrator
 !services/orchestrator/package.json
 !services/orchestrator/service.mjs
-!services/orchestrator/lib/slot.mjs
-!services/orchestrator/lib/restart-clock.mjs
+!services/orchestrator/lib/
