@@ -65,6 +65,15 @@ bulletballet.dev {
 		}
 	}
 
+	# The global leaderboard: the same registry, a different route. The
+	# registry binds loopback for the same reason as /api/servers — the
+	# fleet's numbers are not public.
+	handle /api/leaderboard {
+		reverse_proxy 127.0.0.1:8081 {
+			flush_interval -1
+		}
+	}
+
 	# The WebSocket↔UDP bridge. Caddy proxies the upgrade automatically;
 	# the bridge answers /bridge as well as /ws so no rewrite is needed.
 	handle /bridge {

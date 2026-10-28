@@ -64,7 +64,7 @@
  * merged, reviewed, CI-green and still never touch a running container.
  */
 const SERVICES_PATTERN =
-  /^(services\/|tools\/port\/tsp-rs\/scripts\/ts-udp-bridge|tools\/deploy\/Dockerfile\.bridge|tools\/deploy\/(run-instance|deploy-services)\.sh|webxash\/vite-a2s-plugin)/;
+  /^(services\/|tools\/port\/tsp-rs\/scripts\/ts-udp-bridge|tools\/deploy\/Dockerfile\.bridge|tools\/deploy\/(run-instance|deploy-services)\.sh|tools\/deploy\/config\/|webxash\/vite-a2s-plugin)/;
 
 /**
  * Classify a change.

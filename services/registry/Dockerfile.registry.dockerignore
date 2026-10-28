@@ -8,4 +8,7 @@
 !services/registry/lib/liveness.mjs
 !services/registry/lib/registry-rows.mjs
 !services/registry/lib/console-log.mjs
+!services/registry/lib/log-state.mjs
+!services/registry/lib/leaderboard.mjs
+!services/registry/lib/leaderboard-collector.mjs
 !webxash/vite-a2s-plugin.mjs

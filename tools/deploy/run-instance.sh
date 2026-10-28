@@ -41,6 +41,30 @@ ASSETS="${TS_ASSETS:-/srv/ts-data}"
 MAXPLAYERS="${TS_MAXPLAYERS:-32}"
 MAP="${TS_MAP:-ts_casa}"
 
+# The game server's CONFIGURATION, as a volume.
+#
+# WHY IT IS A VOLUME AND NOT BAKED INTO THE IMAGE
+# ----------------------------------------------
+# The image carries `config/` (server.cfg, gameinfo.txt, mapcycle.txt)
+# because the image has to carry the Rust port's compiled server DLL,
+# which is a build artifact and is deliberately not committed. So the
+# pipeline does not build the ts-server image at all — it ships the
+# frontend and the three control-plane images, and the game image is
+# built BY HAND on the host.
+#
+# That made every change to server.cfg undeliverable: the file lived in
+# the repo, but the only way to get it into a running container was to
+# rebuild the image by hand on the host and recreate the instance. A
+# `log on` that is correct in the repo and absent in production is the
+# same class of bug as a route that lives in the repo and is installed
+# by hand: it drifts.
+#
+# So the config is MOUNTED, exactly as the Dockerfile's own run
+# documentation shows (`-v /srv/ts-config:/srv/config:ro`), and the
+# deploy ships it. The image keeps its baked-in copy as the fallback
+# for a container started by hand with no volume attached.
+CONFIG="${TS_CONFIG:-/srv/ts-config}"
+
 # ── log rotation ────────────────────────────────────────────────────────────
 # The game server's log grows without bound. Measured on production
 # 2026-10-26: 268 bytes/second, so ~22 MB/day from a single instance, and
@@ -75,6 +99,19 @@ LOG_MAX_FILE="${TS_LOG_MAX_FILE:-3}"
   exit 1
 }
 
+# The config volume, checked the same way the asset volume is. The
+# engine copies these three files into the game directory at startup
+# and refuses to start without them, so a config volume that exists
+# but is empty would take the whole game server down rather than fall
+# back to the image's baked-in copy. Checked HERE so the failure names
+# the volume instead of surfacing as an entrypoint error.
+for cfg in server.cfg gameinfo.txt mapcycle.txt; do
+  [ -f "$CONFIG/$cfg" ] || {
+    echo "game config missing: $CONFIG/$cfg — the config volume looks incomplete" >&2
+    exit 1
+  }
+done
+
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 
 docker run -d \
@@ -89,6 +126,7 @@ docker run -d \
   -e TS_MAXPLAYERS="$MAXPLAYERS" \
   -e TS_MAP="$MAP" \
   -v "$ASSETS:/srv/assets:ro" \
+  -v "$CONFIG:/srv/config:ro" \
   "$IMAGE" >/dev/null
 
 # Wait for the healthcheck rather than guessing at a sleep. It verifies the

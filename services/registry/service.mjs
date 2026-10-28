@@ -62,11 +62,13 @@ import { queryServer } from '../../webxash/vite-a2s-plugin.mjs';
 import { probeWithRetry, timeoutForAttempt } from './lib/a2s-retry.mjs';
 import { classifyProbeFailure, nextFailureCount, shouldRefreshSeenAt } from './lib/liveness.mjs';
 import { updateRow, updateRowIfCurrent } from './lib/registry-rows.mjs';
-import { LOG_TAIL_LINES, findAnswerAfterMarker } from './lib/console-log.mjs';
+import { LOG_TAIL_LINES, findAnswerAfterMarker, textAfterMarker } from './lib/console-log.mjs';
+import { LOG_ON, parseLogState } from './lib/log-state.mjs';
 import {
   desiredBotQuota as computeBotQuota,
   resolveHumanCount,
 } from './lib/fleet-logic.mjs';
+import { createCollector } from './lib/leaderboard-collector.mjs';
 
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
 const bool = (v, d) => (v === undefined || v === '' ? d : v === '1' || v === 'true');
@@ -82,12 +84,38 @@ const PREFIX = process.env.TS_CONTAINER_PREFIX || 'ts';
 const PIPE = process.env.TS_CONSOLE_PIPE || '/tmp/console.pipe';
 const USE_DOCKER = bool(process.env.REGISTRY_DOCKER, true);
 
+/**
+ * How long to wait for the engine to answer a console question.
+ *
+ * The answer arrives on the container's log, so the wait is for the
+ * engine to have processed the command and echoed the reply — not for
+ * a socket to say something.
+ */
+const CONSOLE_TIMEOUT_MS = num(process.env.REGISTRY_CONSOLE_TIMEOUT_MS, 6_000);
+
 const TARGET_TICKRATE = num(process.env.TS_TARGET_TICKRATE, 100);
 const DEGRADE_RATIO = num(process.env.TS_DEGRADE_RATIO, 0.85);
 const RECOVER_RATIO = num(process.env.TS_RECOVER_RATIO, 0.95);
 const DEGRADE_SUSTAIN_MS = num(process.env.TS_DEGRADE_SUSTAIN_MS, 30_000);
 const ACTION_COOLDOWN_MS = num(process.env.TS_ACTION_COOLDOWN_MS, 120_000);
 const BOT_TARGET = num(process.env.TS_BOT_TARGET, 16);
+
+/**
+ * The leaderboard.
+ *
+ * `LEADERBOARD_DATA` is where the board is kept. It has to be on a
+ * VOLUME, not in the container's filesystem: a container that is
+ * replaced loses its filesystem, and a leaderboard that resets every
+ * time the control plane is redeployed is not a leaderboard.
+ *
+ * `LEADERBOARD_POLL_MS` is how often the kill log is read. The log
+ * is read from the tail, so consecutive reads overlap and the board
+ * remembers every kill it has already counted.
+ */
+const LEADERBOARD_DATA = process.env.LEADERBOARD_DATA || '/data/leaderboard.json';
+const LEADERBOARD_POLL_MS = num(process.env.LEADERBOARD_POLL_MS, 10_000);
+/** The log lines to read per poll. Enough to cover the gap between polls. */
+const LEADERBOARD_LOG_LINES = num(process.env.LEADERBOARD_LOG_LINES, 2000);
 
 /**
  * The port range the fleet can occupy.
@@ -118,6 +146,15 @@ function portRange() {
 }
 
 const PORTS = portRange();
+
+/**
+ * The leaderboard collector.
+ *
+ * It is created with no log reader and no map source at first; both
+ * are set up below, because the log reader needs the Docker helpers
+ * that are defined further down.
+ */
+const leaderboard = createCollector({ dataFile: LEADERBOARD_DATA });
 
 /** id -> instance record. Kept until it goes stale. */
 const registry = new Map();
@@ -169,6 +206,261 @@ async function consoleWrite(container, command) {
     ['exec', '-i', container, 'sh', '-c', `cat > ${PIPE}`],
     { input: `${command}\n` },
   );
+}
+
+/**
+ * Read an instance's kill log.
+ *
+ * The kill lines are in the container's stdout, because that is where
+ * the engine writes them (`log on`). The tail is generous, because
+ * consecutive reads overlap and the board deduplicates; a tail that
+ * is too small would MISS kills, which is the one failure mode that
+ * cannot be corrected later.
+ */
+async function readKillLog(container) {
+  const { stdout } = await sh('bash', [
+    '-lc',
+    `docker logs --tail ${LEADERBOARD_LOG_LINES} ${container} 2>&1`,
+  ]);
+  return stdout;
+}
+
+/**
+ * The players currently on an instance, by name.
+ *
+ * WHY THIS READS THE CONTAINER'S LOG AND NOT THE EXEC'S OUTPUT
+ * ------------------------------------------------------------
+ * The engine answers on its own STDOUT, which is the container's log.
+ * The `docker exec` that writes the command into the console FIFO
+ * produces NO output of its own — measured on production: 0 bytes.
+ * So the answer has to be read back out of `docker logs`, exactly as
+ * `consoleAsk` does for the cvars.
+ *
+ * The marker makes the answer unambiguous: the engine echoes it, and
+ * the player list is everything after it. Without the marker, a stale
+ * list from an earlier poll would be indistinguishable from this one.
+ *
+ * The names are the players' netnames — the same strings the kill log
+ * uses — so a presence sighting and a kill can be joined on one key.
+ * The list does NOT say who is a bot; the kill log's `<ID_BOT>` authid
+ * is the only authoritative marker, and the collector drops the bots
+ * by name.
+ */
+async function readPlayerNames(container) {
+  const marker = `TSREG${Date.now().toString(36)}`;
+  await consoleWrite(container, `echo ${marker}`);
+  await consoleWrite(container, 'ts_status');
+
+  const deadline = Date.now() + CONSOLE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const text = await logTail(container);
+    const after = textAfterMarker(text, marker);
+    if (after != null) {
+      const names = parseStatusPlayers(after);
+      if (names.length) return names;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return [];
+}
+
+/**
+ * The player names in a `ts_status` dump.
+ *
+ * The real line, from production:
+ *
+ *   [17:40:20] [ts]  #1 Bot Neo 81       alive hp=85 ar=100 frags=11 ...
+ *
+ * The state is `alive`, `dead` or `observer` — and a DEAD player is
+ * still connected, so it counts as present. (The first implementation
+ * matched only `alive|observer`, so every dead player dropped out of
+ * the presence list and their time-seen was wrong.)
+ *
+ * The name is padded to a fixed column width by the engine, so the
+ * capture stops at the state word and the trailing spaces are not
+ * part of the name.
+ */
+export function parseStatusPlayers(text) {
+  const names = [];
+  for (const line of text.split('\n')) {
+    // The console prefix is a timestamp, and the engine's colour
+    // escapes can precede it, so the match is anchored on the
+    // command's own marker rather than on the start of the line.
+    const m = /\[ts\]\s+#\d+\s+(.+?)\s+(alive|dead|observer)\s+hp=/.exec(line);
+    if (m) names.push(m[1].trim());
+  }
+  return names;
+}
+
+/**
+ * Turn the engine's kill log on, if it is off.
+ *
+ * WHY THE REGISTRY HAS TO DO THIS
+ * -------------------------------
+ * The leaderboard's numbers come from the engine's kill log, and the
+ * engine only writes it when its logging is ON. In server.cfg the
+ * setting is a COMMAND — `log on`, not `log 1` — and `log 1` is a
+ * command with an argument the engine does not understand, so it does
+ * nothing at all. It neither turns the log on nor turns it off.
+ *
+ * Measured on production, 2026-10-27: the container was restarted at
+ * 16:24:55 and the kill lines stopped dead. They did not come back on
+ * their own; they came back only when `log on` was typed into the
+ * console by hand. A leaderboard that depends on a human remembering
+ * to do that after every restart is a leaderboard that is empty half
+ * the time.
+ *
+ * So the registry asks the engine, and fixes it when the answer is
+ * "off". The engine answers `log` on stdout with the usage line and
+ * then its state, and the state is read with the same marker trick the
+ * other console questions use.
+ *
+ * THE CONDITION IS NOT "NO KILL LINES"
+ * ------------------------------------
+ * It would be simpler to notice that the kill log is empty and turn
+ * logging on. That is wrong: a quiet server legitimately has no kills,
+ * and turning the log on for a server that is already logging is a
+ * pointless write to every instance every poll. The engine is asked
+ * instead, so the question is answered by the thing that knows.
+ *
+ * AND IT IS ONLY RE-ASKED EVERY SO OFTEN
+ * --------------------------------------
+ * Asking the engine is a console round-trip, so the answer is cached
+ * for a short while. But the cache must NOT be allowed to hide a
+ * container restart, and that is the subtle part:
+ *
+ * `docker restart` keeps the container and its LOG FILE, so the kill
+ * lines from before the restart are still in the tail that the
+ * registry reads. A check of the form "the kill log has lines in it,
+ * so logging must be on" would therefore keep saying ON forever after
+ * a restart — while the engine, restarted with its config re-read,
+ * is writing nothing. Measured on production: the container was
+ * restarted at 16:24:55 and the kill lines stopped dead.
+ *
+ * So the CACHED ANSWER IS ONLY CACHED, never inferred from the kill
+ * log, and it is re-checked on a timer. The engine is asked again
+ * every LOG_CHECK_MS, and a restart is caught within that window
+ * however quiet the server is.
+ */
+const logState = new Map();
+
+/**
+ * How long the engine's answer is trusted.
+ *
+ * Short enough that a restart is caught quickly, long enough that
+ * the console is not asked on every poll.
+ */
+const LOG_CHECK_MS = num(process.env.REGISTRY_LOG_CHECK_MS, 15_000);
+
+/** Ask the engine whether its logging is on. */
+async function readLogState(container) {
+  const marker = `TSREG${Date.now().toString(36)}`;
+  await consoleWrite(container, `echo ${marker}`);
+  await consoleWrite(container, 'log');
+
+  const deadline = Date.now() + CONSOLE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const text = await logTail(container);
+    const after = textAfterMarker(text, marker);
+    if (after != null) {
+      const state = parseLogState(after);
+      if (state) return state;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return null;
+}
+
+/**
+ * Make sure an instance is writing its kill log.
+ *
+ * @returns {Promise<'on'|'off'|null>} the state after the attempt
+ */
+async function ensureKillLog(container) {
+  const known = logState.get(container);
+  const now = Date.now();
+  if (known && now - known.checkedAt < LOG_CHECK_MS) {
+    return known.state;
+  }
+
+  const state = await readLogState(container);
+  const checkedAt = Date.now();
+  if (state == null) {
+    // The engine did not answer. It is not known to be off, and it is
+    // not known to be on, so nothing is changed. The previous answer
+    // is kept, with a fresh timestamp, so a server that is merely
+    // quiet is not re-asked on every poll.
+    logState.set(container, { state: known?.state ?? null, checkedAt });
+    return null;
+  }
+  if (state === LOG_ON) {
+    logState.set(container, { state: LOG_ON, checkedAt });
+    return LOG_ON;
+  }
+
+  // Off. Turn it on.
+  await consoleWrite(container, 'log on');
+  logState.set(container, { state: LOG_ON, checkedAt });
+  return LOG_ON;
+}
+
+/**
+ * Fold the fleet's kill logs into the leaderboard.
+ *
+ * Every instance is read, and every instance's kills land in the
+ * SAME board — a global leaderboard spans the fleet, not one server.
+ */
+let leaderboardInFlight = false;
+async function pollLeaderboard() {
+  if (leaderboardInFlight || !USE_DOCKER) return;
+  leaderboardInFlight = true;
+  try {
+    for (const instance of registry.values()) {
+      if (!instance.container) continue;
+      try {
+        const log = await readKillLog(instance.container);
+        await leaderboard.ingest(instance.id, log, instance.map);
+      } catch {
+        // An instance that cannot be read is skipped; the others
+        // still contribute.
+      }
+      // The kill log has to be ON for any of the above to have read
+      // anything, and it is off by default after a container restart.
+      //
+      // This is asked of the ENGINE rather than inferred from the kill
+      // log being empty: `docker restart` keeps the container's log
+      // file, so the tail still holds the kill lines from BEFORE the
+      // restart and an empty-tail test would say "logging is on"
+      // forever while the engine writes nothing. The engine knows.
+      try {
+        await ensureKillLog(instance.container);
+      } catch {
+        // A server that cannot be asked contributes nothing here; the
+        // others still do.
+      }
+    }
+    // The presence pass.
+    //
+    // This was NEVER CALLED, and that is why the "time seen" column
+    // was always zero: the collector had the code, and the registry
+    // simply never asked for it. The names are read per instance and
+    // passed to `observe`, which drops the bots by name (the kill
+    // log's `<ID_BOT>` authid is the only authoritative marker).
+    const names = [];
+    for (const instance of registry.values()) {
+      if (!instance.container) continue;
+      try {
+        names.push(...(await readPlayerNames(instance.container)));
+      } catch {
+        // A server that cannot be asked contributes no sightings; the
+        // others still do.
+      }
+    }
+    if (names.length) await leaderboard.observe(names);
+    await leaderboard.persist();
+  } finally {
+    leaderboardInFlight = false;
+  }
 }
 
 /**
@@ -600,6 +892,36 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (url.pathname === '/api/leaderboard') {
+    // The global leaderboard: total kills, time seen and MVPs per
+    // player, across the WHOLE fleet.
+    //
+    // "time seen" is a lower bound, not an exact play time — the
+    // registry can only measure the time it SAW a player, and the
+    // port has no connected-time counter. The name says so, because
+    // a number that means something else is a lie in a column
+    // heading.
+    const rows = await leaderboard.rows();
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-store');
+    res.end(
+      JSON.stringify({
+        players: rows.map((p) => ({
+          name: p.name,
+          kills: p.kills,
+          mvps: p.mvps,
+          timeSeen: p.timeSeen,
+        })),
+        // So the UI can say what the numbers are, and so a caller
+        // can tell an empty board from a broken one.
+        source: 'engine kill log',
+        timeSeenNote: 'time the registry observed a player online',
+        updatedAt: Date.now(),
+      }),
+    );
+    return;
+  }
+
   if (url.pathname === '/api/registry') {
     const rows = [...registry.values()].sort((a, b) =>
       a.id.localeCompare(b.id, undefined, { numeric: true }),
@@ -645,6 +967,12 @@ server.listen(Number(bindPort), bindHost, () => {
 
 const pollTimer = setInterval(pollA2S, POLL_MS);
 const metricsTimer = setInterval(pollMetrics, METRICS_MS);
+
+// The leaderboard's own poll. It is separate from the A2S and metrics
+// polls because it reads the LOG, which is a different kind of read:
+// it is much bigger, and it must not be able to delay the fleet's
+// health checks.
+const leaderboardTimer = setInterval(pollLeaderboard, LEADERBOARD_POLL_MS);
 pollTimer.unref?.();
 metricsTimer.unref?.();
 

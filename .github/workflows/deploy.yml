@@ -311,9 +311,40 @@ jobs:
           # recreate below re-does the mount, so the new file is picked up.
           scp -F ~/.ssh/config tools/deploy/deploy-services.sh prod:/home/ubuntu/deploy-services.sh
           scp -F ~/.ssh/config tools/deploy/run-instance.sh prod:/home/ubuntu/run-instance.sh
+          # The Caddyfile too. It is the site's only front door, and a
+          # route that lives in the repo but is installed by hand is a
+          # route that drifts: the /api/leaderboard route was added in
+          # the repo and would not have existed in production.
+          scp -F ~/.ssh/config tools/deploy/config/Caddyfile prod:/home/ubuntu/Caddyfile
+          # The game server's config, for the same reason: it lives in
+          # the repo, and the only way it could reach a running container
+          # was a hand-rebuilt image on the host. `log on` is in
+          # server.cfg, and without this the leaderboard's kill log is
+          # off in production while being on in the repo.
+          #
+          # The volume has to exist BEFORE the instance is created, and
+          # it is root-owned (like /srv itself), so it is made with
+          # sudo. The files are copied as root and made world-readable
+          # because the container reads them as uid 10001 (gameserver).
+          ssh -F ~/.ssh/config prod 'sudo mkdir -p /srv/ts-config && sudo chown 10001:10001 /srv/ts-config'
+          scp -F ~/.ssh/config tools/deploy/config/server.cfg prod:/home/ubuntu/server.cfg
+          scp -F ~/.ssh/config tools/deploy/config/gameinfo.txt prod:/home/ubuntu/gameinfo.txt
+          scp -F ~/.ssh/config tools/deploy/config/mapcycle.txt prod:/home/ubuntu/mapcycle.txt
+          ssh -F ~/.ssh/config prod '
+            set -euo pipefail
+            sudo cp /home/ubuntu/server.cfg /srv/ts-config/server.cfg
+            sudo cp /home/ubuntu/gameinfo.txt /srv/ts-config/gameinfo.txt
+            sudo cp /home/ubuntu/mapcycle.txt /srv/ts-config/mapcycle.txt
+            sudo chown 10001:10001 /srv/ts-config/* && sudo chmod 0644 /srv/ts-config/*
+          '
           ssh -F ~/.ssh/config prod '
             set -euo pipefail
             chmod +x /home/ubuntu/deploy-services.sh /home/ubuntu/run-instance.sh
+            # Caddy validates before it reloads, so a bad Caddyfile
+            # fails the deploy instead of taking the site down.
+            sudo cp /home/ubuntu/Caddyfile /etc/caddy/Caddyfile
+            sudo caddy validate --config /etc/caddy/Caddyfile
+            sudo systemctl reload caddy
             REGISTRY_IMAGE=registry:'"${{ github.sha }}"' \
             ORCHESTRATOR_IMAGE=orchestrator:'"${{ github.sha }}"' \
             BRIDGE_IMAGE=ts-bridge:'"${{ github.sha }}"' \

@@ -51,19 +51,42 @@ export const LOG_TAIL_LINES = 2000;
 /**
  * Find an answer in log text that was written after a marker.
  *
- * The marker is echoed back by the engine immediately, so the answer is
- * unambiguously the first thing after it. Without a marker, a value
+ * The marker is echoed back by the engine immediately, so the answer
+ * is unambiguously the first thing after it. Without a marker, a value
  * could be confused with unrelated log output that happened to contain
  * the same digits.
  *
  * @param {string} text the log text
  * @param {string} marker the marker that was echoed
  * @param {RegExp} pattern the answer's shape, with a capture group
- * @returns {RegExpMatchArray|null} the match, or null
+ * @returns {RegExpMatchArray|null} the answer, or null
  */
 export function findAnswerAfterMarker(text, marker, pattern) {
   const at = text.indexOf(marker);
   if (at === -1) return null;
   const after = text.slice(at + marker.length);
   return after.match(pattern);
+}
+
+/**
+ * The log text AFTER a marker, or null when the marker is not there yet.
+ *
+ * This is the same idea as `findAnswerAfterMarker`, but for a reply
+ * that is several LINES rather than one value. The `ts_status` dump is
+ * a header line plus one line per player, and the caller wants all of
+ * them.
+ *
+ * Why the marker matters here: the log is a ROLLING window. Without a
+ * marker, a stale player list from an earlier poll would be
+ * indistinguishable from this poll's, and the registry would happily
+ * report who was on the server minutes ago as who is on it now.
+ *
+ * @param {string} text the log text
+ * @param {string} marker the marker that was echoed
+ * @returns {string|null} the text after the marker, or null
+ */
+export function textAfterMarker(text, marker) {
+  const at = text.indexOf(marker);
+  if (at === -1) return null;
+  return text.slice(at + marker.length);
 }
