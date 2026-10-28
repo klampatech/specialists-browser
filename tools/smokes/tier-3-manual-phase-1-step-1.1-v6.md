@@ -7,6 +7,13 @@
 
 > **Context:** Phase 1 step 1.1 (v4 PoC) proved CheerpX CAN load `ts/dlls/ts_i386.so` and see all 1387+ exported symbols including TS-specific gameplay functions (`CTSSlowMotion`, `CTSGunUci`, `CTSSharedEmitter`, etc.). Step 1.2 was supposed to write a `ts-host` bridge binary that `dlopen`'s the .so + looks up symbols. Step 1.2 is **NOT** a "did it work" milestone — it's a "we discovered the bridge approach is blocked at the runtime layer" milestone.
 
+> **The code this record describes has been removed** (2026-10-28):
+> `tools/ts-host-v1.c` … `v5.c` and `tools/patch_gnu_stack.py`. The
+> CheerpX path is dead — the build produces a WASM module now, not a
+> Linux `.so` — so none of it is built, referenced or shipped. The
+> record stays because it is the evidence for the pivot to Option D.
+> The files are in git history if anyone needs them.
+
 ---
 
 ## TL;DR
