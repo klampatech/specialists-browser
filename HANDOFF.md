@@ -16,11 +16,57 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-28, `main` — **the character picker and the pre-join
-identity modal are LIVE in production.** webXash #25 and
-specialists-browser #81 were merged (the latter as `c12dba3`), then #82
-(the deploy gate) and #83 (the console-FIFO fix) were merged on
-2026-10-28. The game server image is `ts-server:0.27`.
+**As of:** 2026-10-29, `main` — **the client now caps the tick rate the
+engine is offered**, and the character picker and the pre-join identity
+modal are LIVE in production. webXash #25 and specialists-browser #81
+were merged (the latter as `c12dba3`), then #82 (the deploy gate) and #83
+(the console-FIFO fix) were merged on 2026-10-28, then #85 (the
+abandoned approaches' code) and #86 (the BB favicon, the turning dial,
+the top nav links gone). The game server image is `ts-server:0.27`.
+
+## The client caps the engine's tick rate (PR #87, 2026-10-29)
+
+**The engine has no frame limiter in the browser.** On a display faster
+than the engine can sustain, it misses deadlines, the browser drops ticks
+to catch up, and the surviving frames arrive **unevenly** — which is what
+"plays like the 40s–50s and sometimes feels very smooth like 60s" means.
+The engine's own FPS counter cannot see it: it counts the frames it drew,
+not the gaps between them.
+
+**The cvar cannot do this.** `fps_max` is an alias for `host_maxfps` — a
+**host** (server) frame limiter — and upstream `engine/common/host.c`
+reads it **only when vsync is off**. With vsync on, production's default,
+the engine's target is 200 fps and it renders on every tick the browser
+offers. Measured against production: at `fps_max 5` the engine still
+rendered **60 fps**. The cvar is inert, and the earlier recommendation to
+change it was a placebo — retracted.
+
+**What shipped.** The frontend change is `klampatech/webXash` #27
+(merged). `specialists-browser` #87 carries the submodule pointer, the
+unit tests over the **real** policy module, the research, and the 30
+harnesses that produced it. The cap is applied **above the engine, at the
+tick source** — the global `requestAnimationFrame` — and it **coalesces**
+rather than drops, because the engine's loop is self-rescheduling and
+dropping a callback kills it (60.3 fps → **0.3 fps**).
+
+**The design decisions are in SPEC.md** § "Client frame pacing — the
+engine's tick source".
+
+**What is still open:**
+
+1. A follow-up `webXash` PR fixes the `everyNth` state desync, the
+   median-vs-mean mismatch in the measurement, the false "the shim is
+   removed" comment, the `uninstallFramePacing()` landmine, and adds a
+   way for a player to turn the cap off.
+2. **The tier-3 playtest on a 144 Hz+ display has not happened.** The
+   whole mechanism was established on a 60 Hz box, where the cap
+   correctly does not engage. `tools/perf/diagnose-fullscreen.js` is the
+   player-runnable diagnostic for it.
+
+**The trade the player is making.** The cap trades frame rate for even
+pacing: on a 144 Hz display the engine runs at 72 fps, on 120 Hz at 60,
+and on a 60 Hz display nothing is gated at all. That is the intended
+trade, and once the opt-out lands it is the player's call.
 **Active path:** webXash (Xash3D-FWGS WASM **client**) + the real TS server as a WASM **dedicated server** in a container
 **Goal:** ~~playable The Specialists in the browser~~ — **met.** Real assets, real gameplay, real dedicated server, public URL.
 
@@ -1530,6 +1576,58 @@ full TS gameplay. All of this is still wanted — it is just wanted on the
 the parts that are known traps.
 
 # § NEXT TASK
+
+> ## The frame-pacing follow-up, and the 144 Hz playtest
+>
+> **Two PRs, and the submodule one merges FIRST.**
+>
+> 1. **`klampatech/webXash#29`** — "fix(client): make the frame-pacing
+>    gate honest about what it is doing". The follow-up to the review
+>    of #87. It fixes the `everyNth` state desync, the median-vs-mean
+>    mismatch, the false "the shim is removed" comment, the
+>    `uninstallFramePacing()` landmine, and adds `?nocap=1` so a player
+>    can turn the cap off. It also changes the enforcement module's
+>    import from the Vite-only `/@/` alias to a relative one, which is
+>    what makes the enforcement testable from the parent's unit suite.
+>    **OPEN, CI-verified locally (typecheck + build clean), awaiting
+>    Kyle's approval.**
+> 2. **`klampatech/specialists-browser#87`** — the ONE parent PR for the
+>    frame-pacing work. It carries the `webxash` pointer, the tests over
+>    both the policy (18) and the enforcement (7) — the suite is
+>    **252/252** — the research, the 30 harnesses, and the `SPEC.md` /
+>    `HANDOFF.md` design write-up. **CI green 4/4, CLEAN, and Kyle has
+>    already approved it in the web UI. It is NOT merged.**
+>
+> **The order is not optional.** #87's pointer currently names webXash
+> #29's *branch tip*, because the enforcement test needs the fixes to
+> exist at all. **If #87 merges before #29, the parent's pointer
+> regresses and the fixes are dropped.** So: merge #29, then the
+> pointer takes a one-line update to the commit on `webXash`'s `main`
+> (the trees are identical, so it is free), then #87 is final.
+>
+> **`klampatech/specialists-browser#89`** was closed: it carried the
+> enforcement test and a pointer, and two parent PRs moving the same
+> submodule pointer is a trap — one of them would undo the other. Its
+> content is in #87.
+>
+> **And the one piece of evidence nobody has: the tier-3 playtest on a
+> 144 Hz+ display.** The whole mechanism was established on a 60 Hz box,
+> where the cap correctly *does not engage* — the engine keeps up.
+> `tools/perf/diagnose-fullscreen.js` is the player-runnable diagnostic
+> for exactly that: it reports the display's cadence, the browser's tick
+> rate, the engine's frame count, and whether the frames fit the budget.
+> **Kyle's rig is the instrument.**
+>
+> **E5** (below) is still the gate before the next gameplay change.
+
+---
+
+> ## ~~The PR #80 review, and then the deploy that has never been tested~~
+> ### ✅ DONE — merged as `c12dba3` on 2026-10-27
+>
+> *(Historical. This block described #80 as "open and awaiting Kyle's
+> review". It merged, and #82 and #83 merged after it. Read it for the
+> deploy caveats, not for the task.)*
 
 > ## The PR #80 review, and then the deploy that has never been tested
 >

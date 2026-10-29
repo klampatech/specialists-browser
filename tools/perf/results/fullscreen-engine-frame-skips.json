@@ -1,0 +1,36 @@
+{
+  "renderer": "ANGLE (AMD, Vulkan 1.4.305 (AMD Radeon Graphics (RADV RENOIR) (0x0000164C)), radv)",
+  "fpsMax": 100,
+  "records": [
+    {
+      "label": "fps_max 100 (shipped)",
+      "rafPerSec": 54.25570526862272,
+      "frameMed": 16.665000000000873,
+      "slowFraction": 0.10599078341013825,
+      "draws": 1404492,
+      "clears": 437,
+      "framesPerSec": 54.625,
+      "skipRatio": -0.006806560334049472
+    },
+    {
+      "label": "fps_max 60",
+      "rafPerSec": 53.67234282864989,
+      "frameMed": 16.665000000000873,
+      "slowFraction": 0.11188811188811189,
+      "draws": 1327592,
+      "clears": 432,
+      "framesPerSec": 54,
+      "skipRatio": -0.0061047674478484915
+    },
+    {
+      "label": "fps_max 30",
+      "rafPerSec": 49.26996259954032,
+      "frameMed": 16.665000000000873,
+      "slowFraction": 0.2182741116751269,
+      "draws": 1354562,
+      "clears": 397,
+      "framesPerSec": 49.625,
+      "skipRatio": -0.007205960421471813
+    }
+  ]
+}

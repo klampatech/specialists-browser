@@ -1,0 +1,145 @@
+{
+  "renderer": "ANGLE (AMD, Vulkan 1.4.305 (AMD Radeon Graphics (RADV RENOIR) (0x0000164C)), radv)",
+  "screen": [
+    3840,
+    2160
+  ],
+  "records": [
+    {
+      "label": "A. window 1280x800, engine 1080p",
+      "state": {
+        "backing": [
+          1920,
+          1080
+        ],
+        "css": [
+          1280,
+          800
+        ],
+        "drawing": [
+          1920,
+          1080
+        ],
+        "viewportPx": [
+          1280,
+          800
+        ],
+        "screen": [
+          3840,
+          2160
+        ],
+        "upscale": 0.67,
+        "compositorPixels": 1024000,
+        "enginePixels": 2073600
+      },
+      "rafPerSec": 60.07209870296538,
+      "frameMed": 16.665000000000873,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.67000000000553,
+      "frameMax": 16.67000000000553,
+      "slowFraction": 0
+    },
+    {
+      "label": "B. fullscreen, engine 1080p (UPSCALE)",
+      "state": {
+        "backing": [
+          1920,
+          1080
+        ],
+        "css": [
+          3840,
+          2160
+        ],
+        "drawing": [
+          1920,
+          1080
+        ],
+        "viewportPx": [
+          3840,
+          2160
+        ],
+        "screen": [
+          3840,
+          2160
+        ],
+        "upscale": 2,
+        "compositorPixels": 8294400,
+        "enginePixels": 2073600
+      },
+      "rafPerSec": 59.9896847016737,
+      "frameMed": 16.665000000000873,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.67000000000553,
+      "frameMax": 16.67000000000553,
+      "slowFraction": 0
+    },
+    {
+      "label": "C. fullscreen, engine native (NO upscale)",
+      "state": {
+        "backing": [
+          3840,
+          2160
+        ],
+        "css": [
+          3840,
+          2160
+        ],
+        "drawing": [
+          3840,
+          2160
+        ],
+        "viewportPx": [
+          3840,
+          2160
+        ],
+        "screen": [
+          3840,
+          2160
+        ],
+        "upscale": 1,
+        "compositorPixels": 8294400,
+        "enginePixels": 8294400
+      },
+      "rafPerSec": 59.24791718018379,
+      "frameMed": 16.66500000000815,
+      "frameP90": 16.669999999998254,
+      "frameP99": 33.329999999987194,
+      "frameMax": 50,
+      "slowFraction": 0.010309278350515464
+    },
+    {
+      "label": "D. fullscreen, engine 1080p again",
+      "state": {
+        "backing": [
+          1920,
+          1080
+        ],
+        "css": [
+          3840,
+          2160
+        ],
+        "drawing": [
+          1920,
+          1080
+        ],
+        "viewportPx": [
+          3840,
+          2160
+        ],
+        "screen": [
+          3840,
+          2160
+        ],
+        "upscale": 2,
+        "compositorPixels": 8294400,
+        "enginePixels": 2073600
+      },
+      "rafPerSec": 59.8626086075883,
+      "frameMed": 16.66500000000815,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.670000000012806,
+      "frameMax": 33.33499999999185,
+      "slowFraction": 0.0020408163265306124
+    }
+  ]
+}
