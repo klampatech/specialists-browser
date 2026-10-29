@@ -16,11 +16,57 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-28, `main` — **the character picker and the pre-join
-identity modal are LIVE in production.** webXash #25 and
-specialists-browser #81 were merged (the latter as `c12dba3`), then #82
-(the deploy gate) and #83 (the console-FIFO fix) were merged on
-2026-10-28. The game server image is `ts-server:0.27`.
+**As of:** 2026-10-29, `main` — **the client now caps the tick rate the
+engine is offered**, and the character picker and the pre-join identity
+modal are LIVE in production. webXash #25 and specialists-browser #81
+were merged (the latter as `c12dba3`), then #82 (the deploy gate) and #83
+(the console-FIFO fix) were merged on 2026-10-28, then #85 (the
+abandoned approaches' code) and #86 (the BB favicon, the turning dial,
+the top nav links gone). The game server image is `ts-server:0.27`.
+
+## The client caps the engine's tick rate (PR #87, 2026-10-29)
+
+**The engine has no frame limiter in the browser.** On a display faster
+than the engine can sustain, it misses deadlines, the browser drops ticks
+to catch up, and the surviving frames arrive **unevenly** — which is what
+"plays like the 40s–50s and sometimes feels very smooth like 60s" means.
+The engine's own FPS counter cannot see it: it counts the frames it drew,
+not the gaps between them.
+
+**The cvar cannot do this.** `fps_max` is an alias for `host_maxfps` — a
+**host** (server) frame limiter — and upstream `engine/common/host.c`
+reads it **only when vsync is off**. With vsync on, production's default,
+the engine's target is 200 fps and it renders on every tick the browser
+offers. Measured against production: at `fps_max 5` the engine still
+rendered **60 fps**. The cvar is inert, and the earlier recommendation to
+change it was a placebo — retracted.
+
+**What shipped.** The frontend change is `klampatech/webXash` #27
+(merged). `specialists-browser` #87 carries the submodule pointer, the
+unit tests over the **real** policy module, the research, and the 30
+harnesses that produced it. The cap is applied **above the engine, at the
+tick source** — the global `requestAnimationFrame` — and it **coalesces**
+rather than drops, because the engine's loop is self-rescheduling and
+dropping a callback kills it (60.3 fps → **0.3 fps**).
+
+**The design decisions are in SPEC.md** § "Client frame pacing — the
+engine's tick source".
+
+**What is still open:**
+
+1. A follow-up `webXash` PR fixes the `everyNth` state desync, the
+   median-vs-mean mismatch in the measurement, the false "the shim is
+   removed" comment, the `uninstallFramePacing()` landmine, and adds a
+   way for a player to turn the cap off.
+2. **The tier-3 playtest on a 144 Hz+ display has not happened.** The
+   whole mechanism was established on a 60 Hz box, where the cap
+   correctly does not engage. `tools/perf/diagnose-fullscreen.js` is the
+   player-runnable diagnostic for it.
+
+**The trade the player is making.** The cap trades frame rate for even
+pacing: on a 144 Hz display the engine runs at 72 fps, on 120 Hz at 60,
+and on a 60 Hz display nothing is gated at all. That is the intended
+trade, and once the opt-out lands it is the player's call.
 **Active path:** webXash (Xash3D-FWGS WASM **client**) + the real TS server as a WASM **dedicated server** in a container
 **Goal:** ~~playable The Specialists in the browser~~ — **met.** Real assets, real gameplay, real dedicated server, public URL.
 
@@ -1530,6 +1576,49 @@ full TS gameplay. All of this is still wanted — it is just wanted on the
 the parts that are known traps.
 
 # § NEXT TASK
+
+> ## The frame-pacing follow-up, and the 144 Hz playtest
+>
+> **PR #87 (`specialists-browser`) is open and CI green.** It carries the
+> `webxash` pointer, the unit tests over the **real** policy module, the
+> research, and the harnesses that produced them. Kyle has already
+> approved it in the web UI. It is **not merged** — the agent never
+> merges.
+>
+> **Two things are open, and the order is fixed:**
+>
+> 1. **Land the follow-up `webXash` PR FIRST.** It fixes the `everyNth`
+>    state desync, the median-vs-mean mismatch in the measurement, the
+>    false "the shim is removed" comment, the
+>    `uninstallFramePacing()` landmine, and adds a way for a player to
+>    turn the cap off.
+> 2. **Then repoint the parent.** The parent's submodule pointer must
+>    name a commit on `webXash`'s `main` — the rule is in the
+>    specialists-browser skill, § Hard rules: *"THE PARENT'S SUBMODULE
+>    POINTER MUST NAME A COMMIT ON THE SUBMODULE'S `main`."* PR #87's
+>    pointer has been moved off the PR #27 **branch head** onto
+>    `0542c98` (the squash commit on `webXash`'s `main` — identical
+>    tree, so it is free) and moves once more to the new `main` head
+>    after the follow-up lands.
+>
+> **And the one piece of evidence nobody has: the tier-3 playtest on a
+> 144 Hz+ display.** The whole mechanism was established on a 60 Hz box,
+> where the cap correctly *does not engage* — the engine keeps up.
+> `tools/perf/diagnose-fullscreen.js` is a player-runnable diagnostic for
+> exactly that: it reports the display's cadence, the browser's tick
+> rate, the engine's frame count, and whether the frames fit the budget.
+> **Kyle's rig is the instrument.**
+>
+> **E5** (below) is still the gate before the next gameplay change.
+
+---
+
+> ## ~~The PR #80 review, and then the deploy that has never been tested~~
+> ### ✅ DONE — merged as `c12dba3` on 2026-10-27
+>
+> *(Historical. This block described #80 as "open and awaiting Kyle's
+> review". It merged, and #82 and #83 merged after it. Read it for the
+> deploy caveats, not for the task.)*
 
 > ## The PR #80 review, and then the deploy that has never been tested
 >
