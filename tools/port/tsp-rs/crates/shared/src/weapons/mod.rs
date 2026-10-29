@@ -107,6 +107,48 @@ pub fn info(id: u8) -> Option<&'static WeaponInfo> {
     tables().weapon(id)
 }
 
+/// The price of kevlar (`tki` 0x10): `FUN_10012ad0`'s item branch, 1900.
+pub const KEVLAR_PRICE: i32 = 1900;
+/// The price of stealth shoes (`tki` 0x20): `FUN_10012ad0`'s item branch, 700.
+pub const SHOES_PRICE: i32 = 700;
+/// The price of a loadout item (`tki`): kevlar, the stealth shoes, or nothing for anything else.
+/// The client menu's `cost` and the server's loadout check both use this, so the two cannot
+/// drift.
+pub fn item_price(id: i32) -> i32 {
+    if id & att::KEVLAR as i32 != 0 {
+        KEVLAR_PRICE
+    } else if id & att::STEALTH_SHOES as i32 != 0 {
+        SHOES_PRICE
+    } else {
+        0
+    }
+}
+
+/// The price of one attachment (the `attachment_price` table): the silencer, the laser, the
+/// flashlight and the scope. The client's menu shows these prices and the server's loadout
+/// check charges them, so both read the same table.
+pub fn attachment_price(bit: u32) -> i32 {
+    let p = &tables().combat.attachment_price;
+    match bit {
+        att::SILENCER => p.silencer,
+        att::LASER => p.laser,
+        att::FLASHLIGHT => p.flashlight,
+        att::SCOPE => p.scope,
+        _ => 0,
+    }
+}
+
+/// The price of a set of attachments (the bits the client sends with `tkw`).
+pub fn attachments_price(att: u32) -> i32 {
+    let mut c = 0;
+    for bit in [att::SILENCER, att::LASER, att::FLASHLIGHT, att::SCOPE] {
+        if att & bit != 0 {
+            c += attachment_price(bit);
+        }
+    }
+    c
+}
+
 /// TS kind number of a table kind.
 pub fn ts_kind(k: WeaponKind) -> u8 {
     match k {
