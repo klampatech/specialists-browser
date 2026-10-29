@@ -1,0 +1,71 @@
+{
+  "renderer": "ANGLE (AMD, Vulkan 1.4.305 (AMD Radeon Graphics (RADV RENOIR) (0x0000164C)), radv)",
+  "records": [
+    {
+      "label": "windowed",
+      "rafPerSec": 57.894178068465735,
+      "frameMed": 16.665000000000873,
+      "frameP99": 33.330000000001746,
+      "slowFraction": 0.03735632183908046,
+      "lagMed": 16.144999980926514,
+      "mouseEvents": 955,
+      "mousePerSec": 158.4153817208698,
+      "mouseDx": 430666,
+      "canvas": {
+        "backing": [
+          1280,
+          800
+        ],
+        "css": [
+          1280,
+          800
+        ],
+        "inlineWidth": null,
+        "inlineWidthPriority": null,
+        "viewportPx": [
+          1280,
+          800
+        ],
+        "screen": [
+          1280,
+          800
+        ],
+        "fullscreenElement": null,
+        "pointerLocked": true
+      }
+    },
+    {
+      "label": "fullscreen (granted)",
+      "rafPerSec": 57.66183741827021,
+      "frameMed": 16.665000000000873,
+      "frameP99": 33.33499999999913,
+      "slowFraction": 0.04046242774566474,
+      "lagMed": 18.77999997138977,
+      "mouseEvents": 927,
+      "mousePerSec": 154.03788634097708,
+      "mouseDx": 406296,
+      "canvas": {
+        "backing": [
+          1280,
+          800
+        ],
+        "css": [
+          1280,
+          800
+        ],
+        "inlineWidth": null,
+        "inlineWidthPriority": null,
+        "viewportPx": [
+          1280,
+          800
+        ],
+        "screen": [
+          1280,
+          800
+        ],
+        "fullscreenElement": "HTML",
+        "pointerLocked": true
+      }
+    }
+  ]
+}

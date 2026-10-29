@@ -1,0 +1,105 @@
+{
+  "renderer": "ANGLE (AMD, Vulkan 1.4.305 (AMD Radeon Graphics (RADV RENOIR) (0x0000164C)), radv)",
+  "viewport": "1920x1080",
+  "rows": [
+    {
+      "label": "baseline",
+      "commands": "",
+      "raf": 38.29,
+      "frameMs": 26.11,
+      "lagMed": 40.2,
+      "lagP95": 87.9,
+      "backing": "1920x1080"
+    },
+    {
+      "label": "r_lockpvs 1",
+      "commands": "r_lockpvs 1",
+      "raf": 59.57,
+      "frameMs": 16.79,
+      "lagMed": 12.6,
+      "lagP95": 17.9,
+      "backing": "1920x1080"
+    },
+    {
+      "label": "r_drawviewmodel 0",
+      "commands": "r_drawviewmodel 0",
+      "raf": 59.97,
+      "frameMs": 16.67,
+      "lagMed": 13.6,
+      "lagP95": 18.8,
+      "backing": "1920x1080"
+    },
+    {
+      "label": "hud_scale 1.0",
+      "commands": "hud_scale 1.0",
+      "raf": 53.78,
+      "frameMs": 18.59,
+      "lagMed": 18.5,
+      "lagP95": 46.1,
+      "backing": "1920x1080"
+    },
+    {
+      "label": "gl_vsync 0",
+      "commands": "gl_vsync 0",
+      "raf": 56.36,
+      "frameMs": 17.74,
+      "lagMed": 25.9,
+      "lagP95": 44.2,
+      "backing": "1920x1080"
+    },
+    {
+      "label": "fps_max 0",
+      "commands": "fps_max 0",
+      "raf": 57.66,
+      "frameMs": 17.34,
+      "lagMed": 28.4,
+      "lagP95": 36.4,
+      "backing": "1920x1080"
+    },
+    {
+      "label": "r_lockpvs 0 (reset)",
+      "commands": "r_lockpvs 0",
+      "raf": 57.13,
+      "frameMs": 17.5,
+      "lagMed": 24.7,
+      "lagP95": 40.3,
+      "backing": "1920x1080"
+    },
+    {
+      "label": "r_drawviewmodel 1 (reset)",
+      "commands": "r_drawviewmodel 1",
+      "raf": 59.24,
+      "frameMs": 16.88,
+      "lagMed": 23.4,
+      "lagP95": 35.8,
+      "backing": "1920x1080"
+    },
+    {
+      "label": "hud_scale 2.5 (reset)",
+      "commands": "hud_scale 2.5",
+      "raf": 53.74,
+      "frameMs": 18.61,
+      "lagMed": 31.8,
+      "lagP95": 42.9,
+      "backing": "1920x1080"
+    },
+    {
+      "label": "ALL OFF together",
+      "commands": "r_lockpvs 1; r_drawviewmodel 0; hud_scale 1.0; gl_vsync 0",
+      "raf": 52.63,
+      "frameMs": 19,
+      "lagMed": 32.1,
+      "lagP95": 48.9,
+      "backing": "1920x1080"
+    },
+    {
+      "label": "ALL OFF + r_novis 1",
+      "commands": "r_lockpvs 1; r_drawviewmodel 0; hud_scale 1.0; gl_vsync 0; r_novis 1",
+      "raf": 48.06,
+      "frameMs": 20.81,
+      "lagMed": 38,
+      "lagP95": 54.9,
+      "backing": "1920x1080"
+    }
+  ]
+}

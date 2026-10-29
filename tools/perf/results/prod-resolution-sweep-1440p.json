@@ -1,0 +1,89 @@
+{
+  "renderer": {
+    "name": "ANGLE (AMD, Vulkan 1.4.305 (AMD Radeon Graphics (RADV RENOIR) (0x0000164C)), radv)",
+    "vendor": "Google Inc. (AMD)"
+  },
+  "results": [
+    {
+      "viewport": "2560x1440",
+      "engineMode": "viewport",
+      "engineBacking": [
+        1920,
+        1080
+      ],
+      "drawingBuffer": [
+        1920,
+        1080
+      ],
+      "rafPerSec": 59.98,
+      "lagMed": 4.3,
+      "lagP95": 12.3,
+      "lagMax": 13.5
+    },
+    {
+      "viewport": "2560x1440",
+      "engineMode": "2560x1440",
+      "engineBacking": [
+        2560,
+        1440
+      ],
+      "drawingBuffer": [
+        2560,
+        1440
+      ],
+      "rafPerSec": 60.06,
+      "lagMed": 12.2,
+      "lagP95": 15.9,
+      "lagMax": 23.8
+    },
+    {
+      "viewport": "2560x1440",
+      "engineMode": "1920x1080",
+      "engineBacking": [
+        1920,
+        1080
+      ],
+      "drawingBuffer": [
+        1920,
+        1080
+      ],
+      "rafPerSec": 59.97,
+      "lagMed": 4.4,
+      "lagP95": 12.1,
+      "lagMax": 13.4
+    },
+    {
+      "viewport": "2560x1440",
+      "engineMode": "1280x720",
+      "engineBacking": [
+        1280,
+        720
+      ],
+      "drawingBuffer": [
+        1280,
+        720
+      ],
+      "rafPerSec": 60.07,
+      "lagMed": 4.3,
+      "lagP95": 9.3,
+      "lagMax": 12
+    }
+  ],
+  "input": null,
+  "cvars": {
+    "vid_width": 1280,
+    "vid_height": 720,
+    "host_framerate": 0,
+    "fps_max": 100,
+    "gl_vsync": 1,
+    "r_drawviewmodel": 1,
+    "r_lockpvs": 0,
+    "r_novis": 0,
+    "r_drawentities": 1,
+    "gl_texture_mode": null,
+    "hud_scale": 2.5,
+    "sv_fps": 0,
+    "net_maxrate": null
+  },
+  "errors": []
+}

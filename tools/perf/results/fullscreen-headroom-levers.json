@@ -1,0 +1,69 @@
+{
+  "records": [
+    {
+      "label": "baseline",
+      "engineFps": 119.14285714285714,
+      "rafPerSec": 118.93976550317385,
+      "workMs": 8.393285371702639,
+      "frameMed": 8.110000000000582,
+      "frameP90": 9.814999999995052
+    },
+    {
+      "label": "hud_scale 1",
+      "engineFps": 131.85714285714286,
+      "rafPerSec": 131.59847905110715,
+      "workMs": 7.583965330444204,
+      "frameMed": 7.54500000000553,
+      "frameP90": 8.389999999999418
+    },
+    {
+      "label": "hud_scale 2.5 (restored)",
+      "engineFps": 131.42857142857142,
+      "rafPerSec": 131.17318642864063,
+      "workMs": 7.608695652173914,
+      "frameMed": 7.674999999995634,
+      "frameP90": 8.440000000002328
+    },
+    {
+      "label": "r_drawviewmodel 0",
+      "engineFps": 125.28571428571429,
+      "rafPerSec": 125.02649320192604,
+      "workMs": 7.98175598631699,
+      "frameMed": 7.985000000000582,
+      "frameP90": 8.664999999993597
+    },
+    {
+      "label": "r_lockpvs 0",
+      "engineFps": 130.71428571428572,
+      "rafPerSec": 130.45783707291596,
+      "workMs": 7.6502732240437155,
+      "frameMed": 7.614999999990687,
+      "frameP90": 8.490000000005239
+    },
+    {
+      "label": "r_novis 1",
+      "engineFps": 98.57142857142857,
+      "rafPerSec": 98.27400046511661,
+      "workMs": 10.144927536231885,
+      "frameMed": 9.994999999995343,
+      "frameP90": 11.684999999997672
+    },
+    {
+      "label": "cl_weather null",
+      "engineFps": 116,
+      "rafPerSec": 115.75651736962715,
+      "workMs": 8.620689655172415,
+      "frameMed": 8.665000000008149,
+      "frameP90": 9.614999999990687
+    },
+    {
+      "label": "baseline (again)",
+      "engineFps": 62,
+      "rafPerSec": 61.8319684115974,
+      "workMs": 16.129032258064516,
+      "frameMed": 16.13499999999476,
+      "frameP90": 16.83499999999185
+    }
+  ],
+  "best": "hud_scale 1"
+}

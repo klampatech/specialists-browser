@@ -1,0 +1,254 @@
+{
+  "renderer": "ANGLE (AMD, Vulkan 1.4.305 (AMD Radeon Graphics (RADV RENOIR) (0x0000164C)), radv)",
+  "screen": [
+    2560,
+    1440
+  ],
+  "records": [
+    {
+      "label": "1. windowed",
+      "state": {
+        "backing": [
+          1920,
+          1080
+        ],
+        "css": [
+          1280,
+          800
+        ],
+        "drawing": [
+          1920,
+          1080
+        ],
+        "glViewport": [
+          0,
+          0,
+          1920,
+          1080
+        ],
+        "viewportPx": [
+          1280,
+          800
+        ],
+        "screen": [
+          2560,
+          1440
+        ],
+        "dpr": 1,
+        "fullscreen": false,
+        "upscale": 0.67
+      },
+      "cvars": {
+        "host_framerate": 0,
+        "sv_fps": 0,
+        "fps_max": 100,
+        "gl_vsync": 1,
+        "vid_width": 1920,
+        "vid_height": 1080
+      },
+      "rafPerSec": 59.984601513740174,
+      "frameMed": 16.665000000000873,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.67000000000553,
+      "frameMax": 16.67000000000553,
+      "slowFraction": 0,
+      "lagMed": -11.744999885559082
+    },
+    {
+      "label": "2. fullscreen",
+      "state": {
+        "backing": [
+          1920,
+          1080
+        ],
+        "css": [
+          1280,
+          800
+        ],
+        "drawing": [
+          1920,
+          1080
+        ],
+        "glViewport": [
+          0,
+          0,
+          1920,
+          1080
+        ],
+        "viewportPx": [
+          1280,
+          800
+        ],
+        "screen": [
+          2560,
+          1440
+        ],
+        "dpr": 1,
+        "fullscreen": true,
+        "upscale": 0.67
+      },
+      "cvars": {
+        "host_framerate": 0,
+        "sv_fps": 0,
+        "fps_max": 100,
+        "gl_vsync": 1,
+        "vid_width": 1920,
+        "vid_height": 1080
+      },
+      "rafPerSec": 59.495688697161576,
+      "frameMed": 16.665000000000873,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.67000000000553,
+      "frameMax": 33.33499999999913,
+      "slowFraction": 0.008213552361396304,
+      "lagMed": -5.0350000858306885
+    },
+    {
+      "label": "3. windowed again",
+      "state": {
+        "backing": [
+          1920,
+          1080
+        ],
+        "css": [
+          1280,
+          800
+        ],
+        "drawing": [
+          1920,
+          1080
+        ],
+        "glViewport": [
+          0,
+          0,
+          1920,
+          1080
+        ],
+        "viewportPx": [
+          1280,
+          800
+        ],
+        "screen": [
+          2560,
+          1440
+        ],
+        "dpr": 1,
+        "fullscreen": false,
+        "upscale": 0.67
+      },
+      "cvars": {
+        "host_framerate": 0,
+        "sv_fps": 0,
+        "fps_max": 100,
+        "gl_vsync": 1,
+        "vid_width": 1920,
+        "vid_height": 1080
+      },
+      "rafPerSec": 59.501419560755394,
+      "frameMed": 16.665000000000873,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.670000000012806,
+      "frameMax": 33.33499999999913,
+      "slowFraction": 0.008213552361396304,
+      "lagMed": -0.6150000095367432
+    },
+    {
+      "label": "4. viewport = screen",
+      "state": {
+        "backing": [
+          1920,
+          1080
+        ],
+        "css": [
+          2560,
+          1440
+        ],
+        "drawing": [
+          1920,
+          1080
+        ],
+        "glViewport": [
+          0,
+          0,
+          1920,
+          1080
+        ],
+        "viewportPx": [
+          2560,
+          1440
+        ],
+        "screen": [
+          2560,
+          1440
+        ],
+        "dpr": 1,
+        "fullscreen": false,
+        "upscale": 1.33
+      },
+      "cvars": {
+        "host_framerate": 0,
+        "sv_fps": 0,
+        "fps_max": 100,
+        "gl_vsync": 1,
+        "vid_width": 1920,
+        "vid_height": 1080
+      },
+      "rafPerSec": 60.03307298629861,
+      "frameMed": 16.66500000000815,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.670000000012806,
+      "frameMax": 16.670000000012806,
+      "slowFraction": 0,
+      "lagMed": -4.764999866485596
+    },
+    {
+      "label": "5. viewport = window",
+      "state": {
+        "backing": [
+          1920,
+          1080
+        ],
+        "css": [
+          1280,
+          800
+        ],
+        "drawing": [
+          1920,
+          1080
+        ],
+        "glViewport": [
+          0,
+          0,
+          1920,
+          1080
+        ],
+        "viewportPx": [
+          1280,
+          800
+        ],
+        "screen": [
+          2560,
+          1440
+        ],
+        "dpr": 1,
+        "fullscreen": false,
+        "upscale": 0.67
+      },
+      "cvars": {
+        "host_framerate": 0,
+        "sv_fps": 0,
+        "fps_max": 100,
+        "gl_vsync": 1,
+        "vid_width": 1920,
+        "vid_height": 1080
+      },
+      "rafPerSec": 59.05689187956468,
+      "frameMed": 16.66500000000815,
+      "frameP90": 16.669999999998254,
+      "frameP99": 33.330000000001746,
+      "frameMax": 50,
+      "slowFraction": 0.010330578512396695,
+      "lagMed": -2.4850001335144043
+    }
+  ]
+}

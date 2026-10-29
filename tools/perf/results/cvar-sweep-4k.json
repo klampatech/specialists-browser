@@ -1,0 +1,93 @@
+{
+  "renderer": "ANGLE (AMD, Vulkan 1.4.305 (AMD Radeon Graphics (RADV RENOIR) (0x0000164C)), radv)",
+  "viewport": "3840x2160",
+  "warmupS": 30,
+  "settled": [
+    {
+      "raf": 58.50522153943227,
+      "frameMs": 17.09249146806502,
+      "lagMed": 15.964999914169312,
+      "lagP95": 28.414999961853027
+    },
+    {
+      "raf": 55.675787318810315,
+      "frameMs": 17.96112903215552,
+      "lagMed": 17.05999994277954,
+      "lagP95": 42.59500002861023
+    },
+    {
+      "raf": 59.181417033019805,
+      "frameMs": 16.897195946525883,
+      "lagMed": 12.474999904632568,
+      "lagP95": 30.31500005722046
+    }
+  ],
+  "rows": [
+    {
+      "label": "r_lockpvs",
+      "offRaf": 57.86,
+      "onRaf": 56.5,
+      "dRaf": -1.36,
+      "offLag": 17.9,
+      "onLag": 14.7,
+      "dLag": -3.1,
+      "offFrameMs": 17.3,
+      "onFrameMs": 17.7
+    },
+    {
+      "label": "r_drawviewmodel",
+      "offRaf": 59.03,
+      "onRaf": 48.8,
+      "dRaf": -10.23,
+      "offLag": 17.1,
+      "onLag": 17.1,
+      "dLag": 0,
+      "offFrameMs": 16.94,
+      "onFrameMs": 20.49
+    },
+    {
+      "label": "hud_scale 1.0",
+      "offRaf": 58.43,
+      "onRaf": 60.09,
+      "dRaf": 1.66,
+      "offLag": 12.7,
+      "onLag": 4.2,
+      "dLag": -8.6,
+      "offFrameMs": 17.13,
+      "onFrameMs": 16.64
+    },
+    {
+      "label": "gl_vsync 0",
+      "offRaf": 50.65,
+      "onRaf": 54.38,
+      "dRaf": 3.73,
+      "offLag": 28.7,
+      "onLag": 26,
+      "dLag": -2.7,
+      "offFrameMs": 19.81,
+      "onFrameMs": 18.39
+    },
+    {
+      "label": "fps_max 0",
+      "offRaf": 58,
+      "onRaf": 59.42,
+      "dRaf": 1.42,
+      "offLag": 15.5,
+      "onLag": 17.6,
+      "dLag": 2.1,
+      "offFrameMs": 17.25,
+      "onFrameMs": 16.83
+    },
+    {
+      "label": "r_novis 1",
+      "offRaf": 51.11,
+      "onRaf": 20.09,
+      "dRaf": -31.02,
+      "offLag": 34.4,
+      "onLag": 93.4,
+      "dLag": 59,
+      "offFrameMs": 19.59,
+      "onFrameMs": 49.78
+    }
+  ]
+}
