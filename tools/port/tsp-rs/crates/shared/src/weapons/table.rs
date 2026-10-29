@@ -163,6 +163,10 @@ pub struct AttachmentPrice {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Combat {
+    /// The money a loadout may cost: the buy menu's budget (`CASH`, 30000 in TS 3.0 and 2.1).
+    /// The server reads it, so a loadout a client sends is checked against the same number the
+    /// client's own menu enforces.
+    pub budget: i32,
     pub silencer: Silencer,
     pub headshot: f32,
     pub headshot_shotgun: f32,

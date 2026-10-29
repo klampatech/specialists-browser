@@ -71,6 +71,23 @@ pub struct ArmamentEntry {
     pub item: bool,
 }
 
+/// The loadout a client is building, checked as it arrives.
+///
+/// TS trusts the client's own buy menu: the budget and the slot limit live in the menu, and
+/// the server applies whatever it is sent. That is fine while the menu is the only way in, but
+/// the browser's DOM menu is a second one, so the server checks the numbers too: the loadout
+/// is accumulated here as `rst_cfg` / `tkw` / `tki` / `tka` arrive, and an entry that breaks
+/// the budget or the slot limit is refused.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PendingLoadout {
+    /// What the loadout costs so far: the entries and the ammo.
+    pub cost: i32,
+    /// The slots the loadout takes so far.
+    pub slots: i32,
+    /// The ammo purchases the loadout asks for.
+    pub ammo: i32,
+}
+
 /// Per-player server state around the shared gun.
 pub struct SvState {
     /// The player holds TS's one weapon item, `weapon_tsgun` (`CTSGun` in `m_rgpPlayerItems[2]`,
@@ -82,6 +99,9 @@ pub struct SvState {
     /// Loadout (`tkw`/`tki`), max 32 entries, and ammo purchases per type (`tka`).
     pub armament: Vec<ArmamentEntry>,
     pub armament_ammo: [i32; MAX_AMMO],
+    /// The loadout being built (`rst_cfg` starts a fresh one): what it costs and the slots it
+    /// takes, checked against the budget and the slot limit as it arrives.
+    pub pending: PendingLoadout,
     /// Free inventory weight (`pl+0x548`); `Player::slots_used = SLOTS - free_slots`.
     pub free_slots: i32,
     /// Loadout items bought (`pl+0x718`): 0x10 kevlar, 0x20 stealth shoes.
@@ -148,6 +168,7 @@ impl Default for SvState {
             has_gun: false,
             armament: Vec::new(),
             armament_ammo: [0; MAX_AMMO],
+            pending: PendingLoadout::default(),
             free_slots: SLOTS,
             items: 0,
             grenades_bought: 0,
@@ -367,6 +388,8 @@ pub fn init_hud_reset(p: &mut Player) {
     p.inv.gun.mode_memory = [0; MAX_WEAPONS];
     p.inv.sv.armament.clear();
     p.inv.sv.armament_ammo = [0; MAX_AMMO];
+    // The loadout being built goes with it: the next one starts fresh.
+    p.inv.sv.pending = PendingLoadout::default();
 }
 
 /// The weapon parts of `CBasePlayer::PreThink`: this frame's pressed buttons, then the ruleset's

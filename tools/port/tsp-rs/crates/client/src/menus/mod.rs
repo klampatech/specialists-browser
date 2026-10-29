@@ -10,6 +10,10 @@
 //! and routes clicks here (TS: VGUI's input, or `IN_MouseEvent` → `CTSBuyMenu::MouseEvent`).
 
 pub mod buy;
+#[cfg(test)]
+mod buy_pixels;
+#[cfg(test)]
+mod buy_pixels_before;
 mod motd;
 mod scoreboard;
 mod scroll;
@@ -72,6 +76,12 @@ impl Menus {
     fn note_team(&mut self, team: i32) -> bool {
         std::mem::replace(&mut self.team_number, team) != team
     }
+
+    /// A menu owns the mouse (the virtual cursor moves instead of the view). The buy menu
+    /// owns it only while it is drawn: a hidden one leaves the mouse to the browser's DOM menu.
+    fn wants_cursor(&self) -> bool {
+        self.buy.draws() || !self.queue.is_empty()
+    }
 }
 
 static MENUS: Global<RefCell<Option<Menus>>> = Global(RefCell::new(None));
@@ -123,6 +133,9 @@ pub fn init() {
     engine().add_command(c"ts_respawn", cmd_respawn);
     engine().add_command(c"ts_gate", cmd_gate);
     engine().add_command(c"ts_key", cmd_key);
+    engine().add_command(c"ts_buy_hide", cmd_buy_hide);
+    engine().add_command(c"ts_buy_key", cmd_buy_key);
+    engine().add_command(c"ts_buy_state", cmd_buy_state);
 }
 
 /// ---- the menu commands (port addition, issue #352) ----------------------------------------------
@@ -294,6 +307,70 @@ extern "C" fn cmd_key() {
     e.key_event(key, e.cmd_argv(2).to_bytes() != b"0");
 }
 
+// ---- the buy menu's commands (port addition, the browser's DOM menu) ----------------------------
+//
+// The browser's DOM buy menu needs three things from the port: to know what the menu's page
+// looks like, to send it a key, and to take the canvas menu's screen away. The port stays
+// authoritative for every rule: the DOM menu is a view and an input device, never a model.
+//
+// These are deliberately NOT gated on `ts_dev_scriptinput` (the way the menu commands above
+// are): that cvar is a development switch the browser cannot set, so gating them would make
+// the whole feature dead in the browser — the one place it exists for. `ts_gate` is the
+// precedent: a browser-facing command that is not gated.
+
+/// `ts_buy_hide <0|1>`: the canvas menu's hidden flag. Hidden, the canvas menu is not drawn and
+/// the engine's own key and mouse paths are inert; the menu's state machine keeps running, so
+/// the DOM menu still has a state to render and to drive.
+extern "C" fn cmd_buy_hide() {
+    let e = engine();
+    let hidden = match e.cmd_argv(1).to_string_lossy().trim() {
+        "0" => false,
+        "1" => true,
+        _ => {
+            e.print("usage: ts_buy_hide <0|1>\n");
+            return;
+        }
+    };
+    with(|m| m.buy.hidden = hidden);
+    print_buy_state();
+}
+
+/// `ts_buy_key <n> [<page>]`: run the key `n` (1..=11) on the menu's current page, or on the
+/// given page. This is the DOM menu's only write path, and it works whether or not the canvas
+/// menu is hidden: it is the same [`BuyMenu::handle_key`] the canvas menu runs.
+///
+/// The page is the one the clicked row belongs to: the menu draws the columns of the page it is
+/// on, and a row of a parent column's key acts on that column's page, as the mouse's hit test
+/// has it. Without a page the key runs on the current page, which is what the digit keys do.
+extern "C" fn cmd_buy_key() {
+    let e = engine();
+    let n = match e.cmd_argv(1).to_string_lossy().trim().parse::<i32>() {
+        Ok(n) if (1..=11).contains(&n) => n,
+        _ => {
+            e.print("usage: ts_buy_key <1-11> [<page>]\n");
+            return;
+        }
+    };
+    let page = e.cmd_argv(2).to_string_lossy().trim().parse::<i32>().ok();
+    let r = rules();
+    let actions = with(|m| match page {
+        Some(p) if m.buy.page_is_drawn(p) => m.buy.dom_key_on(p, n, &r, &mut EngineRng),
+        Some(p) => {
+            e.print(&format!("ts_buy_key: page {p} is not on screen\n"));
+            Vec::new()
+        }
+        None => m.buy.dom_key(n, &r, &mut EngineRng),
+    });
+    run_actions(actions);
+    print_buy_state();
+}
+
+/// `ts_buy_state`: print the menu's state, for the DOM menu's initial sync. The port prints the
+/// state on every change too, so the frontend never polls.
+extern "C" fn cmd_buy_state() {
+    print_buy_state();
+}
+
 /// `FUN_10036480`: the nine saved configs from `path` (`<gamedir>/tsbuylist.tsa`). When it can't
 /// be opened for reading, it is created empty (`"wb"`); when that fails too, the path is
 /// forgotten (`+0x2c6c` = ""), so nothing is saved until the next `Init`.
@@ -311,7 +388,11 @@ fn read_buylist(path: &str) -> ([buy::Config; buy::SAVED_CONFIGS], String) {
 pub fn vid_init(_first: bool) {
     let (saved, path) = read_buylist(&format!("{}/tsbuylist.tsa", engine().game_directory()));
     with(|m| {
+        // The hidden flag is the browser's DOM menu's business, not TS's: a map change must not
+        // bring the canvas menu back.
+        let hidden = m.buy.hidden;
         m.buy = BuyMenu::new(saved);
+        m.buy.hidden = hidden;
         m.path = path;
         m.queue.clear();
         if let Some(t) = &mut m.team {
@@ -327,6 +408,9 @@ pub fn vid_init(_first: bool) {
         s.team_number = 0;
     });
     crate::voice::stop_squelch_mode();
+    // The map change resets the menu (a new `BuyMenu`), so the DOM menu has to hear that too:
+    // it renders what the port last printed.
+    print_buy_state();
 }
 
 /// `FUN_10036560`: write the nine configs. Written to a temporary file and renamed, so a
@@ -401,16 +485,65 @@ pub fn open_buy() {
     });
     if opened {
         crate::input::center_cursor();
+        print_buy_state();
     }
 }
 
+/// The engine's own key path (the digit keys and the mouse). A hidden menu does not take it:
+/// the browser's DOM menu owns the input then. The DOM menu's own path is `ts_buy_key`.
 pub fn buy_key(key: i32) {
     let r = rules();
-    let actions = with(|m| {
-        let pg = m.buy.page;
-        m.buy.handle_key(pg, key, &r, &mut EngineRng)
-    });
-    run_actions(actions);
+    let actions = with(|m| m.buy.engine_key(key, &r, &mut EngineRng));
+    if let Some(actions) = actions {
+        run_actions(actions);
+        print_buy_state();
+    }
+}
+
+/// Closes the buy menu and tells the DOM menu about it.
+///
+/// The DOM menu renders what the port last printed, so a close that does not print leaves it
+/// showing a menu that is no longer open (the intermission and the map change both close it).
+fn close_buy() {
+    with(|m| m.buy.close());
+    print_buy_state();
+}
+
+/// The buy menu's state, as the `TSBUY` records the browser's DOM menu reads: one record per
+/// line, `TSBUY end` closing the set. The engine's stdout is what the frontend already reads.
+fn print_buy_state() {
+    let r = rules();
+    let lines = with(|m| m.buy.state_lines(&r));
+    for line in lines {
+        print_state_line(&line);
+    }
+}
+
+/// Where one state record goes: the engine's stdout, which the browser reads.
+///
+/// The tests have no engine, so they collect the records here instead.
+fn print_state_line(line: &str) {
+    #[cfg(test)]
+    TOLD.with(|t| t.borrow_mut().push(line.to_owned()));
+    #[cfg(not(test))]
+    engine().print(&format!("{line}\n"));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The state records the port told the DOM menu, for the tests to read.
+    static TOLD: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+/// The state records the port told the DOM menu since the last [`forget_told_state`].
+fn told_state() -> Vec<String> {
+    TOLD.with(|t| t.borrow().clone())
+}
+
+#[cfg(test)]
+fn forget_told_state() {
+    TOLD.with(|t| t.borrow_mut().clear());
 }
 
 // ---- engine data for the VGUI menus ----------------------------------------------------------
@@ -733,10 +866,10 @@ pub fn scores_visible() -> bool {
 /// (`HideAllVGUIMenus` `0x100641e0`) and shows the scoreboard; leaving hides it.
 pub fn intermission(on: bool) {
     if on {
-        with(|m| {
-            m.buy.close();
-            m.queue.clear();
-        });
+        with(|m| m.queue.clear());
+        // The intermission closes the menu, and the DOM menu has to hear it: it renders what
+        // the port last printed.
+        close_buy();
     }
     show_scores(on);
 }
@@ -756,7 +889,7 @@ pub fn allowed_to_print_text() -> bool {
 
 /// A menu owns the mouse (virtual cursor, clicks): `UpdateCursorState` (`0x10064790`).
 pub fn wants_cursor() -> bool {
-    with(|m| m.buy.active || !m.queue.is_empty()) || squelching()
+    with(|m| m.wants_cursor()) || squelching()
 }
 
 /// Squelch mode with the scoreboard showing: the scoreboard owns the cursor.
@@ -884,7 +1017,8 @@ pub fn mouse_buttons(state: i32, old: i32, x: i32, y: i32) {
 }
 
 fn click(x: i32, y: i32) {
-    if !buy_open() {
+    // A hidden menu does not take the mouse either: the browser's DOM menu owns it.
+    if !buy_open() || with(|m| m.buy.hidden) {
         return;
     }
     let r = rules();
@@ -905,41 +1039,105 @@ fn click(x: i32, y: i32) {
         engine().center_print(msg);
     }
     run_actions(actions);
+    if !matches!(hit, buy::Hit::Unset) {
+        print_buy_state();
+    }
 }
 
 // ---- drawing ---------------------------------------------------------------------------------
 
-/// A TS menu column (`FUN_1004fed0` / `FUN_1004ff10`): rows of 128×20, a translucent box per row.
+/// A TS menu column (`FUN_1004fed0` / `FUN_1004ff10`): rows of 128x20, a translucent box per row.
 /// `FUN_1004ff10` takes a brightness scale, 1.0 or 0.5 (`dim`): the box is the row colour at
-/// alpha `ftol(50·scale)` and the text the row colour times the scale.
-struct Column<'a> {
-    dc: &'a Dc<'a>,
-    r: &'a Rules,
-    x: i32,
-    y: i32,
-    page: i32,
-    dim: bool,
-    rows: &'a mut Vec<(i32, i32, i32, i32, i32, i32)>,
+/// alpha `ftol(50*scale)` and the text the row colour times the scale.
+///
+/// The rows come from [`BuyMenu::rows`] — the same rows the state dump reports — so the canvas
+/// and the browser's DOM menu can never disagree about what the menu shows.
+fn draw_rows(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32, i32, i32)>) {
+    for op in row_ops(b, r, dc.hud, dc.h(), &hud::text::EngineTitles) {
+        dc.fill(op.x, op.y, op.w - 1, op.h - 1, op.rgb, op.alpha);
+        dc.string(op.x, op.y, &op.text, op.text_rgb);
+        if op.key > 0 {
+            rows.push((op.x, op.y, op.w, op.h, op.page, op.key));
+        }
+        // `0x10037b44..0x10037b57`: the box is drawn from the chosen weapon's row, so a weapon
+        // that isn't listed (restricted since it was chosen) has none.
+        if let Some(id) = op.weapon_box {
+            draw_weapon_box(dc, r, id);
+        }
+    }
 }
 
-impl Column<'_> {
-    fn row(&mut self, text: &str, rgb: [i32; 3], key: i32) {
-        let dim = self.dim;
-        self.row_scaled(text, rgb, key, dim);
-    }
+/// One row of the buy menu as the canvas draws it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RowOp {
+    /// The box's left edge: the column's x.
+    pub x: i32,
+    /// The box's top edge.
+    pub y: i32,
+    /// The box's width.
+    pub w: i32,
+    /// The box's height.
+    pub h: i32,
+    /// The box's colour.
+    pub rgb: [i32; 3],
+    /// The box's alpha: half for a dimmed row.
+    pub alpha: i32,
+    /// The text's colour: the row's colour, halved for a dimmed row.
+    pub text_rgb: [i32; 3],
+    /// The text, resolved through the game's titles.
+    pub text: String,
+    /// The page the row's key acts on.
+    pub page: i32,
+    /// The key the row answers to.
+    pub key: i32,
+    /// The weapon whose box is drawn after this row.
+    pub weapon_box: Option<i32>,
+}
 
-    /// A row with its own brightness: TS draws the chosen category and weapon at full
-    /// brightness in a dimmed column.
-    fn row_scaled(&mut self, text: &str, rgb: [i32; 3], key: i32, dim: bool) {
-        let (w, h) = (128, 20);
-        let scale = if dim { 0.5 } else { 1.0 };
-        self.dc.fill(self.x, self.y, w - 1, h - 1, rgb, hud::draw::ftol(50.0 * scale));
-        let t = rgb.map(|c| hud::draw::ftol(c as f64 * scale));
-        self.dc.string(self.x, self.y, &buy_text(self.r, text), t);
-        if key > 0 {
-            self.rows.push((self.x, self.y, w, h, self.page, key));
+/// The rows of the buy menu, as the drawing operations they are: the same boxes, in the same
+/// places, in the same colours, with the same text. The pixel diff compares these.
+pub(crate) fn row_ops(b: &BuyMenu, r: &Rules, hud: [i32; 3], screen_h: i32, titles: &dyn hud::text::Titles) -> Vec<RowOp> {
+    let (w, h) = (128, 20);
+    let mut ops = Vec::new();
+    let mut column = None;
+    let mut x = 0;
+    let mut y = 0;
+    for row in b.rows(r) {
+        if column != Some(row.column) {
+            // A new column starts at the top of the menu's rows again.
+            column = Some(row.column);
+            x = row.column.x();
+            y = screen_h / 2;
         }
-        self.y += h;
+        let rgb = row_rgb(row.color, hud);
+        let scale = if row.flags.dim { 0.5 } else { 1.0 };
+        ops.push(RowOp {
+            x,
+            y,
+            w,
+            h,
+            rgb,
+            alpha: hud::draw::ftol(50.0 * scale),
+            text_rgb: rgb.map(|c| hud::draw::ftol(c as f64 * scale)),
+            text: buy::row_text(&row, r, titles),
+            page: row.column.page(),
+            key: row.key,
+            // `0x10037b44..0x10037b57`: the box is drawn from the chosen weapon's row, so a
+            // weapon that isn't listed (restricted since it was chosen) has none.
+            weapon_box: (row.column == buy::Column::Weapons && row.id == b.pending_weapon).then_some(row.id),
+        });
+        y += h;
+    }
+    ops
+}
+
+/// The colour a row is drawn in: the HUD's half colour, green, red or the back colour.
+fn row_rgb(color: buy::RowColor, hud: [i32; 3]) -> [i32; 3] {
+    match color {
+        buy::RowColor::Hud => half(hud),
+        buy::RowColor::Good => GREEN,
+        buy::RowColor::Bad => RED,
+        buy::RowColor::Back => BACK,
     }
 }
 
@@ -948,136 +1146,14 @@ const GREEN: [i32; 3] = [45, 195, 45];
 const BACK: [i32; 3] = [100, 100, 205];
 
 fn draw_buy(dc: &Dc, b: &BuyMenu, r: &Rules, rows: &mut Vec<(i32, i32, i32, i32, i32, i32)>) {
-    let hud2 = half(dc.hud);
-    let y0 = dc.h() / 2;
-    let fmt = hud::text::format;
-    use hud::text::Arg::I;
     if b.page == page::TEAM {
-        let mut c = Column { dc, r, x: 8, y: y0, page: page::TEAM, dim: false, rows };
-        c.row("#Chg_ChangeTeam", GREEN, 0);
-        c.row("1 #Chg_Join Specialists", hud2, 1);
-        c.row("2 #Chg_Join Mercenaries", hud2, 2);
-        c.row("0 #Chg_Cancel", BACK, 10);
+        draw_rows(dc, b, r, rows);
         return;
     }
     draw_summary(dc, b, r);
-    let cur = &b.current;
-    // Wrapping: a loaded `tsbuylist.tsa` config's totals can be anything (C int arithmetic).
-    let affordable = |cost: i32, slots: i32| cost.wrapping_add(cur.total) <= r.cash && slots.wrapping_add(cur.slots) <= buy::SLOTS;
-
-    // Columns are drawn child-first, parents after (each TS page function calls its parent).
-    if b.page == page::OPTIONS {
-        let id = b.pending_weapon;
-        let base = buy::cost(id, b.pending_att, false, false);
-        let mut c = Column { dc, r, x: 0x188, y: y0, page: page::OPTIONS, dim: false, rows };
-        c.row("1 #Buy_Buy", if affordable(base, buy::slots_for(id, false, false, r)) { GREEN } else { RED }, 1);
-        let labels = ["#HUD_Silencer", "#HUD_Lasersight", "#HUD_Flashlight", "#HUD_Scope"];
-        let prices = [900, 800, 500, 1800];
-        for bit in 0..4 {
-            if b.attachment_allowed(1 << bit) {
-                // The label shows the attachment's own price; the colour tests base + attachment.
-                let price = base.wrapping_add(prices[bit]);
-                let text = fmt(&format!("%i {}  %i", labels[bit]), &[I(bit as i64 + 2), I(prices[bit] as i64)]);
-                c.row(&text, if price.wrapping_add(cur.total) <= r.cash { hud2 } else { RED }, bit as i32 + 2);
-            }
-        }
-        if let Some(w) = shared::weapons::tables().weapon(id.max(0) as u8) {
-            if w.akimbo != -1 {
-                let ok = affordable(buy::cost(id, b.pending_att, true, false), w.slots * 2);
-                c.row("6 #Buy_Akimbo", if ok { GREEN } else { RED }, 6);
-            } else if w.stack {
-                let ok = affordable(buy::cost(id, 0, true, false), w.slots * w.pellets);
-                c.row("6 #Buy_FullLoad", if ok { GREEN } else { RED }, 6);
-            }
-        }
-        c.row("0 #Buy_GoBack", BACK, 10);
-    }
-    if matches!(b.page, page::WEAPONS | page::OPTIONS) {
-        let mut c = Column { dc, r, x: 0x108, y: y0, page: page::WEAPONS, dim: b.page != page::WEAPONS, rows };
-        for row in 0..12 {
-            let id = buy::table(&r.menu)[row][b.category.clamp(0, 4) as usize];
-            if id == -1 || buy::restricted(id, false, r) {
-                continue;
-            }
-            let Some(w) = shared::weapons::tables().weapon(id as u8) else { continue };
-            let (key, ch) = if row < 9 { (row as i32 + 1, (b'1' + row as u8) as char) } else { (11, 'A') };
-            let ok = affordable(w.cost, w.slots);
-            // `0x10037ad4`: full brightness on the weapon page and for the chosen weapon.
-            let dim = b.page != page::WEAPONS && id != b.pending_weapon;
-            c.row_scaled(&format!("{ch} {}", w.name), if ok { hud2 } else { RED }, key, dim);
-            // `0x10037b44..0x10037b57`: the box is drawn from the chosen weapon's row, so a
-            // weapon that isn't listed (restricted since it was chosen) has none.
-            if id == b.pending_weapon {
-                draw_weapon_box(dc, r, id);
-            }
-        }
-        if b.page == page::WEAPONS {
-            c.row("0 #Buy_GoBack", BACK, 10);
-        }
-    }
-    if b.page == page::ITEMS {
-        let mut c = Column { dc, r, x: 0x108, y: y0, page: page::ITEMS, dim: false, rows };
-        for (key, id, label, price) in [(1i32, buy::ITEM_KEVLAR, "Kevlar", 1900i32), (2, buy::ITEM_STEALTH, "Stealth Shoes", 700)] {
-            if buy::restricted(id, true, r) {
-                continue;
-            }
-            let slots = buy::slots_for(id, false, true, r);
-            let text = fmt(&format!("%i {label}  %i"), &[I(key as i64), I(price as i64)]);
-            let ok = if r.menu.items_red_by_cash_only { price.wrapping_add(cur.total) <= r.cash } else { affordable(price, slots) };
-            c.row(&text, if ok { hud2 } else { RED }, key);
-        }
-        c.row("0 #Buy_GoBack", BACK, 10);
-    }
-    if matches!(b.page, page::CATEGORY | page::WEAPONS | page::OPTIONS | page::ITEMS) {
-        let mut c = Column { dc, r, x: 0x88, y: y0, page: page::CATEGORY, dim: b.page != page::CATEGORY, rows };
-        for (i, name) in buy::CATEGORIES.iter().enumerate() {
-            // `0x1003788c`: the chosen category keeps full brightness.
-            let dim = b.page != page::CATEGORY && i as i32 != b.category;
-            c.row_scaled(&format!("{} {name}", i + 1), hud2, i as i32 + 1, dim);
-        }
-        if !r.menu.items_need_teamplay || r.gamemode > 1 {
-            c.row("6 #Buy_PlayerAccessory", hud2, 6);
-        }
-        if b.page == page::CATEGORY {
-            c.row("0 #Buy_GoBack", BACK, 10);
-        }
-    }
-    if b.page == page::REMOVE {
-        let mut c = Column { dc, r, x: 0x88, y: y0, page: page::REMOVE, dim: false, rows };
-        for (i, e) in cur.entries.iter().enumerate().filter(|(_, e)| e.id != 0) {
-            c.row(&format!("{} {}", i + 1, BuyMenu::entry_name(e)), hud2, i as i32 + 1);
-        }
-        c.row("0 #Buy_GoBack", BACK, 10);
-    }
-    if matches!(b.page, page::SAVE | page::LOAD) {
-        let save = b.page == page::SAVE;
-        let mut c = Column { dc, r, x: 0x88, y: y0, page: b.page, dim: false, rows };
-        c.row(if save { "#Buy_SaveEquipment" } else { "#Buy_LoadEquipment" }, GREEN, 0);
-        for (i, s) in b.saved.iter().enumerate() {
-            let key = if s.total < 1 { "#Buy_SlotEmpty" } else { "#Buy_SlotAvailable" };
-            let text = fmt(&buy_text(r, key), &[I(i as i64 + 1)]);
-            let red = !save && s.total > r.cash;
-            c.row(&text, if red { RED } else { hud2 }, i as i32 + 1);
-        }
-        c.row("0 #Buy_GoBack", BACK, 10);
-    }
-    // Main page.
-    let mut c = Column { dc, r, x: 8, y: y0, page: page::MAIN, dim: b.page != page::MAIN, rows };
-    if cur.total < 1 {
-        c.row("1 #Buy_EmptyConfig", RED, 1);
-    } else {
-        let t = if b.new_config { "1 #Buy_UseNewConfig" } else { "1 #Buy_UseLastConfig" };
-        c.row(t, if r.cash.wrapping_sub(cur.total) < 0 { RED } else { GREEN }, 1);
-    }
-    c.row("2 #Buy_Buy", hud2, 2);
-    c.row("3 #Buy_RemoveItem", hud2, 3);
-    c.row("4 #Buy_ResetConfig", hud2, 4);
-    c.row("5 #Buy_SaveConfig", hud2, 5);
-    c.row("6 #Buy_LoadConfig", hud2, 6);
-    c.row("7 #Buy_Random", GREEN, 7);
-    if b.page == page::MAIN {
-        c.row("0 #Buy_Cancel", BACK, 10);
-    }
+    // The rows come in the columns' order: child-first, parents after (each TS page function
+    // calls its parent).
+    draw_rows(dc, b, r, rows);
 }
 
 /// The buy menu's version box (port addition): the server's ruleset, this client library's
@@ -1281,17 +1357,17 @@ pub fn draw_buy_menu(dc: &Dc) {
     let r = rules();
     let active = with(|m| {
         m.rows.clear();
-        if m.buy.active {
+        if m.buy.draws() {
             draw_buy(dc, &m.buy, &r, &mut m.rows);
         }
         m.buy.active
     });
-    if active {
+    if active && with(|m| !m.buy.hidden) {
         let (gameplay, server) = hud::with(|h| (h.gameplay, h.server_version));
         draw_versions(dc, &version_lines(crate::gameplay::hud_rules(gameplay).ruleset_name(), server));
     }
     if buy_open() && !hud::dead_or_observer() && with(|m| m.buy.page != page::TEAM) {
-        with(|m| m.buy.close());
+        close_buy();
     }
 }
 
@@ -1330,6 +1406,38 @@ mod tests {
         assert_eq!(local_team_of("jointeam 01"), None);
     }
 
+    /// The DOM menu renders what the port last printed, so a close that does not print leaves
+    /// it showing a menu that is no longer open.
+    ///
+    /// The intermission and the map change both close the menu without the player asking, and
+    /// the DOM's `open` flag has to follow.
+    #[test]
+    fn closing_the_menu_tells_the_dom_menu() {
+        ts30_gameplay::tables::make_default();
+        forget_told_state();
+        // The rules are built here rather than by `rules()`: that one borrows the HUD, and the
+        // HUD is a RefCell the tests share.
+        let r = buy::Rules { restriction: 0x1f, ..buy::Rules::default() };
+        with(|m| {
+            m.buy = buy::BuyMenu { active: true, ..buy::BuyMenu::default() };
+            m.buy.close();
+        });
+        // The close itself does not print: the caller decides when the DOM is told.
+        assert!(told_state().is_empty(), "the close is the caller's business");
+        // The state the DOM would be told: the menu is closed.
+        let lines = with(|m| m.buy.state_lines(&r));
+        assert!(lines[0].contains("open=0"), "the state says the menu is closed: {lines:?}");
+        // And printing it reaches the DOM.
+        for line in lines {
+            print_state_line(&line);
+        }
+        assert!(
+            told_state().iter().any(|l| l.contains("open=0")),
+            "the DOM menu is told the menu is closed: {:?}",
+            told_state()
+        );
+    }
+
     /// `FUN_10036480`: a missing `tsbuylist.tsa` is created empty, an existing one is read, and
     /// when it can't be created either the path is dropped so nothing is saved.
     #[test]
@@ -1365,6 +1473,21 @@ mod tests {
         assert!(m.note_team(2));
         assert!(!m.note_team(2));
         assert!(m.note_team(1) && m.team_number == 1);
+    }
+
+    /// A hidden buy menu does not own the mouse: the browser's DOM menu does, so the view
+    /// holds still.
+    #[test]
+    fn a_hidden_buy_menu_does_not_want_the_cursor() {
+        let mut m = Menus::default();
+        assert!(!m.wants_cursor(), "nothing is open");
+        m.buy.active = true;
+        assert!(m.wants_cursor(), "an open buy menu owns the mouse");
+        m.buy.hidden = true;
+        assert!(!m.wants_cursor(), "a hidden one does not");
+        m.buy.hidden = false;
+        m.queue.push(Menu::Team);
+        assert!(m.wants_cursor(), "a queued VGUI menu owns it");
     }
 
     #[test]

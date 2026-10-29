@@ -274,21 +274,14 @@ pub fn restricted(id: i32, item: bool, r: &Rules) -> bool {
 }
 
 fn att_price(att: u32) -> i32 {
-    let p = &tables().combat.attachment_price;
-    let mut c = 0;
-    if att & 1 != 0 {
-        c += p.silencer;
-    }
-    if att & 2 != 0 {
-        c += p.laser;
-    }
-    if att & 4 != 0 {
-        c += p.flashlight;
-    }
-    if att & 8 != 0 {
-        c += p.scope;
-    }
-    c
+    shared::weapons::attachments_price(att)
+}
+
+/// The price of one attachment (the `attachment_price` table): the silencer, the laser, the
+/// flashlight and the scope. The menu's options column shows these prices, and they are the
+/// runtime tables' numbers, never a constant.
+pub fn attachment_price(bit: u32) -> i32 {
+    shared::weapons::attachment_price(bit)
 }
 
 /// `FUN_10012ad0`: price of an entry.
@@ -388,8 +381,618 @@ pub fn table(m: &MenuRules) -> [[i32; 5]; 12] {
 /// Category names (`Init` 10036200; `#Buy_SMGs` is at `0x10094dd0`).
 pub const CATEGORIES: [&str; 5] = ["#Buy_Handguns", "#Buy_SMGs", "#Buy_Rifles", "#Buy_Shotguns", "#Buy_SpecialPurpose"];
 
+// ---- the rows: what the canvas draws and what the state dump reports --------------------------------
+
+/// A column of the buy menu. The canvas draws the columns at fixed x positions, and a column's
+/// keys act on its own page ([`Column::page`]): the mouse's hit test answers with that page, and
+/// the browser's DOM menu sends its rows' keys on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Column {
+    /// The main page's column (x 8): use the config, buy, remove, reset, save, load, random.
+    Main,
+    /// The category column (0x88): the five weapon categories and the player accessory.
+    Category,
+    /// The weapon column (0x108): the chosen category's weapons.
+    Weapons,
+    /// The items column (0x108): kevlar and the stealth shoes.
+    Items,
+    /// The options column (0x188): buy, the attachment toggles, akimbo or a full load.
+    Options,
+    /// The remove column (0x88): the config's entries.
+    Remove,
+    /// The save column (0x88): the nine saved slots.
+    Save,
+    /// The load column (0x88): the nine saved slots.
+    Load,
+    /// The team column (x 8): the team menu's own rows.
+    Team,
+}
+
+impl Column {
+    /// Where the canvas draws the column.
+    pub fn x(self) -> i32 {
+        match self {
+            Column::Main | Column::Team => 8,
+            Column::Category | Column::Remove | Column::Save | Column::Load => 0x88,
+            Column::Weapons | Column::Items => 0x108,
+            Column::Options => 0x188,
+        }
+    }
+
+    /// The page whose keys the column answers for.
+    pub fn page(self) -> i32 {
+        match self {
+            Column::Main => page::MAIN,
+            Column::Category => page::CATEGORY,
+            Column::Weapons => page::WEAPONS,
+            Column::Items => page::ITEMS,
+            Column::Options => page::OPTIONS,
+            Column::Remove => page::REMOVE,
+            Column::Save => page::SAVE,
+            Column::Load => page::LOAD,
+            Column::Team => page::TEAM,
+        }
+    }
+}
+
+/// The columns the canvas draws for a page, in the order it draws them (the children first: a
+/// page's own column, then the columns it was reached from).
+pub fn columns(pg: i32) -> &'static [Column] {
+    match pg {
+        page::TEAM => &[Column::Team],
+        page::OPTIONS => &[Column::Options, Column::Weapons, Column::Category, Column::Main],
+        page::WEAPONS => &[Column::Weapons, Column::Category, Column::Main],
+        page::ITEMS => &[Column::Items, Column::Category, Column::Main],
+        page::CATEGORY => &[Column::Category, Column::Main],
+        page::REMOVE => &[Column::Remove, Column::Main],
+        page::SAVE => &[Column::Save, Column::Main],
+        page::LOAD => &[Column::Load, Column::Main],
+        _ => &[Column::Main],
+    }
+}
+
+/// The column a page's own rows are in: the rows a key on that page acts on.
+pub fn own_column(pg: i32) -> Column {
+    match pg {
+        page::CATEGORY => Column::Category,
+        page::WEAPONS => Column::Weapons,
+        page::OPTIONS => Column::Options,
+        page::ITEMS => Column::Items,
+        page::REMOVE => Column::Remove,
+        page::SAVE => Column::Save,
+        page::LOAD => Column::Load,
+        page::TEAM => Column::Team,
+        _ => Column::Main,
+    }
+}
+
+/// A row's flags: what the state dump reports and what the browser's DOM menu renders.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RowFlags {
+    /// The row is the selected one: the pending weapon, the chosen category, an attachment
+    /// that is already on.
+    pub on: bool,
+    /// The row is drawn at half brightness: it belongs to a parent column, so it is not the
+    /// page's own row.
+    pub dim: bool,
+    /// The row costs more than the budget allows.
+    pub x: bool,
+    /// The row is a header: it takes no key.
+    pub sep: bool,
+}
+
+impl RowFlags {
+    /// The flags as the state dump prints them: `0`, or a `+`-joined set.
+    pub fn dump(self) -> String {
+        let mut v: Vec<&str> = Vec::new();
+        if self.on {
+            v.push("on");
+        }
+        if self.dim {
+            v.push("dim");
+        }
+        if self.x {
+            v.push("x");
+        }
+        if self.sep {
+            v.push("sep");
+        }
+        if v.is_empty() { "0".to_owned() } else { v.join("+") }
+    }
+}
+
+/// The colour a row is drawn in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowColor {
+    /// The HUD's half colour: an ordinary row.
+    Hud,
+    /// Green: a row that works.
+    Good,
+    /// Red: a row that does not work (unaffordable, empty, restricted).
+    Bad,
+    /// The back colour: "go back" and "cancel".
+    Back,
+}
+
+/// How a row's text is put together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Text {
+    /// The key, then the label: "1 #Buy_Buy".
+    Keyed,
+    /// The key, the label and the price: "1 Kevlar  1900".
+    Priced,
+    /// The label with the row's key as its number: the saved slots' titles ("Slot %i Empty").
+    Numbered,
+    /// The row's number in decimal, then the label: the remove column's entries
+    /// ("10 Glock-18"). The remove column numbers its entries 1…16, past the key
+    /// alphabet's "A".
+    Decimal,
+}
+
+/// One row of the buy menu: what the canvas draws and what the state dump reports. The rows are
+/// built once ([`column_rows`]) and consumed twice: the canvas draws them and the state dump
+/// reports them, so the two can never disagree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Row {
+    /// The column the row is in.
+    pub column: Column,
+    /// The key the row answers to (1..=11; 0 = the row takes no key).
+    pub key: i32,
+    /// The row's label: a `#Buy_…` title key, or the text the menu draws.
+    pub label: String,
+    /// What the row costs (0 = it costs nothing: a category row, a navigation row).
+    pub price: i32,
+    /// The row's flags.
+    pub flags: RowFlags,
+    /// The colour the row is drawn in.
+    pub color: RowColor,
+    /// How the row's text is put together.
+    pub text: Text,
+    /// The weapon or item the row is about (0 = none).
+    pub id: i32,
+}
+
+impl Row {
+    /// The number the canvas draws before the row's label: the key's own prefix ("1", "0",
+    /// "A"), the entry's number in the remove column ("10"), or nothing when the number is
+    /// part of the title (the saved slots).
+    pub fn number(&self) -> String {
+        match self.text {
+            Text::Keyed | Text::Priced => key_prefix(self.key).trim_end().to_owned(),
+            Text::Decimal => self.key.to_string(),
+            Text::Numbered => String::new(),
+        }
+    }
+}
+
+/// The key a row's text starts with: "1 ".."9 ", "0 " for ten, "A " for eleven, and nothing for
+/// a row that takes no key.
+pub fn key_prefix(key: i32) -> &'static str {
+    match key {
+        1..=9 => ["1 ", "2 ", "3 ", "4 ", "5 ", "6 ", "7 ", "8 ", "9 "][(key - 1) as usize],
+        10 => "0 ",
+        11 => "A ",
+        _ => "",
+    }
+}
+
+/// The text a row is drawn with: the ruleset's own text for the label, with the key and the
+/// price as the canvas draws them.
+pub fn row_text(row: &Row, r: &Rules, titles: &dyn crate::hud::text::Titles) -> String {
+    match row.text {
+        Text::Keyed => text(&r.menu, titles, &format!("{}{}", key_prefix(row.key), row.label)),
+        Text::Priced => text(&r.menu, titles, &format!("{}{}  {}", key_prefix(row.key), row.label, row.price)),
+        // The remove column numbers its entries in decimal, not in the key alphabet.
+        Text::Decimal => text(&r.menu, titles, &format!("{} {}", row.key, row.label)),
+        // The saved slots' titles carry their own number ("Slot %i Empty"), so the title is
+        // resolved first and the number formatted into it after.
+        Text::Numbered => {
+            let f = crate::hud::text::format(&text(&r.menu, titles, &row.label), &[crate::hud::text::Arg::I(row.key as i64)]);
+            text(&r.menu, titles, &f)
+        }
+    }
+}
+
+/// Can the menu still afford this entry? The canvas's own test: the cost and the slots on top
+/// of what the config already holds.
+fn affordable(cost: i32, slots: i32, cur: &Config, r: &Rules) -> bool {
+    cost.wrapping_add(cur.total) <= r.cash && slots.wrapping_add(cur.slots) <= SLOTS
+}
+
+/// The "go back" row every page's own column ends with.
+fn back_row(column: Column) -> Row {
+    Row {
+        column,
+        key: 10,
+        label: "#Buy_GoBack".into(),
+        price: 0,
+        flags: RowFlags::default(),
+        color: RowColor::Back,
+        text: Text::Keyed,
+        id: 0,
+    }
+}
+
+/// The options column: buy the pending weapon, the attachment toggles, and akimbo or a full
+/// load.
+fn options_rows(b: &BuyMenu, r: &Rules) -> Vec<Row> {
+    let cur = &b.current;
+    let id = b.pending_weapon;
+    let base = cost(id, b.pending_att, false, false);
+    let mut rows = Vec::new();
+    let ok = affordable(base, slots_for(id, false, false, r), cur, r);
+    rows.push(Row {
+        column: Column::Options,
+        key: 1,
+        label: "#Buy_Buy".into(),
+        price: base,
+        flags: RowFlags { x: !ok, ..Default::default() },
+        color: if ok { RowColor::Good } else { RowColor::Bad },
+        text: Text::Keyed,
+        id,
+    });
+    let labels = ["#HUD_Silencer", "#HUD_Lasersight", "#HUD_Flashlight", "#HUD_Scope"];
+    for bit in 0..4u32 {
+        if !b.attachment_allowed(1 << bit) {
+            continue;
+        }
+        // The label shows the attachment's own price; the colour tests base + attachment.
+        let price = attachment_price(1 << bit);
+        let total = base.wrapping_add(price);
+        let ok = total.wrapping_add(cur.total) <= r.cash;
+        rows.push(Row {
+            column: Column::Options,
+            key: bit as i32 + 2,
+            label: labels[bit as usize].into(),
+            price,
+            flags: RowFlags { on: b.pending_att & (1 << bit) != 0, x: !ok, ..Default::default() },
+            color: if ok { RowColor::Hud } else { RowColor::Bad },
+            text: Text::Priced,
+            id: 0,
+        });
+    }
+    if let Some(w) = tables().weapon(id.max(0) as u8) {
+        if w.akimbo != -1 {
+            let price = cost(id, b.pending_att, true, false);
+            let ok = affordable(price, w.slots * 2, cur, r);
+            rows.push(Row {
+                column: Column::Options,
+                key: 6,
+                label: "#Buy_Akimbo".into(),
+                price,
+                flags: RowFlags { x: !ok, ..Default::default() },
+                color: if ok { RowColor::Good } else { RowColor::Bad },
+                text: Text::Keyed,
+                id,
+            });
+        } else if w.stack {
+            let price = cost(id, 0, true, false);
+            let ok = affordable(price, w.slots * w.pellets, cur, r);
+            rows.push(Row {
+                column: Column::Options,
+                key: 6,
+                label: "#Buy_FullLoad".into(),
+                price,
+                flags: RowFlags { x: !ok, ..Default::default() },
+                color: if ok { RowColor::Good } else { RowColor::Bad },
+                text: Text::Keyed,
+                id,
+            });
+        }
+    }
+    rows.push(back_row(Column::Options));
+    rows
+}
+
+/// The weapon column: the chosen category's weapons. A restricted weapon is not drawn at all
+/// (TS hides it, it does not grey it out).
+fn weapons_rows(b: &BuyMenu, r: &Rules) -> Vec<Row> {
+    let cur = &b.current;
+    let mut rows = Vec::new();
+    for row in 0..12 {
+        let id = table(&r.menu)[row][b.category.clamp(0, 4) as usize];
+        if id == -1 || restricted(id, false, r) {
+            continue;
+        }
+        let Some(w) = tables().weapon(id as u8) else { continue };
+        // The tenth row onwards is the `a` key (the eleventh), as the mouse's hit test has it.
+        let key = if row < 9 { row as i32 + 1 } else { 11 };
+        let ok = affordable(w.cost, w.slots, cur, r);
+        // `0x10037ad4`: full brightness on the weapon page and for the chosen weapon.
+        let dim = b.page != page::WEAPONS && id != b.pending_weapon;
+        rows.push(Row {
+            column: Column::Weapons,
+            key,
+            label: w.name.clone(),
+            price: w.cost,
+            flags: RowFlags { on: id == b.pending_weapon, dim, x: !ok, sep: false },
+            color: if ok { RowColor::Hud } else { RowColor::Bad },
+            text: Text::Keyed,
+            id,
+        });
+    }
+    if b.page == page::WEAPONS {
+        rows.push(back_row(Column::Weapons));
+    }
+    rows
+}
+
+/// The items column: kevlar and the stealth shoes.
+fn items_rows(b: &BuyMenu, r: &Rules) -> Vec<Row> {
+    let cur = &b.current;
+    let mut rows = Vec::new();
+    for (key, id, label) in [(1i32, ITEM_KEVLAR, "Kevlar"), (2, ITEM_STEALTH, "Stealth Shoes")] {
+        if restricted(id, true, r) {
+            continue;
+        }
+        let price = shared::weapons::item_price(id);
+        let slots = slots_for(id, false, true, r);
+        let ok = if r.menu.items_red_by_cash_only { price.wrapping_add(cur.total) <= r.cash } else { affordable(price, slots, cur, r) };
+        rows.push(Row {
+            column: Column::Items,
+            key,
+            label: label.into(),
+            price,
+            flags: RowFlags { x: !ok, ..Default::default() },
+            color: if ok { RowColor::Hud } else { RowColor::Bad },
+            text: Text::Priced,
+            id,
+        });
+    }
+    rows.push(back_row(Column::Items));
+    rows
+}
+
+/// The category column: the five weapon categories and the player accessory.
+fn category_rows(b: &BuyMenu, r: &Rules) -> Vec<Row> {
+    let mut rows = Vec::new();
+    for (i, name) in CATEGORIES.iter().enumerate() {
+        // `0x1003788c`: the chosen category keeps full brightness.
+        let dim = b.page != page::CATEGORY && i as i32 != b.category;
+        rows.push(Row {
+            column: Column::Category,
+            key: i as i32 + 1,
+            label: (*name).into(),
+            price: 0,
+            // The chosen category is in the state record (`cat`), not in a flag.
+            flags: RowFlags { on: false, dim, x: false, sep: false },
+            color: RowColor::Hud,
+            text: Text::Keyed,
+            id: 0,
+        });
+    }
+    if !r.menu.items_need_teamplay || r.gamemode > 1 {
+        rows.push(Row {
+            column: Column::Category,
+            key: 6,
+            label: "#Buy_PlayerAccessory".into(),
+            price: 0,
+            // The accessory row is in the category column, so it takes the column's dim: half
+            // brightness on every page but CATEGORY.
+            flags: RowFlags { dim: b.page != page::CATEGORY, ..Default::default() },
+            color: RowColor::Hud,
+            text: Text::Keyed,
+            id: 0,
+        });
+    }
+    if b.page == page::CATEGORY {
+        rows.push(back_row(Column::Category));
+    }
+    rows
+}
+
+/// The remove column: the config's entries, in the order they are in it.
+fn remove_rows(b: &BuyMenu, _r: &Rules) -> Vec<Row> {
+    let mut rows = Vec::new();
+    for (i, e) in b.current.entries.iter().enumerate().filter(|(_, e)| e.id != 0) {
+        rows.push(Row {
+            column: Column::Remove,
+            key: i as i32 + 1,
+            label: BuyMenu::entry_name(e),
+            price: e.cost,
+            flags: RowFlags::default(),
+            color: RowColor::Hud,
+            text: Text::Decimal,
+            id: e.id,
+        });
+    }
+    rows.push(back_row(Column::Remove));
+    rows
+}
+
+/// The save and load columns: the nine saved slots.
+fn saved_rows(b: &BuyMenu, r: &Rules, save: bool) -> Vec<Row> {
+    let column = if save { Column::Save } else { Column::Load };
+    let mut rows = vec![Row {
+        column,
+        key: 0,
+        label: if save { "#Buy_SaveEquipment".into() } else { "#Buy_LoadEquipment".into() },
+        price: 0,
+        flags: RowFlags { sep: true, ..Default::default() },
+        color: RowColor::Good,
+        text: Text::Keyed,
+        id: 0,
+    }];
+    for (i, s) in b.saved.iter().enumerate() {
+        let label = if s.total < 1 { "#Buy_SlotEmpty" } else { "#Buy_SlotAvailable" };
+        let red = !save && s.total > r.cash;
+        rows.push(Row {
+            column,
+            key: i as i32 + 1,
+            label: label.into(),
+            price: 0,
+            flags: RowFlags { x: red, ..Default::default() },
+            color: if red { RowColor::Bad } else { RowColor::Hud },
+            text: Text::Numbered,
+            id: 0,
+        });
+    }
+    rows.push(back_row(column));
+    rows
+}
+
+/// The main column: use the config, buy, remove, reset, save, load, random and cancel.
+fn main_rows(b: &BuyMenu, r: &Rules) -> Vec<Row> {
+    let cur = &b.current;
+    // The main column is the parent of every other page, so it is dimmed on them.
+    let dim = b.page != page::MAIN;
+    let mut rows = Vec::new();
+    if cur.total < 1 {
+        rows.push(Row {
+            column: Column::Main,
+            key: 1,
+            label: "#Buy_EmptyConfig".into(),
+            price: 0,
+            flags: RowFlags { dim, ..Default::default() },
+            color: RowColor::Bad,
+            text: Text::Keyed,
+            id: 0,
+        });
+    } else {
+        let label = if b.new_config { "#Buy_UseNewConfig" } else { "#Buy_UseLastConfig" };
+        let red = r.cash.wrapping_sub(cur.total) < 0;
+        rows.push(Row {
+            column: Column::Main,
+            key: 1,
+            label: label.into(),
+            price: 0,
+            flags: RowFlags { dim, x: red, ..Default::default() },
+            color: if red { RowColor::Bad } else { RowColor::Good },
+            text: Text::Keyed,
+            id: 0,
+        });
+    }
+    for (key, label) in [(2, "#Buy_Buy"), (3, "#Buy_RemoveItem"), (4, "#Buy_ResetConfig"), (5, "#Buy_SaveConfig"), (6, "#Buy_LoadConfig")] {
+        rows.push(Row {
+            column: Column::Main,
+            key,
+            label: label.into(),
+            price: 0,
+            flags: RowFlags { dim, ..Default::default() },
+            color: RowColor::Hud,
+            text: Text::Keyed,
+            id: 0,
+        });
+    }
+    rows.push(Row {
+        column: Column::Main,
+        key: 7,
+        label: "#Buy_Random".into(),
+        price: 0,
+        flags: RowFlags { dim, ..Default::default() },
+        color: RowColor::Good,
+        text: Text::Keyed,
+        id: 0,
+    });
+    if b.page == page::MAIN {
+        rows.push(Row {
+            column: Column::Main,
+            key: 10,
+            label: "#Buy_Cancel".into(),
+            price: 0,
+            flags: RowFlags::default(),
+            color: RowColor::Back,
+            text: Text::Keyed,
+            id: 0,
+        });
+    }
+    rows
+}
+
+/// The team column: the team menu's own rows.
+fn team_rows() -> Vec<Row> {
+    vec![
+        Row {
+            column: Column::Team,
+            key: 0,
+            label: "#Chg_ChangeTeam".into(),
+            price: 0,
+            flags: RowFlags { sep: true, ..Default::default() },
+            color: RowColor::Good,
+            text: Text::Keyed,
+            id: 0,
+        },
+        Row {
+            column: Column::Team,
+            key: 1,
+            label: "#Chg_Join Specialists".into(),
+            price: 0,
+            flags: RowFlags::default(),
+            color: RowColor::Hud,
+            text: Text::Keyed,
+            id: 0,
+        },
+        Row {
+            column: Column::Team,
+            key: 2,
+            label: "#Chg_Join Mercenaries".into(),
+            price: 0,
+            flags: RowFlags::default(),
+            color: RowColor::Hud,
+            text: Text::Keyed,
+            id: 0,
+        },
+        Row {
+            column: Column::Team,
+            key: 10,
+            label: "#Chg_Cancel".into(),
+            price: 0,
+            flags: RowFlags::default(),
+            color: RowColor::Back,
+            text: Text::Keyed,
+            id: 0,
+        },
+    ]
+}
+
+/// The rows of one column, for the menu's current state. The canvas draws these and the state
+/// dump reports them: one source of truth, so the two can never disagree.
+pub fn column_rows(b: &BuyMenu, r: &Rules, column: Column) -> Vec<Row> {
+    match column {
+        Column::Options => options_rows(b, r),
+        Column::Weapons => weapons_rows(b, r),
+        Column::Items => items_rows(b, r),
+        Column::Category => category_rows(b, r),
+        Column::Remove => remove_rows(b, r),
+        Column::Save => saved_rows(b, r, true),
+        Column::Load => saved_rows(b, r, false),
+        Column::Main => main_rows(b, r),
+        Column::Team => team_rows(),
+    }
+}
+
+/// The title key of a page: the browser's DOM menu resolves it through the engine's titles.
+pub fn page_title(pg: i32) -> &'static str {
+    match pg {
+        page::MAIN => "#Buy_MAIN",
+        page::CATEGORY => "#Buy_CATEGORY",
+        page::WEAPONS => "#Buy_WEAPONS",
+        page::OPTIONS => "#Buy_OPTIONS",
+        page::ITEMS => "#Buy_ITEMS",
+        page::REMOVE => "#Buy_REMOVE",
+        page::SAVE => "#Buy_SAVE",
+        page::LOAD => "#Buy_LOAD",
+        page::TEAM => "#Buy_TEAM",
+        _ => "#Buy_MAIN",
+    }
+}
+
+/// The slots an entry takes: the same count the menu's own slot check uses
+/// ([`slots_for`], with the entry's own count or akimbo flag).
+pub fn entry_slots(e: &Entry, r: &Rules) -> i32 {
+    if e.is_item {
+        return if e.id & ITEM_KEVLAR != 0 && r.menu.items_use_slots { 10 } else { 0 };
+    }
+    let Some(w) = tables().weapon(e.id as u8) else { return 0 };
+    if e.count == 0 { w.slots * (e.akimbo as i32 + 1) } else { w.slots * e.count }
+}
+
 pub struct BuyMenu {
     pub active: bool,
+    /// Port addition: the canvas menu is not drawn and the engine's own key and mouse paths
+    /// are inert. The state machine keeps running, so the browser's DOM menu can drive it
+    /// (`ts_buy_key`) and read its state (`ts_buy_state`).
+    pub hidden: bool,
     pub page: i32,
     pub category: i32,
     pub pending_att: u32,
@@ -410,6 +1013,7 @@ impl Default for BuyMenu {
     fn default() -> Self {
         BuyMenu {
             active: false,
+            hidden: false,
             page: 0,
             category: 0,
             pending_att: 0,
@@ -1050,6 +1654,93 @@ impl BuyMenu {
         }
         out
     }
+
+    /// Does the canvas draw the menu? A hidden menu is not drawn, but its state machine keeps
+    /// running: the browser's DOM menu drives it and reads its state.
+    pub fn draws(&self) -> bool {
+        self.active && !self.hidden
+    }
+
+    /// The DOM menu's write path: the key runs on the current page, hidden or not. It is the
+    /// same [`BuyMenu::handle_key`] the canvas menu runs, so the two cannot disagree.
+    pub fn dom_key(&mut self, key: i32, r: &Rules, rng: &mut dyn Rng) -> Vec<Action> {
+        let pg = self.page;
+        self.handle_key(pg, key, r, rng)
+    }
+
+    /// Whether the menu draws the given page's column now. The DOM menu may only press a key
+    /// on a column the canvas is showing, like the mouse can only hit a drawn column.
+    pub fn page_is_drawn(&self, pg: i32) -> bool {
+        columns(self.page).iter().any(|c| c.page() == pg)
+    }
+
+    /// A key on a named page: the DOM menu's click path, which acts on the page the clicked
+    /// row belongs to (the canvas's mouse picks the column the click was in).
+    pub fn dom_key_on(&mut self, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> Vec<Action> {
+        self.handle_key(pg, key, r, rng)
+    }
+
+    /// The engine's own key path (the digit keys and the mouse). It is inert while the menu is
+    /// hidden, so the browser's DOM menu owns the input. `None` when the key was not taken.
+    pub fn engine_key(&mut self, key: i32, r: &Rules, rng: &mut dyn Rng) -> Option<Vec<Action>> {
+        if self.hidden || !(1..=r.menu.max_key).contains(&key) {
+            return None;
+        }
+        Some(self.dom_key(key, r, rng))
+    }
+
+    /// Every row the canvas draws for the menu's current page, in the order it draws them: the
+    /// page's own column first, then the columns the page was reached from. The canvas draws
+    /// these and the state dump reports them, so the two can never disagree.
+    pub fn rows(&self, r: &Rules) -> Vec<Row> {
+        let mut out = Vec::new();
+        for column in columns(self.page) {
+            out.extend(column_rows(self, r, *column));
+        }
+        out
+    }
+
+    /// The menu's state, as the `TSBUY` records the browser's DOM menu reads: one record per
+    /// line, `TSBUY end` closing the set. The labels are the `#Buy_…` title keys the canvas
+    /// menu draws too: the port does not localise them, the engine's titles do.
+    pub fn state_lines(&self, r: &Rules) -> Vec<String> {
+        let mut out = Vec::new();
+        out.push(format!(
+            "TSBUY state open={} hidden={} page={} budget={} total={} slots={} ammo_spend={} new={} cat={} pending={} att={}",
+            self.active as i32,
+            self.hidden as i32,
+            self.page,
+            r.cash,
+            self.current.total,
+            self.current.slots,
+            self.ammo_spend,
+            self.new_config as i32,
+            self.category,
+            self.pending_weapon,
+            self.pending_att
+        ));
+        out.push(format!("TSBUY page {} {}", self.page, page_title(self.page)));
+        for row in self.rows(r) {
+            let number = row.number();
+            out.push(format!(
+                "TSBUY row {} {} {} {} {} {}",
+                row.key,
+                row.price,
+                row.flags.dump(),
+                row.column.page(),
+                if number.is_empty() { "-".to_owned() } else { number },
+                row.label
+            ));
+        }
+        for (i, e) in self.current.entries.iter().enumerate() {
+            if e.id == 0 {
+                continue;
+            }
+            out.push(format!("TSBUY entry {} {} {} {}", i, e.cost, entry_slots(e, r), BuyMenu::entry_name(e)));
+        }
+        out.push("TSBUY end".to_owned());
+        out
+    }
 }
 
 /// `FUN_10036af0`'s header (`0x10036b64..0x10036bc1`): the total includes the ammo
@@ -1095,6 +1786,49 @@ mod tests {
 
     fn rules() -> Rules {
         Rules { restriction: 0x1f, ..Rules::default() }
+    }
+
+    /// The titles the menu draws, for the tests: the port never localises them itself.
+    struct TestTitles;
+    impl crate::hud::text::Titles for TestTitles {
+        fn get(&self, key: &str) -> Option<String> {
+            Some(
+                match key {
+                    "Buy_Handguns" => "Handguns",
+                    "Buy_SMGs" => "SMGs",
+                    "Buy_Rifles" => "Rifles",
+                    "Buy_Shotguns" => "Shotguns",
+                    "Buy_SpecialPurpose" => "Special Purpose",
+                    "Buy_SaveEquipment" => "Save Equipment",
+                    "Buy_GoBack" => "Go Back",
+                    "Buy_Buy" => "Buy",
+                    "Buy_EmptyConfig" => "Empty Config",
+                    "Buy_SlotEmpty" => "Slot %i Empty",
+                    "Buy_SlotAvailable" => "Slot %i Available",
+                    "HUD_Silencer" => "Silencer",
+                    _ => return None,
+                }
+                .to_owned(),
+            )
+        }
+    }
+
+    /// The `TSBUY row` records of a state dump: (key, price, flags, page, number, label).
+    fn dump_rows(lines: &[String]) -> Vec<(i32, i32, String, i32, String, String)> {
+        lines
+            .iter()
+            .filter_map(|l| l.strip_prefix("TSBUY row "))
+            .map(|rest| {
+                let mut it = rest.splitn(6, ' ');
+                let key = it.next().unwrap().parse().unwrap();
+                let price = it.next().unwrap().parse().unwrap();
+                let flags = it.next().unwrap().to_owned();
+                let page = it.next().unwrap().parse().unwrap();
+                let number = it.next().unwrap().to_owned();
+                let label = it.next().unwrap().to_owned();
+                (key, price, flags, page, number, label)
+            })
+            .collect()
     }
 
     #[test]
@@ -1445,5 +2179,232 @@ mod tests {
         let loc = |k: &str| k.trim_start_matches("#Buy_").to_owned();
         assert_eq!(attachment_summary(0b1011, &loc), "(Sil,Las,Sco)");
         assert_eq!(attachment_summary(0, &loc), "");
+    }
+
+    /// The hidden flag: the canvas menu is not drawn and the engine's own key path is inert,
+    /// but the menu's state machine keeps running and the DOM menu's key path still works.
+    #[test]
+    fn the_hidden_flag_suppresses_the_draw_and_the_engines_keys() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = BuyMenu { random_first: false, ..Default::default() };
+        m.open(&r, &mut FixedRng(vec![], 0));
+        assert!(m.draws(), "an open menu is drawn");
+        m.hidden = true;
+        assert!(!m.draws(), "a hidden menu is not drawn");
+        // The engine's key path (the digit keys and the mouse) is inert...
+        assert!(m.engine_key(2, &r, &mut FixedRng(vec![], 0)).is_none());
+        assert_eq!(m.page, page::MAIN, "the engine's key did nothing");
+        // ...but the DOM menu's own path is not.
+        let actions = m.dom_key(2, &r, &mut FixedRng(vec![], 0));
+        assert!(actions.is_empty(), "the category page has no actions of its own");
+        assert_eq!(m.page, page::CATEGORY, "the DOM's key ran");
+    }
+
+    /// The DOM menu's key path and the engine's key path run the same key: the same actions,
+    /// the same state.
+    #[test]
+    fn the_dom_key_path_and_the_engines_key_path_agree() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut dom = BuyMenu { random_first: false, ..Default::default() };
+        let mut engine = BuyMenu { random_first: false, ..Default::default() };
+        dom.open(&r, &mut FixedRng(vec![], 0));
+        engine.open(&r, &mut FixedRng(vec![], 0));
+        for key in 1..=11 {
+            let a = dom.dom_key(key, &r, &mut FixedRng(vec![], 0));
+            let b = engine.engine_key(key, &r, &mut FixedRng(vec![], 0)).expect("the engine takes the key");
+            assert_eq!(a, b, "key {key}");
+            assert_eq!(dom.page, engine.page, "key {key}");
+            assert_eq!(dom.current, engine.current, "key {key}");
+        }
+    }
+
+    /// The state dump: one record per line, `TSBUY end` closing the set, and the shape the
+    /// browser's DOM menu reads.
+    #[test]
+    fn the_state_dump_has_the_documented_shape() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = BuyMenu { random_first: false, ..Default::default() };
+        m.open(&r, &mut FixedRng(vec![], 0));
+        m.page = page::CATEGORY;
+        let lines = m.state_lines(&r);
+        assert_eq!(lines[0], "TSBUY state open=1 hidden=0 page=1 budget=30000 total=0 slots=0 ammo_spend=0 new=0 cat=0 pending=-1 att=0");
+        assert_eq!(lines[1], "TSBUY page 1 #Buy_CATEGORY");
+        assert_eq!(lines[2], "TSBUY row 1 0 0 1 1 #Buy_Handguns");
+        assert_eq!(lines[3], "TSBUY row 2 0 0 1 2 #Buy_SMGs");
+        assert_eq!(lines.last().unwrap(), "TSBUY end");
+        assert!(lines.iter().all(|l| l.starts_with("TSBUY ")), "every line is a record");
+        // Every page: the page record, the rows and the end.
+        for pg in [page::MAIN, page::CATEGORY, page::WEAPONS, page::OPTIONS, page::ITEMS, page::REMOVE, page::SAVE, page::LOAD] {
+            m.page = pg;
+            let lines = m.state_lines(&r);
+            assert_eq!(lines[1], format!("TSBUY page {pg} {}", page_title(pg)));
+            assert_eq!(lines.last().unwrap(), "TSBUY end");
+            assert!(lines.iter().all(|l| l.starts_with("TSBUY ")), "page {pg}");
+            assert!(lines[0].contains(&format!(" page={pg} ")), "page {pg}: {}", lines[0]);
+            assert!(!dump_rows(&lines).is_empty(), "page {pg}: the page has rows");
+        }
+        // The hidden flag is in the state record.
+        m.hidden = true;
+        assert!(m.state_lines(&r)[0].contains(" hidden=1 "));
+    }
+
+    /// The dump reports the rows the canvas draws: the same count, the same keys, the same
+    /// prices and the same flags.
+    #[test]
+    fn the_dump_reports_the_rows_the_canvas_draws() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = BuyMenu { random_first: false, ..Default::default() };
+        m.open(&r, &mut FixedRng(vec![], 0));
+        m.add(13, 8, false, false, &r);
+        for pg in [page::MAIN, page::CATEGORY, page::WEAPONS, page::OPTIONS, page::ITEMS, page::REMOVE, page::SAVE, page::LOAD] {
+            m.page = pg;
+            let rows = m.rows(&r);
+            let dumped = dump_rows(&m.state_lines(&r));
+            assert_eq!(dumped.len(), rows.len(), "page {pg}: as many rows as the canvas draws");
+            for (row, (key, price, flags, page, number, label)) in rows.iter().zip(&dumped) {
+                assert_eq!(key, &row.key, "page {pg}: {}", row.label);
+                assert_eq!(price, &row.price, "page {pg}: {}", row.label);
+                assert_eq!(flags, &row.flags.dump(), "page {pg}: {}", row.label);
+                assert_eq!(page, &row.column.page(), "page {pg}: {}", row.label);
+                // The dump writes "-" for a row with no number of its own.
+                let expected = if row.number().is_empty() { "-".to_owned() } else { row.number() };
+                assert_eq!(number, &expected, "page {pg}: {}", row.label);
+                assert_eq!(label, &row.label, "page {pg}");
+            }
+        }
+    }
+
+    /// A row the player cannot afford is marked (`x`) and drawn red; the chosen category is
+    /// the selected one (`on`).
+    #[test]
+    fn the_rows_carry_the_flags_the_dom_menu_needs() {
+        ts30_gameplay::tables::make_default();
+        let r = Rules { cash: 1000, ..rules() };
+        let mut m = BuyMenu { random_first: false, ..Default::default() };
+        m.open(&r, &mut FixedRng(vec![], 0));
+        m.page = page::WEAPONS;
+        m.category = 2;
+        let rows = m.rows(&r);
+        let ak = rows.iter().find(|row| row.label == "AK47").expect("the rifles column lists the AK47");
+        assert!(ak.flags.x, "the AK47 costs more than 1000");
+        assert_eq!(ak.color, RowColor::Bad);
+        assert_eq!(ak.price, 3000);
+        // The category column is a parent column here, so its rows are dimmed.
+        let cat = rows.iter().find(|row| row.label == "#Buy_Handguns").expect("the handguns category");
+        assert!(cat.flags.dim, "the parent column is dimmed");
+        let chosen = rows.iter().find(|row| row.label == "#Buy_Rifles").expect("the rifles category");
+        assert!(!chosen.flags.dim, "the chosen category keeps full brightness");
+        // The options page marks the weapon the options are for.
+        m.page = page::OPTIONS;
+        m.pending_weapon = 13;
+        let rows = m.rows(&r);
+        let ak = rows.iter().find(|row| row.label == "AK47").expect("the rifles column lists the AK47");
+        assert!(ak.flags.on, "the pending weapon is the selected one");
+    }
+
+    /// The client's budget and the tables' budget are the same number: the server checks a
+    /// loadout against the table, so the two cannot drift.
+    #[test]
+    fn the_cash_and_the_tables_budget_agree() {
+        ts30_gameplay::tables::make_default();
+        assert_eq!(CASH, tables().combat.budget, "the client's budget is the table's");
+        assert_eq!(rules().cash, tables().combat.budget);
+    }
+
+    /// The DOM menu's click acts on the row's own page, and the mouse's click on the same row
+    /// does the same thing: the canvas picks the column the click was in, and a column's keys
+    /// answer on that column's page.
+    ///
+    /// Without the page, a click on a parent column's row ran the key on the CURRENT page: on
+    /// the weapons page, the category column's "1 Handguns" row would have picked weapon 1
+    /// instead of the handguns.
+    #[test]
+    fn a_dom_click_does_what_the_mouse_click_does() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = BuyMenu { random_first: false, ..Default::default() };
+        m.open(&r, &mut FixedRng(vec![], 0));
+        m.page = page::WEAPONS;
+        // Every row the canvas draws, and where it draws it: a column's rows start at the
+        // middle of the screen and are 20 pixels high.
+        let rows = m.rows(&r);
+        let mut checked = 0;
+        for (i, row) in rows.iter().enumerate() {
+            if row.key == 0 {
+                continue;
+            }
+            // The row's index in its own column: the rows above it in the same column.
+            let idx = rows[..i].iter().filter(|o| o.column == row.column).count() as i32;
+            let y = 240 + idx * 20;
+            // The mouse's click: the row's box on the canvas.
+            let hit = m.hit_test(row.column.x() + 4, y + 4, 480, &r);
+            let Hit::Row(pg, key) = hit else {
+                continue;
+            };
+            assert_eq!(pg, row.column.page(), "the mouse picks the column's page: {}", row.label);
+            assert_eq!(key, row.key, "the mouse picks the row's key: {}", row.label);
+            // The DOM's click: the key on the row's own page.
+            let mut dom = BuyMenu { random_first: false, ..Default::default() };
+            dom.open(&r, &mut FixedRng(vec![], 0));
+            dom.page = page::WEAPONS;
+            dom.dom_key_on(row.column.page(), row.key, &r, &mut FixedRng(vec![], 0));
+            let mut mouse = BuyMenu { random_first: false, ..Default::default() };
+            mouse.open(&r, &mut FixedRng(vec![], 0));
+            mouse.page = page::WEAPONS;
+            mouse.handle_key(pg, key, &r, &mut FixedRng(vec![], 0));
+            assert_eq!(
+                (dom.page, dom.category, dom.pending_weapon),
+                (mouse.page, mouse.category, mouse.pending_weapon),
+                "the DOM's click and the mouse's click end in the same state: {}",
+                row.label
+            );
+            checked += 1;
+        }
+        assert!(checked > 5, "the test checked {checked} rows: it must check the columns' rows");
+    }
+
+    /// The page a row's key acts on is the column's page, and the dump reports it: the DOM
+    /// sends the key there, so a parent column's row cannot act on the current page.
+    #[test]
+    fn a_row_reports_the_page_its_key_acts_on() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = BuyMenu { random_first: false, ..Default::default() };
+        m.open(&r, &mut FixedRng(vec![], 0));
+        m.page = page::WEAPONS;
+        let rows = m.rows(&r);
+        // The weapons column's rows answer on the weapons page; the category column's on the
+        // category page; the main column's on the main page.
+        let page_of = |label: &str| rows.iter().find(|row| row.label == label).map(|row| row.column.page());
+        assert_eq!(page_of("Glock-18"), Some(page::WEAPONS), "the weapon row");
+        assert_eq!(page_of("#Buy_Handguns"), Some(page::CATEGORY), "the category row");
+        assert_eq!(page_of("#Buy_Buy"), Some(page::MAIN), "the main column's row");
+        // The dump says the same, and the page it says is one the canvas draws.
+        for (pg, _, _, dumped_page, _, _) in dump_rows(&m.state_lines(&r)) {
+            let _ = pg;
+            assert!(m.page_is_drawn(dumped_page), "the dump reports a page the canvas draws");
+        }
+    }
+
+    /// The rows' text: the key, the label and the price, with the title keys resolved by the
+    /// engine's titles.
+    #[test]
+    fn the_rows_text_is_what_the_canvas_draws() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = BuyMenu { random_first: false, ..Default::default() };
+        m.open(&r, &mut FixedRng(vec![], 0));
+        m.page = page::CATEGORY;
+        let rows = m.rows(&r);
+        assert_eq!(row_text(&rows[0], &r, &TestTitles), "1 Handguns");
+        // The saved slots' titles carry their own number.
+        m.page = page::SAVE;
+        let rows = m.rows(&r);
+        assert_eq!(row_text(&rows[0], &r, &TestTitles), "Save Equipment");
+        assert_eq!(row_text(&rows[1], &r, &TestTitles), "Slot 1 Empty");
     }
 }

@@ -15,6 +15,7 @@
 #   slots           81 at spawn (0x10055363); kevlar costs none (FUN_10055c30); no flag in 2.1;
 #                   speed 170..310 (FUN_100436e0)
 #   attachment_price  FUN_10055c30 / FUN_10055e00: 900, 800, 500, 1800
+budget = 30000
 silencer = { damage = 0.8, spread = 1.2, kick = 0.8 }
 headshot = 2.0
 headshot_shotgun = 2.0

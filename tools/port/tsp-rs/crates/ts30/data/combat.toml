@@ -1,5 +1,6 @@
 # Decoded from ts_i386.so (TS 3.0) with Sparta() overrides applied.
 # Source: the-specialists-decomp docs/server/weapons.md §3, §8.3.
+budget = 30000
 silencer = { damage = 0.775, spread = 0.875, kick = 0.775 }
 headshot = 2.0
 headshot_shotgun = 1.5
