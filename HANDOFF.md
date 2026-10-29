@@ -1579,33 +1579,42 @@ the parts that are known traps.
 
 > ## The frame-pacing follow-up, and the 144 Hz playtest
 >
-> **PR #87 (`specialists-browser`) is open and CI green.** It carries the
-> `webxash` pointer, the unit tests over the **real** policy module, the
-> research, and the harnesses that produced them. Kyle has already
-> approved it in the web UI. It is **not merged** — the agent never
-> merges.
+> **Two PRs, and the submodule one merges FIRST.**
 >
-> **Two things are open, and the order is fixed:**
+> 1. **`klampatech/webXash#29`** — "fix(client): make the frame-pacing
+>    gate honest about what it is doing". The follow-up to the review
+>    of #87. It fixes the `everyNth` state desync, the median-vs-mean
+>    mismatch, the false "the shim is removed" comment, the
+>    `uninstallFramePacing()` landmine, and adds `?nocap=1` so a player
+>    can turn the cap off. It also changes the enforcement module's
+>    import from the Vite-only `/@/` alias to a relative one, which is
+>    what makes the enforcement testable from the parent's unit suite.
+>    **OPEN, CI-verified locally (typecheck + build clean), awaiting
+>    Kyle's approval.**
+> 2. **`klampatech/specialists-browser#87`** — the ONE parent PR for the
+>    frame-pacing work. It carries the `webxash` pointer, the tests over
+>    both the policy (18) and the enforcement (7) — the suite is
+>    **252/252** — the research, the 30 harnesses, and the `SPEC.md` /
+>    `HANDOFF.md` design write-up. **CI green 4/4, CLEAN, and Kyle has
+>    already approved it in the web UI. It is NOT merged.**
 >
-> 1. **Land the follow-up `webXash` PR FIRST.** It fixes the `everyNth`
->    state desync, the median-vs-mean mismatch in the measurement, the
->    false "the shim is removed" comment, the
->    `uninstallFramePacing()` landmine, and adds a way for a player to
->    turn the cap off.
-> 2. **Then repoint the parent.** The parent's submodule pointer must
->    name a commit on `webXash`'s `main` — the rule is in the
->    specialists-browser skill, § Hard rules: *"THE PARENT'S SUBMODULE
->    POINTER MUST NAME A COMMIT ON THE SUBMODULE'S `main`."* PR #87's
->    pointer has been moved off the PR #27 **branch head** onto
->    `0542c98` (the squash commit on `webXash`'s `main` — identical
->    tree, so it is free) and moves once more to the new `main` head
->    after the follow-up lands.
+> **The order is not optional.** #87's pointer currently names webXash
+> #29's *branch tip*, because the enforcement test needs the fixes to
+> exist at all. **If #87 merges before #29, the parent's pointer
+> regresses and the fixes are dropped.** So: merge #29, then the
+> pointer takes a one-line update to the commit on `webXash`'s `main`
+> (the trees are identical, so it is free), then #87 is final.
+>
+> **`klampatech/specialists-browser#89`** was closed: it carried the
+> enforcement test and a pointer, and two parent PRs moving the same
+> submodule pointer is a trap — one of them would undo the other. Its
+> content is in #87.
 >
 > **And the one piece of evidence nobody has: the tier-3 playtest on a
 > 144 Hz+ display.** The whole mechanism was established on a 60 Hz box,
 > where the cap correctly *does not engage* — the engine keeps up.
-> `tools/perf/diagnose-fullscreen.js` is a player-runnable diagnostic for
-> exactly that: it reports the display's cadence, the browser's tick
+> `tools/perf/diagnose-fullscreen.js` is the player-runnable diagnostic
+> for exactly that: it reports the display's cadence, the browser's tick
 > rate, the engine's frame count, and whether the frames fit the budget.
 > **Kyle's rig is the instrument.**
 >
