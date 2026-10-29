@@ -24,6 +24,35 @@ were merged (the latter as `c12dba3`), then #82 (the deploy gate) and #83
 abandoned approaches' code) and #86 (the BB favicon, the turning dial,
 the top nav links gone). The game server image is `ts-server:0.27`.
 
+## The buy menu is the game's own menu, rendered in the DOM (PR #88, 2026-10-29)
+
+**The old HUD buy menu was a placeholder armory**: hardcoded prices, cash
+tracked in JavaScript, and a purchase that was `set sv_cheats 1` + `give
+weapon_…`. It ignored the budget, the slot limit, the restrictions, the
+attachments, the akimbo, the saved slots and the ruleset — and its price
+list was wrong across the board.
+
+**What shipped is a VIEW over the port's own buy menu.** The port prints
+its state on stdout as `TSBUY …` records; the browser parses them and
+sends key presses back (`ts_buy_key`, `ts_buy_state`, `ts_buy_hide`). The
+browser **computes nothing**: it never forms a loadout and never sends
+`tkw`/`tki`/`tka`. So the prices stay runtime data (a ruleset can
+override a weapon's cost), and the port stays authoritative for the
+30,000 budget, the 81-slot limit, the attachments and the akimbo
+multipliers. The port side (PR #88) builds each page's rows **once** and
+consumes them twice — the canvas draws them and the state dump reports
+them — so the two cannot disagree.
+
+**The player picks.** The ESC options overlay carries a **Classic /
+Modern** switch: `classic` is the game's own canvas menu, `modern` is the
+DOM panel. The default is `classic`, so nobody's experience changes
+until they opt in, and the choice is persisted. The saved loadouts are
+SHARED — `tsbuylist.tsa` is written by the port's menu, so flipping the
+toggle does not fork the loadout storage.
+
+**It is not in production yet: the OVH box is off the network** (see
+§ NEXT TASK). It is live locally at `https://100.95.111.112:5178/`.
+
 ## The client caps the engine's tick rate (PR #87, 2026-10-29)
 
 **The engine has no frame limiter in the browser.** On a display faster
@@ -1577,38 +1606,56 @@ the parts that are known traps.
 
 # § NEXT TASK
 
-> ## The frame-pacing follow-up, and the 144 Hz playtest
+> ## PRODUCTION IS DOWN — the OVH box is off the network
 >
-> **Two PRs, and the submodule one merges FIRST.**
+> **As of 2026-10-29 ~11:20 CDT, `bulletballet.dev` is unreachable.** The
+> OVH VPS-1 LocalZone Dallas (`40.160.225.81`, alias `bb-prod`) answers
+> nothing: no ping, **"No route to host"** from every path, and ports
+> 22/80/443 all dead. The last successful deploy was
+> **2026-10-28 20:43 UTC** (`e91ec43`, PR #86), so the site has been
+> dark since before the first deploy attempt today.
 >
-> 1. **`klampatech/webXash#29`** — "fix(client): make the frame-pacing
->    gate honest about what it is doing". The follow-up to the review
->    of #87. It fixes the `everyNth` state desync, the median-vs-mean
->    mismatch, the false "the shim is removed" comment, the
->    `uninstallFramePacing()` landmine, and adds `?nocap=1` so a player
->    can turn the cap off. It also changes the enforcement module's
->    import from the Vite-only `/@/` alias to a relative one, which is
->    what makes the enforcement testable from the parent's unit suite.
->    **OPEN, CI-verified locally (typecheck + build clean), awaiting
->    Kyle's approval.**
-> 2. **`klampatech/specialists-browser#87`** — the ONE parent PR for the
->    frame-pacing work. It carries the `webxash` pointer, the tests over
->    both the policy (18) and the enforcement (7) — the suite is
->    **252/252** — the research, the 30 harnesses, and the `SPEC.md` /
->    `HANDOFF.md` design write-up. **CI green 4/4, CLEAN, and Kyle has
->    already approved it in the web UI. It is NOT merged.**
+> **It is not a deploy failure.** The deploys failed at their FIRST
+> step (`Set up SSH` → `ssh: connect to host … port 22: Connection
+> timed out`), so nothing was half-deployed — prod is simply serving an
+> older bundle to nobody. **The game is offline for real players**, and
+> the fix is at the PROVIDER: the instance needs restarting from the
+> OVH control panel, or it needs to self-recover. There are no OVH API
+> credentials on this box, so the agent cannot restart it.
 >
-> **The order is not optional.** #87's pointer currently names webXash
-> #29's *branch tip*, because the enforcement test needs the fixes to
-> exist at all. **If #87 merges before #29, the parent's pointer
-> regresses and the fixes are dropped.** So: merge #29, then the
-> pointer takes a one-line update to the commit on `webXash`'s `main`
-> (the trees are identical, so it is free), then #87 is final.
+> **When it comes back, re-run the deploy** (`gh run rerun <id> --repo
+> klampatech/specialists-browser`); a watcher was armed to do exactly
+> that, poll the host, and re-run the failed workflow.
 >
-> **`klampatech/specialists-browser#89`** was closed: it carried the
-> enforcement test and a pointer, and two parent PRs moving the same
-> submodule pointer is a trap — one of them would undo the other. Its
-> content is in #87.
+> **The merge order that shipped on 2026-10-29** (all five PRs, in
+> this order, and the order was not optional):
+>
+> 1. `klampatech/webXash#29` → `15fe88d` — the frame-pacing fixes.
+> 2. `klampatech/webXash#28` → `5b8efaf` — the modern buy menu.
+> 3. `klampatech/specialists-browser#87` → `181f9da` — the frame-pacing
+>    parent: the pointer, the policy tests (18) and the enforcement
+>    tests (7), the research, the 30 harnesses, the `SPEC.md` /
+>    `HANDOFF.md` design write-up.
+> 4. `klampatech/specialists-browser#90` → `6fdbef8` — the flaky
+>    enforcement test, made deterministic.
+> 5. `klampatech/specialists-browser#88` → `f150998` — the buy menu's
+>    port side, and the pointer to `5b8efaf`.
+>
+> **The parent's pointer now names `5b8efaf`, the commit on
+> `webXash`'s `main`** — the rule is satisfied, and both features are
+> in one tree. #87 deliberately pointed at `15fe88d` (frame-pacing
+> only) so the buy menu would ship as ONE unit with the Rust that
+> serves it, rather than a DOM panel arriving a PR before the port
+> side it talks to.
+>
+> `klampatech/specialists-browser#89` was closed and its content folded
+> into #87: two parent PRs moving the same submodule pointer is a trap,
+> because one of them undoes the other. **#90 exists because the
+> enforcement test was FLAKY** — the same commit passed in #87's CI and
+> failed in main's, because the measurement window was pumped by a
+> `setInterval` racing the wall clock, so the sample count's PARITY was
+> random and the median of an alternating sequence flipped the pacer's
+> decision. It now pumps a fixed 41 ticks synchronously.
 >
 > **And the one piece of evidence nobody has: the tier-3 playtest on a
 > 144 Hz+ display.** The whole mechanism was established on a 60 Hz box,
@@ -1617,6 +1664,15 @@ the parts that are known traps.
 > for exactly that: it reports the display's cadence, the browser's tick
 > rate, the engine's frame count, and whether the frames fit the budget.
 > **Kyle's rig is the instrument.**
+>
+> **The buy menu's own smoke, before prod.** It is live locally at
+> **`https://100.95.111.112:5178/`** — the buy-menu branch, with the
+> rebuilt client WASM, served by a Vite dev server that proxies the
+> WS↔UDP bridge to the local `xash` dedicated server on :27015. The
+> **ESC options overlay carries a Classic/Modern switch** and the
+> default is `classic`, so the DOM menu does not appear until it is
+> flipped. The menu is **dead/observer-only**: die to the bots, or go
+> spectator, and it opens.
 >
 > **E5** (below) is still the gate before the next gameplay change.
 
