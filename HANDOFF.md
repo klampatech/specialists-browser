@@ -50,8 +50,11 @@ until they opt in, and the choice is persisted. The saved loadouts are
 SHARED — `tsbuylist.tsa` is written by the port's menu, so flipping the
 toggle does not fork the loadout storage.
 
-**It is not in production yet: the OVH box is off the network** (see
-§ NEXT TASK). It is live locally at `https://100.95.111.112:5178/`.
+**It is in production as of 2026-10-29**, in the same deploy as the
+frame cap — the production bundle carries `TSBUY`/`ts_buy_key`/
+`ts_buy_hide`/`ts_buy_state` alongside `nocap`/`sustainableFps`, verified
+from the served chunk. The default is still `classic`, so the DOM menu
+does not appear until a player flips the switch.
 
 ## The client caps the engine's tick rate (PR #87, 2026-10-29)
 
@@ -1656,26 +1659,62 @@ the parts that are known traps.
 > **The lesson: behind a NAT-ing bridge, an IP filter is a server-wide
 > switch.** Nothing in this deployment may use one.
 
-> ## PRODUCTION IS DOWN — the OVH box is off the network
+> ## PRODUCTION WAS DOWN — and how it came back (2026-10-29)
 >
-> **As of 2026-10-29 ~11:20 CDT, `bulletballet.dev` is unreachable.** The
-> OVH VPS-1 LocalZone Dallas (`40.160.225.81`, alias `bb-prod`) answers
-> nothing: no ping, **"No route to host"** from every path, and ports
-> 22/80/443 all dead. The last successful deploy was
-> **2026-10-28 20:43 UTC** (`e91ec43`, PR #86), so the site has been
-> dark since before the first deploy attempt today.
+> **It was down. It is back.** `bulletballet.dev` went unreachable
+> during the 2026-10-29 merge window and was restored the same
+> afternoon. The record is here because the DIAGNOSIS is the reusable
+> part, not the outage.
 >
-> **It is not a deploy failure.** The deploys failed at their FIRST
-> step (`Set up SSH` → `ssh: connect to host … port 22: Connection
-> timed out`), so nothing was half-deployed — prod is simply serving an
-> older bundle to nobody. **The game is offline for real players**, and
-> the fix is at the PROVIDER: the instance needs restarting from the
-> OVH control panel, or it needs to self-recover. There are no OVH API
-> credentials on this box, so the agent cannot restart it.
+> **What it looked like.** The OVH VPS-1 LocalZone Dallas
+> (`40.160.225.81`, alias `bb-prod`) answered nothing: no ping, **"No
+> route to host"** from every path, and ports 22/80/443/27015/27017
+> all dead. The last successful deploy before the outage was
+> **2026-10-28 20:43 UTC** (`e91ec43`, PR #86).
 >
-> **When it comes back, re-run the deploy** (`gh run rerun <id> --repo
-> klampatech/specialists-browser`); a watcher was armed to do exactly
-> that, poll the host, and re-run the failed workflow.
+> **It was NOT a deploy failure, and NOT the merge.** The deploys
+> failed at their FIRST step (`Set up SSH` → `ssh: connect to host … port
+> 22: Connection timed out`), so nothing was half-deployed — prod was
+> serving an older bundle to nobody. **Two independent networks said
+> the same thing**: this host AND the GitHub Actions runner (a
+> different IP range, a different provider). A merge cannot take a host
+> off the network. **"No route to host" means the instance is STOPPED
+> at the provider** — as opposed to "connection refused" (host up, port
+> closed) or a timeout (packets dropped by ufw / fail2ban).
+>
+> **How it was fixed.** Kyle started the instance in the OVH panel
+> (12:41 CDT). A watcher armed on m5 was polling the host every 60
+> seconds; it noticed within the minute, re-ran the failed deploy
+> workflow, and **the deploy went green including the browser gate**
+> (`Deploy to production` + `Verify in a real browser`, both success).
+> All four containers came back with the instance — `bridge` (healthy),
+> `orchestrator`, `registry`, `ts-0` (healthy) — and the fleet answered
+> `bulletballet TS | ts_casa | DM | 17 players (0 humans, 15 bots) |
+> tick 100 | stale=false | responsive=true`.
+>
+> **What shipped with that deploy, verified from the SERVED bundle**
+> (not from the repo): the production chunk carries `TSBUY`,
+> `ts_buy_key`, `ts_buy_hide`, `ts_buy_state` (the buy menu) *and*
+> `nocap`, `sustainableFps` (the frame cap) — both features live in one
+> bundle, from one deploy.
+>
+> **THE GAP THAT COST TIME, and the fix.** There was **no OVH
+> credential on this box** — the browser vault was empty, the OVH API
+> keys had never been persisted, and the console password had been
+> deleted on 2026-10-23 (it was inert once password auth was off). So
+> the agent could not start a stopped instance. **A provider credential
+> has to live somewhere that does not get pruned**: the Hermes vault
+> (`hermes vault add <url>` — Desktop → Settings → Passwords & Logins)
+> for the console login, and `~/.config/ovh/ovh.conf` (mode 600) for
+> the API keys. The API path is the one that needs no human: the
+> `specialists-prod-ops` skill ships `scripts/ovhctl.py`, which signs
+> the requests, never prints the credentials, and can
+> `start`/`stop`/`reboot` the instance on demand.
+>
+> **The reusable pattern: arm a watcher.** The box coming back is the
+> only trigger for the deploy to run again, so poll the host and re-run
+> the failed workflow yourself. Check the TCP port (`/dev/tcp`), not
+> SSH — an SSH probe waits on the key exchange and times out slowly.
 >
 > **The merge order that shipped on 2026-10-29** (all five PRs, in
 > this order, and the order was not optional):
