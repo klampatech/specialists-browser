@@ -168,19 +168,45 @@ async function withEnv(fn) {
 }
 
 /**
- * Run the measurement window, pumping ticks until it closes.
+ * How many display ticks a measurement window contains.
  *
- * `applyFrameCap` waits on a real timer, so the ticks have to come
- * from somewhere: a real interval, pumping the fake queue for as
- * long as the window is open.
+ * With the gate engaged, the engine is skipped on every OTHER tick, so
+ * the intervals the pacer measures ALTERNATE between a long one and a
+ * short one -- and the MEDIAN of an alternating sequence depends on the
+ * PARITY of the sample count.
+ *
+ * Measured, not reasoned: with an ODD number of samples the median is
+ * the short interval, the pacer reads a 60 Hz display and keeps
+ * capping; with an EVEN number it is the average of the two, the
+ * pacer reads 30 Hz against an engine that sustains 50 fps, and it
+ * takes the cap off.
+ *
+ * 41 ticks is 40 samples: even. That is the parity the "the reported
+ * state cannot disagree with the gate" test needs -- it asserts that
+ * the pacer decides NOT to cap, which is what an even sample count
+ * produces.
+ */
+const TICKS_PER_WINDOW = 41;
+
+/**
+ * Run the measurement window, pumping a FIXED number of ticks.
+ *
+ * The ticks are pumped SYNCHRONOUSLY, straight after the window opens,
+ * so the pacer sees a known number of samples no matter how fast the
+ * machine running the test is.
+ *
+ * They used to come from a `setInterval` racing the wall clock, and
+ * the count it produced -- and therefore the parity above -- was
+ * whatever happened to fit in the window. That is what made this file
+ * FLAKY: the same commit passed on one runner and failed on another,
+ * because the decision the test asserts depends on that parity.
  */
 async function measure(env, mod, opts) {
-  const pump = setInterval(() => env.tick(), 1);
-  try {
-    return await mod.applyFrameCap(opts);
-  } finally {
-    clearInterval(pump);
-  }
+  // `applyFrameCap` resets its counters before its first await, so the
+  // window is already open by the time this returns.
+  const pending = mod.applyFrameCap(opts);
+  for (let i = 0; i < TICKS_PER_WINDOW; i++) env.tick();
+  return await pending;
 }
 
 test('the gate COALESCES: a held callback runs on the next tick, not dropped', async () => {
