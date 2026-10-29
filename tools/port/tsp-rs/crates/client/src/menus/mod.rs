@@ -408,6 +408,9 @@ pub fn vid_init(_first: bool) {
         s.team_number = 0;
     });
     crate::voice::stop_squelch_mode();
+    // The map change resets the menu (a new `BuyMenu`), so the DOM menu has to hear that too:
+    // it renders what the port last printed.
+    print_buy_state();
 }
 
 /// `FUN_10036560`: write the nine configs. Written to a temporary file and renamed, so a
@@ -497,15 +500,50 @@ pub fn buy_key(key: i32) {
     }
 }
 
+/// Closes the buy menu and tells the DOM menu about it.
+///
+/// The DOM menu renders what the port last printed, so a close that does not print leaves it
+/// showing a menu that is no longer open (the intermission and the map change both close it).
+fn close_buy() {
+    with(|m| m.buy.close());
+    print_buy_state();
+}
+
 /// The buy menu's state, as the `TSBUY` records the browser's DOM menu reads: one record per
 /// line, `TSBUY end` closing the set. The engine's stdout is what the frontend already reads.
 fn print_buy_state() {
     let r = rules();
     let lines = with(|m| m.buy.state_lines(&r));
-    let e = engine();
     for line in lines {
-        e.print(&format!("{line}\n"));
+        print_state_line(&line);
     }
+}
+
+/// Where one state record goes: the engine's stdout, which the browser reads.
+///
+/// The tests have no engine, so they collect the records here instead.
+fn print_state_line(line: &str) {
+    #[cfg(test)]
+    TOLD.with(|t| t.borrow_mut().push(line.to_owned()));
+    #[cfg(not(test))]
+    engine().print(&format!("{line}\n"));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The state records the port told the DOM menu, for the tests to read.
+    static TOLD: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+/// The state records the port told the DOM menu since the last [`forget_told_state`].
+fn told_state() -> Vec<String> {
+    TOLD.with(|t| t.borrow().clone())
+}
+
+#[cfg(test)]
+fn forget_told_state() {
+    TOLD.with(|t| t.borrow_mut().clear());
 }
 
 // ---- engine data for the VGUI menus ----------------------------------------------------------
@@ -828,10 +866,10 @@ pub fn scores_visible() -> bool {
 /// (`HideAllVGUIMenus` `0x100641e0`) and shows the scoreboard; leaving hides it.
 pub fn intermission(on: bool) {
     if on {
-        with(|m| {
-            m.buy.close();
-            m.queue.clear();
-        });
+        with(|m| m.queue.clear());
+        // The intermission closes the menu, and the DOM menu has to hear it: it renders what
+        // the port last printed.
+        close_buy();
     }
     show_scores(on);
 }
@@ -1329,8 +1367,7 @@ pub fn draw_buy_menu(dc: &Dc) {
         draw_versions(dc, &version_lines(crate::gameplay::hud_rules(gameplay).ruleset_name(), server));
     }
     if buy_open() && !hud::dead_or_observer() && with(|m| m.buy.page != page::TEAM) {
-        with(|m| m.buy.close());
-        print_buy_state();
+        close_buy();
     }
 }
 
@@ -1367,6 +1404,38 @@ mod tests {
         );
         assert_eq!(local_team_of("jointeam 1 "), None);
         assert_eq!(local_team_of("jointeam 01"), None);
+    }
+
+    /// The DOM menu renders what the port last printed, so a close that does not print leaves
+    /// it showing a menu that is no longer open.
+    ///
+    /// The intermission and the map change both close the menu without the player asking, and
+    /// the DOM's `open` flag has to follow.
+    #[test]
+    fn closing_the_menu_tells_the_dom_menu() {
+        ts30_gameplay::tables::make_default();
+        forget_told_state();
+        // The rules are built here rather than by `rules()`: that one borrows the HUD, and the
+        // HUD is a RefCell the tests share.
+        let r = buy::Rules { restriction: 0x1f, ..buy::Rules::default() };
+        with(|m| {
+            m.buy = buy::BuyMenu { active: true, ..buy::BuyMenu::default() };
+            m.buy.close();
+        });
+        // The close itself does not print: the caller decides when the DOM is told.
+        assert!(told_state().is_empty(), "the close is the caller's business");
+        // The state the DOM would be told: the menu is closed.
+        let lines = with(|m| m.buy.state_lines(&r));
+        assert!(lines[0].contains("open=0"), "the state says the menu is closed: {lines:?}");
+        // And printing it reaches the DOM.
+        for line in lines {
+            print_state_line(&line);
+        }
+        assert!(
+            told_state().iter().any(|l| l.contains("open=0")),
+            "the DOM menu is told the menu is closed: {:?}",
+            told_state()
+        );
     }
 
     /// `FUN_10036480`: a missing `tsbuylist.tsa` is created empty, an existing one is read, and
