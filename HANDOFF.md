@@ -1606,6 +1606,56 @@ the parts that are known traps.
 
 # § NEXT TASK
 
+> ## THE AUTOBAN THAT KICKS EVERYONE (2026-10-29)
+>
+> **The engine's IP filters are unusable behind the bridge.** Every
+> browser player reaches the game server as the SAME address —
+> `172.17.0.1`, the docker gateway, because the WebSocket bridge NATs
+> the browser's UDP through it. The TS log shows it plainly:
+> `"CIPlayer<23><14><>" connected, address "172.17.0.1:41159"`.
+>
+> So when the engine bans an "IP", it bans **every player on the
+> server**. Here is the chain, from the engine's own source
+> (FWGS/xash3d-fwgs, `engine/server/sv_main.c`):
+>
+> ```
+> static CVAR_DEFINE_AUTO( sv_connect_timeout, "60", ... );
+> static CVAR_DEFINE_AUTO( sv_connect_timeout_ban, "1", ... );
+> static CVAR_DEFINE_AUTO( sv_connect_timeout_ban_time, "2", ... );
+>
+> static void SV_DropTimedOutClient( sv_client_t *cl, qboolean ban )
+> {
+>     SV_BroadcastPrintf( NULL, "%s timed out\n", cl->name );
+>     ...
+>     if( ban )
+>         Cbuf_AddTextf( "addip %g %s\n", sv_connect_timeout_ban_time.value, ... );
+> }
+> ```
+>
+> A client that has not finished connecting within `sv_connect_timeout`
+> is dropped **and** `addip`-ed. `addip` is the engine's IP filter
+> (`engine/server/sv_filter.c`), and its handler kicks every connected
+> client whose address matches — with the message
+> **"The server operator has added you to banned list"**. One stalled
+> handshake therefore kicks the whole server.
+>
+> **What it looked like:** the buy menu's last state dump, then
+> `"CIPlayer timed out"` (the engine broadcasts it to every client),
+> then the ban message. The player's own connection was fine; the
+> punishment was aimed at the shared address.
+>
+> **The fix** (`tools/deploy/config/server.cfg`):
+> `sv_connect_timeout_ban 0` and `sv_connect_timeout 180`. The autoban
+> is for a dedicated server whose slots are being held open by a
+> stalling client — here it punishes the wrong people, and a browser
+> reconnect re-unpacks the 517 MB archive and re-boots the engine before
+> it can finish the handshake, so 60 s is not always enough.
+> `sv_timeout` (65 s) is left alone: that one drops a silent client
+> without banning anyone.
+>
+> **The lesson: behind a NAT-ing bridge, an IP filter is a server-wide
+> switch.** Nothing in this deployment may use one.
+
 > ## PRODUCTION IS DOWN — the OVH box is off the network
 >
 > **As of 2026-10-29 ~11:20 CDT, `bulletballet.dev` is unreachable.** The
