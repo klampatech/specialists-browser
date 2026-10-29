@@ -1,0 +1,125 @@
+{
+  "renderer": "ANGLE (AMD, Vulkan 1.4.305 (AMD Radeon Graphics (RADV RENOIR) (0x0000164C)), radv)",
+  "records": [
+    {
+      "label": "1. at boot (1280x800)",
+      "backing": [
+        1280,
+        800
+      ],
+      "css": [
+        1280,
+        800
+      ],
+      "drawing": [
+        1280,
+        800
+      ],
+      "viewportPx": [
+        1280,
+        800
+      ],
+      "screen": [
+        1280,
+        800
+      ],
+      "fullscreen": false,
+      "vidWidth": 1280,
+      "vidHeight": 800,
+      "rafPerSec": 60.040772997428256,
+      "frameMed": 16.665000000000873,
+      "frameP99": 16.67000000000553,
+      "slowFraction": 0
+    },
+    {
+      "label": "2. after resize to 2560x1440",
+      "backing": [
+        1280,
+        800
+      ],
+      "css": [
+        2560,
+        1440
+      ],
+      "drawing": [
+        1280,
+        800
+      ],
+      "viewportPx": [
+        2560,
+        1440
+      ],
+      "screen": [
+        2560,
+        1440
+      ],
+      "fullscreen": false,
+      "vidWidth": 1280,
+      "vidHeight": 800,
+      "rafPerSec": 51.267665579971286,
+      "frameMed": 16.665000000000873,
+      "frameP99": 50,
+      "slowFraction": 0.14826498422712933
+    },
+    {
+      "label": "3. after resize back",
+      "backing": [
+        1280,
+        800
+      ],
+      "css": [
+        1280,
+        800
+      ],
+      "drawing": [
+        1280,
+        800
+      ],
+      "viewportPx": [
+        1280,
+        800
+      ],
+      "screen": [
+        1280,
+        800
+      ],
+      "fullscreen": false,
+      "vidWidth": 1280,
+      "vidHeight": 800,
+      "rafPerSec": 59.39255420310904,
+      "frameMed": 16.665000000000873,
+      "frameP99": 33.32999999999447,
+      "slowFraction": 0.010869565217391304
+    },
+    {
+      "label": "4. after fullscreen (granted)",
+      "backing": [
+        1280,
+        800
+      ],
+      "css": [
+        1280,
+        800
+      ],
+      "drawing": [
+        1280,
+        800
+      ],
+      "viewportPx": [
+        1280,
+        800
+      ],
+      "screen": [
+        1280,
+        800
+      ],
+      "fullscreen": true,
+      "vidWidth": 1280,
+      "vidHeight": 800,
+      "rafPerSec": 59.6653913391212,
+      "frameMed": 16.66500000000815,
+      "frameP99": 16.670000000012806,
+      "slowFraction": 0.005405405405405406
+    }
+  ]
+}

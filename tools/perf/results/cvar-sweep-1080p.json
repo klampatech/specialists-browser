@@ -1,0 +1,93 @@
+{
+  "renderer": "ANGLE (AMD, Vulkan 1.4.305 (AMD Radeon Graphics (RADV RENOIR) (0x0000164C)), radv)",
+  "viewport": "1920x1080",
+  "warmupS": 25,
+  "settled": [
+    {
+      "raf": 44.64414728251794,
+      "frameMs": 22.39935267823083,
+      "lagMed": 42.77999997138977,
+      "lagP95": 55.77999997138977
+    },
+    {
+      "raf": 52.32721284772726,
+      "frameMs": 19.110515266884374,
+      "lagMed": 18.230000019073486,
+      "lagP95": 50.97499990463257
+    },
+    {
+      "raf": 58.746364568476686,
+      "frameMs": 17.022329932167416,
+      "lagMed": 17.054999828338623,
+      "lagP95": 36.825000047683716
+    }
+  ],
+  "rows": [
+    {
+      "label": "r_lockpvs",
+      "offRaf": 55.88,
+      "onRaf": 50.15,
+      "dRaf": -5.73,
+      "offLag": 26.2,
+      "onLag": 38.3,
+      "dLag": 12.2,
+      "offFrameMs": 17.99,
+      "onFrameMs": 19.94
+    },
+    {
+      "label": "r_drawviewmodel",
+      "offRaf": 51.51,
+      "onRaf": 50.89,
+      "dRaf": -0.61,
+      "offLag": 34.9,
+      "onLag": 36.8,
+      "dLag": 1.8,
+      "offFrameMs": 19.43,
+      "onFrameMs": 19.65
+    },
+    {
+      "label": "hud_scale 1.0",
+      "offRaf": 58.98,
+      "onRaf": 58.13,
+      "dRaf": -0.86,
+      "offLag": 14.3,
+      "onLag": 18.1,
+      "dLag": 3.7,
+      "offFrameMs": 16.95,
+      "onFrameMs": 17.2
+    },
+    {
+      "label": "gl_vsync 0",
+      "offRaf": 59.13,
+      "onRaf": 53.77,
+      "dRaf": -5.36,
+      "offLag": 15.4,
+      "onLag": 26.4,
+      "dLag": 11,
+      "offFrameMs": 16.91,
+      "onFrameMs": 18.6
+    },
+    {
+      "label": "fps_max 0",
+      "offRaf": 59.64,
+      "onRaf": 59.32,
+      "dRaf": -0.33,
+      "offLag": 14.2,
+      "onLag": 13.2,
+      "dLag": -1,
+      "offFrameMs": 16.77,
+      "onFrameMs": 16.86
+    },
+    {
+      "label": "r_novis 1",
+      "offRaf": 59.15,
+      "onRaf": 60.13,
+      "dRaf": 0.99,
+      "offLag": 8.6,
+      "onLag": 16.3,
+      "dLag": 7.6,
+      "offFrameMs": 16.91,
+      "onFrameMs": 16.63
+    }
+  ]
+}

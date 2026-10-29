@@ -1,0 +1,154 @@
+{
+  "records": [
+    {
+      "label": "base",
+      "desynchronized": false,
+      "pacingState": {
+        "capFps": 0,
+        "displayHz": 59.934072725768964,
+        "engineWorkMs": 7.465249983469645,
+        "sustainableFps": 113,
+        "active": false,
+        "everyNth": 1,
+        "reason": "the engine sustains 113 fps against a 60 Hz display; not capping"
+      },
+      "pacingLog": [
+        "[frame-pacing] the engine sustains 113 fps against a 60 Hz display; not capping"
+      ],
+      "frames": 600,
+      "fps": 60.00176299026037,
+      "med": 16.65000009536743,
+      "p90": 17.19000005722046,
+      "p99": 17.950000047683716,
+      "max": 29.40499997138977,
+      "distinctBuckets": 36,
+      "evenness": 0.1001669449081803,
+      "topBuckets": [
+        "16.5ms x60",
+        "16.6ms x59",
+        "16.7ms x56",
+        "16.9ms x55"
+      ]
+    },
+    {
+      "label": "desync",
+      "desynchronized": true,
+      "pacingState": {
+        "capFps": 0,
+        "displayHz": 0,
+        "engineWorkMs": 0,
+        "sustainableFps": 0,
+        "active": false,
+        "everyNth": 1,
+        "reason": "not measured yet"
+      },
+      "pacingLog": [
+        "[frame-pacing] the engine sustains 97 fps against a 60 Hz display; not capping"
+      ],
+      "frames": 600,
+      "fps": 60.00389674756175,
+      "med": 16.674999952316284,
+      "p90": 17.144999980926514,
+      "p99": 17.865000009536743,
+      "max": 31.460000038146973,
+      "distinctBuckets": 36,
+      "evenness": 0.1285475792988314,
+      "topBuckets": [
+        "16.7ms x77",
+        "16.8ms x76",
+        "16.6ms x60",
+        "16.5ms x57"
+      ]
+    },
+    {
+      "label": "both",
+      "desynchronized": true,
+      "pacingState": {
+        "capFps": 30.00300036870829,
+        "displayHz": 60.00600073741658,
+        "engineWorkMs": 8.285000005044228,
+        "sustainableFps": 102,
+        "active": true,
+        "everyNth": 2,
+        "reason": "display 60 Hz, engine sustains 102 fps -> cap 60 fps (divides the display rate evenly); the engine runs 1 frame in 2 (effective 30.0 fps, budget 33.33 ms)"
+      },
+      "pacingLog": [
+        "[frame-pacing] the engine sustains 112 fps against a 60 Hz display; not capping"
+      ],
+      "frames": 300,
+      "fps": 30.00297019350381,
+      "med": 33.33999991416931,
+      "p90": 34.015000104904175,
+      "p99": 38.19999980926514,
+      "max": 42.8050000667572,
+      "distinctBuckets": 36,
+      "evenness": 0.08695652173913043,
+      "topBuckets": [
+        "33.7ms x26",
+        "33.3ms x24",
+        "33.6ms x22",
+        "33.2ms x21"
+      ]
+    },
+    {
+      "label": "base again",
+      "desynchronized": false,
+      "pacingState": {
+        "capFps": 0,
+        "displayHz": 0,
+        "engineWorkMs": 0,
+        "sustainableFps": 0,
+        "active": false,
+        "everyNth": 1,
+        "reason": "not measured yet"
+      },
+      "pacingLog": [
+        "[frame-pacing] the engine sustains 112 fps against a 60 Hz display; not capping"
+      ],
+      "frames": 601,
+      "fps": 59.998350044801576,
+      "med": 16.670000076293945,
+      "p90": 17.299999952316284,
+      "p99": 17.81499981880188,
+      "max": 25.705000162124634,
+      "distinctBuckets": 35,
+      "evenness": 0.09,
+      "topBuckets": [
+        "16.8ms x54",
+        "16.5ms x52",
+        "16.6ms x52",
+        "16.7ms x51"
+      ]
+    },
+    {
+      "label": "desync again",
+      "desynchronized": true,
+      "pacingState": {
+        "capFps": 0,
+        "displayHz": 60.042028664225825,
+        "engineWorkMs": 8.079669426295382,
+        "sustainableFps": 105,
+        "active": false,
+        "everyNth": 1,
+        "reason": "the engine sustains 105 fps against a 60 Hz display; not capping"
+      },
+      "pacingLog": [
+        "[frame-pacing] the engine sustains 105 fps against a 60 Hz display; not capping"
+      ],
+      "frames": 600,
+      "fps": 60.000530890193176,
+      "med": 16.65499997138977,
+      "p90": 17.194999933242798,
+      "p99": 17.74500012397766,
+      "max": 26.47000002861023,
+      "distinctBuckets": 27,
+      "evenness": 0.12520868113522537,
+      "topBuckets": [
+        "16.7ms x75",
+        "16.6ms x65",
+        "16.5ms x55",
+        "16.8ms x51"
+      ]
+    }
+  ]
+}

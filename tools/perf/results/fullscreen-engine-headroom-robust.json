@@ -1,0 +1,78 @@
+{
+  "baseWork": 7.836990595611286,
+  "records": [
+    {
+      "label": "A: baseline (shipped)",
+      "engineFps": 124,
+      "workMs": 8.064516129032258,
+      "stalls": 0,
+      "windows": [
+        124,
+        122,
+        115,
+        104
+      ]
+    },
+    {
+      "label": "B: hud_scale 1.0",
+      "engineFps": 98.4,
+      "workMs": 10.16260162601626,
+      "stalls": 0,
+      "windows": [
+        98,
+        74,
+        68,
+        69
+      ]
+    },
+    {
+      "label": "A: hud_scale 2.5 (restored)",
+      "engineFps": 127.6,
+      "workMs": 7.836990595611286,
+      "stalls": 0,
+      "windows": [
+        100,
+        128,
+        119,
+        113
+      ]
+    },
+    {
+      "label": "B: hud_scale 1.0 (again)",
+      "engineFps": 108.4,
+      "workMs": 9.22509225092251,
+      "stalls": 0,
+      "windows": [
+        99,
+        108,
+        101,
+        88
+      ]
+    },
+    {
+      "label": "r_drawviewmodel 0",
+      "engineFps": 81.6,
+      "workMs": 12.254901960784315,
+      "stalls": 0,
+      "windows": [
+        79,
+        81,
+        82,
+        80
+      ]
+    },
+    {
+      "label": "A: baseline (end)",
+      "engineFps": 81.6,
+      "workMs": 12.254901960784315,
+      "stalls": 0,
+      "windows": [
+        70,
+        66,
+        71,
+        82
+      ]
+    }
+  ],
+  "best": "A: hud_scale 2.5 (restored)"
+}

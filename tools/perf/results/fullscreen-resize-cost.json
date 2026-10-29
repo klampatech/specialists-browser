@@ -1,0 +1,245 @@
+{
+  "renderer": "ANGLE (AMD, Vulkan 1.4.305 (AMD Radeon Graphics (RADV RENOIR) (0x0000164C)), radv)",
+  "records": [
+    {
+      "label": "A. 1280x800 window",
+      "backing": [
+        1280,
+        800
+      ],
+      "css": [
+        1280,
+        800
+      ],
+      "drawing": [
+        1280,
+        800
+      ],
+      "viewportPx": [
+        1280,
+        800
+      ],
+      "screen": [
+        1280,
+        800
+      ],
+      "scale": 1,
+      "rafPerSec": 59.8121800814155,
+      "frameMed": 16.665000000000873,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.67000000000553,
+      "frameMax": 33.32999999999811,
+      "slowFraction": 0.002702702702702703
+    },
+    {
+      "label": "B1. +4s after the resize",
+      "backing": [
+        1280,
+        800
+      ],
+      "css": [
+        2560,
+        1440
+      ],
+      "drawing": [
+        1280,
+        800
+      ],
+      "viewportPx": [
+        2560,
+        1440
+      ],
+      "screen": [
+        2560,
+        1440
+      ],
+      "scale": 2,
+      "rafPerSec": 56.43577447610861,
+      "frameMed": 16.665000000000873,
+      "frameP90": 16.669999999998254,
+      "frameP99": 33.33499999999913,
+      "frameMax": 233.32500000000437,
+      "slowFraction": 0.02005730659025788
+    },
+    {
+      "label": "B2. +16s after the resize",
+      "backing": [
+        1280,
+        800
+      ],
+      "css": [
+        2560,
+        1440
+      ],
+      "drawing": [
+        1280,
+        800
+      ],
+      "viewportPx": [
+        2560,
+        1440
+      ],
+      "screen": [
+        2560,
+        1440
+      ],
+      "scale": 2,
+      "rafPerSec": 59.99361358454654,
+      "frameMed": 16.665000000000873,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.67000000000553,
+      "frameMax": 16.67000000000553,
+      "slowFraction": 0
+    },
+    {
+      "label": "B3. +28s after the resize",
+      "backing": [
+        1280,
+        800
+      ],
+      "css": [
+        2560,
+        1440
+      ],
+      "drawing": [
+        1280,
+        800
+      ],
+      "viewportPx": [
+        2560,
+        1440
+      ],
+      "screen": [
+        2560,
+        1440
+      ],
+      "scale": 2,
+      "rafPerSec": 59.98374633905581,
+      "frameMed": 16.665000000000873,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.67000000000553,
+      "frameMax": 16.67000000000553,
+      "slowFraction": 0
+    },
+    {
+      "label": "C1. native engine",
+      "backing": [
+        2560,
+        1440
+      ],
+      "css": [
+        2560,
+        1440
+      ],
+      "drawing": [
+        2560,
+        1440
+      ],
+      "viewportPx": [
+        2560,
+        1440
+      ],
+      "screen": [
+        2560,
+        1440
+      ],
+      "scale": 1,
+      "rafPerSec": 59.58563825121647,
+      "frameMed": 16.66500000000815,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.670000000012806,
+      "frameMax": 33.33499999999185,
+      "slowFraction": 0.005420054200542005
+    },
+    {
+      "label": "C2. native engine, +8s",
+      "backing": [
+        2560,
+        1440
+      ],
+      "css": [
+        2560,
+        1440
+      ],
+      "drawing": [
+        2560,
+        1440
+      ],
+      "viewportPx": [
+        2560,
+        1440
+      ],
+      "screen": [
+        2560,
+        1440
+      ],
+      "scale": 1,
+      "rafPerSec": 59.64033653250478,
+      "frameMed": 16.66500000000815,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.670000000012806,
+      "frameMax": 33.33499999999185,
+      "slowFraction": 0.008130081300813009
+    },
+    {
+      "label": "D1. small engine again",
+      "backing": [
+        1280,
+        800
+      ],
+      "css": [
+        2560,
+        1440
+      ],
+      "drawing": [
+        1280,
+        800
+      ],
+      "viewportPx": [
+        2560,
+        1440
+      ],
+      "screen": [
+        2560,
+        1440
+      ],
+      "scale": 2,
+      "rafPerSec": 59.801545678881176,
+      "frameMed": 16.66500000000815,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.670000000012806,
+      "frameMax": 16.670000000012806,
+      "slowFraction": 0
+    },
+    {
+      "label": "E1. 1280x800 window again",
+      "backing": [
+        1280,
+        800
+      ],
+      "css": [
+        1280,
+        800
+      ],
+      "drawing": [
+        1280,
+        800
+      ],
+      "viewportPx": [
+        1280,
+        800
+      ],
+      "screen": [
+        1280,
+        800
+      ],
+      "scale": 1,
+      "rafPerSec": 59.693711726582805,
+      "frameMed": 16.66500000000815,
+      "frameP90": 16.669999999998254,
+      "frameP99": 16.670000000012806,
+      "frameMax": 50,
+      "slowFraction": 0.002702702702702703
+    }
+  ]
+}

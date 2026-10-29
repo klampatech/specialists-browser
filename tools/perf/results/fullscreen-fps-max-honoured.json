@@ -1,0 +1,75 @@
+{
+  "verdict": "inert",
+  "records": [
+    {
+      "label": "fps_max 100",
+      "rafPerSec": 59.984666420861785,
+      "framesPerSec": 60,
+      "clears": 480,
+      "enginePctOfBrowser": 1.0002556249797345
+    },
+    {
+      "label": "fps_max 30",
+      "rafPerSec": 59.98931440194189,
+      "framesPerSec": 60,
+      "clears": 480,
+      "enginePctOfBrowser": 1.000178125023842
+    },
+    {
+      "label": "fps_max 15",
+      "rafPerSec": 59.98346705746434,
+      "framesPerSec": 60.125,
+      "clears": 481,
+      "enginePctOfBrowser": 1.0023595325425267
+    },
+    {
+      "label": "fps_max 5",
+      "rafPerSec": 60.052149235242005,
+      "framesPerSec": 60.125,
+      "clears": 481,
+      "enginePctOfBrowser": 1.0012131250202656
+    },
+    {
+      "label": "fps_max 100 (restored)",
+      "rafPerSec": 59.99100134944001,
+      "framesPerSec": 60,
+      "clears": 480,
+      "enginePctOfBrowser": 1.0001500000059604
+    },
+    {
+      "label": "fps_override 30",
+      "rafPerSec": 57.921082526093905,
+      "framesPerSec": 58.125,
+      "clears": 465,
+      "enginePctOfBrowser": 1.003520608818287
+    },
+    {
+      "label": "fps_override 5",
+      "rafPerSec": 59.63185438742861,
+      "framesPerSec": 59.75,
+      "clears": 478,
+      "enginePctOfBrowser": 1.0019812500178813
+    },
+    {
+      "label": "cl_maxframetime 30",
+      "rafPerSec": 54.23105302694773,
+      "framesPerSec": 54.375,
+      "clears": 435,
+      "enginePctOfBrowser": 1.0026543274566464
+    },
+    {
+      "label": "cl_maxframetime 5",
+      "rafPerSec": 53.44335004882083,
+      "framesPerSec": 53.625,
+      "clears": 429,
+      "enginePctOfBrowser": 1.0033989252360347
+    },
+    {
+      "label": "all restored",
+      "rafPerSec": 59.99358818511968,
+      "framesPerSec": 60,
+      "clears": 480,
+      "enginePctOfBrowser": 1.0001068750023843
+    }
+  ]
+}

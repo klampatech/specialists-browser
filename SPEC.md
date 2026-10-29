@@ -14,7 +14,7 @@ match. **D.7 webXash engine-port path** → then the **server-DLL WASM
 port**, which is what made a real dedicated server possible. The
 decompile + pump path is now the **single-player fallback**, not the
 production path.
-**Last updated:** 2026-10-23 (production live; control plane built)
+**Last updated:** 2026-10-29 (client frame pacing: the engine's tick source is capped)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 
@@ -66,6 +66,86 @@ the public URL.
 instances" capacity figure is still a budget, not a measurement); the FE
 tweaks and the bulletballet re-brand; single-player depth on the
 fallback path.
+
+## Client frame pacing — the engine's tick source (2026-10-29)
+
+**The problem.** The engine has **no frame limiter in the browser**. On a
+display faster than the engine can sustain, it misses deadlines, the
+browser drops ticks to catch up, and the surviving frames arrive
+**unevenly**. The engine's own FPS counter cannot see this: it counts the
+frames it drew, not the gaps between them — which is why the in-game
+number and the feel disagree.
+
+**Why the cvar cannot do it.** Upstream `engine/common/host.c` defines
+`fps_max` as an alias for `host_maxfps` — a **host** (server) frame
+limiter — and `Host_CalcFPS` reads it **only when vsync is off**. With
+vsync on, which is production's default, the engine's target is 200 fps
+and it renders on every tick the browser offers. Measured against
+production, counting the engine's own rendered frames against the
+browser's rAF rate in the same window: at `fps_max 5` the engine still
+rendered **60 fps**. **The cvar is inert**, and the earlier
+recommendation to change it was a placebo. `gl_vsync 0` does activate it,
+but it moves frames off the display's refresh grid — measured 19.5 ms
+median on a 60 Hz display, where the grid is 16.7 ms — which is judder in
+a different place.
+
+**The locked decisions:**
+
+1. **The cap is applied ABOVE the engine, at the tick source.**
+   Emscripten drives the engine's main loop from the global
+   `requestAnimationFrame`. `MainLoop` is not reachable from the page, but
+   the global rAF is, and replacing it puts a gate in front of the
+   engine's loop.
+2. **The gate COALESCES; it never DROPS.** The engine's loop is
+   self-rescheduling — `MainLoop.runner` asks for the next frame from
+   inside the frame it just ran — so dropping a callback does not skip a
+   frame, it **kills the loop**. Verified: forwarding every second
+   callback took the engine from 60.3 fps to **0.3 fps**. A skipped tick
+   therefore **holds** the engine's callback and runs it on the next one.
+3. **Only the engine is gated.** The app uses rAF for a loading spinner
+   and three one-shot key-binding calls, and those must not be delayed.
+   The gate learns which callback is the engine's — the one called most
+   often, once per frame — and gates only that one.
+4. **The cap is MEASURED, not assumed.** The shim times the engine's own
+   callback (which *is* its frame) and reads the display's cadence from
+   the tick intervals, then picks a rate from those. It does not hard-code
+   a refresh rate, and it does not engage at all on a display the engine
+   already keeps up with.
+5. **Even division is the evenness guarantee.** The chosen rate divides
+   the display rate evenly where possible. Capping a 144 Hz display to
+   60 fps holds each frame for 2.4 refreshes — an uneven 2s-and-3s
+   pattern, which is judder in a different place — while capping it to 72
+   holds each frame for exactly 2.
+6. **A canvas keeps the context its FIRST `getContext` created**, so
+   whoever asks first owns the attributes. The launcher pre-creates the
+   engine's context; the app's own resize watchdog must not create one
+   before the engine is armed, or the pre-creation is silently ignored.
+   `Module.webGLContextAttributes` does not reach the engine's context —
+   the generated glue never reads it.
+7. **`desynchronized` is a latency lever, not a frame-rate fix.**
+   Measured neutral for frame rate (the same 60.0 fps, the same 16.7 ms
+   median, the p99 marginally better). It is **off by default** behind
+   `?desync=1`, pending an input-latency A/B.
+8. **The policy lives in an import-free module.** `frame-pacing.ts` has
+   no imports, so the parent repo's unit suite tests the **real** file
+   rather than a copy of it.
+
+**What this costs the player.** The cap trades frame rate for even
+pacing. On a 144 Hz display the engine runs at 72 fps; on 120 Hz, at 60.
+On a 60 Hz display nothing is gated at all. A player needs a way to turn
+the cap off — see HANDOFF.md § NEXT TASK.
+
+**What is still missing.** The mechanism was established on a **60 Hz**
+test box, where the cap correctly *does not engage* — the engine keeps
+up. Confirming it on a 144 Hz+ display needs that display:
+`tools/perf/diagnose-fullscreen.js` is a player-runnable diagnostic for
+exactly that, and **that playtest has not been done.**
+
+**Where the evidence lives.** `docs/FULLSCREEN-PERFORMANCE.md` (the
+investigation), `docs/CLIENT-PERF-RESEARCH.md` (the earlier GPU
+research), `tools/perf/` (the harnesses) and `tools/perf/results/` (the
+raw JSON behind every number quoted, so the reports can be checked rather
+than taken on trust).
 
 ## Phase 1 D-step progress (Option D + webXash)
 

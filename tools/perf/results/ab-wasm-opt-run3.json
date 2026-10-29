@@ -1,0 +1,82 @@
+{
+ "results": [
+  {
+   "label": "Oz (production)",
+   "renderer": "ANGLE (AMD, Vulkan 1.4.305 (AMD Radeon Graphics (RADV RENOIR) (0x0000164C)), radv)",
+   "rafAvg": 56.93,
+   "rafMax": 59.57,
+   "frameMsAvg": 17.59,
+   "frameMsMin": 16.79,
+   "lagMedAvg": 20.94,
+   "lagMedMax": 32.83,
+   "windows": [
+    {
+     "raf": 59.57,
+     "frameMs": 16.79,
+     "lagMed": 16
+    },
+    {
+     "raf": 55.62,
+     "frameMs": 17.98,
+     "lagMed": 19.26
+    },
+    {
+     "raf": 56.26,
+     "frameMs": 17.77,
+     "lagMed": 19.81
+    },
+    {
+     "raf": 59.38,
+     "frameMs": 16.84,
+     "lagMed": 16.83
+    },
+    {
+     "raf": 53.83,
+     "frameMs": 18.58,
+     "lagMed": 32.83
+    }
+   ],
+   "errors": 0
+  },
+  {
+   "label": "O3",
+   "renderer": "ANGLE (AMD, Vulkan 1.4.305 (AMD Radeon Graphics (RADV RENOIR) (0x0000164C)), radv)",
+   "rafAvg": 58.93,
+   "rafMax": 60.06,
+   "frameMsAvg": 16.98,
+   "frameMsMin": 16.65,
+   "lagMedAvg": 11.18,
+   "lagMedMax": 17.08,
+   "windows": [
+    {
+     "raf": 56.97,
+     "frameMs": 17.55,
+     "lagMed": 17.08
+    },
+    {
+     "raf": 60.06,
+     "frameMs": 16.65,
+     "lagMed": 4.16
+    },
+    {
+     "raf": 59.98,
+     "frameMs": 16.67,
+     "lagMed": 10.21
+    },
+    {
+     "raf": 57.68,
+     "frameMs": 17.34,
+     "lagMed": 12.32
+    },
+    {
+     "raf": 59.98,
+     "frameMs": 16.67,
+     "lagMed": 12.1
+    }
+   ],
+   "errors": 0
+  }
+ ],
+ "_note": "Raw output of tools/perf/ab-wasm-opt-level.cjs. Order: Oz-then-O3. The build measured SECOND won 3 of 4 cycles across all four runs, so the effect is a position effect, not a build effect.",
+ "_order": "Oz-then-O3"
+}

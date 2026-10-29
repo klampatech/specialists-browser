@@ -1,0 +1,38 @@
+{
+  "capped": {
+    "label": "NORMAL (vsync-limited)",
+    "rafPerSec": 59.8896390923228,
+    "engineFramesPerSec": 60,
+    "frameMed": 16.665000000000873,
+    "frameP90": 16.669999999998254,
+    "frameMax": 16.67000000000553,
+    "distinctBuckets": 1,
+    "buckets": [
+      "16.7ms x599"
+    ],
+    "slowFraction": 0,
+    "workMs": 16.666666666666668
+  },
+  "uncapped": {
+    "label": "UNCAPPED (--disable-frame-rate-limit, --disable-gpu-vsync)",
+    "rafPerSec": 121.36613315547675,
+    "engineFramesPerSec": 121.7,
+    "frameMed": 8.12999999999738,
+    "frameP90": 9.529999999998836,
+    "frameMax": 26.31999999999971,
+    "distinctBuckets": 58,
+    "buckets": [
+      "8.3ms x70",
+      "8.0ms x63",
+      "8.2ms x63",
+      "8.1ms x60",
+      "7.8ms x56",
+      "7.6ms x55",
+      "7.9ms x55",
+      "8.4ms x55"
+    ],
+    "slowFraction": 0.00411522633744856,
+    "workMs": 8.216926869350862
+  },
+  "workMs": 8.216926869350862
+}
