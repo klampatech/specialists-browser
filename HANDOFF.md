@@ -24,6 +24,49 @@ were merged (the latter as `c12dba3`), then #82 (the deploy gate) and #83
 abandoned approaches' code) and #86 (the BB favicon, the turning dial,
 the top nav links gone). The game server image is `ts-server:0.27`.
 
+## The reconnect does not reload the page (2026-10-29)
+
+The CONNECTION LOST panel used to recover by **reloading the page**:
+re-unpack the 517 MB archive, re-boot the WASM engine, re-run the
+handshake. A minute of loading after a blip.
+
+It was also dangerous, and not because of the loading. The reload's
+handshake is far slower than any normal client, and the engine's
+connect timeout is 60 seconds — so `sv_connect_timeout_ban` (ON by
+default) fired, and because every browser player reaches the server as
+the SAME address (`172.17.0.1`, the docker gateway), that ban hit the
+**whole server**. **This was reproduced locally**: the local test
+server's own IP filter listed `127.0.0.1/32`, and the client could not
+get back in until it was lifted.
+
+The engine does not need a reload. It has a `retry` command — *"retry
+connection to last server"* — that re-runs the handshake against the
+address it already knows (`cls.servername`, set by the launch's
+`+connect`). The fast path is: put the transport back, tell the engine
+to `retry`, and wait for the engine's own banner.
+
+**The proof of life is the engine's word.** The banner (`Server #1
+"bulletballet TS" ...`) is printed the moment the game server answers
+the handshake — the same line the deploy's browser gate matches on. The
+page being alive, the WebSocket being open, the bridge counting a
+connection: none of those mean the player got in. `waitForServerBanner()`
+(new, `webxash/src/services/server-banner.ts`) attaches the listener
+BEFORE the reconnect is triggered, so the banner cannot be missed
+between the trigger and the wait.
+
+**The reload is still the fallback.** If the transport cannot be
+re-opened, the engine takes no `retry`, or the banner does not arrive
+inside 75 s, the old reload runs unchanged. The window is 75 s because
+the bridge says the game server *"will be back in about a minute"*
+while the orchestrator restarts it, and the engine's own retry keeps
+re-attempting the handshake.
+
+Measured in a browser against a local server: the transport dies → the
+panel appears with the reason in ~2 s → the countdown fires → the
+engine prints `Commencing connection retry to ...` → ~2 s later the
+banner arrives and the panel clears → **the URL never changed**, the
+buy-menu state flows again, and a keypress still reaches the engine.
+
 ## The buy menu is the game's own menu, rendered in the DOM (PR #88, 2026-10-29)
 
 **The old HUD buy menu was a placeholder armory**: hardcoded prices, cash
