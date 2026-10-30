@@ -218,24 +218,61 @@ async function bootPlayer(browser, label) {
   const browser = await chromium.launch({
     args: ['--enable-features=SharedArrayBuffer', '--no-sandbox'],
   });
-  const players = [];
-  for (let i = 1; i <= PLAYERS; i++) {
-    players.push(await bootPlayer(browser, `P${i}`));
-    // Stagger: if two clients hit the server at the same instant, a
-    // same-slot collision looks different from a serial collision.
-    await new Promise((r) => setTimeout(r, 8000));
-  }
 
-  console.log('\n  waiting 25s for the server to settle the connections...');
-  // Watch the bridge's live connection count while the players settle.
-  // The PEAK is what matters: it is the number of browsers connected at
-  // the same moment, which is exactly what "can two players be in the
-  // server together" means.
+  // HOW MANY TIMES TO TRY
+  // ----------------------
+  // A player has to download the whole 493 MiB archive before it can
+  // connect, and a download that dies is a NETWORK failure, not a
+  // broken game. It happened on the CI runner on 2026-10-30: the
+  // archive died at 78% with `net::ERR_CONNECTION_RESET`, the engine
+  // never booted, and the gate went red on a game that was working
+  // perfectly.
+  //
+  // The play-button test has always retried in that situation ("the
+  // server never answered the handshake — trying again"). This one
+  // did not, so the same transient network event failed the deploy
+  // with nothing to show for it. The verdict is the number of browsers
+  // connected AT THE SAME MOMENT, and a player that never got as far
+  // as opening a socket was never a candidate for it.
+  const ATTEMPTS = 2;
+
+  let players = [];
   let peakLive = 0;
-  for (let i = 0; i < 25; i++) {
-    await new Promise((r) => setTimeout(r, 1000));
-    const live = await bridgeLiveConnections();
-    if (live > peakLive) peakLive = live;
+
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    players = [];
+    for (let i = 1; i <= PLAYERS; i++) {
+      players.push(await bootPlayer(browser, `P${i}`));
+      // Stagger: if two clients hit the server at the same instant, a
+      // same-slot collision looks different from a serial collision.
+      await new Promise((r) => setTimeout(r, 8000));
+    }
+
+    console.log('\n  waiting 25s for the server to settle the connections...');
+    // Watch the bridge's live connection count while the players settle.
+    // The PEAK is what matters: it is the number of browsers connected at
+    // the same moment, which is exactly what "can two players be in the
+    // server together" means.
+    peakLive = 0;
+    for (let i = 0; i < 25; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const live = await bridgeLiveConnections();
+      if (live > peakLive) peakLive = live;
+    }
+
+    if (peakLive >= PLAYERS) break;
+
+    if (attempt < ATTEMPTS) {
+      console.log(
+        `\n  only ${peakLive} of ${PLAYERS} browser(s) connected — ` +
+          'a download or a handshake did not survive. Trying again.',
+      );
+      // Close the contexts so the next attempt starts from nothing: a
+      // half-downloaded archive in IndexedDB is worse than no archive.
+      for (const p of players) {
+        await p.ctx.close().catch(() => {});
+      }
+    }
   }
 
   for (const p of players) {

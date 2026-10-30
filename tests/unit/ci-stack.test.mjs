@@ -445,6 +445,32 @@ test('the registry compares the quota against the ENGINE, not against itself', (
   );
 });
 
+test('the two-player gate retries a dropped download', () => {
+  // A player has to download the whole 493 MiB archive before it can
+  // connect, and that download can die on a flaky connection. Measured
+  // 2026-10-30 on the CI runner: the archive died at 78% with
+  // `net::ERR_CONNECTION_RESET` and the gate went red on a game that
+  // was working perfectly.
+  //
+  // The play-button test has always retried in that situation; this one
+  // did not, so the same transient event failed the deploy with nothing
+  // to show for it.
+  const twoPlayer = readFileSync(
+    join(ROOT, 'tools', 'deploy', 'two-player-e2e.cjs'),
+    'utf8',
+  );
+  assert.match(
+    twoPlayer,
+    /const ATTEMPTS = 2;/,
+    'the two-player gate must retry',
+  );
+  assert.match(
+    twoPlayer,
+    /if \(peakLive >= PLAYERS\) break;/,
+    'the retry must stop once the players are connected',
+  );
+});
+
 test('the browser gate points at the CI hostname, not production', () => {
   // THE regression this whole change exists to prevent. The two e2e
   // invocations must not name the production hostname.
