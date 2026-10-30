@@ -16,6 +16,36 @@
 
 # § CURRENT STATE
 
+**As of:** 2026-10-30, `wt/t_3e01dfa4` — **the admin console's UI/UX design
+is written** (`docs/ADMIN-CONSOLE-UI.md`), for a single administrator
+driving the running TS fleet over RCON: server selection, dashboard status,
+map changes, a player list with kick and ban, a command output drawer, and
+a single-password login.
+
+**The design rests on four engine facts that are easy to get wrong, so they
+are recorded here rather than only in the document:**
+
+1. **RCON is a silent channel.** A wrong password, a missing
+   `rcon_password`, and a command that legitimately prints nothing are all
+   "no reply" (`engine/server/sv_client.c:1110`). The console therefore
+   confirms every action by **re-reading the server's state**, never by
+   trusting the reply, and uses an `echo <marker>` probe to tell "refused"
+   from "server down" from "worked but said nothing".
+2. **The fleet has no `rcon_password` today**
+   (`tools/deploy/config/server.cfg`), so every rcon attempt is currently a
+   silent no-op. The console must show that as its own state, not as a
+   generic failure.
+3. **A ban does not ban a person.** Every browser player on an instance
+   shares one uniqueid — the repo's own logs show `ID_7dea…` for two
+   different players (`HANDOFF.md:40`) — so `banid` removes **every** browser
+   player on that instance. The console states the live count before the
+   action. It also offers **no way to add an IP ban**, because every browser
+   player arrives from the same `172.17.0.1` and an IP ban would empty the
+   server — the failure the fleet already lived through on 2026-10-29.
+4. **`kick #N` wants the userid, `banid` wants the uniqueid**, and the
+   port's `ts_status` prints neither. The player list is built from the
+   engine's `status` command, which has both.
+
 **As of:** 2026-10-29, `main` — **the client now caps the tick rate the
 engine is offered**, and the character picker and the pre-join identity
 modal are LIVE in production. webXash #25 and specialists-browser #81
