@@ -24,6 +24,50 @@ were merged (the latter as `c12dba3`), then #82 (the deploy gate) and #83
 abandoned approaches' code) and #86 (the BB favicon, the turning dial,
 the top nav links gone). The game server image is `ts-server:0.27`.
 
+## The admin console is SPECIFIED, and the spec is measured (2026-10-30)
+
+`docs/ADMIN-CONSOLE.md` is the architecture and API for the single-user
+admin console (RCON to any running HL server: map changes, kicks, bans).
+It is a **spec, not a build** — the backend, the frontend and the auth
+are separate tasks.
+
+The spec was written against **measurements on the SHA-pinned engine**
+(`dd4ad840…`, the exact build `fetch-engine.sh` fetches) driven over
+RCON, not against how a GoldSrc server is supposed to behave. Three
+findings changed the design, and two of them contradicted what a
+source-reading pass concludes:
+
+| Finding | Measured result | What it changes |
+|---|---|---|
+| The roster source | The pinned engine's `status` prints `#      name userid uniqueid frag time ping loss adr` — **`userid` and `uniqueid` are right there** | No connect-log parsing, no userid inference, no "userid is unknown" state. `status2` is the old table and is useless for targeting. |
+| `banid #userid` | **`Error: banid: not supported`** on the pinned engine | A ban must use the unique ID. It also means the port's own team-kill ban (`scoring.rs:388`, `banid {m} #{uid} kick`) is **already broken in production** — worth reporting upstream. |
+| The map change | A plain **`changelevel`** over RCON works, and an **off-cycle** map is honoured (the port's cycle does not override it) | No `exec`-a-cfg, no bind mount, no Docker socket. The success reply is **empty** — a test must assert the map changed, not that the reply was non-empty. |
+
+Two safety facts, both measured, and both load-bearing:
+
+- **The engine logs the RCON password in cleartext on every command**
+  (`Rcon from 127.0.0.1:32909:` / `rcon <password> status`), into the
+  server's stdout *and* its `logs/` file. So the RCON password cannot be
+  anything but an RCON-scoped secret, and it is another reason the
+  console stays on the same box. The spec says so plainly rather than
+  leaving it to be discovered.
+- **Every browser player on an instance shares one uuid.** The WASM
+  client has no machine-id source (the `xash3d-fwgs` 1.2.2 `xash.wasm`
+  contains no `machine-id`/`cpuinfo`/`device/cid` strings), so the uuid
+  is constant per server — and the production log shows one authid
+  prefix (`ID_7dea…`) for every browser player. So `banid <uuid>` would
+  ban **everyone**. The spec's ban path refuses a uuid that matches more
+  than one connected player, and offers no IP bans at all (behind the
+  bridge every player is the same address — the § NEXT TASK autoban).
+
+Also worth knowing before anyone writes the client: **the RCON packet is
+raw bytes**, and a Node client that does `Buffer.from('\xff\xff\xff\xff' +
+cmd)` (UTF-8) silently sends `0xc3 0xbf` and gets **no reply at all** —
+identical in appearance to "the server is down". And the reply spans
+**many** datagrams (`status` is 12, `cvarlist` is 257), so a client that
+reads one packet returns a truncated roster. Both are in the spec with
+the reasoning, because both cost real debugging time.
+
 ## The CI browser gate was playing in production (2026-10-30)
 
 The deploy's "Verify in a real browser" job ran its two Playwright scripts
@@ -1833,6 +1877,47 @@ full TS gameplay. All of this is still wanted — it is just wanted on the
 the parts that are known traps.
 
 # § NEXT TASK
+
+> ## BUILD THE ADMIN CONSOLE (2026-10-30)
+>
+> **The design is done; the code is not.** `docs/ADMIN-CONSOLE.md`
+> specifies a single-user admin console that issues RCON commands to any
+> running HL server — map changes, kicks, bans — with one password and no
+> roles. It was written against **measurements on the pinned engine**,
+> not against how a GoldSrc server is supposed to behave, and the
+> measurements changed the design in three places (the roster source, the
+> ban target, and the map-change mechanism). Read the spec's §2, §6 and
+> §10 before writing any of it.
+>
+> **The next task is the backend**, in the order the spec lays out:
+> `services/admin/` as a `node:http` service shaped like
+> `services/registry` and `services/orchestrator` — plain `node:http`, no
+> framework, `node:test` for tests, joining the repo's existing suite.
+>
+> Three things to get right first, because all three fail *silently*:
+>
+> 1. **The RCON packet is raw bytes.** `Buffer.from('\xff\xff\xff\xff' +
+>    cmd)` (UTF-8) sends `0xc3 0xbf` and the server never sees the magic
+>    number — no reply, which looks exactly like the server being down.
+> 2. **The reply spans many datagrams** (`status` is 12, `cvarlist` is
+>    257). Read until the timeout, concatenate, then parse.
+> 3. **A wrong password and an unreachable server are the same
+>    observable** — zero reply packets. The error message has to name
+>    both possibilities rather than confidently claiming "unreachable".
+>
+> **The spec's §10 acceptance criteria are the work list.** AC-4 through
+> AC-12 are the ones that need writing; AC-1 through AC-3 are already
+> **measured** and recorded in the spec, and each names the fixture that
+> proves it. AC-8's map change asserts the **map changed**, not that the
+> reply was non-empty — a successful `changelevel` replies with nothing.
+>
+> **One decision is Kyle's, not the implementer's** (spec §11 item 2):
+> the engine writes the RCON password to the server's stdout and its
+> `logs/` file on every command. The spec's mitigation is to keep that
+> password scoped to RCON and nothing else, and to keep the console on
+> the same box. The alternative — a per-instance RCON password — needs a
+> per-instance config volume, which is a bigger change than the problem
+> deserves. Say so before building it if you disagree.
 
 > ## THE AUTOBAN THAT KICKS EVERYONE (2026-10-29)
 >
