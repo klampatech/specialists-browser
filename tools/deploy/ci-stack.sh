@@ -81,11 +81,15 @@ CI_REGISTRY_PORT="${CI_REGISTRY_PORT:-8082}"
 CI_BRIDGE_NAME="${CI_BRIDGE_NAME:-bridge-ci}"
 CI_BRIDGE_PORT="${CI_BRIDGE_PORT:-27018}"
 CI_PREFIX="${CI_PREFIX:-ts-ci}"
-CI_MAXPLAYERS="${CI_MAXPLAYERS:-8}"
+CI_MAXPLAYERS="${CI_MAXPLAYERS:-32}"
 CI_MAP="${CI_MAP:-ts_casa}"
 CI_HOSTNAME="${CI_HOSTNAME:-bulletballet TS CI}"
 CI_ASSETS="${CI_ASSETS:-/srv/ts-data}"
-CI_CONFIG="${CI_CONFIG:-/srv/ts-config}"
+# Production's config directory — the SOURCE the CI config is derived
+# from, never mounted into the CI container directly.
+CI_CONFIG_SRC="${CI_CONFIG_SRC:-/srv/ts-config}"
+# The CI container's own config directory. See make_ci_config().
+CI_CONFIG_DIR="${CI_CONFIG_DIR:-/srv/ts-ci-config}"
 CI_LEADERBOARD_DIR="${CI_LEADERBOARD_DIR:-/srv/ts-ci-leaderboard}"
 
 # The log rotation limits are the SAME ones the production containers use.
@@ -126,6 +130,42 @@ CI_BRIDGE_IMAGE="${CI_BRIDGE_IMAGE:-$(image_of bridge)}"
 CI_REGISTRY_IMAGE="${CI_REGISTRY_IMAGE:-$(image_of registry)}"
 CI_PUBLIC_ADDRESS="${CI_PUBLIC_ADDRESS:-$(public_address_of_prod)}"
 
+# ── the CI server's config ────────────────────────────────────────────
+#
+# It is DERIVED from production's, never a second copy in the repo: the
+# CI server plays the same maps with the same rules as production, and a
+# second server.cfg in the repo is a file that drifts from the first.
+#
+# The one difference is the bot quota, and it has to be in the CONFIG
+# rather than applied afterwards, because the quota only decides whether
+# NEW bots spawn. Setting it at runtime leaves the bots that are already
+# connected — and on a server with fewer slots than bots, that means the
+# browser client is refused with "server is full", which reads like a
+# broken client and is not one.
+#
+# Measured 2026-10-30: the CI server came up with 16 bots on 8 slots,
+# and the gate's handshake never completed — 6 packets up, 10 back, and
+# the server never registered the client. The engine's own log said the
+# quota was 16 while the registry believed it had applied 0.
+#
+# So: no bots at all, and as many slots as production, so nothing about
+# the server's shape differs from what the gate is supposed to be
+# verifying.
+make_ci_config() {
+  [ -f "$CI_CONFIG_SRC/server.cfg" ] || die "config volume missing: $CI_CONFIG_SRC"
+  sudo mkdir -p "$CI_CONFIG_DIR"
+  sudo cp "$CI_CONFIG_SRC/gameinfo.txt" "$CI_CONFIG_DIR/gameinfo.txt"
+  sudo cp "$CI_CONFIG_SRC/mapcycle.txt"  "$CI_CONFIG_DIR/mapcycle.txt"
+  sudo sed 's/^ts_bot_quota .*/ts_bot_quota 0/' "$CI_CONFIG_SRC/server.cfg" \
+    | sudo tee "$CI_CONFIG_DIR/server.cfg" >/dev/null
+  # The container reads the config as uid 10001 (gameserver), the same
+  # uid production's config is owned by.
+  sudo chown 10001:10001 "$CI_CONFIG_DIR"/*
+  sudo chmod 0644 "$CI_CONFIG_DIR"/*
+  grep -q "^ts_bot_quota 0$" "$CI_CONFIG_DIR/server.cfg" \
+    || die "the derived CI config does not zero the bot quota"
+}
+
 # ── the game server ───────────────────────────────────────────────────
 #
 # It mounts the SAME asset and config volumes as the fleet. The 961 MB
@@ -140,7 +180,7 @@ CI_PUBLIC_ADDRESS="${CI_PUBLIC_ADDRESS:-$(public_address_of_prod)}"
 start_game() {
   [ -n "$CI_GAME_IMAGE" ] || die "no game server image found — is ts-0 running?"
   [ -d "$CI_ASSETS/ts/maps" ] || die "asset volume missing: $CI_ASSETS"
-  [ -f "$CI_CONFIG/server.cfg" ] || die "config volume missing: $CI_CONFIG"
+  make_ci_config
 
   docker rm -f "$CI_GAME_NAME" >/dev/null 2>&1 || true
 
@@ -156,7 +196,7 @@ start_game() {
     -e TS_MAP="$CI_MAP" \
     -e TS_HOSTNAME="$CI_HOSTNAME" \
     -v "$CI_ASSETS:/srv/assets:ro" \
-    -v "$CI_CONFIG:/srv/config:ro" \
+    -v "$CI_CONFIG_DIR:/srv/config:ro" \
     "$CI_GAME_IMAGE" >/dev/null
 
   # Wait for the healthcheck rather than guessing at a sleep. It

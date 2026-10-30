@@ -639,7 +639,25 @@ function desiredBotQuota(instance) {
 
 async function applyBotQuota(instance, quota) {
   if (!USE_DOCKER) return false;
-  if (instance.botQuotaApplied === quota) return false;
+  // Compare against the ENGINE'S ACTUAL quota, not against what this
+  // registry believes it last wrote.
+  //
+  // Comparing against `botQuotaApplied` means the registry considers the
+  // job done the moment it has issued ONE write, and never writes
+  // again — so if the engine's quota is not what the registry thinks
+  // (a container restart resets it from server.cfg, the write landed on
+  // a server that was not the one being read, or the write raced the
+  // engine's own startup), the discrepancy is invisible AND permanent.
+  //
+  // Measured 2026-10-30, on the CI server: the registry reported
+  // botQuota 16 and botQuotaApplied 0, the engine's own log said the
+  // quota was 16, and the registry never wrote again. The bots stayed,
+  // the server filled up, and the browser client was refused with a
+  // handshake that never completed.
+  //
+  // `instance.botQuota` is the engine's own answer, read from the
+  // console moments earlier in this same tick.
+  if (instance.botQuota === quota) return false;
   await consoleWrite(instance.container, `ts_bot_quota ${quota}`);
   instance.botQuotaApplied = quota;
   instance.botQuotaChangedAt = Date.now();

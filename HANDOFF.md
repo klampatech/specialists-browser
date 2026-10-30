@@ -97,6 +97,65 @@ and the orchestrator's arithmetic on the suffix still works. The CI
 registry runs with the prefix `ts-ci`, so its instance is `ts-ci-0` rather
 than answering to the same name as the production one.
 
+### What the first real run of the gate found (two more bugs)
+
+The gate was run end to end against the CI environment before the PR was
+raised, and it failed twice — each time in a way that read like a broken
+build rather than a broken configuration.
+
+**1. The archive could not be fetched, because of CORS.** The CI page is
+a different origin from the production page, and the R2 bucket's CORS
+policy allowed only `https://bulletballet.dev`. A cross-origin `fetch()`
+cannot read a response without an `Access-Control-Allow-Origin` for its
+own origin, so the archive never arrived, the engine never booted, and
+the gate reported a server that "never answered the handshake". The
+client's cache-busting retry does not help: the origin was **unlisted**,
+not a stale cached variant. The bucket's policy is a Cloudflare dashboard
+setting — `docs/ASSET-DELIVERY.md` now carries the policy with the CI
+origin in it, and a test asserts the documented policy still lists it.
+
+**2. The CI server came up with 16 bots on 8 slots, so it was FULL.**
+The browser client was refused and the handshake never completed — 6
+packets up the bridge, 10 back, and the server never registered the
+client. Two things had to change:
+
+- **The CI server's config is DERIVED from production's, with the bot
+  quota zeroed.** Not applied afterwards: `ts_bot_quota` only decides
+  whether NEW bots spawn, so setting it at runtime leaves the bots that
+  are already connected. `ci-stack.sh` derives
+  `/srv/ts-ci-config/server.cfg` from `/srv/ts-config/server.cfg` with
+  `ts_bot_quota 0`, so it cannot drift from production's, and the CI
+  server has production's 32 slots.
+- **The registry now compares the quota against the ENGINE, not against
+  itself.** `applyBotQuota` skipped the write whenever
+  `botQuotaApplied` already equalled the wanted quota, so it considered
+  the job done after one write, forever. Measured on the CI server: the
+  registry reported `botQuota 16` and `botQuotaApplied 0`, the engine's
+  own log said the quota was 16, and the registry never wrote again — a
+  discrepancy that was invisible AND permanent. It now compares against
+  `instance.botQuota`, the engine's own answer, read from the console
+  moments earlier in the same tick.
+
+**The gate's verdict, once both were fixed** (run by hand against
+`https://ci.bulletballet.dev`, exactly as the deploy runs it):
+
+```
+the fleet: 1 server(s) after 0s
+fullscreen: supported=true element=HTML (PASS)
+the buy-menu key: "b" = "buy" (PASS)
+time to the server's handshake: 22s
+engine running: yes (canvas at the engine's size, heap 512MB), server banner: "Server #1"
+VERDICT: PASS — PLAY reaches the server
+
+bridge peak live connections: 2
+VERDICT: PASS — 2 browser(s) connected simultaneously, needed 2
+```
+
+And the isolation, from the two game servers' own logs: `CIPlayer`, `P1`
+and `P2` in the **CI** server's log at 14:46–14:48, the production
+server's last CI player at **00:58 UTC — before the fix** — and the
+public leaderboard with zero CI names on it.
+
 ## The game is browser-only: the game UDP port is closed to the world (2026-10-29)
 
 The container published its UDP straight out of Docker (`-p 27015:27015/udp`)

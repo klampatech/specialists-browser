@@ -382,6 +382,69 @@ test('the assets bucket\'s CORS policy lists the CI origin', () => {
   );
 });
 
+test('the CI server gets no bots', () => {
+  // The bot quota only decides whether NEW bots spawn, so it has to be
+  // in the CONFIG, not applied after the fact: setting it at runtime
+  // leaves the bots that are already connected.
+  //
+  // Measured 2026-10-30: the CI server came up with 16 bots on 8 slots,
+  // and the gate's handshake never completed — the server never
+  // registered the client. It reads like a broken client and is not
+  // one; the server was full.
+  assert.match(
+    ciStack,
+    /sed 's\/\^ts_bot_quota \.\*\/ts_bot_quota 0\/'/,
+    'the CI config must zero the bot quota, derived from production\'s',
+  );
+  assert.match(
+    ciStack,
+    /-v "\$CI_CONFIG_DIR:\/srv\/config:ro"/,
+    'the CI container must mount the DERIVED config, not production\'s',
+  );
+  assert.ok(
+    !ciStack.includes('-v "$CI_CONFIG_SRC:/srv/config:ro"'),
+    'production\'s config must never be mounted into the CI container — ' +
+      'the CI server would inherit the bot roster',
+  );
+});
+
+test('the CI server has as many slots as production', () => {
+  // Belt and braces. Even with the quota at zero, a CI server with
+  // fewer slots than production's is a different server shape from the
+  // one the gate is supposed to be verifying.
+  const prodSlots = Number(
+    (readFileSync(join(ROOT, 'tools', 'deploy', 'entrypoint.sh'), 'utf8')
+      .match(/TS_MAXPLAYERS:=(\d+)/) || [])[1],
+  );
+  assert.ok(prodSlots > 0, 'the entrypoint must set the slot count');
+  assert.equal(
+    shellDefault(ciStack, 'CI_MAXPLAYERS'),
+    prodSlots,
+    `the CI server must have production's ${prodSlots} slots`,
+  );
+});
+
+test('the registry compares the quota against the ENGINE, not against itself', () => {
+  // Comparing against what the registry last WROTE means it believes
+  // the job is done after one write, forever — so a quota the engine
+  // did not take is invisible and permanent.
+  const registry = readFileSync(
+    join(ROOT, 'services', 'registry', 'service.mjs'),
+    'utf8',
+  );
+  assert.match(
+    registry,
+    /if \(instance\.botQuota === quota\) return false;/,
+    'the registry must compare against the engine\'s actual quota',
+  );
+  assert.doesNotMatch(
+    registry,
+    /if \(instance\.botQuotaApplied === quota\) return false;/,
+    'comparing against what the registry believes it applied hides a ' +
+      'quota the engine never took',
+  );
+});
+
 test('the browser gate points at the CI hostname, not production', () => {
   // THE regression this whole change exists to prevent. The two e2e
   // invocations must not name the production hostname.
