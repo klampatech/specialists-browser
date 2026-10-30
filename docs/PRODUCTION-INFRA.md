@@ -353,14 +353,14 @@ server, not the wire: **24 of 26 slow samples had a perfectly healthy
   player is not represented.
 - **The tickrate was never stressed.** 100 Hz on 2 shared vCores at 17%
   says nothing about 100 Hz at 32 humans.
-- **The ~150 ms of event-loop lag in the browser is a CLIENT finding, and
-  it was not investigated further.** The main thread cannot service a
+- ~~**The ~150 ms of event-loop lag in the browser is a CLIENT finding, and
+  it was not investigated further.**~~ **ANSWERED 2026-10-27** — see "The
+  150 ms of client lag: ANSWERED" below. The main thread cannot service a
   callback for 150 ms while the engine runs, so the page is starved for
   anything that is not the simulation — and any measurement taken from
-  inside the page is inflated by it. Whether a player *feels* it (their
-  input, their HUD, their audio) is a separate question from whether the
-  network is slow, and it was not answered here. **This is the most
-  likely thing to actually hurt a player, and it is worth a look.**
+  inside the page is inflated by it. The answer is not what it looked
+  like: the 150 ms was never server latency, it was the engine's own
+  render frame time, and the render cap is the knob that bounds it.
 - **`sv_maxrate` is unset**, so the server's own bandwidth ceiling is the
   engine default. That default was not read out of the running server
   (the console pipe did not answer for it), so it is `UNVERIFIED`.
@@ -383,9 +383,11 @@ Mbit/s of traffic on it. The server answers a query in one 10 ms tick
 and the wire is 4–6 ms. The player's own browser is the slow part.
 
 **The two things to measure next, in order:**
-1. **Does a player feel the 150 ms?** (input lag, HUD lag, audio
+1. ~~**Does a player feel the 150 ms?** (input lag, HUD lag, audio
    underruns.) That is a client problem and it is the one with the
-   evidence behind it.
+   evidence behind it.~~ **ANSWERED 2026-10-27** — at 1920×1080 the
+   client loses 235.7 ms per frame to the engine's render; see "The 150
+   ms of client lag: ANSWERED" below.
 2. **Tickrate 100 at 32 humans** on the 2 vCores — the server-side
    unknown, and the only remaining capacity question.
 
@@ -406,10 +408,13 @@ and the wire is 4–6 ms. The player's own browser is the slow part.
    3×. It buys CPU headroom, not RAM — RAM still binds at 8 either way.
 5. **Container overhead is not included** in the 375 MB figure.
 
-**Bottom line: 8 is a defensible plan, not a promise.** Item 1 is the one that could
-move the number, and it is only answerable with real clients.
+**Bottom line: 8 is a defensible plan, not a promise.** Item 1 is **ANSWERED
+2026-10-27** — the client-side lag is the engine's own render frame time, not
+network latency (see "The 150 ms of client lag: ANSWERED" below). Item 2,
+tickrate 100 at 32 humans, is the one that could move the number, and it is
+only answerable with real clients.
 
-### The 150 ms of client lag: ANSWERED (2026-10-28)
+### The 150 ms of client lag: ANSWERED (2026-10-27)
 
 The 2026-10-27 capacity/latency report measured a **154.5 ms event-loop
 lag** in the game page and could not explain it. It is answered now, and
