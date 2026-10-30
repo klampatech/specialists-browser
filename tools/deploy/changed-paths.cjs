@@ -56,6 +56,13 @@
  * log rotation lives in exactly those two files, and a rotation rule
  * that never reaches the host is not a rule at all.
  *
+ * `tools/deploy/ci-stack.sh` is in the list for a related reason. It
+ * creates the CI environment's containers, and it takes their IMAGES
+ * from the containers production is running — so a change to it that
+ * needs a newer registry or bridge cannot work until the control plane
+ * is rebuilt. Shipping the script is not enough; the images have to
+ * match.
+ *
  * This was a live chicken-and-egg bug: `run-instance.sh` was not even
  * SHIPPED by the deploy (only `deploy-services.sh` was — measured on the
  * production host, 2026-10-26), so it had to be copied by hand, and
@@ -64,7 +71,7 @@
  * merged, reviewed, CI-green and still never touch a running container.
  */
 const SERVICES_PATTERN =
-  /^(services\/|tools\/port\/tsp-rs\/scripts\/ts-udp-bridge|tools\/deploy\/Dockerfile\.bridge|tools\/deploy\/(run-instance|deploy-services)\.sh|tools\/deploy\/config\/|webxash\/vite-a2s-plugin)/;
+  /^(services\/|tools\/port\/tsp-rs\/scripts\/ts-udp-bridge|tools\/deploy\/Dockerfile\.bridge|tools\/deploy\/(run-instance|deploy-services|ci-stack)\.sh|tools\/deploy\/config\/|webxash\/vite-a2s-plugin)/;
 
 /**
  * Classify a change.

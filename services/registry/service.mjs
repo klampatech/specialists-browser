@@ -639,7 +639,25 @@ function desiredBotQuota(instance) {
 
 async function applyBotQuota(instance, quota) {
   if (!USE_DOCKER) return false;
-  if (instance.botQuotaApplied === quota) return false;
+  // Compare against the ENGINE'S ACTUAL quota, not against what this
+  // registry believes it last wrote.
+  //
+  // Comparing against `botQuotaApplied` means the registry considers the
+  // job done the moment it has issued ONE write, and never writes
+  // again — so if the engine's quota is not what the registry thinks
+  // (a container restart resets it from server.cfg, the write landed on
+  // a server that was not the one being read, or the write raced the
+  // engine's own startup), the discrepancy is invisible AND permanent.
+  //
+  // Measured 2026-10-30, on the CI server: the registry reported
+  // botQuota 16 and botQuotaApplied 0, the engine's own log said the
+  // quota was 16, and the registry never wrote again. The bots stayed,
+  // the server filled up, and the browser client was refused with a
+  // handshake that never completed.
+  //
+  // `instance.botQuota` is the engine's own answer, read from the
+  // console moments earlier in this same tick.
+  if (instance.botQuota === quota) return false;
   await consoleWrite(instance.container, `ts_bot_quota ${quota}`);
   instance.botQuotaApplied = quota;
   instance.botQuotaChangedAt = Date.now();
@@ -673,7 +691,22 @@ async function pollA2S() {
    try {
     await Promise.all(
       PORTS.map(async (port) => {
-        const id = `ts-${port - PORT_BASE}`;
+        // The instance id is derived from the container PREFIX, not
+        // hardcoded to "ts-N".
+        //
+        // Production runs with the default prefix ("ts"), so its ids are
+        // unchanged — "ts-0", "ts-1", ... — and the orchestrator, which
+        // reads these ids and does arithmetic on the suffix, is
+        // unaffected.
+        //
+        // The CI registry runs with the prefix "ts-ci", so the instance
+        // it manages is called "ts-ci-0" rather than "ts-0". The two
+        // control planes are separate processes with separate maps, so
+        // the ids could not actually collide — but a CI instance
+        // answering to the same name as the production one is a trap
+        // for whoever is reading a log at 2am, and one for anyone who
+        // ever points a bridge at the wrong registry.
+        const id = `${PREFIX}-${port - PORT_BASE}`;
         // A2S replies get LOST — this server drops a large share of
         // queries when they arrive in bursts (measured: 42% at one
         // query every 60ms, 0% at one every 2s). A single dropped

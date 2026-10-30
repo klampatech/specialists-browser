@@ -425,6 +425,20 @@ jobs:
     # The point of a deploy is that the thing works. A green HTTP 200
     # from the landing page does not mean a player can get into a game —
     # that is exactly the failure the first real user hit.
+    #
+    # IT RUNS AGAINST A CI ENVIRONMENT, NOT PRODUCTION.
+    # These checks are real browser clients: they complete the GoldSrc
+    # handshake and ENTER THE GAME. Run against bulletballet.dev they
+    # put "CIPlayer", "P1" and "P2" into the server people play on and
+    # into the public leaderboard — measured on production 2026-10-30,
+    # across 94 deploy runs since 2026-10-23, so roughly 280 test-player
+    # sessions in the live server.
+    #
+    # So the gate gets its own hostname, its own game server, its own
+    # bridge and its own registry (tools/deploy/ci-stack.sh). The BUNDLE
+    # is the same one production serves — the gate verifies the artifact
+    # that was just deployed, not a rebuild of it — and only the two
+    # control-plane upstreams differ.
     needs: deploy
     runs-on: ubuntu-latest
     steps:
@@ -446,8 +460,59 @@ jobs:
           npm install --no-save playwright@latest
           npx playwright install --with-deps chromium
 
+      # ── the CI environment ──────────────────────────────────────────
+      - name: Set up SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          cat > ~/.ssh/config <<'EOF'
+          Host prod
+            HostName ${{ secrets.PROD_SSH_HOST }}
+            User ${{ secrets.PROD_SSH_USER }}
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            ServerAliveInterval 30
+          EOF
+          ssh -F ~/.ssh/config prod 'echo "  ssh ok: $(whoami)@$(hostname)"'
+
+      - name: Ship the CI stack script
+        # The script that creates the CI environment. It is shipped from
+        # the repo by the job that uses it, so it can never be a version
+        # on the host that the repo does not have.
+        run: |
+          set -euo pipefail
+          scp -F ~/.ssh/config tools/deploy/ci-stack.sh prod:/home/ubuntu/ci-stack.sh
+          ssh -F ~/.ssh/config prod 'chmod +x /home/ubuntu/ci-stack.sh'
+
+      - name: Start the CI environment
+        # A game server, a bridge and a registry, on ports the production
+        # registry never looks at. The script waits until the CI
+        # registry publishes the instance and the hostname answers, so
+        # the tests below cannot start against a half-built environment.
+        run: ssh -F ~/.ssh/config prod 'bash /home/ubuntu/ci-stack.sh up'
+
       - name: The Play button reaches the server
-        run: node tools/deploy/play-button-e2e.cjs https://bulletballet.dev/
+        env:
+          # The human count is read from the PUBLIC API, so it has to be
+          # the CI registry's — the production one counts production's
+          # players, and the verdict would be about the wrong server.
+          PROD_REGISTRY_URL: https://ci.bulletballet.dev/api/servers
+        run: node tools/deploy/play-button-e2e.cjs https://ci.bulletballet.dev/
 
       - name: Two browsers can be in the server at once
-        run: node tools/deploy/two-player-e2e.cjs https://bulletballet.dev/ 2
+        env:
+          PROD_REGISTRY_URL: https://ci.bulletballet.dev/api/servers
+        run: node tools/deploy/two-player-e2e.cjs https://ci.bulletballet.dev/ 2
+
+      - name: Stop the CI environment
+        # ALWAYS. A gate that fails must not leave a game server and a
+        # registry running on the production host until the next deploy
+        # happens to clean them up. `always()` runs this step whether the
+        # tests passed, failed or were skipped.
+        if: always()
+        run: ssh -F ~/.ssh/config prod 'bash /home/ubuntu/ci-stack.sh down'
