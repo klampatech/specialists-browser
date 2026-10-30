@@ -545,7 +545,7 @@ Then actually attempt a password login. Both were required to catch this.
 | Root login | **off** — `PermitRootLogin no` |
 | `AllowUsers` | `ubuntu` only |
 | `MaxAuthTries` | 3 · `LoginGraceTime` 30 |
-| Firewall (ufw) | default-deny inbound; **22/tcp, 443/tcp, 27015/udp, 27017/tcp** |
+| Firewall (ufw) | default-deny inbound; **22/tcp, 443/tcp** (the game UDP is loopback-only — see §6) |
 | fail2ban | sshd jail, 6 strikes / 10 min / 1 h ban, ufw action |
 | unattended-upgrades | enabled |
 | Security patches | 140 applied, rebooted into new kernel |
@@ -792,6 +792,23 @@ browser ──https──> Caddy (bulletballet.dev, Let's Encrypt)
 
 The game UDP port is published directly by Docker and deliberately does
 NOT go through Caddy — it is raw UDP, not HTTP.
+
+**It is published on `127.0.0.1` only, and it is browser-only (decided
+2026-10-29).** The bridge, the registry and the orchestrator all run with
+`--network host`, so they reach the game server over the host's own
+loopback (`-p 127.0.0.1:$PORT:$PORT/udp`) and nothing changes for them.
+What it changes is the outside: with the port on `0.0.0.0`, a **native
+GoldSrc client could connect straight to the game server** — the whole
+classic cheat-tooling ecosystem, aimbots and wallhacks included, and
+players with real addresses rather than the bridge's shared one. Measured
+before the change: **zero** connections had ever arrived over that path
+(the container's whole log held 444 `local` registry polls, 12 bridge
+players, and nothing else), so no player loses anything by closing it.
+
+Note that the **ufw rules are not what closes it**: Docker's port
+publish is a DNAT in the PREROUTING chain, so a packet addressed to the
+public IP never reaches ufw's INPUT chain. The bind address is the whole
+of the control.
 
 **The bridge must be same-origin with the page.** A page served over HTTPS
 cannot open a plain `ws://` WebSocket (mixed content), and a cross-origin

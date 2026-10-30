@@ -14,6 +14,26 @@
 # says "Server IPv4 address 0.0.0.0:27015", and a probe to either 127.0.0.1 or
 # the public IP times out. Cost an hour of misdiagnosing it as a firewall or
 # A2S problem on prod.
+#
+# ── why the publish is bound to 127.0.0.1 ────────────────────────────────────
+# This game is BROWSER-ONLY (decided 2026-10-29). Players arrive through the
+# WebSocket bridge, and the bridge, the registry and the orchestrator all run
+# with `--network host`, so they reach the game server over the host's own
+# loopback. Publishing on 0.0.0.0 therefore bought nothing and cost the
+# threat model: with the port open, a NATIVE GoldSrc client could connect
+# straight to the game server — the whole classic cheat-tooling ecosystem,
+# aimbots and wallhacks included, and players with real addresses instead of
+# the bridge's shared one. Measured before the change: zero connections had
+# ever arrived over that path (the container's whole log held 444 "local"
+# registry polls, 12 bridge players, and nothing else), so nothing that
+# anyone was using is lost by closing it.
+#
+# Binding to 127.0.0.1 keeps every host-local caller working — the bridge
+# dials 127.0.0.1:$PORT, the registry polls it for A2S — and makes the
+# public path unreachable. Note that the ufw rules are NOT what closes it:
+# Docker's port publish is a DNAT in the PREROUTING chain, so a packet to
+# the public address never reaches ufw's INPUT chain. The bind address is
+# the whole of the control.
 
 set -euo pipefail
 
@@ -125,7 +145,7 @@ docker run -d \
   --log-driver json-file \
   --log-opt max-size="$LOG_MAX_SIZE" \
   --log-opt max-file="$LOG_MAX_FILE" \
-  -p "$PORT:$PORT/udp" \
+  -p "127.0.0.1:$PORT:$PORT/udp" \
   -e TS_INSTANCE="$N" \
   -e TS_PORT_BASE="$PORT_BASE" \
   -e TS_MAXPLAYERS="$MAXPLAYERS" \

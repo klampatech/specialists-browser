@@ -24,6 +24,37 @@ were merged (the latter as `c12dba3`), then #82 (the deploy gate) and #83
 abandoned approaches' code) and #86 (the BB favicon, the turning dial,
 the top nav links gone). The game server image is `ts-server:0.27`.
 
+## The game is browser-only: the game UDP port is closed to the world (2026-10-29)
+
+The container published its UDP straight out of Docker (`-p 27015:27015/udp`)
+and ufw allowed `27015/udp` from anywhere, so **a native GoldSrc client could
+connect straight to the game server** — the whole classic cheat-tooling
+ecosystem, aimbots and wallhacks included — and with a real address instead of
+the bridge's shared one.
+
+It was deliberate ("it is raw UDP, not HTTP"), but it was a leftover: the game
+is browser-only, and **nothing had ever used that path**. The container's whole
+log, before the change:
+
+```
+444  "local"        ← the registry's own A2S polls
+ 12  "172.17.0.1"   ← browser players, through the bridge
+  0  anything else
+```
+
+**The fix:** publish on the host's loopback only —
+`-p 127.0.0.1:$PORT:$PORT/udp`. The bridge, the registry and the orchestrator
+all run with `--network host`, so they reach the game server over
+`127.0.0.1:$PORT` exactly as before; nothing host-local changes. The public
+path is gone, and with it the native cheat population — and the identity
+design collapses to a single path, where the bridge is the only door and
+therefore the only identity authority.
+
+**The ufw rules are NOT what closes it.** Docker's port publish is a DNAT in
+the PREROUTING chain, so a packet addressed to the public IP never reaches
+ufw's INPUT chain. The bind address is the whole of the control — the
+`27015/udp` rules were removed as hygiene, not as the fix.
+
 ## The reconnect does not reload the page (PR #94, 2026-10-29)
 
 The CONNECTION LOST panel used to recover by **reloading the page**:
@@ -365,7 +396,8 @@ assets.bulletballet.dev  →  Cloudflare R2 (ts-assets), 493 MB in 8×64 MiB par
 ```
 
 The game UDP port is published straight out of Docker and deliberately does
-**not** go through Caddy — it is raw UDP, not HTTP.
+**not** go through Caddy — it is raw UDP, not HTTP. It is published on
+**`127.0.0.1` only** — see "The game is browser-only" below.
 
 ## The Half-Life lambda was ghosting through the game (2026-10-24)
 
