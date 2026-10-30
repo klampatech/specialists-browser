@@ -517,7 +517,7 @@ ssh bb-prod          # alias, IdentityFile ~/.ssh/id_specialists_ovh
 
 - Login user: `ubuntu` (OVH creates an OS-named user; **root is disabled by default and was deliberately left that way**)
 - `sudo` is **passwordless** for `ubuntu`
-- Password lives at `~/.hermes/cache/scratch/_ovh_pw` — **inert**, since password auth is off. Delete on request.
+- There is no stored password: password auth is off, and the old `~/.hermes/cache/scratch/_ovh_pw` file was deleted on 2026-10-23.
 
 ### The sshd footgun — do not "tidy" this
 
@@ -554,13 +554,22 @@ Then actually attempt a password login. Both were required to catch this.
 ### Ports
 
 ```
-22/tcp      ssh, key-only
-443/tcp     app + wss bridge (Caddy)          [not yet deployed]
-27015/udp   GoldSrc game server               [not yet deployed]
-27017/tcp   bridge, DIRECT                    TEMPORARY — see below
+22/tcp      ssh, key-only                     open
+443/tcp     app + wss bridge (Caddy)          open — the ONLY public game path
+27015/udp   GoldSrc game server               LOOPBACK ONLY, never public (see §6)
+27017/tcp   bridge                            host-local only, not reachable from outside
 ```
 
-**`27017/tcp` is temporary.** The browser currently dials the bridge directly on 27017, and keeping it open preserves the working local multiplayer path. Once Caddy terminates TLS and proxies `/bridge` → `localhost:27017`, **delete this rule**.
+**`27015/udp` is deliberately not in this list, and must never be.** The game
+server's port is published on `127.0.0.1` only — the bridge, the registry and
+the orchestrator reach it over the host's own loopback, and the outside world
+cannot. It was public until 2026-10-29, which is what let a native GoldSrc
+client connect straight to the game server; see §6.
+
+**`27017/tcp` is host-local.** The browser does not dial it directly — Caddy
+terminates TLS and proxies `/bridge` → `localhost:27017`, so the bridge's port
+is only ever reached through 443. The old public rule was removed with the
+rest; the bridge still listens on 27017 on the host's own interface.
 
 ---
 
