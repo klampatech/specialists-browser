@@ -673,7 +673,22 @@ async function pollA2S() {
    try {
     await Promise.all(
       PORTS.map(async (port) => {
-        const id = `ts-${port - PORT_BASE}`;
+        // The instance id is derived from the container PREFIX, not
+        // hardcoded to "ts-N".
+        //
+        // Production runs with the default prefix ("ts"), so its ids are
+        // unchanged — "ts-0", "ts-1", ... — and the orchestrator, which
+        // reads these ids and does arithmetic on the suffix, is
+        // unaffected.
+        //
+        // The CI registry runs with the prefix "ts-ci", so the instance
+        // it manages is called "ts-ci-0" rather than "ts-0". The two
+        // control planes are separate processes with separate maps, so
+        // the ids could not actually collide — but a CI instance
+        // answering to the same name as the production one is a trap
+        // for whoever is reading a log at 2am, and one for anyone who
+        // ever points a bridge at the wrong registry.
+        const id = `${PREFIX}-${port - PORT_BASE}`;
         // A2S replies get LOST — this server drops a large share of
         // queries when they arrive in bursts (measured: 42% at one
         // query every 60ms, 0% at one every 2s). A single dropped

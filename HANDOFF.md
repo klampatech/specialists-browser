@@ -24,6 +24,79 @@ were merged (the latter as `c12dba3`), then #82 (the deploy gate) and #83
 abandoned approaches' code) and #86 (the BB favicon, the turning dial,
 the top nav links gone). The game server image is `ts-server:0.27`.
 
+## The CI browser gate was playing in production (2026-10-30)
+
+The deploy's "Verify in a real browser" job ran its two Playwright scripts
+against **`https://bulletballet.dev/`** — the production site. Those scripts
+are not probes. They are real browser clients: they complete the GoldSrc
+handshake and **enter the game**.
+
+Kyle noticed two test players in the live server and asked whether CI was
+connecting to production. It was. From the production game server's own
+log (`/srv/ts/logs/*.log` inside `ts-0`):
+
+```
+10/30 00:42:54  "CIPlayer<163><15><>" connected, address "172.17.0.1:34304"
+10/30 00:43:30  "P1<165><ID_7dea…><165>" entered the game
+10/30 00:45:12  "P2<166><ID_7dea…><166>" entered the game
+10/30 00:47:48  "CIPlayer<185><17><>" connected, address "172.17.0.1:44139"
+10/30 00:49:28  "P2<187><ID_7dea…><187>" entered the game
+10/30 00:58:26  "CIPlayer<194><14><>" connected, address "172.17.0.1:43384"
+10/30 00:59:02  "P1<196><ID_7dea…><196>" entered the game
+10/30 01:00:25  "P2<197><ID_7dea…><197>" entered the game
+```
+
+One set per deploy run, matching the GitHub Actions runs to the minute
+(`40981282720` created 00:41:39Z, `40981237506` at 00:41:12Z,
+`40982829789` at 00:56:44Z). **94 deploy runs since 2026-10-23**, so
+roughly 280 test-player sessions in the server people play on.
+
+And they were on the **public leaderboard** too: `/api/leaderboard`
+returned `CIPlayer`, `P1` and `P2` as entries, because the registry
+builds the board from the same server-side log the scoreboard reads.
+
+**The fix:** the gate keeps its value and loses its footprint. It now runs
+against a CI environment of its own — `tools/deploy/ci-stack.sh` creates a
+game server, a bridge and a registry that exist only while the gate is
+running, behind a second hostname (`ci.bulletballet.dev`).
+
+- **The bundle is the same one production serves.** The gate verifies the
+  artifact that was just deployed, not a rebuild of it. Only the two
+  control-plane upstreams differ.
+- **A separate registry and a separate bridge, not a second entry in
+  production's.** The production registry discovers instances by PORT
+  RANGE (27015–27022) and publishes them to the public server browser.
+  A CI instance added to it would appear on the site as a server people
+  can join — the same problem, moved rather than solved.
+- **The CI port (27025) MUST stay outside that range.** Move it inside and
+  production adopts the instance, the orchestrator starts managing it, and
+  the CI players are in production after all — with every signal green.
+  Asserted by `tests/unit/ci-stack.test.mjs`.
+- **The CI containers run the same images production is running** (read
+  off the running containers), so the gate tests what was deployed.
+- **The CI registry has its own leaderboard**, so CI kills never reach
+  the board people read.
+
+Measured on the production host, 2026-10-30 — a CI-shaped instance with
+no bots costs **0.40% of one core and 225 MiB**, and the box sits 92–99%
+idle with the whole production stack running:
+
+```
+ts-ci-0  0.40%  225.3MiB      ts-0    0.53%  362.9MiB
+bridge-ci 0.00%  15.9MiB      bridge  8.68%   37.6MiB
+registry-ci 8.86% 30.8MiB      registry 0.00%  61.4MiB
+```
+
+Spin-up is **6 seconds** to healthy and teardown is instant, so the stack
+is ephemeral: the cost is only paid during the gate.
+
+**The one change with a cost:** the registry's instance id is now derived
+from `TS_CONTAINER_PREFIX` instead of being hardcoded to `ts-N`. Production
+runs with the default prefix, so its ids are unchanged (`ts-0`, `ts-1`, …)
+and the orchestrator's arithmetic on the suffix still works. The CI
+registry runs with the prefix `ts-ci`, so its instance is `ts-ci-0` rather
+than answering to the same name as the production one.
+
 ## The game is browser-only: the game UDP port is closed to the world (2026-10-29)
 
 The container published its UDP straight out of Docker (`-p 27015:27015/udp`)

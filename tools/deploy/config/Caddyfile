@@ -97,3 +97,90 @@ bulletballet.dev {
 
 # The game server's own UDP port is published directly by Docker and is
 # deliberately NOT proxied through this vhost: it is raw UDP, not HTTP.
+
+# ─────────────────────────────────────────────────────────────────────
+# ci.bulletballet.dev — the CI environment
+# ─────────────────────────────────────────────────────────────────────
+#
+# WHY A SECOND VHOST
+# ------------------
+# The deploy's browser gate has to prove that a player can really get
+# into a game. Those checks are real browser clients: they complete the
+# GoldSrc handshake and enter the server. Run against bulletballet.dev,
+# they put "CIPlayer", "P1" and "P2" into the server people play on and
+# into the public leaderboard (measured 2026-10-30 — 94 deploy runs since
+# 2026-10-23, so ~280 test-player sessions in production).
+#
+# So the gate gets its own hostname, its own game server, its own bridge
+# and its own registry. The BUNDLE is the same one production serves —
+# the gate verifies the artifact that was just deployed, not a rebuild of
+# it — and only the two control-plane upstreams differ.
+#
+# WHY A HOSTNAME AND NOT A PATH
+# -----------------------------
+# The bridge MUST be same-origin with the page: a page served over HTTPS
+# cannot open a plain ws:// WebSocket, and a cross-origin WebSocket
+# cannot carry the page's cross-origin-isolation context. The client
+# also builds the bridge address from `location.hostname:location.port`
+# and connects to `/bridge` — a fixed path — so two environments on one
+# hostname cannot both have a bridge. A second hostname is the only
+# shape that works.
+#
+# WHEN THE CI STACK IS DOWN
+# -------------------------
+# This vhost is always in the config, but the containers behind it only
+# exist while the deploy's browser gate is running. In between, /api and
+# /bridge answer 502 and the page says no server answered. That is
+# correct: there is no CI server, and saying so is the truth.
+#
+# The access log is separate so production's traffic analysis is not
+# polluted by the gate's own requests.
+ci.bulletballet.dev {
+	encode zstd gzip
+
+	# The same isolation headers as the production vhost. The engine is
+	# a WASM build that needs SharedArrayBuffer, which the browser only
+	# grants to a cross-origin isolated document — without these the
+	# engine boots and then fails the moment it tries to use threaded
+	# memory.
+	header {
+		Cross-Origin-Opener-Policy   same-origin
+		Cross-Origin-Embedder-Policy credentialless
+		Cross-Origin-Resource-Policy cross-origin
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer-when-downgrade
+	}
+
+	# The CI registry: the fleet view for the CI game server.
+	handle /api/servers {
+		reverse_proxy 127.0.0.1:8082 {
+			flush_interval -1
+		}
+	}
+
+	handle /api/leaderboard {
+		reverse_proxy 127.0.0.1:8082 {
+			flush_interval -1
+		}
+	}
+
+	# The WebSocket↔UDP bridge. Caddy proxies the upgrade automatically.
+	handle /bridge {
+		reverse_proxy 127.0.0.1:27018
+	}
+
+	# The app bundle — the same directory production serves.
+	handle {
+		root * /srv/web
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output file /var/log/caddy/ci-access.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}
