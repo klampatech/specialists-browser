@@ -252,7 +252,10 @@ policy that looks plausible and does nothing.
 ```json
 [
   {
-    "AllowedOrigins": ["https://bulletballet.dev"],
+    "AllowedOrigins": [
+      "https://bulletballet.dev",
+      "https://ci.bulletballet.dev"
+    ],
     "AllowedMethods": ["GET", "HEAD"],
     "AllowedHeaders": ["*"],
     "ExposeHeaders": ["Content-Length", "ETag"],
@@ -260,6 +263,25 @@ policy that looks plausible and does nothing.
   }
 ]
 ```
+
+**`https://ci.bulletballet.dev` is the CI environment's origin, and it
+has to be in this list.** The deploy's browser gate runs against a
+second hostname, whose page fetches the archive from this bucket — and
+a cross-origin `fetch()` without an `Access-Control-Allow-Origin` for
+the requesting origin cannot read the response at all. With the CI
+origin missing, the gate fails with:
+
+```
+Access to fetch at 'https://assets.bulletballet.dev/hl/ts/manifest.json'
+from origin 'https://ci.bulletballet.dev' has been blocked by CORS
+policy: No 'Access-Control-Allow-Origin' header is present
+```
+
+and the engine never boots, so the gate reports a server that "never
+answered the handshake" when the server was fine. The client's
+cache-busting retry does not help: the origin is UNLISTED, not a stale
+cached variant. **Any new origin that loads the app needs adding here
+before it can fetch the archive.**
 
 **Wrangler CLI** — lowercase, with an `allowed` wrapper:
 
