@@ -55,7 +55,7 @@ the PREROUTING chain, so a packet addressed to the public IP never reaches
 ufw's INPUT chain. The bind address is the whole of the control — the
 `27015/udp` rules were removed as hygiene, not as the fix.
 
-## The reconnect does not reload the page (2026-10-29)
+## The reconnect does not reload the page (PR #94, 2026-10-29)
 
 The CONNECTION LOST panel used to recover by **reloading the page**:
 re-unpack the 517 MB archive, re-boot the WASM engine, re-run the
@@ -83,20 +83,38 @@ page being alive, the WebSocket being open, the bridge counting a
 connection: none of those mean the player got in. `waitForServerBanner()`
 (new, `webxash/src/services/server-banner.ts`) attaches the listener
 BEFORE the reconnect is triggered, so the banner cannot be missed
-between the trigger and the wait.
+between the trigger and the wait. That ordering is load-bearing: the
+engine's `retry` fires the handshake immediately (`cls.connect_time =
+MAX_HEARTBEAT`, *"CL_CheckForResend() will fire immediately"*), so the
+banner can come back in the SAME TICK.
+
+**The window is the engine's budget.** `CL_CheckForResend` gives the
+connect attempt `CL_CONNECTION_RETRIES` (5) tries, one every `cl_resend`
+(6.0 s), then calls `CL_Disconnect()` — the engine gives up after ~30 s
+and goes idle, so no banner can arrive after that. Waiting longer cannot
+buy a success, only delay the fallback. The window is **40 s**. And if
+the transport dies AGAIN mid-attempt, no banner can ever arrive, so the
+wait watches the transport and hands over to the fallback at once
+(measured: the fallback fired 1.0 s after the transport was killed).
 
 **The reload is still the fallback.** If the transport cannot be
 re-opened, the engine takes no `retry`, or the banner does not arrive
-inside 75 s, the old reload runs unchanged. The window is 75 s because
-the bridge says the game server *"will be back in about a minute"*
-while the orchestrator restarts it, and the engine's own retry keeps
-re-attempting the handshake.
+inside the window, the old reload runs unchanged.
 
 Measured in a browser against a local server: the transport dies → the
 panel appears with the reason in ~2 s → the countdown fires → the
 engine prints `Commencing connection retry to ...` → ~2 s later the
 banner arrives and the panel clears → **the URL never changed**, the
 buy-menu state flows again, and a keypress still reaches the engine.
+
+**Verified on production** (`2fac453`, live on `bulletballet.dev`): the
+client's WebSocket was closed from the page, the panel appeared with
+the reason, the countdown fired, the engine printed `Connecting to
+40.160.225.81:27015... (retry #1)`, and **1.0 s later** the banner
+(`Server #13`) arrived and the panel cleared — **the URL never
+changed**. The server's own view agreed: `players 16 (bots 15, humans
+1)`, the one human being the client that had just been disconnected and
+reconnected.
 
 ## The buy menu is the game's own menu, rendered in the DOM (PR #88, 2026-10-29)
 
