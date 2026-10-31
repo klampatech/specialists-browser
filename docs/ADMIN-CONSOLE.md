@@ -677,14 +677,79 @@ All endpoints are under `/admin`, all require a session except
 | `GET` | `/admin/servers/:id/maps` | The map list, from `maps *`, with the cycle first. |
 | `POST` | `/admin/servers/:id/command` | `{command}` — the free-form escape hatch. One command only. |
 | `POST` | `/admin/servers/:id/kick` | `{userid, reason?}` → outcome. |
-| `GET` | `/admin/servers/:id/bans` | The id-ban list and the read-only IP filter. **Read-only — there is no ban action (§2.5).** |
+| `GET` | `/admin/servers/:id/bans` | The id-ban list (the console's own store) and the read-only IP filter (the engine's `listip`). |
+| `POST` | `/admin/servers/:id/ban` | **STUBBED — always 501.** The contract is fixed; the handler is not written (§5.1). |
 | `POST` | `/admin/servers/:id/map` | `{map}` → the confirmed new map. |
 | `POST` | `/admin/servers/:id/broadcast` | `{message}` → a `say` to everyone on that instance. |
 | `POST` | `/admin/servers/:id/restart-round` | The port's `restartround`. |
 | `POST` | `/admin/servers/:id/timelimit` | `{minutes}` → `mp_timelimit`. The **only** setting the console writes. |
 
-**There is no ban endpoint and no mute endpoint.** Not "disabled" — not
-written (§2.5, §2.6).
+**There is no mute endpoint** — not written, §2.6.
+
+**There is a ban endpoint, and it is a stub** — §5.1. Kyle's call
+(2026-10-31): *"stub this in the admin console for now and spec / build
+it out separately."* The request shape, the response shape and the UI
+are written down and fixed; the handler that would carry it out is
+not, because the thing it bans by does not exist yet.
+
+### 5.1 The stubbed ban endpoint
+
+Kyle's call: *"stub this in the admin console for now and spec / build
+it out separately."* So the ban is **present in the console** — the
+button, the modal, the endpoint — and **cannot actually ban**, in a way
+that is obvious to the operator and impossible to mistake for a
+success.
+
+**Request (fixed now, so the UI never has to move):**
+
+```json
+POST /admin/servers/:id/ban
+{ "userid": 165, "minutes": 1440, "reason": "cheating" }
+```
+
+**Response — always, until the identity lands:**
+
+```json
+HTTP/1.1 501 Not Implemented
+{
+  "error": "ban_unavailable",
+  "reason": "Banning one player needs a per-browser identity. Today every browser client on an instance shares one uniqueid, so banning it would remove everyone.",
+  "requires": "FEAT-004/FEAT-005 — the bridge-stamped id (anti-cheat plan, Phases 5-6)",
+  "spec": "docs/ADMIN-CONSOLE.md §2.5",
+  "banned": false
+}
+```
+
+**The invariants, which are the whole point of the stub:**
+
+1. **It never returns success.** No `done`, no `no_output` — only 501.
+2. **It never touches the engine.** No `banid`, no `addip`, nothing.
+   In particular it must **not** fall back to an IP ban: every browser
+   player reaches the game server through the bridge from the same
+   address, so an IP ban is the fleet-wide action wearing a
+   per-player tool's clothes (§2.5).
+3. **`banned` is always `false`** in the response, so a client that
+   ignores the status code still cannot conclude that a ban happened.
+4. The reason names the blocker and where it is specified. An operator
+   who hits it learns what to do next instead of concluding the console
+   is broken.
+
+**The UI (in the mock's own language):** the ban button is present on
+each player row, and the modal is the mock's — duration select, a
+confirm button that is **not** styled as available. The modal's body
+carries the reason up front, so the operator learns it **before**
+clicking confirm rather than after. The console asks the server for
+its capabilities (`GET /admin/session` → `{"capabilities": {"ban":
+false}}`) and renders the ban affordance from that flag. When FEAT-004
+lands, the server flips the flag to `true` and the button enables —
+**one flag, no UI change**, because the request and response shapes
+are already fixed.
+
+**What "build it out separately" means:** the ban's own project is
+the identity work — FEAT-004 (the site issues an account id) and
+FEAT-005 (the bridge stamps it and refuses banned accounts at the
+door). The console's share of it is then the handler behind this
+endpoint and the flag flip. Nothing else in the console changes.
 
 **Every mutating endpoint returns the same envelope**, because the
 console's output drawer needs the same four parts for every action:
