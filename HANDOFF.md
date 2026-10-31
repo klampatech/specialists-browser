@@ -62,12 +62,21 @@ what happens to them (2026-10-31):**
   `ignore` command does not exist in FWGS. A real admin mute would be a
   small **server-side** port change (drop `say`/`say_team` from a muted
   player in `host_say`), not a console change.
-- **Ban → held.** There is **no unique per-browser id today** — every
-  browser client on an instance presents the same authid and the same
-  uniqueid, which is exactly what the anti-cheat research found and
-  what its FEAT-004 (the **bridge-minted** signed id) exists to fix.
-  Until that lands, `banid` is a mass disconnect with a duration, so
-  the console ships with **kick and no ban**.
+- **Ban → held, with the unblock now named.** The engine DOES have a
+  per-machine id that is unique, persistent across sessions and not a
+  cookie — `ID_GenerateRawId()`, a bloom filter over `/etc/machine-id`,
+  CPU info and disk serials, saved to disk. It is **inert in a
+  browser**, which has none of those, so every client ends up with the
+  same value and `banid` is a mass disconnect. **The ban key is one
+  field**: the server reads `protinfo["uuid"]` out of the connect
+  packet, and that single value is the authid, the `banid` key and the
+  `status` uniqueid. A bridge that overwrote it with a per-browser
+  token would make `banid` remove exactly one player, with **no
+  engine, port or server change**. That is FEAT-004/FEAT-005 of the
+  anti-cheat plan (its Phases 5-6). The vaulted spec had the wrong
+  field name (`cdkey` instead of `uuid`) and wrongly said the bridge
+  already parses the connect packet; both are corrected. The console
+  ships with **kick and no ban**.
 
 **Game mode is a readout, not a control** (also decided 2026-10-31):
 the mode is decided by the **map** at rules install, the servers will

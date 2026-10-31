@@ -248,32 +248,100 @@ So the console must:
 - treat the ban button as **the thing the identity work replaces**.
 
 **Decision (Q3): hold the ban.** Kyle's instruction was "if we don't
-have a way to do that, then let's hold on it for now" — and we do not.
-A ban today is a **mass disconnect with a duration**: it removes every
-human on the instance and it does not survive a server restart (the
-engine never execs `banned.cfg`).
+have a way to do that, then let's hold on it for now" — and at the time
+of asking, we did not have one *shipped*. This is the part that has
+since been dug into properly, and it changes the *shape* of the answer
+without changing the decision.
 
-**The correction to a natural assumption, because it is the opposite of
-it:** there is **no unique per-browser id** today. Kyle's recollection
-was that each browser presents its own `authid`, and the measurement
-says the reverse — every browser client on an instance presents the
-**same** one (`ID_7dea…`), because the WASM engine's "CD key" is
-`MD5(COM_RandomLong(...))` from an unseeded generator, and the authid
-is derived from it. The unique id is not something to find; it is
-something to **mint**.
+### 2.5.1 What Kyle was remembering is real — and it is inert in a browser
 
-The minting is already specified: **`~/Obsidian/specs/bulletballet-anticheat-and-identity.md`,
-FEAT-004 — "Player identity: the bridge-minted signed id"**. The bridge
-terminates the WebSocket, so it is the trust boundary; it stamps its
-own unforgeable id over the client's claim in the connect packet, and
-the server enforces against that. It is a separate project with its own
-plan, and until it ships, **the console has no ban**.
+The engine **does** have an identity mechanism that is unique per
+machine, persistent across sessions, and not a cookie:
+`ID_GenerateRawId()` (`engine/client/identification.c:523`) builds a
+bloom filter over machine attributes — `/etc/machine-id`, CPU info,
+`/sys/block/*/device/cid`, net devices, and on Windows the WMIC serial
+numbers — and **saves it to disk** so it survives a restart. That is
+exactly "unique to each browser, persistent between connections, not a
+cookie that could be cleared".
 
-So the first release of the console has **kick** and no ban. The ban
-endpoint, the ban button and the ban modal are **not built** — not
-hidden behind a flag, not built and disabled. When the identity lands,
-the ban is a small addition on top of a console that already has the
-player list, the userid and the outcome envelope.
+**A browser has none of those.** No `/etc/machine-id` to read, no CPU
+to query, no block devices, and nowhere to persist the id. So the bloom
+filter is empty, `id` is 0 for every client, and the field the server
+reads comes out as:
+
+```c
+ID_GetMD5ForAddress( key, adr, sizeof( key ));       // MD5(engine_id + server_address)
+Info_SetValueForKey( protinfo, "uuid", key, ... );   // → protinfo["uuid"], 32 hex
+```
+
+— **MD5(0 + the server's address), identical for every client on that
+server.** The engine's mechanism is real and it works; it is inert
+here, and it is the one thing that has to be *replaced* rather than
+reused.
+
+### 2.5.2 The ban key is ONE field, and the bridge can stamp it
+
+This is the useful part, and it is not in the earlier drafts.
+
+The server copies **one** field out of the client's connect packet
+(`engine/server/sv_client.c:523`):
+
+```c
+Q_strncpy( newcl->hashedcdkey, Info_ValueForKey( protinfo, "uuid" ), 32 );
+```
+
+and that single 32-hex value becomes **all three** of:
+
+| what | where |
+|---|---|
+| the authid — `ID_<hashedcdkey>` | `sv_client.c:836` |
+| the key `banid` matches on | `sv_filter.c` — `Info_ValueForKey(cl->useragent, "uuid")` |
+| the `uniqueid` column of `status` | `sv_cmds.c` |
+
+**So the ban is not blocked by a missing mechanism. It is blocked by
+one field being the same for everybody.** If the bridge overwrote that
+field with a per-browser token, `banid <token>` would remove exactly
+one player, with **no change to the engine, the port, or the server's
+ban code**.
+
+Two corrections to the vaulted anti-cheat spec
+(`~/Obsidian/specs/bulletballet-anticheat-and-identity.md`, both now
+fixed there), because they would have cost the implementer a day:
+
+1. **The field is `uuid`, not `cdkey`.** The spec said to overwrite
+   `cdkey`. On the connect path our client uses, `cdkey` is not sent at
+   all — the client sends `protinfo["uuid"]`, and the server never
+   reads `cdkey`. Stamping `cdkey` would have silently done nothing,
+   and the ban would still have removed every player.
+2. **The bridge does not parse the connect packet today.** The spec
+   said "the bridge already parses the handshake to resolve the
+   target". It does not: `tools/port/tsp-rs/scripts/ts-udp-bridge.js`
+   reads a **WebSocket-level** join message to choose the target and is
+   a blind byte pipe after that. So the stamp is new code in the
+   connection path: find the connect packet (the client's second
+   datagram, after the `getchallenge` round-trip), locate
+   `protinfo["uuid"]`, overwrite **32 bytes in place**. The replacement
+   is the same length as the value it replaces, so the packet's length,
+   its netchan framing and its length fields are all untouched.
+
+### 2.5.3 So what the ban actually costs
+
+| Piece | Work | Where |
+|---|---|---|
+| The site issues a per-browser id | An account auto-created on first play (the 2026-10-29 "account or both" decision) plus a durable store | The site — the Caddy vhost serves it today |
+| The bridge stamps it | New connect-packet parsing; 32 bytes in place | `ts-udp-bridge.js` |
+| The server bans by it | **Nothing.** `banid` already matches that field. | — |
+| The console bans by it | The ban endpoint and modal the spec already writes down | this project |
+
+That is a real project, and it is **not** the admin console — it is
+FEAT-004 and FEAT-005 of the anti-cheat plan, which is Phase 5 and 6
+of that plan's build order. The console's ban depends on it.
+
+**So: the ban stays held, and the hold has a name now.** It is not
+"we don't have a way"; it is "the way is the bridge stamp, it is a
+separate piece of work, and when it lands the ban is a small addition
+to a console that already has the player list, the userid and the
+outcome envelope."
 
 The bans **panel** stays, read-only: `listid` and `listip` are two
 commands, and knowing what the engine currently has filtered is
@@ -749,24 +817,36 @@ This also settles the fleet direction: **one instance per game mode**,
 each booting into its own mode. The mode stops being a runtime
 question — it becomes a property of *which server you are talking to*.
 
-### Q3 — Is a ban worth offering? → **Held**
+### Q3 — Is a ban worth offering? → **Held, with the unblock now named**
 
 Kyle: *"We'll need to modify this to use the unique authId from each
 browser we could use — you found this when you were doing the anti
 cheat research. If we don't have a way to do that, then let's hold on
 it for now."*
 
-**The correction, because it is the opposite of the recollection:**
-there is **no unique per-browser id today**. Every browser client on an
-instance presents the **same** authid and the same uniqueid (§2.5) —
-that is exactly what the anti-cheat research found, and it is why the
-research specifies **minting** one at the bridge (the trust boundary)
-rather than looking for one.
+**He was remembering something real, and it was dug into rather than
+argued with.** The engine *has* a per-machine id that is unique,
+persistent across sessions and not a cookie
+(`ID_GenerateRawId()` — a bloom filter over `/etc/machine-id`, CPU info
+and disk serials, saved to disk). It is **inert in a browser**, which
+has none of those, so every client ends up with the same value — which
+is why `banid` is a mass disconnect today. §2.5.1–§2.5.3 have the
+detail.
+
+**The good news is that the ban key is one field.** The server reads
+`protinfo["uuid"]` out of the connect packet, and that single value is
+the authid, the `banid` key and the `status` uniqueid. A bridge that
+overwrote it with a per-browser token would make `banid` remove
+exactly one player, with **no engine, port or server change**. The
+vaulted anti-cheat spec had the wrong field name (`cdkey`) and a wrong
+assumption about the bridge; both are corrected now.
 
 **Decision: no ban in this release.** Not built, not hidden behind a
 flag. The ban endpoint, the ban button and the ban modal are not
-written; the ban arrives with the bridge-minted identity, as a small
-addition to a console that already has the player list and the
+written — but the hold is no longer "we don't have a way", it is
+"**the way is the bridge stamp, and that is FEAT-004/FEAT-005 of the
+anti-cheat plan** (its Phases 5 and 6)". The ban arrives with it, as a
+small addition to a console that already has the player list and the
 outcome envelope. The bans **panel** stays, read-only.
 
 ### Q4 — SSH tunnel, or Tailscale on the VPS? → **SSH tunnel**
