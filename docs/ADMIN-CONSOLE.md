@@ -58,7 +58,7 @@ Here is what each of its parts maps to.
 | Time limit dropdown | `mp_timelimit` (minutes); `mp_timeleft` is the live countdown. | ✅ |
 | Broadcast ("Say") | The engine's `say` server command. | ✅ with a quoting caveat (§2.2) |
 | "Restart round" | The port's own `restartround` server command. | ✅ |
-| "Ban list" | `listid` (id bans) and `listip` (the IP filter). | ✅ |
+| "Ban list" | The **IP filter** (`listip` — works). The **id-ban list** (`listid`) is **silently empty**: it prints through `Con_Reportf`, which the engine drops below `developer 2`, and the fleet runs `developer 1`. | ⚠️ the id list must come from the console's own store, not the engine (§2.5.3) |
 | Players — kills | `frag` in `status`; `frags`/`deaths` in the port's `ts_status`. | ✅ |
 | Players — ping | `ping` in `status`. | ✅ |
 | Players — search | Name and Steam ID. There are no Steam IDs here — the identity is the engine's `uniqueid` (a uuid) and the `userid`. | ✅ relabel |
@@ -127,7 +127,9 @@ All **[measured]**, on `ts-ci-0` unless noted.
 | `mp_timeleft` | `"mp_timeleft" is "875"` | Seconds left on the map. |
 | `mp_timelimit 20` | `Server cvar "mp_timelimit" = "20"` + `"mp_timelimit" changed to "20"` | Live, no restart. |
 | `listip` | `IP filter list is empty` | |
-| `listid` | *(empty)* | No id bans. |
+| `listid` | *(empty)* | **Not "no id bans" — the command is mute.** `SV_ListID_f` prints through `Con_Reportf`, which the engine only emits at `developer 2`+; the fleet runs `developer 1` (`tools/deploy/entrypoint.sh:192`). Measured empty on the CI instance. |
+| `removeid <uuid>` | *(empty)* | Removes an id ban. **Does not need the player to be connected** — unlike `banid`, it matches the filter list by id string. Also `Con_Reportf`, so it is silent on success. |
+| `writeid` | *(empty)* | Writes `banned.cfg`. **Only permanent bans** (`if ( !filter->endTime )`). **And the file cannot be loaded back** — see §2.5.3. |
 | `maps *` | The map list. | Better than a static list — it is what the server actually has. |
 | `kick #1 "reason"` | **Four lines**, including `Kick: "Marcez<1><ID_BOT><>" was kicked by "Console" (message "rcon test kick")`. | See §3.3 — this corrects the earlier draft. |
 | `banid 10 <uuid> kick` | `^1Error: ^7banid: no such player with userid <uuid>` when the player is not live. | Colour codes (`^1` error, `^2` note, `^3` warning, `^7` normal) must be stripped. |
@@ -344,7 +346,7 @@ things:
 |---|---|---|
 | a reconnect, a page reload | The token to be derived from something stable. `token = HMAC(key, account_id ‖ epoch)` gives that. | The bridge stamp. |
 | **a cookie clear** | An **account**, not a cookie. The 2026-10-29 "account or both" decision is exactly this: the account is the durable part; the cookie is the cheap fallback for guests. | An account store on the site. |
-| a **server restart** | The engine's ban list is **in memory only**. But the engine ships `writeid` (writes `banned.cfg`) — and refuses to use it: *"should be called manually because banned.cfg is not executed by engine"* (`sv_filter.c:247`). So the console writes `banned.cfg` with `writeid` and `exec`s it back after an instance comes up. | One command, on our side. |
+| a **server restart** | **Not the engine's job — and the engine cannot do it.** Its ban list is in memory only. It ships `writeid` (writes `banned.cfg`) but refuses to use it: *"should be called manually because banned.cfg is not executed by engine"* (`sv_filter.c:247`). Worse, `writeid` writes only permanent bans, as `banid 0 <id>` lines — and **`banid` only works on a connected player**, so `exec banned.cfg` restores nothing. The durable list has to live outside the game server. | The list lives in the console (or the bridge). |
 
 **And one limit worth knowing before designing around it:**
 `banid` can only ban somebody who is **connected right now**. The lookup
@@ -367,7 +369,7 @@ the piece that makes "ban someone who is not online right now" work.
 | The site issues a per-browser id | An account auto-created on first play (the 2026-10-29 "account or both" decision) plus a durable store | The site — the Caddy vhost serves it today |
 | The bridge stamps it | New connect-packet parsing; 32 bytes in place | `ts-udp-bridge.js` |
 | The server bans by it | **Nothing.** `banid` already matches that field. | — |
-| The ban outlives a restart | `writeid` + `exec banned.cfg` after the instance comes up | the console |
+| The ban outlives a restart | The console owns the durable list; the engine's in-memory list is a mirror it re-populates on demand | the console |
 | The ban list outlives the connection | Held by the bridge, keyed by account, refused at the door | the bridge |
 | The console bans by it | The ban endpoint and modal the spec already writes down | this project |
 
@@ -381,10 +383,24 @@ separate piece of work, and when it lands the ban is a small addition
 to a console that already has the player list, the userid and the
 outcome envelope."
 
-The bans **panel** stays, read-only: `listid` and `listip` are two
-commands, and knowing what the engine currently has filtered is
-diagnostic when something has gone wrong (an old ban still in place, an
-IP entry nobody remembers adding).
+The bans **panel** stays, read-only — but it reads **two different
+places**, because the engine can only answer for one of them:
+
+- The **IP filter** comes from the engine (`listip`) — it prints through
+  `Con_Printf`, so it works, and it is genuinely useful: an IP entry
+  nobody remembers adding is exactly the kind of thing that locks a
+  whole NAT out of a server.
+- The **id-ban list** comes from the **console's own store**, not from
+  `listid`. `listid` prints through `Con_Reportf` and the fleet runs
+  `developer 1`, so it is **silent** — an empty `listid` means "the
+  command said nothing", not "there are no bans". (Measured: empty
+  reply on the CI instance.) A console that showed the engine's list
+  would show an empty list while bans were in force.
+
+This is not a workaround. The durable ban list **cannot** live in the
+game server — the engine has no way to hold a ban for a player who is
+not currently connected (§2.5.3) — so the console holding it is the
+design, not a workaround for a mute command.
 
 Two other engine facts the console must respect, for when the ban does
 land:
@@ -392,6 +408,33 @@ land:
 - `banid` only works on a **live** player ("no such player with userid").
 - A ban does **not** disconnect the player unless the command ends with
   `kick`. The console sends `banid <minutes> <uuid> kick`.
+
+### 2.5.5 Is the ban reversible? — Yes
+
+It has to be, and the engine's own source settles each part.
+
+| Question | Answer | Source |
+|---|---|---|
+| Can a ban be lifted? | **Yes** — `removeid <uuid>`. | `SV_RemoveID_f` |
+| Does lifting it need the player to be connected? | **No.** `removeid` matches the filter list by id string; `banid` is the one that needs a live client. | `SV_RemoveID_f` vs `SV_BanID_f` |
+| Does the removal report success? | **No** — `removeid` prints nothing on success (`Con_Reportf` only for the usage line). The console must **verify by re-reading**, not by reply text. | `sv_filter.c` |
+| Do timed bans lift themselves? | **Yes.** `SV_CheckID` — run on every connect — sweeps expired filters out of the list before comparing. | `sv_filter.c:71` |
+| Can the console un-ban? | **Yes.** Its own store is the source of truth; un-ban is a delete, and it tells the engine to forget the id with `removeid`. | — |
+| Can a ban be undone after a restart? | The engine's list is gone, so trivially yes — but that is not a feature. A console-held ban survives the restart, which is the point. | §2.5.3 |
+
+So the ban is reversible in all three senses that matter: **by the
+operator** (`removeid`, works on an offline id), **by time** (a timed
+ban expires and the player can rejoin), and **by the console's own
+store** (a delete, with the engine told to forget the id).
+
+The one asymmetry worth naming: **the engine can only *add* a ban for
+a player who is connected right now.** `banid` walks the live client
+slots and answers `banid: no such player with userid <id>` if nobody
+matches. So the console's flow has to be: the operator bans someone
+**who is on the server** (the common case, and the mock's player list
+is right there), and the console holds the account-keyed record so the
+ban still applies to them when they come back — enforced at the door,
+not by the engine.
 
 ### 2.6 "Squelch" — it exists, and it is not an administrative mute
 
@@ -720,7 +763,9 @@ content to put in the mock's frame.
    one result, no pipes, no `&&`, no history.
 7. **Bans.** The id-ban list and the IP filter, both **read-only**.
    There is no ban action in this release (§2.5) — the panel is there to
-   see what the engine has filtered, not to change it.
+   see what has filtered a player out, not to change it. The IP filter
+   is the engine's (`listip`); the id list is the console's own store,
+   because the engine's `listid` is silent at `developer 1` (§2.5.3).
 
 ### 6.2 The destructive-action rules
 
