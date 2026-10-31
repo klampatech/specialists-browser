@@ -1140,9 +1140,87 @@ one returns the §5 envelope and is confirmed by a re-read.
   have tests — a kick whose target left between the list refresh and
   the click, and a round restart that prints nothing.
 
+What phase 4 actually shipped (2026-10-31): five endpoints —
+`POST /admin/servers/:id/{kick,map,broadcast,restart-round,timelimit}`
+— and every one of them answers with the §5 envelope (`outcome`,
+`command`, `reply`, `detail`, `affected`), needs the session **and**
+the CSRF token, and writes **one** audit line. The kick targets the
+**userid**, never the name (§2.2: `SV_ClientByName` returns the first
+exact match, and the fleet has two players called `Specialist`), the
+broadcast is `say` and nothing else, and the time limit is the only
+setting the console writes.
+
+**The reply is never the evidence; the state after the command is.**
+Each action is confirmed by a re-read: the kick re-reads the player
+list and the userid has to be gone from it; the map change re-reads
+the status and the map has to be the new one; the time limit re-reads
+`mp_timelimit` and it has to carry the new value. The **broadcast has
+no state to re-read** and says so — the engine's own reply is its
+confirmation. The **round restart** re-reads the map timer, which is
+the only clock RCON can see.
+
+**The cached probe is dropped before the re-read, and the re-read
+asks the engine directly.** The fleet probe is cached for five
+seconds (phase 1), so a re-read through that cache would read the
+state from BEFORE the action, and every confirmation would be a lie.
+The TTLs did not move: `invalidate()` is the one door an action opens
+in the cache, and it is opened exactly once per action. A probe that
+was already in flight when the action ran does not put its result
+back into the cache either — it read the world before the action.
+
+**One attempt, always.** The engine's rate limiter takes a token from
+a FAILED attempt only, so a retry loop turns one mistake into a
+lockout of the very engine the console is trying to fix. Every action
+makes exactly ONE mutating attempt; a failed attempt is reported, not
+retried.
+
+**The two traps have tests.** A kick whose target left between the
+list refresh and the click is **refused**, with the engine's own text
+(`Client is not on the server`) — not `done`, and not a crash. A
+round restart that prints nothing is a **success**: the empty reply
+is `no_output`, which the drawer shows in GREEN, because a console
+that treats an empty reply as an error reports every round restart as
+broken.
+
+**And the round restart is honest about what it cannot see.**
+Measured against a live instance on 2026-10-31, `restartround` prints
+nothing AND leaves `mp_timeleft` counting down (866 s → 862 s): the
+port's round restart does not touch the map timer (`rules/frame.rs:53`
+derives `mp_timeleft` from the map clock), and on an FFA server it
+does not act at all (`rules/frame.rs:339` — it acts in the round
+modes or with last man standing, and the fleet has neither). The
+console reads the mode and the flag from the port's own `ts_status`
+header and says so — *a round restart does not apply in Dm without
+last man standing, so the round was not restarted* — instead of
+claiming that a round restarted.
+
+**The UI follows §6.2.** The kick is **one click** with an optional
+reason and **no modal** — it is not destructive, the player
+reconnects — and it is **not a red button**. The map change is the
+**only** action with a modal, and the modal names **how many players
+will be dropped** and that **`server.cfg` will be re-executed**,
+before the click and not after it. The broadcast, the round restart
+and the time limit have no modal at all. The broadcast field says
+that a **multi-word** message reaches the players **with its
+quotes**, because the engine re-quotes every RCON argument, and the
+console does not "fix" it by mangling the message. The time limit is
+written in **minutes**, live, with no restart.
+
+**The drawer carries the confirmation on its own line** where the
+outcome line could not hold it (§6.3's fourth part): `refused` shows
+the engine's own text and the re-read behind it gets its own line,
+and `no_output` says "✓ done — no output" and the measurement gets
+its own line.
+
 **Not in this phase:** the real ban (§2.5) and mute (§2.6). The ban's
 **stub endpoint does ship, in phase 2** — §5.1 — because it never
 touches the engine and it gives the phase-3 UI an endpoint to call.
+
+**And still not in this release: the free-form command box.** It is
+in the API table above, and it is deliberately not built: over RCON
+`banid` works, so a box that could send a second command would hand
+back exactly what the ban hold exists to prevent (§2.5). It needs its
+own decision. The console box stays **disabled** and says so.
 
 ### Phase 5 — Deployment, the secret, and the docs
 The `deploy-services.sh` entry, the Dockerfile, the CI wiring, the

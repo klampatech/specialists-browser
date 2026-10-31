@@ -383,6 +383,17 @@ export function createProbeCache({
   const entries = new Map();
   /** id -> the probe promise currently in flight */
   const inflight = new Map();
+  /**
+   * id -> a generation counter.
+   *
+   * `invalidate()` bumps it, and a probe that was already in flight
+   * when the bump happened does NOT put its result back into the
+   * cache: it read the world before the action, and caching it would
+   * hand the next reader a state that is already wrong. This is why
+   * the counter exists rather than just deleting the entry — deleting
+   * the entry does not un-ring the promise that is already on its way.
+   */
+  const generations = new Map();
 
   const fresh = (id) => {
     const entry = entries.get(id);
@@ -421,6 +432,10 @@ export function createProbeCache({
       const running = inflight.get(id);
       if (running) return running;
 
+      // The generation this probe reads at. If it is bumped while the
+      // probe is in flight, the result is dropped instead of cached.
+      const generation = generations.get(id) ?? 0;
+
       // The probe is started on a microtask, so the in-flight entry is
       // in the map before anything can await it.
       const p = Promise.resolve()
@@ -429,13 +444,25 @@ export function createProbeCache({
           (result) => {
             // The TTL follows the OUTCOME: an instance that answered is
             // worth re-probing soon, one that did not is not.
-            const ok = result?.row?.rcon === 'ok';
-            entries.set(id, { at: now(), ttlMs: ok ? okTtlMs : failTtlMs, result });
-            inflight.delete(id);
+            //
+            // But only if the world was not invalidated under this
+            // probe: an action that changed the instance bumps the
+            // generation, and this probe read the state from BEFORE
+            // that action.
+            if ((generations.get(id) ?? 0) === generation) {
+              const ok = result?.row?.rcon === 'ok';
+              entries.set(id, { at: now(), ttlMs: ok ? okTtlMs : failTtlMs, result });
+            }
+            // Only THIS probe's own entry is cleared. An action may
+            // have dropped the map while this probe was on its way,
+            // and a fresh probe may be running by now — clearing the
+            // map unconditionally would drop THAT one's entry and
+            // let a third probe start underneath it.
+            if (inflight.get(id) === p) inflight.delete(id);
             return result;
           },
           (err) => {
-            inflight.delete(id);
+            if (inflight.get(id) === p) inflight.delete(id);
             throw err;
           },
         );
@@ -444,11 +471,35 @@ export function createProbeCache({
     },
 
     /**
+     * Forget ONE instance's probe.
+     *
+     * This is what a mutating action calls before it re-reads the
+     * instance: the cached probe is the state from BEFORE the action,
+     * and serving it after the action would show the operator a
+     * server that has not changed yet.
+     *
+     * The TTLs do not move. This is not a policy change — it is the
+     * one door in the cache that an action opens, and it is opened
+     * exactly once per action.
+     *
+     * @param {string} id
+     */
+    invalidate(id) {
+      entries.delete(id);
+      // The in-flight probe is dropped as well: it was started before
+      // the action, so it read the world before it. The next reader
+      // starts a fresh one.
+      inflight.delete(id);
+      generations.set(id, (generations.get(id) ?? 0) + 1);
+    },
+
+    /**
      * Forget everything. Used by the tests.
      */
     clear() {
       entries.clear();
       inflight.clear();
+      generations.clear();
     },
   };
 }

@@ -25,10 +25,22 @@
     4. "Signed in as root@neo" becomes "Signed in as admin." The API says
        `user: "admin"` — there is one administrator and no username.
 
-  The write controls — the command box, "Change map", "Say", "Restart
-  round" — ARE rendered, and they are `disabled`: the console shows the
-  operator the shape of what is coming, and it does not pretend. The
-  "Ban list" button is not a write, so it works.
+  PHASE 4: THE WRITE CONTROLS ARE LIVE
+  -----------------------------------
+  "Change map", "Say", "Restart round" and the time limit are LIVE, and
+  so is the player row's KICK. The command box is still `disabled` —
+  the free-form escape hatch is not in this phase, because over RCON
+  `banid` works, and a box that sends a second command would hand back
+  exactly what the ban hold exists to prevent. Its line says so.
+
+  The map change is the ONLY action with a modal (§6.2): it names how
+  many players will be dropped and that `server.cfg` will be
+  re-executed, both of them BEFORE the click. A kick is not
+  destructive — the player reconnects — so it gets no modal, no typed
+  confirmation and no red button.
+
+  The "Ban list" button is not a write: it is a read-only view, and it
+  works.
 
   The login screen is NOT in the mock. It is built in the mock's language:
   the same top and bottom bars, the same brand block, the same void.
@@ -94,22 +106,24 @@
 <div class="maps" id="maps"></div>
 <div class="field">
 <span class="rd" id="modeRd"><span class="k">Mode</span> <span id="modeVal">-</span></span>
-<span class="rd" id="tlRd"><span class="k">Limit</span> <span id="tlVal">-</span></span>
+<span class="rd" id="tlRd"><span class="k">Limit</span> <input id="tlVal" type="number" min="0" max="1440" step="1" value="20" aria-label="Round time limit, in minutes" title="the round length in MINUTES — it is written live, with no restart"><span class="m">min</span></span>
 </div>
-<div class="field"><button class="btn" id="apply" style="flex:1;justify-content:center" disabled title="changing the map arrives with phase 4"><span>Change map</span></button></div>
+<div class="field"><button class="btn ghost" id="tlBtn" style="flex:1;justify-content:center"><span>Set limit</span></button></div>
+<div class="field"><button class="btn" id="apply" style="flex:1;justify-content:center" disabled title="pick a map first"><span>Change map</span></button></div>
 </div>
 
 <div class="head"><h2 class="d">Server</h2></div>
 <div class="card">
-<div class="field" style="margin-top:0"><input class="f" id="say" placeholder="Broadcast message..." aria-label="Broadcast message" disabled title="broadcasting arrives with phase 4"><button class="btn ghost" id="sayBtn" disabled title="broadcasting arrives with phase 4"><span>Say</span></button></div>
-<div class="field"><button class="btn ghost" id="restart" style="flex:1;justify-content:center" disabled title="restarting a round arrives with phase 4"><span>Restart round</span></button><button class="btn ghost" id="banlist" style="flex:1;justify-content:center" aria-expanded="false" aria-controls="banPanel" title="the ban list is READ-ONLY in this release"><span>Ban list <span id="bc">(0)</span></span></button></div>
+<div class="field" style="margin-top:0"><input class="f" id="say" placeholder="Broadcast message..." aria-label="Broadcast message" maxlength="900"><button class="btn ghost" id="sayBtn"><span>Say</span></button></div>
+<div class="hint" id="sayHint">a MULTI-WORD message reaches the players WITH ITS QUOTES &mdash; the engine re-quotes every RCON argument</div>
+<div class="field"><button class="btn ghost" id="restart" style="flex:1;justify-content:center"><span>Restart round</span></button><button class="btn ghost" id="banlist" style="flex:1;justify-content:center" aria-expanded="false" aria-controls="banPanel" title="the ban list is READ-ONLY in this release"><span>Ban list <span id="bc">(0)</span></span></button></div>
 </div>
 </div>
 </div>
 
 <section style="margin-top:8px">
 <div class="head"><h2 class="d">Players</h2><span class="m"><span class="g">&#9679;</span> <span id="plCount"></span> connected</span></div>
-<div class="ptabs" id="ptabs" role="tablist"><button class="ptab" role="tab" data-f="all" aria-selected="true">All</button><button class="ptab" role="tab" data-f="ping" aria-selected="false">High ping</button><input class="psearch" id="psearch" type="search" placeholder="Search name or id  ( / )" aria-label="Search players" autocomplete="off" spellcheck="false"></div>
+<div class="ptabs" id="ptabs" role="tablist"><button class="ptab" role="tab" data-f="all" aria-selected="true">All</button><button class="ptab" role="tab" data-f="ping" aria-selected="false">High ping</button><input class="preason" id="kickReason" type="text" placeholder="kick reason (optional)" aria-label="Kick reason (optional)" maxlength="64" autocomplete="off" spellcheck="false" title="the reason a KICK carries &mdash; it is optional"><input class="psearch" id="psearch" type="search" placeholder="Search name or id  ( / )" aria-label="Search players" autocomplete="off" spellcheck="false"></div>
 <div class="plist" id="plBody"></div>
 </section>
 
@@ -130,6 +144,16 @@
 
 </div>
 </div>
+<!-- THE MAP-CHANGE MODAL. The only modal in the console: a map change
+     disconnects EVERYONE on the instance and re-executes server.cfg, so
+     the modal names the count and the re-execution BEFORE the click
+     (§6.2). The confirm button is RED — a destructive confirm is never
+     green (the signal rule). -->
+<dialog id="mapDlg">
+<h2 class="d" style="font-size:24px;letter-spacing:.1em;color:var(--red)" id="mapTitle">Change map?</h2>
+<p id="mapBody"></p>
+<div class="field" style="margin-top:16px"><button class="btn ghost" id="mapNo" style="flex:1;justify-content:center"><span>Cancel</span></button><button class="btn danger" id="mapYes" style="flex:1;justify-content:center"><span>Change map</span></button></div>
+</dialog>
 <div class="toast" id="toast" role="status"></div>
 <script type="module" src="/admin.js"></script>
 </body>

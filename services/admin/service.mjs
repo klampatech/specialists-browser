@@ -197,6 +197,18 @@ import {
   DEFAULT_AUTH_FILE,
   verifyPasswordAsync,
 } from './lib/auth.mjs';
+import {
+  performBroadcast,
+  performKick,
+  performMapChange,
+  performRestartRound,
+  performTimelimit,
+  validateMap,
+  validateMessage,
+  validateMinutes,
+  validateReason,
+  validateUserid,
+} from './lib/actions.mjs';
 import { createAuditSink, DEFAULT_AUDIT_PATH } from './lib/audit.mjs';
 import { banCapabilities, banUnavailableBody } from './lib/ban.mjs';
 import { createBanStore, ID_BANS_NOTE } from './lib/bans.mjs';
@@ -512,6 +524,7 @@ const STATUS_PATH = /^\/admin\/servers\/([^/]+)\/status$/;
 const BAN_PATH = /^\/admin\/servers\/([^/]+)\/ban$/;
 const MAPS_PATH = /^\/admin\/servers\/([^/]+)\/maps$/;
 const BANS_PATH = /^\/admin\/servers\/([^/]+)\/bans$/;
+const ACTION_PATH = /^\/admin\/servers\/([^/]+)\/(kick|map|broadcast|restart-round|timelimit)$/;
 
 /* ------------------------------------------------------------------ */
 /* the static files                                                    */
@@ -808,6 +821,180 @@ export function createAdminService(opts = {}) {
   }
 
   /**
+   * THE FIVE MUTATING ACTIONS.
+   *
+   * Kick, map change, broadcast, restart round and the time limit.
+   * Every one of them:
+   *
+   *   - needs the session (the gate above) and the CSRF token (the
+   *     check above) — the ban stub was the proof that the gate
+   *     works, and these are what it was a proof FOR;
+   *   - makes EXACTLY ONE attempt against the engine. The engine's
+   *     rate limiter takes a token from a FAILED attempt only, so a
+   *     retry turns one mistake into a lockout of the engine the
+   *     console is trying to fix. A failed attempt is reported, not
+   *     retried;
+   *   - is confirmed by a RE-READ of the server, never by its own
+   *     reply — except the broadcast, which has no state to re-read
+   *     and says so (docs/ADMIN-CONSOLE.md §5);
+   *   - answers with the §5 envelope, and
+   *   - writes ONE audit line.
+   *
+   * THE CACHE IS DROPPED BEFORE THE RE-READ. The fleet probe is
+   * cached for five seconds on an instance that answered, so a
+   * re-read through the cache would read the state from BEFORE the
+   * action — and every confirmation would be a lie. The cached probe
+   * is dropped as part of the action, and the re-read asks the engine
+   * directly.
+   *
+   * The audit line is the ACTION'S, and it carries the outcome the
+   * envelope carries. The target is the instance and the thing acted
+   * on (`ts-0#165`, `ts-0/ts_hideout`, `ts-0/20`) — never the
+   * operator's own words, because a reason or a message is prose and
+   * the audit line is about events.
+   */
+  const ACTIONS = {
+    kick: {
+      audit: 'kick',
+      validate(body) {
+        const userid = validateUserid(body.userid);
+        if (!userid.ok) return userid;
+        const reason = validateReason(body.reason);
+        if (!reason.ok) return reason;
+        return { ok: true, value: { userid: userid.value, reason: reason.value } };
+      },
+      target(instance, value) {
+        return `${instance.id}#${value.userid}`;
+      },
+      run(ask, invalidate, value) {
+        return performKick({
+          ask,
+          invalidate,
+          userid: value.userid,
+          reason: value.reason,
+        });
+      },
+    },
+    map: {
+      audit: 'map',
+      validate(body) {
+        return validateMap(body.map);
+      },
+      target(instance, value) {
+        return `${instance.id}/${value}`;
+      },
+      run(ask, invalidate, value) {
+        return performMapChange({ ask, invalidate, map: value });
+      },
+    },
+    broadcast: {
+      audit: 'broadcast',
+      validate(body) {
+        return validateMessage(body.message);
+      },
+      target(instance) {
+        return instance.id;
+      },
+      run(ask, invalidate, value) {
+        return performBroadcast({ ask, invalidate, message: value });
+      },
+    },
+    'restart-round': {
+      audit: 'restart-round',
+      validate() {
+        return { ok: true, value: null };
+      },
+      target(instance) {
+        return instance.id;
+      },
+      run(ask, invalidate) {
+        return performRestartRound({ ask, invalidate });
+      },
+    },
+    timelimit: {
+      audit: 'timelimit',
+      validate(body) {
+        return validateMinutes(body.minutes);
+      },
+      target(instance, value) {
+        return `${instance.id}/${value}`;
+      },
+      run(ask, invalidate, value) {
+        return performTimelimit({ ask, invalidate, minutes: value });
+      },
+    },
+  };
+
+  /**
+   * ONE MUTATING ACTION, END TO END.
+   *
+   * The order is the one the spec fixes:
+   *
+   *   1. THE BODY. A body that is not JSON is a 400.
+   *   2. THE FIELD. A field that is not allowed is a 400, and the
+   *      answer says which rule it broke.
+   *   3. THE ACTION. One attempt against the engine, then the
+   *      re-read. The cached probe is dropped as part of it.
+   *   4. THE AUDIT LINE. One line, with the outcome.
+   *   5. THE ENVELOPE. A 200: the action happened, or it did not,
+   *      and the envelope says which.
+   *
+   * A request that never reached the engine is still audited — a
+   * refusal that leaves no trace is a refusal nobody can learn from.
+   *
+   * @param {http.IncomingMessage} req
+   * @param {http.ServerResponse} res
+   * @param {object} instance the instance the action is about
+   * @param {string} kind which of the five actions it is
+   * @returns {Promise<void>}
+   */
+  async function handleAction(req, res, instance, kind) {
+    const spec = ACTIONS[kind];
+
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      writeAudit(spec.audit, instance.id, 'rejected');
+      sendJson(res, 400, {
+        error: 'bad_request',
+        detail: 'the request body is not JSON',
+      });
+      return;
+    }
+
+    const check = spec.validate(body ?? {});
+    if (!check.ok) {
+      writeAudit(spec.audit, instance.id, 'rejected');
+      sendJson(res, 400, { error: 'bad_request', detail: check.error });
+      return;
+    }
+
+    let envelope;
+    try {
+      envelope = await spec.run(
+        askFor(instance),
+        () => cache.invalidate(instance.id),
+        check.value,
+      );
+    } catch (err) {
+      // The ACTION threw — a bug in the console, not a refusal by the
+      // engine. It must not take the service down, and it must not be
+      // reported as the engine's answer either.
+      console.error(`admin: the ${kind} action failed: ${err?.message ?? err}`);
+      writeAudit(spec.audit, instance.id, 'error');
+      sendJson(res, 500, {
+        error: 'internal_error',
+        detail: String(err?.message ?? err),
+      });
+      return;
+    }
+
+    writeAudit(spec.audit, spec.target(instance, check.value), envelope.outcome);
+    sendJson(res, 200, envelope);
+  }
+
+  /**
    * The login.
    *
    * The order of the checks is the point:
@@ -1030,7 +1217,12 @@ export function createAdminService(opts = {}) {
     // method is wrong. The order is the one the spec fixes:
     // session (401) → CSRF token (403) → the endpoint (501).
     const banMatch = BAN_PATH.exec(path);
-    const needsCsrf = mutating || banMatch !== null;
+    const actionMatch = ACTION_PATH.exec(path);
+    // The action paths are mutating paths WHATEVER THE METHOD SAYS,
+    // for the same reason the ban path is: the whole purpose of the
+    // path is a mutation, so a request to it has to carry the token
+    // even when the method is wrong.
+    const needsCsrf = mutating || banMatch !== null || actionMatch !== null;
 
     if (needsCsrf && !csrfMatches(session.csrfToken, req.headers[CSRF_HEADER])) {
       // This is only reached WITH a valid session, so the 403 does
@@ -1063,6 +1255,45 @@ export function createAdminService(opts = {}) {
       req.resume();
       writeAudit('ban', safeDecode(banMatch[1]), 'unavailable');
       sendJson(res, 501, banUnavailableBody());
+      return;
+    }
+
+    // THE FIVE MUTATING ACTIONS.
+    //
+    // They are POSTs, they need the CSRF token (checked above), and
+    // they answer with the §5 envelope — a 200 whatever the outcome,
+    // because the envelope IS the answer: `done`, `no_output`,
+    // `refused`, `no_reply` or `not_confirmed`.
+    if (actionMatch) {
+      if (method !== 'POST') {
+        res.setHeader('Allow', 'POST');
+        sendJson(res, 405, {
+          error: 'method_not_allowed',
+          detail: `${method} is not allowed on ${path}; this action is a POST`,
+        });
+        return;
+      }
+
+      let id;
+      try {
+        id = decodeURIComponent(actionMatch[1]);
+      } catch {
+        sendJson(res, 400, {
+          error: 'bad_request',
+          detail: 'the server id is not a valid percent-encoded path segment',
+        });
+        return;
+      }
+      const instance = instances.find((i) => i.id === id);
+      if (!instance) {
+        sendJson(res, 404, {
+          error: 'unknown_server',
+          detail: `no instance '${id}' in the configured port range`,
+        });
+        return;
+      }
+
+      await handleAction(req, res, instance, actionMatch[2]);
       return;
     }
 

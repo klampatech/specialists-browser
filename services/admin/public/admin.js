@@ -12,18 +12,33 @@
  * WHAT THE CONSOLE DOES, AND WHAT IT DOES NOT
  * --------------------------------------------
  * It READS: the fleet, one instance's status, its players, its map
- * list and its bans. It WRITES NOTHING. The command box, "Change map",
- * "Say" and "Restart round" are rendered and disabled — the console
- * shows the operator the shape of what is coming and it does not
- * pretend (§7 phase 3).
+ * list and its bans.
+ *
+ * And in phase 4 it WRITES, five ways: KICK (on a player row), the map
+ * change, the broadcast, the round restart and the time limit. Every
+ * one of them is confirmed by a RE-READ of the server, and every one
+ * of them lands in the output drawer (§6.3).
+ *
+ * THE COMMAND BOX IS STILL DISABLED, and that is not an oversight.
+ * The free-form box is in the spec's API table and it is NOT in this
+ * phase: over RCON, `banid` works, so a box that would send a second
+ * command would hand back exactly what the ban hold exists to
+ * prevent. It needs its own decision.
+ *
+ * THE KICK IS NOT DESTRUCTIVE, SO IT GETS NO MODAL. The player
+ * reconnects. One click, an optional reason, and the engine's own
+ * outcome in the drawer (§6.2). The MAP CHANGE is the only action
+ * with a modal, because a map change disconnects EVERYONE on the
+ * instance and re-executes `server.cfg` — so the modal names the
+ * count and the re-execution before the click.
  *
  * THE CSRF TOKEN LIVES IN THE PAGE, AND NOWHERE ELSE
  * --------------------------------------------------
  * The session cookie is HttpOnly, so the page cannot read it, and the
  * token does not need to: the cookie alone authenticates a read. The
  * CSRF token is a SECOND secret, and it lives in this module's memory
- * — never in a cookie, never in localStorage, never in the URL. It is
- * only needed for a mutating request, and phase 3 has none.
+ * — never in a cookie, never in localStorage, never in the URL. It
+ * goes on every request that mutates, and on nothing else.
  *
  * ONE POLL INTERVAL, AND IT IS NOT FASTER THAN THE CACHE
  * ------------------------------------------------------
@@ -59,6 +74,17 @@ const POLL_MS = 5_000;
 /** How often the map list and the IP filter are read. */
 const SLOW_READ_MS = 30_000;
 
+/**
+ * How long the map button stays out of reach after a map change.
+ *
+ * A `changelevel` drops everybody on the instance and the engine
+ * loads the map over the next frames. A second `changelevel` in the
+ * middle of that load is a way to leave an instance in a state
+ * nobody asked for, so the console waits a moment before it will
+ * offer another one.
+ */
+const MAP_COOLDOWN_MS = 5_000;
+
 /** The ping above which a player is "high ping". */
 const HIGH_PING_MS = 100;
 
@@ -80,6 +106,17 @@ const state = {
   selected: null,
   /** The selected instance's status document. */
   status: null,
+  /**
+   * The instance `state.status` belongs to.
+   *
+   * THE STATUS BELONGS TO ONE INSTANCE, and the console has to know
+   * which one. A map change names how many players it is about to
+   * drop, and that number has to be the SELECTED instance's — the
+   * moment the selection changes, the old instance's status is
+   * gone, and until the new one is read the console has no number
+   * to name. The map button waits for it.
+   */
+  statusId: null,
   /** The selected instance's player document. */
   players: null,
   /** The selected instance's map document. */
@@ -96,10 +133,29 @@ const state = {
   log: [],
   /** When the last slow read happened. */
   lastSlow: 0,
+  /** The map the "Change map" button would change to. */
+  mapChoice: null,
+  /** Has the operator picked a map? */
+  mapPicked: false,
+  /** The instance's map, as the console last read it. */
+  mapCurrent: null,
+  /** When the map button may be used again (the engine's own rule). */
+  mapCooldownUntil: 0,
 };
 
 /** The last payload of each polled read, for the "did it change" test. */
 const seen = { fleet: null, status: null, players: null, maps: null, bans: null };
+
+/**
+ * The actions that are in flight.
+ *
+ * A double click must not fire one action twice: a second `kick` for
+ * a player who has already gone is refused by the engine, and a
+ * second `changelevel` in the middle of a map load is a way to leave
+ * an instance in a state nobody asked for. The console guards it
+ * here, in one place, rather than in five click handlers.
+ */
+const inflight = new Set();
 
 /** The poll timer. */
 let pollTimer = null;
@@ -179,9 +235,11 @@ function toast(text) {
  * @param {string} outcome the outcome, in the spec's vocabulary
  * @param {string} cls the outcome's class: `ok`, `er`, `wn`, `t`
  * @param {string} [raw] the engine's own text, when there is one
+ * @param {string} [conf] the confirmation, when the outcome line
+ *   could not carry it (§6.3's fourth part)
  */
-function drawer(cmd, echo, outcome, cls, raw) {
-  state.log.push({ at: stamp(), cmd, echo, outcome, cls, raw });
+function drawer(cmd, echo, outcome, cls, raw, conf) {
+  state.log.push({ at: stamp(), cmd, echo, outcome, cls, raw, conf });
   // The drawer is the console's history. It is bounded, so a console
   // left open for a week does not grow a million entries.
   if (state.log.length > 200) state.log.splice(0, state.log.length - 200);
@@ -200,6 +258,7 @@ function renderLog() {
         `<div><span class="t">[${esc(e.at)}]</span> ${esc(e.cmd)}</div>` +
         `<div class="in">▸ ${esc(e.echo)}</div>` +
         `<div class="${e.cls}">${esc(e.outcome)}</div>` +
+        (e.conf ? `<div class="conf ${e.cls}">${esc(e.conf)}</div>` : '') +
         (e.raw ? `<div class="raw">${esc(e.raw)}</div>` : '') +
         `</div>`,
     )
@@ -228,16 +287,19 @@ class SessionGone extends Error {}
  */
 async function api(path, opts = {}) {
   const headers = {};
+  const method = opts.method ?? 'GET';
   if (opts.body !== undefined) headers['Content-Type'] = 'application/json';
-  // The CSRF token goes on a MUTATING request and on nothing else.
-  // Phase 3 has none, so the token stays where it is — in this
-  // module's memory — and never goes out on the wire.
-  if (state.csrf && opts.body !== undefined) headers['X-CSRF-Token'] = state.csrf;
+  // The CSRF token goes on a MUTATING request and on nothing else. It
+  // stays where it is — in this module's memory — and never goes out
+  // on the wire for a read.
+  if (state.csrf && method !== 'GET' && method !== 'HEAD') {
+    headers['X-CSRF-Token'] = state.csrf;
+  }
 
   let res;
   try {
     res = await fetch(path, {
-      method: opts.method ?? 'GET',
+      method,
       headers,
       credentials: 'same-origin',
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
@@ -394,6 +456,7 @@ function sessionGone() {
   state.csrf = null;
   state.fleet = null;
   state.status = null;
+  state.statusId = null;
   state.players = null;
   state.maps = null;
   state.bans = null;
@@ -607,6 +670,8 @@ async function readStatus(log = false) {
   if (!state.selected) return null;
   const body = await api(`/admin/servers/${encodeURIComponent(state.selected)}/status`);
   state.status = body;
+  // The status is the SELECTED instance's, and it says which one.
+  state.statusId = state.selected;
   const isNew = changed('status', statusShape(body));
   if (log || isNew) {
     drawer(
@@ -850,12 +915,26 @@ function renderStatus() {
   $('mapTimer').textContent = left === null || left === undefined ? '' : `· ${mmss(left)} left`;
   $('modeVal').textContent = s?.mode ?? fleetRow?.mode ?? '—';
   const limit = s?.timeLimitMinutes ?? fleetRow?.timeLimitMinutes ?? null;
-  $('tlVal').textContent = limit === null || limit === undefined ? '—' : `${limit} min`;
+  // THE TIME LIMIT IS A FIELD, and it is a field the operator can
+  // type into — so the poll does NOT overwrite it while it has the
+  // focus. A console that rewrote the number under the operator's
+  // cursor would be writing to the field they were editing.
+  const tl = $('tlVal');
+  if (tl && document.activeElement !== tl) {
+    tl.value = limit === null || limit === undefined ? '' : String(limit);
+  }
+  // The map choice follows the instance's map until the operator
+  // picks one, and the "Change map" button says whether there is
+  // anything to do.
+  if (syncMapChoice(map ?? null)) renderMaps();
+  renderMapChoice();
 }
 
 /**
- * The map list. A VIEW in phase 3: the buttons are disabled, and the
- * current map is the one that is pressed.
+ * The map list. SELECTABLE in phase 4, in the mock's own idiom: a
+ * click PICKS the map, the picked map carries `aria-pressed`, and
+ * the "Change map" button applies it. The map that is RUNNING is in
+ * the header above the list.
  */
 function renderMaps() {
   const el = $('maps');
@@ -870,7 +949,7 @@ function renderMaps() {
   el.innerHTML = list
     .map(
       (m) =>
-        `<button class="map" type="button" disabled aria-pressed="${m === current}" ` +
+        `<button class="map" type="button" data-map="${esc(m)}" aria-pressed="${m === state.mapChoice}" ` +
         `title="${esc(m)}${m === current ? ' — the current map' : ''}">${esc(m)}</button>`,
     )
     .join('');
@@ -954,8 +1033,16 @@ function fragsOf(p) {
  * One player row.
  *
  * The engine's own columns — slot, name, userid, uniqueid, frags,
- * time, ping, loss — and NO row action: a kick is phase 4, and a ban
- * does not exist in this release (§2.5).
+ * time, ping, loss — and ONE row action: KICK.
+ *
+ * The kick button is NOT RED. A kick is not destructive: the player
+ * reconnects, so it gets the mock's own small action button with its
+ * amber hover, and no modal and no typed confirmation (§6.2). The
+ * ban button is not here: there is no ban in this release (§2.5).
+ *
+ * The button carries the USERID and not the name, because that is
+ * what the engine resolves — `SV_ClientByName` returns the first
+ * exact match, and the fleet has two players called `Specialist`.
  *
  * @param {object} p the engine's row
  * @param {number} rank the position in the ranked list
@@ -982,6 +1069,9 @@ function playerRow(p, rank) {
     `<div class="pstat time"><b>${esc(time)}</b><span class="m">Time</span></div>` +
     `<div class="pstat p${high ? ' w' : ''}"><b>${esc(p.ping ?? 0)}</b><span class="m">Ping</span></div>` +
     `<div class="pstat p hide-sm${(p.loss ?? 0) > 0 ? ' w' : ''}"><b>${esc(p.loss ?? 0)}</b><span class="m">Loss</span></div>` +
+    `<div class="pacts"><button class="act k" type="button" data-a="kick" ` +
+    `data-uid="${esc(p.userid ?? '')}" data-name="${esc(p.name ?? '')}" ` +
+    `title="kick userid ${esc(p.userid ?? '')} — the player reconnects">Kick</button></div>` +
     `</div>`
   );
 }
@@ -1018,6 +1108,367 @@ function renderBans() {
 }
 
 /* ------------------------------------------------------------------ */
+/* the actions                                                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * THE FIVE ACTIONS, AND THE ONE RULE THEY SHARE
+ * ---------------------------------------------
+ * The envelope is the answer (§5), and the drawer is where it lands
+ * (§6.3). The console does NOT decide what happened — the service
+ * does, by re-reading the server, and the console shows the five
+ * outcomes in the spec's own words:
+ *
+ *   done           ✓ done — <what the re-read found>
+ *   no_output      ✓ done — no output
+ *   refused        ✗ <the engine's own text>
+ *   no_reply       ✗ no reply — <the likely cause>
+ *   not_confirmed  ⚠ sent, but <what did not change>
+ *
+ * `no_output` is GREEN. The command ran, it printed nothing, and
+ * there was nothing to observe — and a console that showed it in red
+ * would report every such command as broken.
+ */
+
+/**
+ * The outcome's line.
+ *
+ * @param {object} env the envelope
+ * @returns {string}
+ */
+function outcomeLine(env) {
+  const detail = String(env?.detail ?? '').trim();
+  switch (env?.outcome) {
+    case 'done':
+      return `✓ done — ${detail}`;
+    case 'no_output':
+      return '✓ done — no output';
+    case 'refused':
+      // The engine's OWN text. It is the most useful thing in the
+      // drawer, so it is shown verbatim rather than paraphrased.
+      return `✗ ${String(env?.reply ?? '').trim() || detail}`;
+    case 'no_reply':
+      return `✗ no reply — ${detail}`;
+    case 'not_confirmed':
+      return `⚠ sent, but ${detail}`;
+    default:
+      return `✗ ${detail || String(env?.outcome ?? 'unknown')}`;
+  }
+}
+
+/**
+ * The outcome's class.
+ *
+ * GREEN IS FOR THINGS THAT WORK, and never an error surface.
+ * `done` and `no_output` are both successes; `not_confirmed` is a
+ * warning; everything else is an error.
+ *
+ * @param {string} outcome
+ * @returns {string} `ok`, `wn` or `er`
+ */
+function outcomeClass(outcome) {
+  if (outcome === 'done' || outcome === 'no_output') return 'ok';
+  if (outcome === 'not_confirmed') return 'wn';
+  return 'er';
+}
+
+/**
+ * The confirmation, when the outcome line could not carry it.
+ *
+ * §6.3's four parts are: the timestamp, the command echoed, the
+ * outcome, and the confirmation — and the confirmation is always a
+ * re-read of the server's state, phrased in the past tense.
+ *
+ * Three of the five outcomes put the confirmation IN the outcome
+ * line — `done` says "✓ done — userid 165 is no longer connected",
+ * `no reply` says "✗ no reply — <why>", `not confirmed` says "⚠
+ * sent, but <what did not change>" — so repeating it would be
+ * noise. The other two have an outcome line of their own:
+ *
+ *   - `refused` shows the ENGINE's own text, which is the most
+ *     useful thing in the drawer, and the re-read behind it gets
+ *     its own line;
+ *   - `no output` says "✓ done — no output", and what the console
+ *     measured gets its own line.
+ *
+ * @param {object} env the envelope
+ * @returns {string}
+ */
+function confirmationOf(env) {
+  const detail = String(env?.detail ?? '').trim();
+  if (!detail) return '';
+  if (env?.outcome === 'done' || env?.outcome === 'no_reply') return '';
+  if (env?.outcome === 'not_confirmed') return '';
+  return detail;
+}
+
+/**
+ * The engine's own reply, for the drawer's raw line.
+ *
+ * It is shown when the engine said something — a kick prints four
+ * lines and they are the evidence — and it is NOT repeated when the
+ * outcome line already IS that text.
+ *
+ * @param {object} env
+ * @returns {string}
+ */
+function rawOf(env) {
+  const reply = String(env?.reply ?? '').trim();
+  if (!reply) return '';
+  if (env?.outcome === 'refused' && reply.split('\n').length === 1) return '';
+  return reply;
+}
+
+/**
+ * The endpoint for one action on the selected instance.
+ *
+ * @param {string} action the action's path segment
+ * @returns {string}
+ */
+function actionPath(action) {
+  return `/admin/servers/${encodeURIComponent(state.selected ?? '')}/${action}`;
+}
+
+/**
+ * ONE ACTION, END TO END.
+ *
+ * A POST with the CSRF token, and the answer is the §5 envelope. The
+ * envelope lands in the drawer in §6.3's four parts — the timestamp,
+ * the command echoed, the outcome and the confirmation — and the
+ * console re-reads itself afterwards so the shell shows the state the
+ * action produced.
+ *
+ * A FAILED ACTION IS NOT RETRIED HERE. The engine's rate limiter
+ * takes a token from a FAILED attempt only, so a retry loop turns one
+ * mistake into a lockout of the very engine the operator is trying
+ * to fix. The console reports what happened and stops; the operator
+ * decides what to do next.
+ *
+ * @param {string} label the action, in the console's own words
+ * @param {string} path the endpoint
+ * @param {object|null} body the request body
+ * @returns {Promise<object|null>} the envelope, or null when the
+ *   request itself did not get through
+ */
+async function act(label, path, body) {
+  if (inflight.has(path)) {
+    toast('that action is already running');
+    return null;
+  }
+  inflight.add(path);
+  let env = null;
+  try {
+    env = await api(path, { method: 'POST', body: body ?? {} });
+  } catch (err) {
+    if (!(err instanceof SessionGone)) {
+      drawer(label, path, `✗ ${err.message}`, 'er');
+    }
+    return null;
+  } finally {
+    inflight.delete(path);
+  }
+  drawer(
+    label,
+    env?.command ?? label,
+    outcomeLine(env),
+    outcomeClass(env?.outcome),
+    rawOf(env),
+    confirmationOf(env),
+  );
+  return env;
+}
+
+/**
+ * THE KICK.
+ *
+ * ONE CLICK, an optional reason, and NO MODAL: a kick is not
+ * destructive, because the player reconnects (§6.2). The target is
+ * the USERID and never the name — `SV_ClientByName` returns the
+ * first exact match, and the fleet has two players called
+ * `Specialist`.
+ *
+ * The reason comes out of the one field in the player list's header,
+ * and it is cleared after a kick that worked, so the NEXT kick does
+ * not silently carry this one's reason.
+ *
+ * @param {string} userid
+ */
+async function doKick(userid) {
+  const reason = ($('kickReason')?.value ?? '').trim();
+  const env = await act(`kick #${userid}`, actionPath('kick'), {
+    userid: Number(userid),
+    reason,
+  });
+  if (env && (env.outcome === 'done' || env.outcome === 'no_output')) {
+    $('kickReason').value = '';
+  }
+  await refresh(false);
+}
+
+/**
+ * THE BROADCAST.
+ *
+ * The message goes out as it is. The console does NOT re-quote it
+ * and does NOT mangle it: the engine re-quotes every RCON argument
+ * itself, so a multi-word message reaches the players WITH ITS
+ * QUOTES — and the field says so, before the message is sent, so
+ * nobody is surprised by it in a public channel.
+ */
+async function doBroadcast() {
+  const message = ($('say')?.value ?? '').trim();
+  if (!message) {
+    toast('the message is empty');
+    return;
+  }
+  const env = await act('broadcast', actionPath('broadcast'), { message });
+  if (env && (env.outcome === 'done' || env.outcome === 'no_output')) {
+    $('say').value = '';
+  }
+  await refresh(false);
+}
+
+/**
+ * THE ROUND RESTART.
+ *
+ * The port's `restartround` prints NOTHING, and that is a success.
+ * The round it would restart is not visible over RCON, so the
+ * confirmation is the map timer, re-read — and on the deployed
+ * fleet the clock does not move, because the port's round restart
+ * does not apply in FFA. That is `no output`, GREEN, and the drawer
+ * says why. The console does not decide any of that here: the
+ * service re-reads and says, and the drawer shows what it said.
+ */
+async function doRestartRound() {
+  await act('restart round', actionPath('restart-round'), null);
+  await refresh(false);
+}
+
+/**
+ * THE TIME LIMIT.
+ *
+ * The only setting the console writes: `mp_timelimit`, in MINUTES,
+ * live and with no restart. The confirmation is the cvar, re-read.
+ */
+async function doTimelimit() {
+  const raw = ($('tlVal')?.value ?? '').trim();
+  const minutes = Number(raw);
+  if (raw === '' || !Number.isInteger(minutes) || minutes < 0 || minutes > 1440) {
+    toast('the time limit must be 0 to 1440 minutes');
+    return;
+  }
+  await act('time limit', actionPath('timelimit'), { minutes });
+  await refresh(false);
+}
+
+/**
+ * THE MAP CHANGE — the only action with a modal.
+ *
+ * The modal names TWO facts before the click, and both are about the
+ * server: how many players will be dropped, and that `server.cfg`
+ * will be re-executed. A map change disconnects EVERYONE on the
+ * instance, and that reconnect is the exact moment the browser
+ * engine has been aborting with an OOM, so the operator is told what
+ * it costs BEFORE it costs it (§6.2).
+ *
+ * @param {string} map the map that was picked
+ */
+function openMapDialog(map) {
+  const players = state.status?.players ?? 0;
+  $('mapTitle').textContent = `Change map to ${map}?`;
+  $('mapBody').innerHTML =
+    `<b>${esc(players)}</b> ${players === 1 ? 'player' : 'players'} will be dropped ` +
+    `from <b>${esc(state.selected ?? '')}</b>.` +
+    `<span class="warnline"><b>server.cfg</b> will be re-executed — the instance ` +
+    `reloads it and everybody reconnects.</span>`;
+  $('mapDlg').dataset.map = map;
+  $('mapDlg').showModal();
+}
+
+/**
+ * The map change, confirmed.
+ *
+ * The button is disabled for a moment afterwards: the engine is
+ * loading a map, and a second `changelevel` in the middle of that is
+ * a way to leave an instance in a state nobody asked for.
+ */
+async function confirmMapChange() {
+  const map = $('mapDlg').dataset.map;
+  $('mapDlg').close();
+  if (!map) return;
+  state.mapCooldownUntil = Date.now() + MAP_COOLDOWN_MS;
+  renderMapChoice();
+  const env = await act('map', actionPath('map'), { map });
+  if (env && (env.outcome === 'done' || env.outcome === 'no_output')) {
+    // The choice follows the server now: the picked map IS the map.
+    state.mapPicked = false;
+    state.mapChoice = map;
+    state.mapCurrent = map;
+  }
+  await refresh(false);
+}
+
+/**
+ * The map the console would change to, and the button that does it.
+ *
+ * The button is DISABLED when there is nothing to do — no map picked,
+ * or the picked map is the one already running — and it is disabled
+ * again for a moment after a change, because the engine is loading a
+ * map and a second `changelevel` in the middle of that is a way to
+ * leave an instance in a state nobody asked for.
+ */
+function renderMapChoice() {
+  const btn = $('apply');
+  if (!btn) return;
+  const current = state.status?.map ?? state.mapCurrent ?? null;
+  const choice = state.mapChoice;
+  const cooling = Date.now() < state.mapCooldownUntil;
+  // THE BUTTON WAITS FOR THE INSTANCE. The modal names how many
+  // players the change is about to drop, and that number is the
+  // SELECTED instance's — so the button stays out of reach until the
+  // console has read that instance's status. A button that opened a
+  // modal with the PREVIOUS instance's number would be a lie, and
+  // the operator would act on it.
+  const loaded = state.statusId !== null && state.statusId === state.selected;
+  const nothing = !choice || !current || choice === current;
+  btn.disabled = !loaded || nothing || cooling;
+  btn.title = !loaded
+    ? 'reading the instance — wait a moment'
+    : nothing
+      ? 'pick a map first'
+      : cooling
+        ? 'the instance is loading the map — wait a moment'
+        : `change the map to ${choice}`;
+}
+
+/**
+ * Keep the map choice honest.
+ *
+ * The choice follows the instance's map until the operator picks
+ * one: the mock starts with the current map selected, and a console
+ * that left a stale selection behind would offer to change the map
+ * to the map that is already running.
+ *
+ * @param {string|null} current the instance's map
+ * @returns {boolean} whether the choice moved
+ */
+function syncMapChoice(current) {
+  if (!current) return false;
+  let moved = false;
+  if (state.mapCurrent !== current) {
+    state.mapCurrent = current;
+    if (!state.mapPicked) {
+      state.mapChoice = current;
+      moved = true;
+    }
+  }
+  if (!state.mapChoice) {
+    state.mapChoice = current;
+    moved = true;
+  }
+  return moved;
+}
+
+/* ------------------------------------------------------------------ */
 /* the events                                                           */
 /* ------------------------------------------------------------------ */
 
@@ -1034,6 +1485,19 @@ async function select(id) {
   state.selected = id;
   state.maps = null;
   state.bans = null;
+  // The old instance's status and player list belong to the old
+  // instance. They are dropped here, because a map change has to
+  // name the SELECTED instance's player count and nothing else will
+  // do: the moment the selection moves, the console has no status
+  // for the new instance until it reads one.
+  state.status = null;
+  state.statusId = null;
+  state.players = null;
+  // The map choice belongs to the instance that was left.
+  state.mapChoice = null;
+  state.mapPicked = false;
+  state.mapCurrent = null;
+  state.mapCooldownUntil = 0;
   seen.status = null;
   seen.players = null;
   state.lastSlow = 0;
@@ -1080,6 +1544,52 @@ function wire() {
       e.target.blur();
     }
   });
+
+  // THE KICK. One click, an optional reason from the field above the
+  // list, and NO MODAL: the player reconnects (§6.2).
+  $('plBody').addEventListener('click', (e) => {
+    const btn = e.target.closest('.act[data-a="kick"]');
+    if (!btn) return;
+    const userid = btn.dataset.uid;
+    if (!userid) return;
+    btn.disabled = true;
+    doKick(userid);
+  });
+
+  // THE MAP LIST PICKS THE MAP, the way the mock does it, and the
+  // "Change map" button applies the pick through the modal.
+  $('maps').addEventListener('click', (e) => {
+    const btn = e.target.closest('.map[data-map]');
+    if (!btn) return;
+    state.mapChoice = btn.dataset.map;
+    state.mapPicked = true;
+    renderMaps();
+    renderMapChoice();
+  });
+
+  $('apply').addEventListener('click', () => {
+    const map = state.mapChoice;
+    const current = state.status?.map ?? state.mapCurrent ?? null;
+    if (!map || map === current) return;
+    openMapDialog(map);
+  });
+  $('mapNo').addEventListener('click', () => $('mapDlg').close());
+  $('mapYes').addEventListener('click', confirmMapChange);
+
+  // THE BROADCAST.
+  $('sayBtn').addEventListener('click', doBroadcast);
+  $('say').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      doBroadcast();
+    }
+  });
+
+  // THE ROUND RESTART. It prints nothing, and that is a success.
+  $('restart').addEventListener('click', doRestartRound);
+
+  // THE TIME LIMIT. Minutes, live, with no restart.
+  $('tlBtn').addEventListener('click', doTimelimit);
 
   // The mock's "/" shortcut.
   document.addEventListener('keydown', (e) => {

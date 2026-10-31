@@ -16,23 +16,29 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-31, branch `feat/admin-console-phase3` — **the admin
-console's PHASE 3 (THE READ-ONLY UI) IS BUILT**, on top of phase 2
-(the password, the session, the lockout, the CSRF token, the audit
-line and `adminctl`) and phase 1 (the RCON client, the fleet discovery
-and the read-only API, reviewed and merged into this branch), and on
-top of the specification in `docs/ADMIN-CONSOLE.md` (PR #104, awaiting
-Kyle's approval). The console now has a **page**: Kyle's own mock,
-which is the design contract, served by the admin service itself and
-wired to the API — the login screen, the shell, the fleet switcher,
-the status bar, the player list, the map list, the bans list and the
-output drawer. **It reads everything and writes nothing**: the command
-box, "Change map", "Say" and "Restart round" are rendered and
-disabled, and the one mutating endpoint that exists (the ban stub) is
-still a 501. Everything else below is unchanged from the 2026-10-29
-state: the client caps the tick rate the engine is offered, the
-character picker and the pre-join identity modal are LIVE in
-production, and the game server image is `ts-server:0.27`.
+**As of:** 2026-10-31, branch `feat/admin-console-phase4` — **the admin
+console's PHASE 4 (THE MUTATING ACTIONS) IS BUILT**, on top of phase 3
+(the read-only UI, on Kyle's own mock), phase 2 (the password, the
+session, the lockout, the CSRF token, the audit line and `adminctl`)
+and phase 1 (the RCON client, the fleet discovery and the read-only
+API), and on top of the specification in `docs/ADMIN-CONSOLE.md`
+(PR #104, awaiting Kyle's approval). **The console can now touch a
+live server**: five endpoints — kick, map change, broadcast, restart
+round and the time limit — each one behind the session gate and the
+CSRF token, each one writing one audit line, and each one answering
+with the §5 envelope. **Every action is confirmed by a re-read, never
+by its own reply**; the cached probe is dropped before that re-read,
+and a failed RCON call is reported and never retried. The UI follows
+§6.2: the kick is one click with an optional reason and **no modal**
+and is **not a red button**, the map change is the **only** action
+with a modal (it names the player count and `server.cfg` before the
+click), and the broadcast, the round restart and the time limit are
+live with no modal. **The free-form command box is still disabled** —
+over RCON `banid` works — and the ban stub is still a 501. Everything
+else below is unchanged from the 2026-10-29 state: the client caps
+the tick rate the engine is offered, the character picker and the
+pre-join identity modal are LIVE in production, and the game server
+image is `ts-server:0.27`.
 
 ## The admin console is specified (PR #104, 2026-10-31)
 
@@ -721,6 +727,171 @@ returning the §5 envelope and confirmed by a re-read. The contract is
 `docs/ADMIN-CONSOLE.md` §5 and §6, and the two traps are a kick whose
 target left between the list refresh and the click, and a round
 restart that prints nothing.
+
+## The admin console: phase 4 is built — THE MUTATING ACTIONS (2026-10-31, `feat/admin-console-phase4`)
+
+**The console can touch a live server now, and it says what it did.**
+Five endpoints — `POST /admin/servers/:id/{kick,map,broadcast,restart-round,timelimit}`
+— each one behind the **session gate** and the **CSRF token**, each
+one writing **exactly one audit line**, and each one answering with
+the §5 envelope: `outcome`, `command`, `reply`, `detail`, `affected`.
+The code is `services/admin/lib/actions.mjs` (the actions and the
+honest answer about each one) and the five routes in
+`services/admin/service.mjs`.
+
+### The rule the whole phase is built on
+
+**The reply is never the evidence; the state after the command is.**
+So every action is confirmed by a **re-read**:
+
+| Action | The re-read | `done` when |
+|---|---|---|
+| kick | the player list | the userid is **gone** from it |
+| map change | the status | the map **is** the new one |
+| broadcast | *nothing* | the engine's own reply is the confirmation, and the envelope says so |
+| restart round | the map timer (`mp_timeleft`) | it jumped back up |
+| time limit | the cvar (`mp_timelimit`) | it carries the new value |
+
+**The cached probe is dropped before the re-read, and the re-read asks
+the engine DIRECTLY.** The fleet probe is cached for five seconds
+(phase 1), so a re-read through that cache would read the state from
+BEFORE the action and every confirmation would be a lie. The cache's
+**TTL policy did not move** — `invalidate()` is the one door an
+action opens, and it is opened exactly once per action. A probe that
+was already in flight when the action ran does not put its result
+back into the cache either: it read the world before the action.
+
+**One attempt, always.** The engine's rate limiter takes a token from
+a FAILED attempt only, so a retry loop turns one mistake into a
+lockout of the very engine the console is trying to fix. Every action
+makes exactly ONE mutating attempt; a failed attempt is reported, not
+retried. The reads that confirm an action are not retries.
+
+### The two traps
+
+1. **A kick whose target left** between the list refresh and the
+   click: the engine answers `Client is not on the server`, and the
+   console reports that as **`refused`** — the engine's own text,
+   colour codes stripped — and not `done`, and not a crash.
+2. **A round restart that prints nothing**: the empty reply is
+   **`no_output`**, which is a **success** (§5 names it) and which the
+   drawer shows in **GREEN**. A console that treated an empty reply as
+   an error would report every round restart as broken.
+
+### The finding: `restartround` is INERT on the fleet
+
+This was measured against a **live instance** on 2026-10-31, not
+guessed. `restartround` prints nothing (that is in §2.2 already) —
+and it does not restart the round either:
+
+- `mp_timeleft` went **866 s → 862 s** across the command — the map
+  timer counting down, not jumping back up;
+- the port derives `mp_timeleft` from the **map clock**
+  (`rules/frame.rs:53`), and a round restart does not touch it;
+- and the port's round restart **does not apply in FFA at all**:
+  `reset_restart_round` returns early unless
+  `restart_round_applies(mode, lms)` (`rules/frame.rs:339`), which is
+  `matches!(mode, RoundTdm | Objective) || lms`. The fleet runs `Dm`,
+  `teamplay=false`, `lms=false` — so it acts nowhere.
+
+The console reads the mode and the flag from the port's own
+`ts_status` header and says so — *"a round restart does not apply in
+Dm without last man standing, so the round was not restarted"* — and
+the outcome is `no_output`, GREEN. It does **not** claim a round
+restarted, and it does **not** report the action as broken.
+
+### The UI, per §6.2
+
+- **Kick** — **one click** plus an optional reason. **No modal, no
+  typed confirmation, and NOT a red button**: a kick is not
+  destructive, the player reconnects. The player row's action is
+  `KICK`.
+- **Map change** — the **only** action with a modal, and the modal
+  names **how many players will be dropped** and that **`server.cfg`
+  will be re-executed**, before the click and not after it. The
+  confirm button is **red** — the only red button in the console.
+- **Broadcast, restart round, time limit** — no modal. They are live.
+- The **broadcast field** says that a **multi-word** message reaches
+  the players **with its quotes**, because the engine re-quotes every
+  RCON argument. The console does not hide it and does not "fix" it by
+  mangling the message.
+- The **time limit** is written in **minutes**, live, with no restart.
+- The **map list** is selectable now, with the modal.
+- The **output drawer** (§6.3) carries the four parts, and the
+  **confirmation gets its own line** where the outcome line could not
+  hold it: `refused` shows the engine's own text and the re-read
+  behind it gets a line of its own, and `no_output` says "✓ done — no
+  output" and the measurement gets a line of its own.
+- **Green is never an error surface.** `done` and `no_output` are
+  green, `not_confirmed` is amber, and `refused` and `no reply` are
+  red.
+
+### A bug the browser smoke found, and the fix
+
+The map modal named the **previous** instance's player count: the
+console still held `ts-0`'s status after the operator had selected
+`ts-1`, and a map change drops EVERYONE on the instance, so the count
+is the whole warning. The status read now records **which instance it
+belongs to** (`state.statusId`), `select()` drops the old instance's
+status, and the map button stays out of reach until the SELECTED
+instance has been read.
+
+### How it was proven
+
+**The unit suite** — 47 new tests (533 in all): the envelope for each
+action, all five outcomes reachable, the two traps, the cache
+invalidation (a re-read that would fail if it went through the
+cached probe), one attempt and no retry, the audit line for each
+action (with **no** password, session token or CSRF token in it), the
+CSRF gate (403) and the session gate (401) on every action, and the
+UI's rules (the kick has no modal and is not red, the map modal names
+the count and `server.cfg`, the write controls are live and the ban
+affordance is not).
+
+**At the HTTP level** (`tools/smokes/admin-ui-smoke.sh`): all five
+actions, both traps, the CSRF and session gates, the audit lines and
+the logout. **And in a real browser**
+(`tools/smokes/admin-ui-browser.mjs`): the five actions driven through
+the page, the drawer entries in §6.3's format, both traps, the audit
+lines, and a screenshot of the console with the action entries in it
+(`docs/screenshots/admin-console-phase4.png`).
+
+**And against the REAL engine.** The CI stack could not be used (no
+`ts-server` image, and `ci-stack.sh` derives the image from a
+running production `ts-0`), so the real engine was **run natively**
+instead: Xash3D FWGS plus the built Rust TS DLL plus the operator's
+own asset tree, on `127.0.0.1:27025`, with the `rcon_password` set
+at runtime through the console pipe. The console's own service was
+pointed at it and drove the five actions. What the real engine
+answered:
+
+```
+kick #34 "rcon smoke kick"  → done       Kick: "Bot Trinity 34<34><ID_BOT><>" was kicked by "Console" (message "rcon smoke kick") …
+kick #999 "cheating"        → refused    Client is not on the server
+broadcast                   → done       bulletballet TS CI: "Hello" "from" "the" "admin" "console"
+restartround                → no_output  (the reply is empty — the trap, and a success)
+mp_timelimit 20             → done       "mp_timelimit" changed to "20"
+changelevel ts_lobby        → done       (the reply is empty; the re-read says the map is ts_lobby)
+```
+
+**What is NOT in phase 4**
+
+**The free-form command box is not built**, on purpose: over RCON
+`banid` works, so a box that could send a second command would hand
+back exactly what the ban hold exists to prevent (§2.5). The console
+box stays **disabled** and says the actions arrive with phase 4.
+**No ban and no mute** (§2.5, §2.6) — the ban's stub endpoint still
+answers **501**, and the console's ban affordance is unchanged.
+**No deployment, no Dockerfile, no systemd unit** (phase 5). **The RCON
+client, the fleet discovery's cache policy, the auth, the session,
+the lockout and the audit were not touched.**
+
+**NEXT TASK (admin console, phase 5): the deployment, the secret and
+the docs.** The `deploy-services.sh` entry, the Dockerfile, the CI
+wiring, the `rcon_password` provisioning (runtime first, boot config
+second), the SSH tunnel alias and the runbook — so the console is
+reachable from Kyle's machine over the tunnel and the secret survives
+a container restart.
 
 ## The CI browser gate was playing in production (2026-10-30)
 
