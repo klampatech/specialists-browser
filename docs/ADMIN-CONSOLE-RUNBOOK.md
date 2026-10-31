@@ -320,6 +320,28 @@ of a log is a password to treat as compromised when the logs are.** If the
 game server's logs are ever readable by somebody who should not have them,
 the password is to be rotated — not "monitored".
 
+**HOW LONG THE PASSWORD STAYS READABLE IN THE LOGS.** Not "until the logs
+rotate", which is vague — the console keeps writing it, so the window never
+closes on its own. The fleet's docker logs are capped at three 10 MB files
+(`LOG_MAX_SIZE` / `LOG_MAX_FILE` in `deploy-services.sh`), and the console's
+own probe issues a handful of RCON commands per instance every few seconds,
+so the password is re-written into the log continuously. The consequence is
+that the secret is readable from the rotated logs for **days**, not hours,
+and that clearing the logs does not clear the secret — it only rewrites it
+into a fresh file a few seconds later.
+
+So the rule is not "rotate the password when the logs rotate". It is:
+
+1. **The logs are secret.** Same access rules as the password file, from
+   the moment the first RCON command is sent.
+2. **If the logs have been readable by somebody who should not have them,
+   rotate the password** — write a new value into
+   `/srv/ts-admin/rcon_password`, re-apply it to every instance
+   (§4), and delete the old logs.
+3. **Deleting the logs is not a remediation on its own.** It removes the
+   old copies; the console writes the current one again seconds later. The
+   password is only safe once the *access* is fixed.
+
 The console itself never logs the password, never returns it, and never
 writes it to the audit log. The engine does, and the engine is not ours.
 
