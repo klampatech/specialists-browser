@@ -482,14 +482,16 @@ audited with no secret in the line.
 **And for real**, against a fake engine that speaks the protocol
 (`tools/smokes/admin-auth-smoke.sh`; the output is in the commit
 message that added it): an unauthenticated `GET /admin/servers` is a
-**401**, the
-wrong password is a **401**, the fifth wrong password trips the
+**401**, the wrong password is a **401**, the fifth wrong password trips the
 lockout and the sixth is a **423** with `lockoutSecondsRemaining:
 300`, the right password is a **200** with a `Set-Cookie` that is
 `HttpOnly; SameSite=Strict` and a `csrfToken` in the body, the fleet
 is **200** with that cookie, `/admin/session` answers with the CSRF
-token and the expiries, and the logout **ends the session** — the
-same cookie is a 401 again.
+token, the expiries and the capabilities, the **ban** is a **501**
+with the fixed body and `banned: false` (and a **403** without the
+CSRF token, and a **401** without a session — the order is session →
+CSRF → 501), and the logout **ends the session** — the same cookie is
+a 401 again. The audit log has the ban in it: `ban ts-0 unavailable`.
 
 **The clock is injected** everywhere it matters: the service takes it
 as an argument, and the tests move it by hand. A test that waited
