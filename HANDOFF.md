@@ -250,6 +250,45 @@ bridge-stamped identity exists), and **no uptime** — the engine has no
 uptime command, so `uptime` is `null` until the service can ask the
 orchestrator for the container start time.
 
+**AND LIVE, AGAINST THE REAL ENGINE** (2026-10-31). The fake engine is
+a fake; the CI stack is not. The disposable stack was brought up
+(`ci-stack.sh up` → `ts-ci-0` on `127.0.0.1:27025/udp`, `bridge-ci`,
+`registry-ci`), an `rcon_password` was set at runtime on `ts-ci-0`
+through its console pipe, and **this service** was run against it in a
+`node:22-alpine` container on the host's network namespace. The real
+engine answered:
+
+```
+GET /admin/servers  →  {"id":"ts-0","port":27025,
+                        "name":"bulletballet TS CI","map":"ts_casa",
+                        "mode":"Dm","players":0,"bots":0,"max":32,
+                        "tickrate":100,"mapSecondsLeft":874,
+                        "timeLimitMinutes":15,"rcon":"ok","health":"up",
+                        "expectedPlayers":0,"parsedPlayers":0,"partial":false}
+GET /admin/servers/ts-0/status   → the same, as a status document
+GET /admin/servers/ts-0/players  → the player table, partial: false
+a second fleet read inside the cache's TTL → 6 ms, and the engine was
+                                          sent no commands at all
+```
+
+So the RCON transport, the fleet discovery, the parsers and the cache
+are proven against the engine that will actually run them — not only
+against a fake that agrees with our reading of the protocol. The stack
+was torn down afterwards and production was not touched (the four
+production containers were still up with their original uptimes).
+
+The live run also confirmed the **deployment** fact above, from the
+engine's own log rather than from the source:
+
+```
+[15:00:28] Rcon: "rcon cismoke2026 sys_ticrate
+[15:00:28] Rcon from 172.17.0.1:52212:
+```
+
+The password, in the log, once per command. That is the engine's
+behaviour and the console cannot change it — the cache only reduces
+how often it happens.
+
 **Proven, not asserted:** the unit suite covers the wire encoding, the
 multi-datagram read, the exact reply text, the quiet timer, the overall
 deadline, the empty reply, the refusal's four causes, the unreachable
