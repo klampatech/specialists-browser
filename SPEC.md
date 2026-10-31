@@ -67,6 +67,39 @@ instances" capacity figure is still a budget, not a measurement); the FE
 tweaks and the bulletballet re-brand; single-player depth on the
 fallback path.
 
+## The admin console: phase 1 (2026-10-31)
+
+The console is specified in `docs/ADMIN-CONSOLE.md` (the source of
+truth). Phase 1 is the **service and the transport**: `services/admin`,
+a small Node HTTP service that talks to the fleet over RCON and serves
+three read-only endpoints. It is not deployed yet (phase 5), it has no
+UI (phase 3), no auth (phase 2) and no mutating action (phase 4).
+
+Three decisions in phase 1 are **not** in the spec document, and they
+are worth keeping:
+
+- **The RCON socket is CONNECTED.** A connected UDP socket reports the
+  host's ICMP "port unreachable" as `ECONNREFUSED`, which is the only
+  thing that tells `refused` (the engine is there and will not talk to
+  us — a configuration problem) apart from `unreachable` (the instance
+  is not there — a network problem). Both are silent on the wire
+  otherwise, and they need different answers from an operator. The
+  engine's rate limiter counts only FAILED attempts, so a refused
+  instance is probed **once** and then reported.
+- **`health` is not a second liveness signal.** It is the RCON
+  tri-state collapsed onto one word (`ok` → `up`, `unreachable` →
+  `down`, `refused` → `degraded`), so a row cannot say "healthy" and
+  "refused" at the same time.
+- **`uptime` is `null` in phase 1.** The engine has no uptime command,
+  and the admin service does not talk to the orchestrator yet; the
+  container start time in the orchestrator's instance rows is where the
+  number will come from.
+
+The service binds **loopback only** and refuses to start on any other
+address. It holds **no Docker socket** — RCON over loopback UDP is
+what makes that possible, and it is the deciding argument over the
+console FIFO the registry uses.
+
 ## Client frame pacing — the engine's tick source (2026-10-29)
 
 **The problem.** The engine has **no frame limiter in the browser**. On a
@@ -457,7 +490,9 @@ made it out of date.
 │   │                       # tools/decompile/output/ — that is where they live.
 ├── services/               # The control plane.
 │   ├── registry/           # The fleet registry: A2S, console, leaderboard.
-│   └── orchestrator/       # The fleet orchestrator: scale out/in, restarts.
+│   ├── orchestrator/       # The fleet orchestrator: scale out/in, restarts.
+│   └── admin/              # The admin console: read-only fleet API over RCON.
+│                           #   No Docker socket, loopback only (docs/ADMIN-CONSOLE.md).
 ├── tests/unit/             # The unit suite.
 └── .github/                # CI + deploy workflows.
 ```

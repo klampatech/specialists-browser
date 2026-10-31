@@ -16,11 +16,14 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-31, `main` — **the admin console is SPECIFIED, not
-built** (PR #104, `docs/ADMIN-CONSOLE.md`). Everything else below is
-unchanged from the 2026-10-29 state: the client caps the tick rate the
-engine is offered, the character picker and the pre-join identity modal
-are LIVE in production, and the game server image is `ts-server:0.27`.
+**As of:** 2026-10-31, branch `feat/admin-console-phase1` — **the admin
+console's PHASE 1 IS BUILT** (`services/admin`: the RCON client, the
+fleet discovery and the read-only API), on top of the specification in
+`docs/ADMIN-CONSOLE.md` (PR #104, awaiting Kyle's approval). Everything
+else below is unchanged from the 2026-10-29 state: the client caps the
+tick rate the engine is offered, the character picker and the pre-join
+identity modal are LIVE in production, and the game server image is
+`ts-server:0.27`.
 
 ## The admin console is specified (PR #104, 2026-10-31)
 
@@ -91,7 +94,73 @@ VPS operations, which is why it needs no Docker socket.
 
 All five decisions are written up in `docs/ADMIN-CONSOLE.md` §8.
 
-**Nothing is built yet.** The build plan is five phases, each a PR.
+**Phase 1 is built** (branch `feat/admin-console-phase1`, next section).
+The build plan is five phases, each a PR.
+
+## The admin console: phase 1 is built (2026-10-31, `feat/admin-console-phase1`)
+
+`services/admin` exists: a small Node HTTP service that talks to the
+fleet over **RCON** and serves three read-only endpoints. No auth, no
+UI, no mutating action — that is phase 1
+(`docs/ADMIN-CONSOLE.md` §7, phase 1).
+
+**The RCON client** (`services/admin/lib/rcon.mjs`) is the risky part,
+and it is done with all four traps handled:
+
+- **The packet is raw bytes.** The request is built with
+  `Buffer.from(str, 'binary')`, so the magic number is four `0xff` and
+  not the UTF-8 pair `0xc3 0xbf`; the reply is decoded the same way.
+- **The reply is MANY datagrams** — one per printed line, and `status`
+  on a busy server is ~20 of them. The reader stops when the socket
+  goes **quiet** (300 ms), because there is no length and no terminator.
+- **An empty reply is a success.** The engine flushes its redirect even
+  when the command printed nothing, so "a reply with nothing in it" and
+  "no reply at all" are different things, and they mean different
+  things.
+- **Never retried.** The engine's rate limiter takes a token on a
+  FAILED attempt only, so a retry loop locks us out. One attempt per
+  instance, then report.
+
+**The three RCON states are kept apart**, because they are three
+different operator situations:
+
+| state | what it means | how it is told apart |
+|---|---|---|
+| `ok` | the engine answered | a reply came back |
+| `refused` | the engine is there and would not talk to us | the port is open and nothing came back (or it said "Bad rcon_password") |
+| `unreachable` | the instance is not there | the host answered ICMP port-unreachable — a **connected** UDP socket reports that as `ECONNREFUSED` |
+
+The connected socket is what buys that distinction: a closed port says
+so, an open-but-silent port does not, and without it a down server and
+a misconfigured one would be the same row. With **no `RCON_PASSWORD`**
+set the service still starts, and every instance comes back `refused` —
+the truth, and the reason is the configuration.
+
+**The parsers** (`services/admin/lib/parse.mjs`) read the engine's own
+text, and the two live footguns are handled: the `#` column of the
+`status` table is the **slot**, not the userid (`kick #N` wants the
+userid, so the API exposes `slot` and `userid` as separate fields and
+says which is which), and a bot is a row whose `uniqueid` is `BOT` — not
+a name that starts with "Bot ".
+
+**What is NOT in phase 1**, on purpose: no auth, no UI, no
+kick/map/broadcast/restart, no cvar write, **no ban** (held until the
+bridge-stamped identity exists), and **no uptime** — the engine has no
+uptime command, so `uptime` is `null` until the service can ask the
+orchestrator for the container start time.
+
+**Proven, not asserted:** the unit suite covers the wire encoding, the
+multi-datagram read, the timeout, the empty reply, the refused
+password, the unreachable host, the player table, `ts_status` and the
+cvars; and the service was started and curled for real against a fake
+engine that speaks the protocol — `GET /admin/servers` returned 200
+with the live instance `ok` and the seven dead ones `unreachable`.
+
+**NEXT TASK (admin console, phase 2): auth.** The password (scrypt
+hash), the session cookie, the lockout, the CSRF token, the audit
+line, and `adminctl`. The contract is fixed in
+`docs/ADMIN-CONSOLE.md` §4 and §5 — phase 2 changes the code, not the
+shapes.
 
 ## The CI browser gate was playing in production (2026-10-30)
 
