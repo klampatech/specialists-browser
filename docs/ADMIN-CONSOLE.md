@@ -324,13 +324,51 @@ fixed there), because they would have cost the implementer a day:
    is the same length as the value it replaces, so the packet's length,
    its netchan framing and its length fields are all untouched.
 
-### 2.5.3 So what the ban actually costs
+### 2.5.3 "Durable" has three layers, and they are not equally hard
+
+The question behind Q3 is: *can we ban people individually, with a durable
+id they cannot change?* Yes — and the engine's own source says exactly
+how much of it is already there.
+
+**1. Individually** — one field, one value per browser. §2.5.2.
+
+**2. Cannot change it** — the bridge **overwrites** the field rather than
+reading it. A patched client can send any `uuid` it likes and the
+bridge replaces it. The id is stamped, not requested, so there is
+nothing for the player to hold on to and nothing to lie about.
+
+**3. Durable** — three different meanings, and they cost different
+things:
+
+| Durable across | Needs | Cost |
+|---|---|---|
+| a reconnect, a page reload | The token to be derived from something stable. `token = HMAC(key, account_id ‖ epoch)` gives that. | The bridge stamp. |
+| **a cookie clear** | An **account**, not a cookie. The 2026-10-29 "account or both" decision is exactly this: the account is the durable part; the cookie is the cheap fallback for guests. | An account store on the site. |
+| a **server restart** | The engine's ban list is **in memory only**. But the engine ships `writeid` (writes `banned.cfg`) — and refuses to use it: *"should be called manually because banned.cfg is not executed by engine"* (`sv_filter.c:247`). So the console writes `banned.cfg` with `writeid` and `exec`s it back after an instance comes up. | One command, on our side. |
+
+**And one limit worth knowing before designing around it:**
+`banid` can only ban somebody who is **connected right now**. The lookup
+walks the live client slots (`sv_filter.c`: it skips `FAKECLIENT` and
+anything not `cs_spawned`) and answers `banid: no such player with
+userid <id>` if nobody matches. There is no "ban an id I recorded
+yesterday". A ban list that outlives the connection therefore has to be
+enforced by whoever holds it — and since **the bridge is the door**,
+the bridge is where a durable list belongs: the console bans the
+**account**, the bridge maps account → the token it is about to stamp,
+and refuses the connection before it reaches the server.
+
+That is FEAT-005 ("Ban enforcement") in the anti-cheat spec, and it is
+the piece that makes "ban someone who is not online right now" work.
+
+### 2.5.4 So what the ban actually costs
 
 | Piece | Work | Where |
 |---|---|---|
 | The site issues a per-browser id | An account auto-created on first play (the 2026-10-29 "account or both" decision) plus a durable store | The site — the Caddy vhost serves it today |
 | The bridge stamps it | New connect-packet parsing; 32 bytes in place | `ts-udp-bridge.js` |
 | The server bans by it | **Nothing.** `banid` already matches that field. | — |
+| The ban outlives a restart | `writeid` + `exec banned.cfg` after the instance comes up | the console |
+| The ban list outlives the connection | Held by the bridge, keyed by account, refused at the door | the bridge |
 | The console bans by it | The ban endpoint and modal the spec already writes down | this project |
 
 That is a real project, and it is **not** the admin console — it is
