@@ -120,7 +120,7 @@ Four more, from the phase-1 review (2026-10-31):
   with `expectedPlayers` and `parsedPlayers`, and the count shown is
   the engine's. The reply is read once more before that is reported.
 - **THE FACTORY HOLDS THE GUARDS.** The loopback check, the port
-  check and the password check live in `createAdminService()`, not in
+  check and the RCON password check live in `createAdminService()`, not in
   the command line, and the factory returns a **redacted** config — the
   RCON password stays in the closure and is never handed to a caller.
 
@@ -138,7 +138,7 @@ console FIFO the registry uses.
 ### Phase 2 — auth
 
 **Every endpoint but `/admin/login` needs a session**, including the
-three read endpoints phase 1 built. Seven decisions in phase 2 are
+three read endpoints phase 1 built. Eight decisions in phase 2 are
 **not** in the spec document, and they are worth keeping:
 
 - **THE ORDER OF THE CHECKS IS: SESSION → CSRF TOKEN → ROUTER.** A
@@ -184,6 +184,18 @@ three read endpoints phase 1 built. Seven decisions in phase 2 are
   it. The order is the spec's: **session (401) → CSRF token (403) →
   501**. And the attempt is **audited**: one line, `ban <instance>
   unavailable`.
+- **THERE ARE TWO PASSWORDS, AND THE NAMES KEEP THEM APART.** The
+  **RCON** password is the engine's, has to be a plaintext string at
+  runtime, and is `rconPassword` in the factory and `RCON_PASSWORD`
+  in the environment. The **administrator's** is never a plaintext
+  string: it is a scrypt record, and it is `auth` in the factory (a
+  record or a store) and `ADMIN_AUTH_FILE` in the environment. So
+  the option that is a string is named after the thing it is, and the
+  one that is a record is not called `password` at all. The factory
+  **refuses** `password` and `adminPassword` outright — an option
+  that is quietly ignored is a service that starts with the wrong
+  secret — and the environment refuses the old `ADMIN_AUTH_PATH` and
+  a plaintext `ADMIN_PASSWORD` for the same reason.
 
 The audit line is **timestamp, action, target, outcome**, one line per
 event, appended and never rewritten, at 0600, in

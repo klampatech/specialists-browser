@@ -311,6 +311,13 @@ token, an audit line and `adminctl`. **Every endpoint but
 endpoints phase 1 built, which were deliberately open before the login
 existed and are deliberately closed now.
 
+**And the two passwords have different names**, because there are two
+of them: the engine's is `rconPassword` / `RCON_PASSWORD` and it is
+the only one that is ever a plaintext string, and the administrator's
+is `auth` / `ADMIN_AUTH_FILE` and it is a scrypt record. The factory
+refuses `password` and `adminPassword` outright — see the decisions
+below.
+
 **Nothing in phase 1 was touched.** The RCON client, the fleet
 discovery and the parsers are exactly as the review left them. The
 only phase-1 file that changed is `services/admin/service.mjs`, and
@@ -383,7 +390,7 @@ nearly harmless — so the gate would barely be exercised), and it
 gives **phase 3's ban button an endpoint to call** instead of
 nothing.
 
-### The four decisions the spec did not make
+### The five decisions the spec did not make
 
 1. **A login with no record on the host is a 503, not a 401.** "Wrong
    password" and "no password has been provisioned yet" are different
@@ -405,6 +412,22 @@ nothing.
    without the token and the same 501 with it. And the attempt is
    **audited**: one line, `ban <instance> unavailable`. A refusal
    that leaves no trace is a refusal nobody can learn from.
+5. **THERE ARE TWO PASSWORDS, AND THE NAMES KEEP THEM APART.** The
+   **RCON** password is the engine's: it has to be a plaintext string
+   at runtime, so it is `rconPassword` in the factory and
+   `RCON_PASSWORD` in the environment. The **administrator's** is
+   never a plaintext string anywhere: it is a scrypt record, so it is
+   `auth` in the factory (a record or a store) and `ADMIN_AUTH_FILE`
+   in the environment. The one that is a string is named after the
+   thing it is; the one that is a record is not called `password` at
+   all. The factory **refuses** `password` and `adminPassword`
+   outright, and the environment refuses the old `ADMIN_AUTH_PATH`
+   and a plaintext `ADMIN_PASSWORD` — because an option that is
+   quietly ignored is a service that starts with the wrong secret (or
+   with none of them) and refuses every instance for a reason nobody
+   can see. The redacted config carries `rconConfigured` **and**
+   `authConfigured`, so an operator can tell at a glance whether the
+   console will accept a login at all; neither flag is a secret.
 
 ### Two things that are deliberate and must not be "fixed"
 
@@ -424,11 +447,19 @@ nothing.
   turns the gate off is a footgun, and phase 4 (the mutating
   actions) would trip over it with the tests still green.
 
-### The paths
+### The paths, and the names of the two secrets
 
 - `/srv/ts-admin/auth.json` — the password record, 0600, written by
-  `adminctl set-password`.
+  `adminctl set-password`. In the environment it is
+  **`ADMIN_AUTH_FILE`** — the path to the *record*, not to a password.
 - `/srv/ts-admin/actions.log` — the audit log, 0600, appended.
+  `ADMIN_AUDIT_PATH`.
+- `RCON_PASSWORD` — the **engine's** password, and the only secret
+  that is ever a plaintext string. `rconPassword` in the factory.
+- The **administrator's** password is never a plaintext string
+  anywhere: it is the scrypt record, and it is `auth` in the factory
+  (a record, or a store that reads one). `adminctl` writes it;
+  nothing else ever holds it.
 
 **Phase 5 provisions that directory; phase 2 deploys nothing.** The
 service reads the record at the moment of the login, so a password set

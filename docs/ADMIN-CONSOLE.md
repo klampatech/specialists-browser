@@ -1005,6 +1005,22 @@ password from stdin with the echo off, `adminctl set-password`
 validates the record before it writes it and writes it atomically at
 0600, and both refuse to work as root.
 
+**And the two passwords have different names**, because there are two
+of them. The **engine's** is the RCON password: it has to be a
+plaintext string at runtime, because the engine compares it on the
+wire, so it is `RCON_PASSWORD` in the environment and
+`rconPassword` in the service's factory. The **administrator's** is
+never a plaintext string anywhere — it is the scrypt record, so it
+is `ADMIN_AUTH_FILE` in the environment (the path to the record) and
+`auth` in the factory (the record, or a store that reads one). The
+one that is a string is named after the thing it is, and the one that
+is a record is not called `password` at all. The factory **refuses**
+`password` and `adminPassword` outright, because an option that is
+quietly ignored is a service that starts with the wrong secret. The
+redacted config carries `rconConfigured` **and** `authConfigured`, so
+an operator can tell at a glance whether the console will accept a
+login at all; neither flag is a secret.
+
 **The ban's stub endpoint also ships in phase 2** — §5.1. It is the
 one mutating endpoint that may not touch the engine, and it is here
 for two reasons: it is the honest end-to-end proof of the CSRF gate
@@ -1019,7 +1035,7 @@ even a `status`. The order for it is the spec's: **session (401) →
 CSRF token (403) → 501**, and only a properly authenticated request
 ever reaches the 501.
 
-Three things the spec did not say, and the implementation had to decide:
+Four things the spec did not say, and the implementation had to decide:
 
 - **A login with no record on the host is a 503, not a 401.** "Wrong
   password" and "no password has been provisioned yet" are different
@@ -1035,6 +1051,11 @@ Three things the spec did not say, and the implementation had to decide:
   403 without the token and the same 501 with it. And the attempt is
   **audited**: one line, `ban <instance> unavailable`. A refusal
   that leaves no trace is a refusal nobody can learn from.
+- **The two passwords are named apart, and the ambiguous names are
+  refused.** `password` and `adminPassword` are not options: the
+  factory says so, and says what the right name is. So does the
+  environment, for the old `ADMIN_AUTH_PATH` and for a plaintext
+  `ADMIN_PASSWORD` — neither of which is a thing any more.
 
 ### Phase 3 — The read-only UI
 The mock, wired to the API: the login screen, the shell, the fleet
