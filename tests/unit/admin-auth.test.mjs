@@ -213,7 +213,7 @@ test('the store reads the record off the disk', () => {
   const path = join(dir, 'auth.json');
   const record = createPasswordRecord('hunter2');
   writeFileSync(path, JSON.stringify(record));
-  const store = createAuthStore({ path });
+  const store = createAuthStore({ file: path });
   assert.deepEqual(store.load(), record);
   // And the file is read at the moment of the load, so a record set
   // after the store was made is picked up.
@@ -228,7 +228,7 @@ test('a missing or corrupt record file is null, not a crash', () => {
   const path = join(dir, 'auth.json');
   writeFileSync(path, 'this is not json');
   assert.equal(readPasswordRecord(path), null);
-  assert.equal(createAuthStore({ path }).load(), null);
+  assert.equal(createAuthStore({ file: path }).load(), null);
 });
 
 test('an in-memory store never touches the disk', () => {

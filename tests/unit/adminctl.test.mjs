@@ -148,7 +148,7 @@ test('hash and set-password round trip, and the service logs in with it', async 
   const service = createAdminService({
     port: 0,
     count: 1,
-    auth: createAuthStore({ path }),
+    auth: createAuthStore({ file: path }),
   });
   await new Promise((resolve) => service.server.listen(0, '127.0.0.1', resolve));
   try {
@@ -178,6 +178,6 @@ test('the file the CLI writes is read back by the store', () => {
   const path = join(dir, 'auth.json');
   const record = createPasswordRecord('hunter2');
   run(['set-password', '--path', path], JSON.stringify(record));
-  const store = createAuthStore({ path });
+  const store = createAuthStore({ file: path });
   assert.deepEqual(store.load(), record);
 });

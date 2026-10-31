@@ -22,6 +22,16 @@
  * it to be in a shell history either, and a hash in a history file is
  * a hash an attacker can take offline.
  *
+ * THIS IS THE ADMINISTRATOR'S PASSWORD, NOT THE ENGINE'S
+ * ------------------------------------------------------
+ * There are two passwords on this service and they are not
+ * interchangeable. The **RCON** password is the engine's, it has to
+ * be a plaintext string at runtime, and it is `RCON_PASSWORD` in the
+ * environment. The one this CLI sets is the **administrator's**, and
+ * it is never a plaintext string anywhere — it is the scrypt record
+ * this CLI writes. The file it writes is the one the service reads
+ * as `ADMIN_AUTH_FILE`.
+ *
  * WHY THE WRITE REFUSES TO RUN AS ROOT
  * ------------------------------------
  * The record lands in the console's state directory, and that
@@ -66,7 +76,7 @@ import { fileURLToPath } from 'node:url';
 import {
   checkRecord,
   createPasswordRecord,
-  DEFAULT_AUTH_PATH,
+  DEFAULT_AUTH_FILE,
 } from './lib/auth.mjs';
 
 /** The mode the record file is written with. */
@@ -77,11 +87,11 @@ const USAGE = `adminctl — the admin console's password, set by hand on the hos
   adminctl hash           read the password from stdin (echo off) and print
                           the scrypt record as one line of JSON
   adminctl set-password   read that record from stdin and write it to
-                          ${DEFAULT_AUTH_PATH} (mode 0600, atomically)
+                          ${DEFAULT_AUTH_FILE} (mode 0600, atomically)
   adminctl --help         this text
 
 Options:
-  --path <file>   the record file to write (default ${DEFAULT_AUTH_PATH})
+  --path <file>   the record file to write (default ${DEFAULT_AUTH_FILE})
 
 The password is NEVER read from the command line: argv is in \`ps\` output and
 in the shell history.`;
@@ -305,7 +315,7 @@ async function cmdSetPassword(path) {
  */
 export async function main(argv = process.argv.slice(2)) {
   const args = [...argv];
-  let path = DEFAULT_AUTH_PATH;
+  let path = DEFAULT_AUTH_FILE;
   let command = null;
 
   // The OPTIONS are read first, and the command afterwards, so

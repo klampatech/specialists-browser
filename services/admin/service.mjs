@@ -128,8 +128,24 @@
  *   TS_PORT_BASE       first game-server port     default 27015
  *   TS_INSTANCE_COUNT  number of instances        default 8
  *   RCON_PASSWORD      the RCON password          default (empty)
- *   ADMIN_AUTH_PATH    the password record        default /srv/ts-admin/auth.json
+ *   ADMIN_AUTH_FILE    the admin password record  default /srv/ts-admin/auth.json
  *   ADMIN_AUDIT_PATH   the audit log              default /srv/ts-admin/actions.log
+ *
+ * THERE ARE TWO PASSWORDS, AND THE NAMES KEEP THEM APART
+ * ------------------------------------------------------
+ *   - `RCON_PASSWORD` / `rconPassword` is the **ENGINE's**. It has
+ *     to be a plaintext string at runtime, because the engine
+ *     compares it on the wire.
+ *   - `ADMIN_AUTH_FILE` / `auth` is the **ADMINISTRATOR's**. It is
+ *     never a plaintext string: it is a scrypt record, read from a
+ *     file on the host or handed in as a record by the tests.
+ *
+ * So the option that is a string is named after the thing it is, and
+ * the one that is a record is not called `password` at all. The
+ * factory REFUSES `password` and `adminPassword` outright — a phase-4
+ * reader who guesses wrong gets told what the right name is, rather
+ * than a service that quietly starts with the wrong secret (or with
+ * none of them).
  *
  * THE ADMINISTRATOR'S PASSWORD IS NOT IN THE ENVIRONMENT
  * ------------------------------------------------------
@@ -177,7 +193,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   createAuthStore,
-  DEFAULT_AUTH_PATH,
+  DEFAULT_AUTH_FILE,
   verifyPasswordAsync,
 } from './lib/auth.mjs';
 import { createAuditSink, DEFAULT_AUDIT_PATH } from './lib/audit.mjs';
@@ -313,10 +329,37 @@ export function checkRconPassword(password) {
 /**
  * The service's configuration, from the environment.
  *
+ * THE NAMES ARE CHECKED, NOT JUST READ
+ * ------------------------------------
+ * Two environment variables are refused outright, because the thing
+ * they used to mean (or the thing somebody might assume they mean)
+ * would otherwise be ignored in silence:
+ *
+ *   - `ADMIN_AUTH_PATH` was the old name of the record's file. It is
+ *     `ADMIN_AUTH_FILE` now, and an old name that is quietly
+ *     ignored is a console that cannot be logged into.
+ *   - `ADMIN_PASSWORD` is the administrator's password as a PLAIN
+ *     STRING. It does not exist and never will: the password is a
+ *     scrypt record on disk. An operator who sets it deserves to be
+ *     told, not to watch the console ignore their secret.
+ *
  * @param {object} [env]
  * @returns {object}
  */
 export function readConfig(env = process.env) {
+  if (env.ADMIN_AUTH_PATH) {
+    throw new Error(
+      'ADMIN_AUTH_PATH is not a name any more: the path to the admin ' +
+        "password's scrypt record is ADMIN_AUTH_FILE",
+    );
+  }
+  if (env.ADMIN_PASSWORD) {
+    throw new Error(
+      'ADMIN_PASSWORD is not a thing: the administrator\'s password is a ' +
+        'scrypt record, not a plaintext string. Point ADMIN_AUTH_FILE at ' +
+        'the record that adminctl set-password wrote',
+    );
+  }
   const host = env.ADMIN_HOST || DEFAULT_BIND_HOST;
   const rawPort = env.ADMIN_PORT === undefined || env.ADMIN_PORT === '' ? DEFAULT_BIND_PORT : env.ADMIN_PORT;
   const port = checkBindPort(host, rawPort);
@@ -328,10 +371,13 @@ export function readConfig(env = process.env) {
     portBase: num(env.TS_PORT_BASE, DEFAULT_PORT_BASE),
     // The fleet's size is clamped: see MAX_INSTANCE_COUNT.
     count: clampInstanceCount(count),
-    password: checkRconPassword(env.RCON_PASSWORD || ''),
+    // The ENGINE's password. The administrator's is a scrypt record
+    // and lives in the file below — see the header for why the two
+    // are never both called `password`.
+    rconPassword: checkRconPassword(env.RCON_PASSWORD || ''),
     // The console's own password record, and the audit log. Both live
     // in the service's state directory, which phase 5 provisions.
-    authPath: env.ADMIN_AUTH_PATH || DEFAULT_AUTH_PATH,
+    authFile: env.ADMIN_AUTH_FILE || DEFAULT_AUTH_FILE,
     auditPath: env.ADMIN_AUDIT_PATH || DEFAULT_AUDIT_PATH,
   };
 }
@@ -505,23 +551,48 @@ function safeDecode(segment) {
  * `/srv/ts-admin/auth.json`. There is no default that silently turns
  * the gate off.
  *
+ * THE NAMES ARE GUARDED, NOT JUST CHOSEN
+ * --------------------------------------
+ * `password` and `adminPassword` are REFUSED. There are two
+ * passwords on this service and they are not interchangeable: the
+ * RCON password has to be a plaintext string, and the administrator's
+ * is a scrypt record. A caller who reaches for the obvious name
+ * gets an error that says which name to use — rather than a service
+ * that quietly starts with the wrong secret, or with neither, and
+ * refuses every instance for a reason nobody can see.
+ *
  * @param {object} [opts]
  * @param {string} [opts.host]
  * @param {number} [opts.port]
  * @param {string} [opts.targetHost] where the game servers are
  * @param {number} [opts.portBase]
  * @param {number} [opts.count]
- * @param {string} [opts.password]
+ * @param {string} [opts.rconPassword] the ENGINE's password
  * @param {(opts: object) => (command: string) => Promise<object>} [opts.makeAsk]
  * @param {() => number} [opts.now] the clock — injectable for tests
  * @param {{load: () => (object|null)}} [opts.auth] where the password record comes from
  * @param {object|null} [opts.authRecord] a record, instead of a store
- * @param {string} [opts.authPath] the record's file, when there is no store
+ * @param {string} [opts.authFile] the record's file, when there is no store
  * @param {{record: (action: string, target: string, outcome: string) => boolean}} [opts.audit]
  * @param {string} [opts.auditPath] the audit log, when there is no sink
  * @returns {{server: http.Server, config: object, instances: object[]}}
  */
 export function createAdminService(opts = {}) {
+  // THE AMBIGUOUS NAMES ARE REFUSED OUTRIGHT.
+  if ('password' in opts) {
+    throw new Error(
+      "the option is 'rconPassword', not 'password': the engine's RCON " +
+        'password is a plaintext string, and the administrator\'s password is ' +
+        'not one at all — it is a scrypt record (opts.auth)',
+    );
+  }
+  if ('adminPassword' in opts) {
+    throw new Error(
+      "'adminPassword' is not an option: the administrator's password is never " +
+        'a plaintext string. Pass the scrypt record (opts.auth), or the file ' +
+        'the record is in (opts.authFile)',
+    );
+  }
   const host = opts.host ?? DEFAULT_BIND_HOST;
   // The guard. Failing here is the point: the console is loopback-only
   // (docs/ADMIN-CONSOLE.md §4.1), and a service that quietly binds
@@ -530,14 +601,16 @@ export function createAdminService(opts = {}) {
     throw new Error(loopbackRefusal(host));
   }
   const port = checkBindPort(host, opts.port ?? DEFAULT_BIND_PORT, { allowEphemeral: true });
-  const password = checkRconPassword(opts.password ?? '');
+  // The ENGINE's password. The administrator's is the scrypt record
+  // below, and the two are never the same thing.
+  const rconPassword = checkRconPassword(opts.rconPassword ?? '');
   const config = {
     host,
     port,
     targetHost: opts.targetHost ?? '127.0.0.1',
     portBase: opts.portBase ?? DEFAULT_PORT_BASE,
     count: clampInstanceCount(opts.count ?? DEFAULT_INSTANCE_COUNT),
-    password,
+    rconPassword,
   };
   const instances = fleetInstances({ portBase: config.portBase, count: config.count });
   const makeAsk = opts.makeAsk ?? makeRconAsk;
@@ -558,7 +631,7 @@ export function createAdminService(opts = {}) {
       ? opts.auth
       : opts.authRecord
         ? createAuthStore({ record: opts.authRecord })
-        : createAuthStore({ path: opts.authPath ?? DEFAULT_AUTH_PATH });
+        : createAuthStore({ file: opts.authFile ?? DEFAULT_AUTH_FILE });
 
   // WHERE THE AUDIT LINE GOES. Injectable, so the tests capture the
   // lines instead of writing to /srv.
@@ -598,7 +671,10 @@ export function createAdminService(opts = {}) {
     makeAsk({
       host: config.targetHost,
       port: instance.port,
-      password: config.password,
+      // The RCON client's own option is `password`, and it is the
+      // ENGINE's password — the administrator's never reaches this
+      // layer, and could not be used here if it did.
+      password: config.rconPassword,
     });
 
   /**
@@ -941,9 +1017,9 @@ export function createAdminService(opts = {}) {
         const body = {
           servers: probed.map((p) => p.row),
           count: probed.length,
-          rconConfigured: Boolean(config.password),
+          rconConfigured: Boolean(config.rconPassword),
         };
-        if (!config.password) {
+        if (!config.rconPassword) {
           body.warning =
             'RCON_PASSWORD is not set on this service, so no instance can be reached; ' +
             'every instance is reported as refused until it is.';
@@ -1046,7 +1122,7 @@ export function createAdminService(opts = {}) {
       portBase: config.portBase,
       count: config.count,
       /** Whether an RCON password is configured — not the password. */
-      rconConfigured: Boolean(config.password),
+      rconConfigured: Boolean(config.rconPassword),
       /**
        * Whether a password record was found — NOT the record, and
        * not the hash. This is a SNAPSHOT, taken when the factory was
@@ -1056,7 +1132,7 @@ export function createAdminService(opts = {}) {
        */
       authConfigured: authConfigured(),
       /** Where the record lives. A path is not a secret. */
-      authPath: auth.path,
+      authFile: auth.file,
       /** Where the audit log lives. */
       auditPath: audit.path,
     },
@@ -1103,7 +1179,7 @@ export function start(config = null) {
     console.log(`admin listening on ${resolved.host}:${resolved.port}`);
     console.log(
       `rcon password ${
-        resolved.password ? 'configured' : 'NOT CONFIGURED — every instance will be refused'
+        resolved.rconPassword ? 'configured' : 'NOT CONFIGURED — every instance will be refused'
       }`,
     );
     // The state of the console's own password, so the operator can

@@ -8,6 +8,24 @@
  * imply a "wrong user" answer that tells a guesser something they
  * already know.
  *
+ * THIS IS THE ADMINISTRATOR'S PASSWORD, NOT THE ENGINE'S
+ * ------------------------------------------------------
+ * There are two passwords on this service, and they have nothing to
+ * do with each other:
+ *
+ *   - the RCON password is the ENGINE's. It has to be a plaintext
+ *     string at runtime, because the engine compares it on the wire.
+ *     It is `rconPassword` in the factory and `RCON_PASSWORD` in the
+ *     environment.
+ *   - the ADMIN password is this one. It is never a plaintext string
+ *     anywhere: it is a scrypt record on disk, handed to the service
+ *     as `auth` (a record or a store) and named `ADMIN_AUTH_FILE` in
+ *     the environment.
+ *
+ * They must never be swapped, and the names are what keeps them
+ * apart: the one that is a string is named after the thing it is,
+ * and the one that is a record is not called `password` at all.
+ *
  * THE PLAINTEXT NEVER TOUCHES THE DISK
  * ------------------------------------
  * The record on the host is a scrypt hash with a per-password salt.
@@ -74,7 +92,7 @@ export const SCRYPT_PARAMS = Object.freeze({
 export const SALT_BYTES = 16;
 
 /** Where the record lives on the host. */
-export const DEFAULT_AUTH_PATH = '/srv/ts-admin/auth.json';
+export const DEFAULT_AUTH_FILE = '/srv/ts-admin/auth.json';
 
 /** A hex string, and nothing else. */
 const HEX = /^[0-9a-f]+$/;
@@ -376,13 +394,13 @@ export async function verifyPasswordAsync(record, password) {
  * A file that is there but corrupt is also null, for the same reason:
  * the login fails, and the operator sees a failed login.
  *
- * @param {string} path
+ * @param {string} file
  * @returns {object|null}
  */
-export function readPasswordRecord(path) {
+export function readPasswordRecord(file) {
   let text;
   try {
-    text = readFileSync(path, 'utf8');
+    text = readFileSync(file, 'utf8');
   } catch {
     return null;
   }
@@ -405,17 +423,29 @@ export function readPasswordRecord(path) {
  *
  * `load()` is synchronous and returns the record, or null.
  *
+ * The option is `file`, and a stale `path` is REFUSED rather than
+ * ignored: a store that quietly read the default file instead of the
+ * one that was asked for is a console that cannot be logged into, and
+ * the reason is not visible from where it happened.
+ *
  * @param {object} [opts]
- * @param {string} [opts.path] the file on the host
+ * @param {string} [opts.file] the file on the host
  * @param {object|null} [opts.record] an in-memory record
- * @returns {{path: string, load: () => (object|null)}}
+ * @returns {{file: string, load: () => (object|null)}}
  */
-export function createAuthStore({ path = DEFAULT_AUTH_PATH, record = null } = {}) {
+export function createAuthStore(opts = {}) {
+  if ('path' in opts) {
+    throw new Error(
+      "the option is 'file', not 'path': the auth store reads the " +
+        "administrator's scrypt record out of a file, and the name says which one",
+    );
+  }
+  const { file = DEFAULT_AUTH_FILE, record = null } = opts;
   return {
-    path,
+    file,
     load() {
       if (record) return record;
-      return readPasswordRecord(path);
+      return readPasswordRecord(file);
     },
   };
 }
