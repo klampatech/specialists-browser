@@ -273,8 +273,16 @@ export function parseStatus(text) {
  * The mode is the Rust `Debug` form of the mode enum (`Dm`, `TeamDm`,
  * `RoundTdm`, `Objective`). It is a READ-ONLY fact: the mode is
  * decided by the map's ruleset, not by a cvar the console could write.
+ *
+ * IT IS ANCHORED, and it has to be. The player name is
+ * attacker-chosen bytes printed UNQUOTED, so a name may contain
+ * "[ts] status:" — and an unanchored search would take such a player
+ * line for the header and lose the row. The console timestamp is
+ * stripped before the match (see TIMESTAMP_PREFIX), so the header and
+ * the player lines both start with "[ts]", and what follows tells
+ * them apart.
  */
-const TS_HEADER = /\[ts\]\s+status:\s?(.*)$/;
+const TS_HEADER = /^\[ts\]\s+status:\s?(.*)$/;
 
 /**
  * One player line of `ts_status`.
@@ -301,18 +309,84 @@ const TS_HEADER = /\[ts\]\s+status:\s?(.*)$/;
  *   - the line may carry a `[HH:MM:SS]` console timestamp in front of
  *     it, depending on which output path it came from.
  *
- * So: find ` hp=` (the first field that is always a number), split the
- * head on its LAST space into name and state, and read every other
- * field by its own key. A field that is missing is null — never a
- * guess.
+ * So: find the head/field boundary at a ` hp=` (the first field that
+ * is always a number), split the head on its LAST space into name and
+ * state, and read every other field by its own key. A field that is
+ * missing is null — never a guess.
+ *
+ * The boundary is found FROM THE RIGHT, because the name is
+ * attacker-chosen bytes and may contain " hp=" itself — see
+ * splitTsPlayerLine() below for why the first one cannot be trusted.
  */
-const TS_LINE = /\[ts\]\s+#(\d+)\s+(.*)$/;
+const TS_LINE = /^\[ts\]\s+#(\d+)\s+(.*)$/;
 
 /** The console timestamp some output paths put in front of a line. */
 const TIMESTAMP_PREFIX = /^\[\d{2}:\d{2}:\d{2}\]\s*/;
 
 /** The three states the port prints. */
 const TS_STATES = new Set(['alive', 'dead', 'observer']);
+
+/**
+ * Split a `ts_status` player line into its head and its fields.
+ *
+ * THE BOUNDARY IS FOUND FROM THE RIGHT
+ * ------------------------------------
+ * `hp=` is the first field that is always a number, so it is the
+ * natural boundary between the head (the name and the state) and the
+ * fields. But the NAME is attacker-chosen bytes printed UNQUOTED, so
+ * a name may contain " hp=" itself — and splitting at the FIRST " hp="
+ * then cuts the name in half: the head's last word is no longer a
+ * state, the row fails its check and DISAPPEARS. A player the
+ * moderator cannot see is a player the moderator cannot moderate, and
+ * a hostile name is a cheap way to hide from the console.
+ *
+ * So the candidates are tried from the RIGHT: the rightmost " hp=" is
+ * the real boundary if the head's last word is a state (`alive` /
+ * `dead` / `observer`), and if it is not, the next one to the left is
+ * tried, and so on. The first candidate that yields a valid state
+ * wins. If none does, the line is malformed and the row is dropped —
+ * which is correct: a row that cannot be read must not be invented.
+ *
+ * @param {string} rest the line after the client index
+ * @returns {{name: string, state: string, fields: string}|null}
+ */
+function splitTsPlayerLine(rest) {
+  const candidates = [];
+  for (let at = rest.indexOf(' hp='); at !== -1; at = rest.indexOf(' hp=', at + 1)) {
+    candidates.push(at);
+  }
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const at = candidates[i];
+    const head = rest.slice(0, at).trimEnd();
+    const split = head.lastIndexOf(' ');
+    if (split === -1) continue;
+    const state = head.slice(split + 1);
+    if (!TS_STATES.has(state)) continue;
+    return { name: head.slice(0, split).trim(), state, fields: rest.slice(at + 1) };
+  }
+  return null;
+}
+
+/**
+ * The integer fields of a `ts_status` line, PRECOMPILED.
+ *
+ * The line is parsed field by field, and a `new RegExp` per field per
+ * player is twelve regexes thrown away for every line of every read.
+ * The map is built once, at load time.
+ */
+const TS_INT_FIELDS = new Map(
+  ['hp', 'ar', 'frags', 'deaths', 'cash', 'award', 'spree'].map((key) => [
+    key,
+    new RegExp(`\\b${key}=(-?\\d+)(?:\\s|$)`),
+  ]),
+);
+
+/**
+ * The string fields of a `ts_status` line, PRECOMPILED.
+ */
+const TS_STR_FIELDS = new Map(
+  ['gp', 'active'].map((key) => [key, new RegExp(`\\b${key}=(\\S+)(?:\\s|$)`)]),
+);
 
 /**
  * One integer field, by key.
@@ -322,7 +396,9 @@ const TS_STATES = new Set(['alive', 'dead', 'observer']);
  * @returns {number|null}
  */
 function intField(text, key) {
-  const m = new RegExp(`\\b${key}=(-?\\d+)(?:\\s|$)`).exec(text);
+  const re = TS_INT_FIELDS.get(key);
+  if (!re) return null;
+  const m = re.exec(text);
   return m ? Number(m[1]) : null;
 }
 
@@ -334,7 +410,9 @@ function intField(text, key) {
  * @returns {string|null}
  */
 function strField(text, key) {
-  const m = new RegExp(`\\b${key}=(\\S+)(?:\\s|$)`).exec(text);
+  const re = TS_STR_FIELDS.get(key);
+  if (!re) return null;
+  const m = re.exec(text);
   return m ? m[1] : null;
 }
 
@@ -398,23 +476,9 @@ export function parseTsStatus(text) {
     const m = TS_LINE.exec(line);
     if (!m) continue;
     const index = Number(m[1]);
-    const rest = m[2];
-
-    // `hp=` is the first field that is always a number, so it is the
-    // boundary between the head (name + state) and the fields.
-    const hpAt = rest.indexOf(' hp=');
-    if (hpAt === -1) continue;
-    const head = rest.slice(0, hpAt).trimEnd();
-    const fields = rest.slice(hpAt + 1);
-
-    // The state is the LAST word of the head. The name may contain
-    // the words alive/dead/observer, so the state cannot be found by
-    // searching forward for it — but the last word is always it.
-    const split = head.lastIndexOf(' ');
-    if (split === -1) continue;
-    const state = head.slice(split + 1);
-    if (!TS_STATES.has(state)) continue;
-    const name = head.slice(0, split).trim();
+    const split = splitTsPlayerLine(m[2]);
+    if (!split) continue;
+    const { name, state, fields } = split;
 
     const held = /held=(\S+)\/(\d+)s/.exec(fields);
     const slow = /slow=([\d.]+)->([\d.]+)/.exec(fields);
@@ -465,6 +529,16 @@ export function parseTsStatus(text) {
 const CVAR_REPLY = /"([^"]+)"\s+is\s+"([^"]*)"/;
 
 /**
+ * A plain decimal integer, and nothing else.
+ *
+ * `Number('0x10')` is 16 and `Number('1e3')` is 1000, so a cvar that
+ * printed something odd would come back as a PLAUSIBLE wrong number
+ * — and a plausible wrong tickrate is worse than no tickrate. The
+ * cvars in use are decimal, so anything else is null.
+ */
+const DECIMAL_INTEGER = /^-?\d+$/;
+
+/**
  * Parse a cvar's reply.
  *
  * @param {string} text
@@ -475,7 +549,7 @@ export function parseCvar(text) {
   if (!m) return null;
   const value = m[2];
   const trimmed = value.trim();
-  const n = trimmed === '' ? NaN : Number(trimmed);
+  const n = DECIMAL_INTEGER.test(trimmed) ? Number(trimmed) : NaN;
   return {
     name: m[1],
     value,

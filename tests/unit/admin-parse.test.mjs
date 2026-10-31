@@ -263,6 +263,61 @@ test('a player whose NAME contains a state word is still parsed', () => {
   assert.equal(players[0].hp, 50);
 });
 
+test('a player whose NAME contains " hp=" is still parsed', () => {
+  // THE TRAP. The name is attacker-chosen bytes printed UNQUOTED, so
+  // it can contain " hp=" — and `hp=` is the boundary between the
+  // head (the name and the state) and the fields. Splitting at the
+  // FIRST " hp=" cuts the name in half, the head fails its state
+  // check, and the row DISAPPEARS: a player the moderator cannot see
+  // is a player the moderator cannot moderate.
+  //
+  // The boundary is found from the RIGHT: the rightmost " hp=" is the
+  // real one, and it is only accepted when the head's last word is a
+  // state.
+  const { players } = parseTsStatus(
+    "[ts]  #1 x hp=5 alive hp=100 ar=0 frags=2 deaths=1 cash=0 team='' held=0x0/0s active=0x0 slow=1.00->1.00 award=0 spree=0 gp=21 org=(0 0 0)",
+  );
+  assert.equal(players.length, 1, 'the row must parse, not vanish');
+  assert.equal(players[0].name, 'x hp=5');
+  assert.equal(players[0].state, 'alive');
+  assert.equal(players[0].hp, 100);
+});
+
+test('a name with " hp=" in the middle comes back whole', () => {
+  const { players } = parseTsStatus(
+    "[ts]  #1 a hp=1 b        alive hp=100 ar=0 frags=2 deaths=1 cash=0 team='' held=0x0/0s active=0x0 slow=1.00->1.00 award=0 spree=0 gp=21 org=(0 0 0)",
+  );
+  assert.equal(players.length, 1);
+  assert.equal(players[0].name, 'a hp=1 b');
+  assert.equal(players[0].state, 'alive');
+  assert.equal(players[0].hp, 100);
+  assert.equal(players[0].frags, 2);
+});
+
+test('a malformed ts_status line is dropped, not guessed at', () => {
+  // No state word at the end of the head: the line is not a player
+  // line, and a row that cannot be read must not be invented.
+  const { players } = parseTsStatus(
+    "[ts]  #2 broken           hp=100 ar=0 frags=2 deaths=1 cash=0 team='' held=0x0/0s active=0x0 slow=1.00->1.00 award=0 spree=0 gp=21 org=(0 0 0)",
+  );
+  assert.equal(players.length, 0);
+});
+
+test('a player whose NAME contains "[ts] status:" is not the header', () => {
+  // The header pattern has to be ANCHORED. Unanchored, it finds the
+  // "[ts] status:" inside the name, takes the player line for the
+  // header, and the row is lost.
+  const { header, players } = parseTsStatus(
+    '[ts] status: Dm teamplay=false lms=false theone=false time=1.0\n' +
+      "[ts]  #1 [ts] status:    alive hp=100 ar=0 frags=2 deaths=1 cash=0 team='' held=0x0/0s active=0x0 slow=1.00->1.00 award=0 spree=0 gp=21 org=(0 0 0)",
+  );
+  assert.equal(header.mode, 'Dm');
+  assert.equal(players.length, 1);
+  assert.equal(players[0].name, '[ts] status:');
+  assert.equal(players[0].state, 'alive');
+  assert.equal(players[0].hp, 100);
+});
+
 test('a ts_status line with a console timestamp is still parsed', () => {
   // The engine\'s own stdout path prefixes lines with [HH:MM:SS].
   const { players } = parseTsStatus(
@@ -300,6 +355,18 @@ test('a cvar reply becomes a number', () => {
 test('a reply that is not a cvar is not a cvar', () => {
   assert.equal(parseCvar('nothing to see here'), null);
   assert.equal(parseCvar(''), null);
+});
+
+test('a cvar value that is not a decimal integer is null, not a wrong number', () => {
+  // `Number('0x10')` is 16 and `Number('1e3')` is 1000, so a cvar that
+  // printed something odd would come back as a PLAUSIBLE wrong number.
+  // A plausible wrong tickrate is worse than no tickrate.
+  assert.equal(parseCvar('"sys_ticrate" is "0x10"').number, null);
+  assert.equal(parseCvar('"sys_ticrate" is "1e3"').number, null);
+  assert.equal(parseCvar('"sys_ticrate" is "100.5"').number, null);
+  assert.equal(parseCvar('"sys_ticrate" is "100"').number, 100);
+  // The raw text is still there: the value is a string too.
+  assert.equal(parseCvar('"sys_ticrate" is "0x10"').value, '0x10');
 });
 
 /* ------------------------------------------------------------------ */
