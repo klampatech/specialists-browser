@@ -74,8 +74,9 @@ truth). Phase 1 is the **service and the transport**: `services/admin`,
 a small Node HTTP service that talks to the fleet over RCON and serves
 three read-only endpoints. Phase 2 is the **auth**: the password, the
 session, the lockout, the CSRF token, the audit line and `adminctl`. It
-is not deployed yet (phase 5), it has no UI (phase 3) and no mutating
-action (phase 4).
+also ships the **ban's stub endpoint** (§5.1) — always 501, and it
+never touches the engine. The console is not deployed yet (phase 5), it
+has no UI (phase 3) and no mutating **engine** action (phase 4).
 
 Three decisions in phase 1 are **not** in the spec document, and they
 are worth keeping:
@@ -137,7 +138,7 @@ console FIFO the registry uses.
 ### Phase 2 — auth
 
 **Every endpoint but `/admin/login` needs a session**, including the
-three read endpoints phase 1 built. Six decisions in phase 2 are
+three read endpoints phase 1 built. Seven decisions in phase 2 are
 **not** in the spec document, and they are worth keeping:
 
 - **THE ORDER OF THE CHECKS IS: SESSION → CSRF TOKEN → ROUTER.** A
@@ -176,6 +177,13 @@ three read endpoints phase 1 built. Six decisions in phase 2 are
   file and the tests read a record in memory. A switch that turns the
   gate off is a footgun, and phase 4 would trip over it with the
   tests still green.
+- **THE BAN STUB IS A MUTATING PATH WHATEVER THE METHOD SAYS.** A
+  `GET` on `/admin/servers/:id/ban` still needs the CSRF token,
+  because the path is the one endpoint whose whole purpose is a
+  mutation — so it is a 403 without the token and the same 501 with
+  it. The order is the spec's: **session (401) → CSRF token (403) →
+  501**. And the attempt is **audited**: one line, `ban <instance>
+  unavailable`.
 
 The audit line is **timestamp, action, target, outcome**, one line per
 event, appended and never rewritten, at 0600, in
@@ -189,6 +197,27 @@ without a restart. `adminctl` reads the password from **stdin with the
 echo off** — never from argv, which is in `ps` output and in the shell
 history — validates the record before it writes it, writes it
 atomically, and refuses to work as root.
+
+### The ban stub — in phase 2, and it cannot ban
+
+`POST /admin/servers/:id/ban` ships in phase 2, as the fixed §5.1
+stub: **always 501**, with the body the spec fixes (value and key
+order) and `banned: false` in every one of them. It is the **one
+mutating endpoint that may not touch the engine** — it does not even
+read the fleet: no `banid`, no `addip`, not a `status`. The reason is
+in the body: the engine's ban key is the **uniqueid**, and every
+browser client on an instance shares one (§2.5), so banning it would
+remove everybody, and the IP fallback would be the fleet-wide action
+wearing a per-player tool's clothes.
+
+It is in phase 2 for two reasons: it is the **honest end-to-end proof
+of the CSRF gate** — the logout is the only other mutating endpoint,
+and a CSRF failure on a logout is nearly harmless, so the gate would
+barely be exercised — and it gives **phase 3's ban button an endpoint
+to call** instead of nothing. `GET /admin/session` carries the
+capability the UI renders it from: `{"capabilities": {"ban": false}}`.
+When FEAT-004 and FEAT-005 land, the flag flips and the button
+enables — one flag, no UI change.
 
 ## Client frame pacing — the engine's tick source (2026-10-29)
 

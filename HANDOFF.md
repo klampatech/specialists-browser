@@ -317,7 +317,10 @@ only phase-1 file that changed is `services/admin/service.mjs`, and
 what changed in it is the gate, the three auth endpoints and the
 factory's arguments.
 
-### The five pieces, and the trap in each
+**And the ban's stub endpoint** (`POST /admin/servers/:id/ban`) is
+here too — always 501, and it never touches the engine. See below.
+
+### The six pieces, and the trap in each
 
 **THE PASSWORD** (`lib/auth.mjs`) is a scrypt record — `{version,
 algo, N, r, p, keylen, salt, hash}` — with N=16384, r=8, p=1, a
@@ -363,7 +366,24 @@ outcome**, one line per event, appended and never rewritten, at 0600.
 The target of a login is the **source address** — never the password,
 never a session token, never the CSRF token.
 
-### The three decisions the spec did not make
+**THE BAN STUB** (`lib/ban.mjs`) is the **one mutating endpoint that
+cannot touch the engine**. `POST /admin/servers/:id/ban` answers
+**501** and the fixed body from §5.1 — whatever the method, whatever
+the body, whatever the instance — and `banned` is `false` in every
+one of them, so a client that ignores the status code still cannot
+conclude that a ban happened. It does not even **read** the fleet:
+no `banid`, no `addip`, not a `status`. The reason is in the body:
+the engine's ban key is the **uniqueid**, and every browser client
+on an instance shares one (§2.5), so banning it would remove
+everybody — and the IP fallback is the fleet-wide action wearing a
+per-player tool's clothes. It is in phase 2 for two reasons: it is
+the **honest end-to-end proof of the CSRF gate** (the logout is the
+only other mutating endpoint, and a CSRF failure on a logout is
+nearly harmless — so the gate would barely be exercised), and it
+gives **phase 3's ban button an endpoint to call** instead of
+nothing.
+
+### The four decisions the spec did not make
 
 1. **A login with no record on the host is a 503, not a 401.** "Wrong
    password" and "no password has been provisioned yet" are different
@@ -379,6 +399,12 @@ never a session token, never the CSRF token.
    kept, so the next lock is twice as long. A **successful** login
    resets everything, including the level — the administrator who got
    in does not carry a longer lock into their next typo.
+4. **The ban path is a mutating path whatever the method says.** A
+   `GET` on it still needs the CSRF token, because the path is the
+   one endpoint whose whole purpose is a mutation — so it is a 403
+   without the token and the same 501 with it. And the attempt is
+   **audited**: one line, `ban <instance> unavailable`. A refusal
+   that leaves no trace is a refusal nobody can learn from.
 
 ### Two things that are deliberate and must not be "fixed"
 
@@ -427,7 +453,7 @@ after the service started takes effect without a restart.
 
 ### How it was proven
 
-**The unit suite** (75 new tests, 433 in all) covers the scrypt
+**The unit suite** (91 new tests, 449 in all) covers the scrypt
 verifier (the right password, a wrong one of the same length, a wrong
 one of a different length, and a malformed record that does not
 throw), the two session clocks (the idle expiry at 12 h, the absolute
@@ -443,7 +469,15 @@ login, an expired session → 401 and audited, a wrong CSRF token →
 403, and a request with no session and a wrong CSRF token → **401**,
 not 403), and the CLI round trip (`hash` → `set-password` → the
 service logs in with that password; a malformed record is refused and
-the file is left alone).
+the file is left alone). **And the ban stub**: the body is compared
+against the literal in §5.1 (value and key order), the answer is 501
+for a valid body, a malformed one, an empty one, a body that claims
+the ban happened and a body that asks for an IP ban, for an instance
+that does not exist, and for a method that is not POST; the **engine
+is never asked** (the fleet spy counts zero commands); a request with
+no session is a 401 and one with a bad token is a 403; no session and
+a bad token together is a **401**, not a 403; and the attempt is
+audited with no secret in the line.
 
 **And for real**, against a fake engine that speaks the protocol
 (`tools/smokes/admin-auth-smoke.sh`; the output is in the commit
@@ -467,7 +501,10 @@ be a test that never runs.
 No UI (phase 3), no mutating engine action (phase 4), no deployment, no
 Dockerfile, no systemd unit, no TLS, no usernames, no roles, no
 password reset. **The state directory is not provisioned either** —
-phase 5 does that.
+phase 5 does that. **And no REAL ban** — the ban's *stub* endpoint
+ships in phase 2 (§5.1), the ban that actually removes somebody
+does not, and it cannot until FEAT-004 and FEAT-005 give every
+browser client its own id.
 
 **NEXT TASK (admin console, phase 3): the read-only UI.** The mock,
 wired to the API: the login screen, the shell, the fleet rail, the

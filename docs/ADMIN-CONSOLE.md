@@ -719,7 +719,7 @@ All endpoints are under `/admin`, all require a session except
 | `POST` | `/admin/servers/:id/command` | `{command}` — the free-form escape hatch. One command only. |
 | `POST` | `/admin/servers/:id/kick` | `{userid, reason?}` → outcome. |
 | `GET` | `/admin/servers/:id/bans` | The id-ban list (the console's own store) and the read-only IP filter (the engine's `listip`). |
-| `POST` | `/admin/servers/:id/ban` | **STUBBED — always 501.** The contract is fixed; the handler is not written (§5.1). |
+| `POST` | `/admin/servers/:id/ban` | **STUBBED — always 501.** The endpoint is live and answers the fixed body (§5.1); the handler that would carry the ban out is not written, and may not be until the per-browser identity exists. |
 | `POST` | `/admin/servers/:id/map` | `{map}` → the confirmed new map. |
 | `POST` | `/admin/servers/:id/broadcast` | `{message}` → a `say` to everyone on that instance. |
 | `POST` | `/admin/servers/:id/restart-round` | The port's `restartround`. |
@@ -748,7 +748,10 @@ server believes — and a short list says so instead of looking complete.
 (2026-10-31): *"stub this in the admin console for now and spec / build
 it out separately."* The request shape, the response shape and the UI
 are written down and fixed; the handler that would carry it out is
-not, because the thing it bans by does not exist yet.
+not, because the thing it bans by does not exist yet. The endpoint
+itself **ships in phase 2** — it is the one mutating endpoint that
+cannot touch the engine, and it is the honest proof that the CSRF
+gate works on something that matters.
 
 ### 5.1 The stubbed ban endpoint
 
@@ -1002,7 +1005,21 @@ password from stdin with the echo off, `adminctl set-password`
 validates the record before it writes it and writes it atomically at
 0600, and both refuse to work as root.
 
-Two things the spec did not say, and the implementation had to decide:
+**The ban's stub endpoint also ships in phase 2** — §5.1. It is the
+one mutating endpoint that may not touch the engine, and it is here
+for two reasons: it is the honest end-to-end proof of the CSRF gate
+(a real mutating endpoint that takes the token and refuses to do
+anything — a CSRF failure on the logout is nearly harmless, so the
+gate would barely be exercised), and it gives phase 3's ban button an
+endpoint to call instead of nothing. It answers **501** and nothing
+else — whatever the method, whatever the body, whatever the instance
+— with the fixed body from §5.1, `banned: false` in every one of
+them. It does not read the fleet either: no `banid`, no `addip`, not
+even a `status`. The order for it is the spec's: **session (401) →
+CSRF token (403) → 501**, and only a properly authenticated request
+ever reaches the 501.
+
+Three things the spec did not say, and the implementation had to decide:
 
 - **A login with no record on the host is a 503, not a 401.** "Wrong
   password" and "no password has been provisioned yet" are different
@@ -1012,6 +1029,12 @@ Two things the spec did not say, and the implementation had to decide:
   unauthenticated caller cannot even learn which endpoints exist
   (an unknown path is a 401 to an anonymous caller and a 404 to a
   logged-in one).
+- **The ban path is a mutating path whatever the method says.** A
+  `GET` on it still needs the CSRF token, because the path is the one
+  endpoint whose whole purpose is a mutation — so the answer is a
+  403 without the token and the same 501 with it. And the attempt is
+  **audited**: one line, `ban <instance> unavailable`. A refusal
+  that leaves no trace is a refusal nobody can learn from.
 
 ### Phase 3 — The read-only UI
 The mock, wired to the API: the login screen, the shell, the fleet
@@ -1030,8 +1053,9 @@ one returns the §5 envelope and is confirmed by a re-read.
   have tests — a kick whose target left between the list refresh and
   the click, and a round restart that prints nothing.
 
-**Not in this phase, and not in this release:** ban (§2.5) and mute
-(§2.6).
+**Not in this phase:** the real ban (§2.5) and mute (§2.6). The ban's
+**stub endpoint does ship, in phase 2** — §5.1 — because it never
+touches the engine and it gives the phase-3 UI an endpoint to call.
 
 ### Phase 5 — Deployment, the secret, and the docs
 The `deploy-services.sh` entry, the Dockerfile, the CI wiring, the
