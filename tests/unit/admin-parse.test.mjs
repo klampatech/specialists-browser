@@ -16,10 +16,13 @@ import assert from 'node:assert/strict';
 import {
   parseCvar,
   parseDuration,
+  parseIpFilter,
+  parseMapList,
   parsePlayerRow,
   parseStatus,
   parseTsStatus,
   stripColourCodes,
+  withCurrentFirst,
 } from '../../services/admin/lib/parse.mjs';
 
 /** The measured `status` reply, one string per printed line. */
@@ -377,4 +380,139 @@ test('the colour codes go, including the one in the middle of the line', () => {
   assert.equal(stripColourCodes('^1Error: ^7banid: no such player'), 'Error: banid: no such player');
   assert.equal(stripColourCodes('^2note^7'), 'note');
   assert.equal(stripColourCodes('nothing to strip'), 'nothing to strip');
+});
+
+/* ------------------------------------------------------------------ */
+/* `maps *`                                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The engine's `maps *` reply, in the engine's own shape.
+ *
+ * `SV_Maps_f` (engine/server/sv_cmds.c) prints one line per map
+ * through `Cmd_ListMaps` (engine/common/con_utils.c):
+ *
+ *     "%16s (%s) ^3%s^7 ^2%s %s^7"
+ *
+ * — the map's file base name right-aligned in sixteen columns, the
+ * BSP version in brackets, and then the map's own title, its
+ * compiler and its generator. The colour codes are here because the
+ * engine prints them; the RCON client strips them before the parser
+ * sees them, so the parser is fed the stripped form.
+ */
+const MAPS_LINES = [
+  '           ts_casa (Half-Life extended) Casa Hammer 3.0',
+  '        ts_hideout (Half-Life extended) Hideout Hammer 3.0',
+  '       ts_lobby (Half-Life extended) Lobby Hammer 3.0',
+  '-------------------',
+  'Directory: "ts/maps" - Maps listed: 3',
+];
+
+const MAPS_TEXT = MAPS_LINES.join('\n');
+
+test('the map list parses out of the engine\'s own reply', () => {
+  const parsed = parseMapList(MAPS_TEXT);
+  assert.deepEqual(
+    parsed.maps.map((m) => m.name),
+    ['ts_casa', 'ts_hideout', 'ts_lobby'],
+  );
+  assert.equal(parsed.maps[0].version, 'Half-Life extended');
+  // And the engine's own summary.
+  assert.equal(parsed.listed, 3);
+  assert.equal(parsed.directory, 'ts/maps');
+});
+
+test('the separator and the summary are not maps', () => {
+  const parsed = parseMapList(MAPS_TEXT);
+  const names = parsed.maps.map((m) => m.name);
+  assert.equal(names.includes('Directory:'), false);
+  assert.equal(names.length, 3);
+});
+
+test('a map line with the engine\'s colour codes still parses', () => {
+  const parsed = parseMapList(
+    '           ts_casa (Half-Life extended) ^3Casa^7 ^2Hammer 3.0^7',
+  );
+  assert.equal(parsed.maps.length, 1);
+  assert.equal(parsed.maps[0].name, 'ts_casa');
+});
+
+test('a reply that is not a map list is an empty list', () => {
+  assert.deepEqual(parseMapList('').maps, []);
+  assert.deepEqual(parseMapList('Unknown command "maps"').maps, []);
+});
+
+test('a map name with a space in it is still a map name', () => {
+  // The engine prints the file's BASE NAME, and a base name can
+  // carry a space. The name is the first field and the bracketed
+  // version is what ends it.
+  const parsed = parseMapList(
+    '        de_dust of the dead (Half-Life extended) Dust',
+  );
+  assert.equal(parsed.maps.length, 1);
+  assert.equal(parsed.maps[0].name, 'de_dust of the dead');
+  assert.equal(parsed.maps[0].version, 'Half-Life extended');
+});
+
+test('a map name with an extension on it loses the extension', () => {
+  const parsed = parseMapList('        ts_casa.bsp (Half-Life extended) Casa');
+  assert.equal(parsed.maps.length, 1);
+  assert.equal(parsed.maps[0].name, 'ts_casa');
+});
+
+test('a path is not a map name', () => {
+  const parsed = parseMapList(
+    '     ts/maps/ts_casa (Half-Life extended) Casa',
+  );
+  assert.deepEqual(parsed.maps, []);
+});
+
+test('the current map goes first', () => {
+  assert.deepEqual(withCurrentFirst(['ts_a', 'ts_b', 'ts_c'], 'ts_b'), [
+    'ts_b',
+    'ts_a',
+    'ts_c',
+  ]);
+  // And it is not listed twice.
+  assert.deepEqual(withCurrentFirst(['ts_a', 'ts_b'], 'ts_b'), ['ts_b', 'ts_a']);
+});
+
+test('a current map the engine did not list is still put first', () => {
+  assert.deepEqual(withCurrentFirst(['ts_a'], 'ts_loaded_from_a_pak'), [
+    'ts_loaded_from_a_pak',
+    'ts_a',
+  ]);
+});
+
+/* ------------------------------------------------------------------ */
+/* `listip`                                                             */
+/* ------------------------------------------------------------------ */
+
+test('an empty ip filter is an empty list', () => {
+  const parsed = parseIpFilter('IP filter list is empty');
+  assert.deepEqual(parsed.filters, []);
+  assert.equal(parsed.empty, true);
+});
+
+test('the ip filter parses out of the engine\'s own reply', () => {
+  const parsed = parseIpFilter(
+    ['IP filter list:', '203.0.113.7/32 (permanent)', '198.51.100.0/24 (300.000000 minutes)'].join(
+      '\n',
+    ),
+  );
+  assert.equal(parsed.filters.length, 2);
+  assert.equal(parsed.filters[0].address, '203.0.113.7');
+  assert.equal(parsed.filters[0].prefix, 32);
+  assert.equal(parsed.filters[0].permanent, true);
+  assert.equal(parsed.filters[0].minutes, null);
+  assert.equal(parsed.filters[0].raw, '203.0.113.7/32 (permanent)');
+  assert.equal(parsed.filters[1].address, '198.51.100.0');
+  assert.equal(parsed.filters[1].prefix, 24);
+  assert.equal(parsed.filters[1].permanent, false);
+  assert.equal(parsed.filters[1].minutes, 300);
+});
+
+test('the ip filter header is not a filter', () => {
+  const parsed = parseIpFilter('IP filter list:');
+  assert.deepEqual(parsed.filters, []);
 });

@@ -1,0 +1,301 @@
+/**
+ * admin — the console's stylesheet.
+ *
+ * THIS IS THE MOCK'S CSS, VERBATIM.
+ * ------------------------------------
+ * Extracted from Kyle's own mock for this console
+ * (docs/admin-console-mock.html, the `<style>` block), character for
+ * character. The mock is the DESIGN CONTRACT, and this file is that
+ * contract's stylesheet: not a re-implementation of it, not a
+ * rewrite of it, the thing itself.
+ *
+ * WHY IT IS NOT THE SITE'S `ts-theme.css`
+ * ---------------------------------------
+ * The PALETTE mirrors the site's
+ * (`webxash/src/assets/ts-theme.css`): the same values — the void
+ * `#010A04`, the panel `#06150A`, the edge `#123A1C`, the phosphor
+ * `#00FF41`, the ghost `#D8FFE2`, the muted `#6FA67C` — under the
+ * MOCK'S OWN TOKEN NAMES (`--void`, `--terminal`, `--line`,
+ * `--phosphor`, `--ghost`, `--mute`), and the mock's `--red` and
+ * `--amber` sit a shade either side of the site's `--ts-error` and
+ * `--ts-warn`.
+ *
+ * THE TOKEN NAMES ARE THE MOCK'S, AND THEY STAY THE MOCK'S. The
+ * site's tokens are frozen (`--ts-` prefixed, historical rather than
+ * semantic — see that file's own header), and rewriting the mock's
+ * components against different names is how a design drifts: the
+ * mock's CSS WORKS, and a translation of it is a second thing to
+ * keep in step with the first. So the names stay, the values stay,
+ * and the components stay.
+ *
+ * THE SIGNAL RULE, CARRIED OVER
+ * ------------------------------
+ * `--phosphor` (the site's `--ts-signal`) is the accent for things
+ * that WORK. It is NEVER an error surface: failures are `--red` and
+ * warnings are `--amber`. The site's rule, in the mock's names.
+ *
+ * WHAT IS ADDED, AND WHY
+ * ----------------------
+ * Everything below the rule marked "PHASE 3" is an ADDITION, and
+ * every addition is marked. The additions are the things phase 3
+ * needs and the mock did not have: the login screen, the "not
+ * available" treatment for the controls that arrive in phase 4, the
+ * read-only map list, the extra player columns, the bans panel and
+ * the output drawer's entry layout.
+ *
+ * None of them changes a colour, a font or a shape the mock already
+ * uses. They are the mock's own idioms — the chip, the ghost button,
+ * the muted label — used for the two things the mock could not show:
+ * a screen that is not the shell, and a control that cannot be
+ * pressed.
+ */
+
+:root{color-scheme:dark;--void:#010A04;--terminal:#06150A;--line:#123A1C;--deep:#008F11;--phosphor:#00FF41;--ghost:#D8FFE2;--mute:#6FA67C;--red:#FF3B4E;--amber:#FFC247;
+--display:'Anton',Impact,'Arial Narrow',sans-serif;--body:'Space Grotesk',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,monospace;
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--void);color:var(--ghost);font-family:var(--body);min-height:100vh}
+.bar{position:fixed;left:0;right:0;height:44px;background:#000;display:flex;align-items:center;padding:0 24px;z-index:5}
+.bar.top{top:env(safe-area-inset-top,0px);justify-content:space-between}.bar.bot{bottom:0;justify-content:center;padding-bottom:env(safe-area-inset-bottom,0px);height:calc(44px + env(safe-area-inset-bottom,0px))}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:#000;z-index:6}
+.m{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--mute)}
+.g{color:var(--phosphor)}
+.d{font-family:var(--display);text-transform:uppercase;font-weight:400;margin:0}
+.stage{position:relative;overflow:hidden;min-height:100vh;padding:76px 24px 88px;background:radial-gradient(ellipse 60% 40% at 50% 10%,#03220d 0%,var(--void) 75%)}
+.rain{position:absolute;top:-10%;height:120%;writing-mode:vertical-rl;font-size:18px;line-height:1.1;color:var(--phosphor);opacity:.2;overflow:hidden;white-space:nowrap;-webkit-mask-image:linear-gradient(#0000,#000 40%,#0000);mask-image:linear-gradient(#0000,#000 40%,#0000);animation:fall 9s linear infinite alternate;pointer-events:none}
+@keyframes fall{from{transform:translateY(-8%)}to{transform:translateY(8%)}}
+.wrap{position:relative;max-width:1120px;margin:0 auto}
+.nav{display:flex;align-items:center;justify-content:space-between;padding:8px 0 24px;gap:16px;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:12px;font-size:26px}
+.btn{font-family:var(--display);text-transform:uppercase;letter-spacing:.08em;font-size:15px;min-height:44px;padding:0 22px;border:0;background:var(--phosphor);color:var(--void);cursor:pointer;transform:skewX(-10deg);display:inline-flex;align-items:center}
+.btn>span{display:inline-flex;align-items:center;gap:10px;transform:skewX(10deg)}
+.btn:hover{background:var(--ghost)}
+.btn:focus-visible,.srv:focus-visible,select:focus-visible,input:focus-visible,.act:focus-visible{outline:3px solid var(--ghost);outline-offset:3px}
+.btn.ghost{background:transparent;color:var(--ghost);box-shadow:inset 0 0 0 2px var(--ghost)}
+.btn.ghost:hover{background:var(--ghost);color:var(--void)}
+.btn.danger{background:var(--red);color:#000}.btn.danger:hover{background:#ffd0d4}
+.chip{font-family:var(--mono);font-size:11px;letter-spacing:.12em;padding:4px 10px;border:1px solid var(--phosphor);color:var(--phosphor);white-space:nowrap}
+.chip.r{border-color:var(--red);color:var(--red)}.chip.a{border-color:var(--amber);color:var(--amber)}.chip.x{border-color:var(--mute);color:var(--mute)}
+h2.d{font-size:22px;letter-spacing:.14em}
+.head{display:flex;justify-content:space-between;align-items:center;margin:0 0 14px;gap:12px}
+/* server switcher */
+.servers{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin-bottom:24px}
+.srv{all:unset;box-sizing:border-box;cursor:pointer;background:var(--terminal);border:1px solid var(--line);border-left:4px solid var(--line);padding:16px 18px;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.srv:hover{border-color:var(--deep)}
+.srv[aria-pressed=true]{border-color:var(--phosphor);box-shadow:0 0 30px rgba(0,255,65,.18)}
+.srv b{font-size:18px;display:block}
+.srv .sub{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--mute);margin-top:6px;display:block}
+.srv .cnt{font-family:var(--display);font-size:32px;color:var(--phosphor);text-align:right;line-height:1}
+.srv .cnt small{font-family:var(--mono);font-size:11px;color:var(--mute)}
+.srv.off .cnt{color:var(--mute)}
+.grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,1fr);gap:24px}
+@media (max-width:900px){.grid{grid-template-columns:1fr}}
+.card{background:var(--terminal);border:1px solid var(--line);padding:20px;margin-bottom:24px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);margin-bottom:24px}
+.stat{background:var(--terminal);padding:14px 16px}
+.stat b{font-family:var(--display);font-weight:400;font-size:28px;color:var(--phosphor);display:block;margin-top:4px}
+@media (max-width:600px){.stats{grid-template-columns:repeat(2,1fr)}}
+/* console */
+.con{background:#000;border:1px solid var(--line);border-top:2px solid var(--phosphor)}
+.conbar{display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line)}
+.log{height:340px;overflow-y:auto;padding:14px;font-family:var(--mono);font-size:13px;line-height:1.7;color:var(--ghost)}
+.log div{white-space:pre-wrap;word-break:break-word}
+.log .t{color:var(--mute)}.log .ok{color:var(--phosphor)}.log .er{color:var(--red)}.log .wn{color:var(--amber)}.log .ch{color:var(--ghost)}.log .in{color:var(--phosphor)}
+.cin{display:flex;align-items:center;border-top:1px solid var(--line);padding:0 14px;gap:10px}
+.cin span{font-family:var(--mono);color:var(--phosphor)}
+.cin input{flex:1;background:none;border:0;color:var(--ghost);font:500 14px var(--mono);min-height:52px;outline-offset:-3px}
+.hint{font-family:var(--mono);font-size:11px;color:var(--mute);margin-top:10px;letter-spacing:.06em}
+/* map */
+.maps{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin:12px 0 16px}
+.map{all:unset;box-sizing:border-box;cursor:pointer;border:1px solid var(--line);padding:10px 12px;font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:var(--mute);background:#000}
+.map:hover{color:var(--ghost);border-color:var(--deep)}
+.map[aria-pressed=true]{border-color:var(--phosphor);color:var(--phosphor);background:rgba(0,255,65,.06)}
+.map:focus-visible{outline:3px solid var(--ghost);outline-offset:2px}
+.field{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+select,.f{background:#000;border:1px solid var(--line);color:var(--ghost);font:500 13px var(--mono);min-height:44px;padding:0 12px;flex:1;min-width:100px}
+/* players */
+.tw{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:600px}
+th{padding:10px 12px;font-family:var(--mono);font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--mute);font-weight:500;text-align:left;border-bottom:2px solid var(--phosphor)}
+td{padding:12px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:13px}
+td.n{font-family:var(--body);font-weight:700;font-size:15px}
+td.nm small{display:block;font-family:var(--mono);font-weight:500;font-size:10px;color:var(--mute);letter-spacing:.06em;margin-top:3px}
+td.r,th.r{text-align:right}
+.acts{display:flex;gap:6px;justify-content:flex-end}
+.act{all:unset;cursor:pointer;font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;padding:7px 10px;border:1px solid var(--mute);color:var(--mute);min-height:32px;display:inline-flex;align-items:center}
+.act:hover{background:var(--ghost);color:var(--void);border-color:var(--ghost)}
+.act.k:hover{background:var(--amber);border-color:var(--amber)}.act.b:hover{background:var(--red);border-color:var(--red)}
+.act.on{border-color:var(--amber);color:var(--amber)}
+.act:focus-visible{outline:3px solid var(--ghost);outline-offset:2px}
+.ptabs{display:flex;border-bottom:1px solid var(--line);margin-bottom:16px;flex-wrap:wrap}
+.ptab{font-family:var(--mono);font-size:13px;letter-spacing:.2em;text-transform:uppercase;padding:14px 24px;background:none;border:0;border-bottom:2px solid var(--line);color:var(--mute);cursor:pointer}
+.ptab[aria-selected=true]{color:var(--ghost);border-color:var(--phosphor)}
+.ptab:focus-visible{outline:3px solid var(--ghost);outline-offset:3px}
+.psearch{margin-left:auto;align-self:center;margin-bottom:6px;background:#000;border:1px solid var(--line);border-left:4px solid var(--phosphor);color:var(--ghost);font:500 13px var(--mono);min-height:44px;padding:0 14px;width:280px;max-width:100%}
+.psearch::placeholder{color:var(--mute);letter-spacing:.06em}
+.psearch:focus-visible{outline:3px solid var(--ghost);outline-offset:2px}
+@media (max-width:700px){.psearch{margin:12px 0 14px;width:100%}}
+.plist{display:grid;gap:10px}
+.prow{background:var(--terminal);border:1px solid var(--line);border-left:4px solid var(--phosphor);padding:18px 22px;display:grid;grid-template-columns:48px minmax(0,1fr) auto auto auto;align-items:center;gap:24px}
+.prow.mu{border-left-color:var(--amber)}
+.prow .rk{font-family:var(--display);font-size:30px;color:var(--mute)}
+.prow.top .rk{color:var(--phosphor)}
+.prow .pn{font-size:22px;font-weight:700}
+.chips{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+.pstat{text-align:right;min-width:64px}
+.pstat b{font-family:var(--display);font-size:36px;font-weight:400;color:var(--phosphor);line-height:1}
+.pstat.w b{color:var(--amber)}
+.pstat .m{font-size:10px;display:block;margin-top:4px}
+.pacts{display:flex;gap:10px}
+.btn.sm{min-height:40px;font-size:14px;padding:0 18px}
+.btn.ghost.on{box-shadow:inset 0 0 0 2px var(--amber);color:var(--amber)}
+.btn.ghost.on:hover{background:var(--amber);color:var(--void)}
+@media (max-width:860px){.prow{grid-template-columns:40px minmax(0,1fr) auto;gap:16px}.prow .pstat.p{display:none}.pacts{grid-column:1/-1}}
+.empty{padding:28px;text-align:center;color:var(--mute);font-family:var(--mono);font-size:12px}
+.toast{position:fixed;left:50%;bottom:calc(64px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--phosphor);color:var(--void);font-family:var(--mono);font-size:12px;letter-spacing:.1em;padding:10px 18px;z-index:9;opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.show{opacity:1}
+dialog{background:var(--terminal);color:var(--ghost);border:1px solid var(--red);border-left:4px solid var(--red);padding:24px;max-width:420px;width:calc(100% - 32px)}
+dialog::backdrop{background:rgba(0,0,0,.75)}
+dialog p{line-height:1.6;color:var(--mute)}dialog p b{color:var(--ghost)}
+@media (max-width:600px){.bar .m:last-child{display:none}.maps{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){.rain{animation:none}.toast{transition:none}}
+
+/* ==================================================================== */
+/* PHASE 3 — THE ADDITIONS                                              */
+/* ==================================================================== */
+
+/* ------------------------------------------------------------------ */
+/* the login screen                                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The login screen is NOT in the mock, so it is built in the mock's
+ * language: the same bars, the same brand block, the same void, and
+ * a card of the same kind as the mock's other cards.
+ */
+.login{max-width:420px;margin:8vh auto 0}
+.login .card{margin-bottom:0}
+.login h2.d{font-size:22px;letter-spacing:.14em;margin-bottom:4px}
+.login .sub{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--mute);margin-bottom:18px}
+.login .field{margin-top:0}
+.login input{flex:1;min-width:0}
+.login .btn{width:100%;justify-content:center;margin-top:14px}
+.login .state{min-height:20px;font-family:var(--mono);font-size:12px;letter-spacing:.08em;margin-top:14px;color:var(--mute)}
+.login .state.bad{color:var(--red)}
+.login .state.wait{color:var(--amber)}
+.login .foot{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute);border-top:1px solid var(--line);padding-top:12px;margin-top:20px}
+
+/* The shell is hidden until there is a session. */
+body.view-login #shell{display:none}
+body.view-shell #login{display:none}
+
+/* ------------------------------------------------------------------ */
+/* a control that cannot be pressed                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * THE MOCK'S OWN IDIOM FOR "NOT AVAILABLE".
+ *
+ * The mock has no disabled control, so the treatment is built from
+ * the mock's parts: the muted border and the muted ink of the small
+ * `.act` button, and no hover fill. Green is never used for it —
+ * `--phosphor` is the accent for things that WORK (the signal rule),
+ * and a control that cannot be pressed is not one.
+ */
+.btn:disabled,.act:disabled,select:disabled,input:disabled{
+  background:transparent;color:var(--mute);border-color:var(--line);
+  box-shadow:none;cursor:not-allowed;opacity:.75
+}
+.btn:disabled:hover{background:transparent;color:var(--mute)}
+.act:disabled{border-color:var(--line)}
+.act:disabled:hover{background:none;color:var(--mute);border-color:var(--line)}
+select:disabled,input:disabled{opacity:.6}
+
+/*
+ * The write controls keep the mock's SHAPE — a red destructive
+ * button is red whether or not it can be pressed — but they are
+ * dimmed, because a red button that is not styled as available is
+ * the one thing an operator must not have to guess about.
+ */
+.btn.danger:disabled{background:transparent;color:var(--red);border-color:var(--line);opacity:.6}
+.btn.danger:disabled:hover{background:transparent;color:var(--red)}
+
+/* ------------------------------------------------------------------ */
+/* the read-only map list                                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The map list is a VIEW in phase 3, so the buttons are disabled —
+ * but a disabled button that dims the whole panel reads as "this
+ * panel is broken", so the map list keeps the mock's own colours and
+ * only loses the pointer.
+ */
+.map:disabled{opacity:1;cursor:default}
+.map:disabled:hover{color:var(--mute);border-color:var(--line)}
+.map[aria-pressed=true]:disabled,.map[aria-pressed=true]:disabled:hover{color:var(--phosphor);border-color:var(--phosphor);background:rgba(0,255,65,.06)}
+
+/* The read-only labels: the mode and the time limit. */
+.rd{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;letter-spacing:.08em;color:var(--ghost);border:1px solid var(--line);padding:0 12px;min-height:44px;background:#000}
+.rd .k{color:var(--mute)}
+
+/* ------------------------------------------------------------------ */
+/* the player rows                                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The engine's own columns — slot, name, userid, uniqueid, frags,
+ * time, ping, loss — fit in the mock's row, which had a rank, a name
+ * and two numbers. The row is widened; nothing about it is restyled.
+ */
+.prow{grid-template-columns:48px minmax(0,1fr) repeat(5,auto)}
+.prow .rk small{display:block;font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:.06em;color:var(--mute);text-align:center;margin-top:2px}
+.prow .pstat.time b{font-size:22px}
+.prow .pstat.id b{font-size:26px}
+@media (max-width:1180px){.prow{grid-template-columns:48px minmax(0,1fr) repeat(3,auto)}.prow .pstat.hide-sm{display:none}}
+@media (max-width:860px){.prow{grid-template-columns:40px minmax(0,1fr) auto;gap:16px}.prow .pstat.p{display:none}.pacts{grid-column:1/-1}}
+
+/* ------------------------------------------------------------------ */
+/* the output drawer                                                    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * §6.3: every entry is a timestamp, the command echoed, the outcome
+ * and the confirmation. The mock's log is one line per entry; an
+ * entry with four parts is four lines, indented under the timestamp.
+ */
+.log .entry{padding:6px 0}
+.log .entry>div{padding-left:18px}
+.log .entry>div:first-child{padding-left:0}
+.log .entry .raw{color:var(--mute);font-size:12px;white-space:pre-wrap}
+
+/* ------------------------------------------------------------------ */
+/* the fleet cards                                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The health chip and the RCON chip. The RCON chip is the one thing
+ * that tells "the server is down" from "the console cannot talk to
+ * the server", so it is a chip of its own and it is never green by
+ * default.
+ */
+.srv .chips{margin-top:8px}
+.srv .cnt{white-space:nowrap}
+.chip.ok{border-color:var(--phosphor);color:var(--phosphor)}
+.chip.r{border-color:var(--red);color:var(--red)}
+.chip.a{border-color:var(--amber);color:var(--amber)}
+.chip.x{border-color:var(--mute);color:var(--mute)}
+
+/* The warning the player list shows when the reply was cut short. */
+.warn{border:1px solid var(--amber);color:var(--amber);font-family:var(--mono);font-size:12px;letter-spacing:.06em;padding:12px 14px;margin-bottom:14px}
+
+/* The bans panel: a list of nothing, which has to look like a list. */
+.banlist{font-family:var(--mono);font-size:12px;color:var(--ghost)}
+.banlist div{padding:8px 0;border-bottom:1px solid var(--line)}
+.banlist .none{color:var(--mute);border-bottom:0}
+
+/* Two lists side by side: the console's own id bans, and the engine's
+   IP filter. They are read-only and they are not the same thing. */
+.bancols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
+@media (max-width:700px){.bancols{grid-template-columns:1fr}}
+#banPanel{margin-top:24px}

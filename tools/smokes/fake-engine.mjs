@@ -36,6 +36,20 @@ const REPLIES = {
   sys_ticrate: '"sys_ticrate" is "100"',
   mp_timeleft: '"mp_timeleft" is "875"',
   mp_timelimit: '"mp_timelimit" is "20"',
+  // The map list, in the engine's own shape: the map's file base name
+  // right-aligned in sixteen columns, the BSP version in brackets, and
+  // then the map's title, its compiler and its generator — and the
+  // engine's summary at the end. The colour codes are here because the
+  // engine prints them; the RCON client strips them.
+  'maps *': [
+    '           ts_casa (Half-Life extended) ^3Casa^7 ^2Hammer 3.0^7',
+    '        ts_hideout (Half-Life extended) ^3Hideout^7 ^2Hammer 3.0^7',
+    '       ts_lobby (Half-Life extended) ^3Lobby^7 ^2Hammer 3.0^7',
+    '-------------------',
+    'Directory: "ts/maps" - Maps listed: 3',
+  ].join('\n'),
+  // The IP filter. The empty one is what the fleet has today.
+  listip: 'IP filter list is empty',
 };
 
 /**
@@ -54,12 +68,46 @@ function print(text) {
 const port = Number(process.argv[2] ?? 27015);
 const socket = dgram.createSocket('udp4');
 
+/**
+ * When the fake engine started.
+ *
+ * Two of the engine's numbers move on their own, and the console
+ * has to cope with both: the MAP TIMER counts down, and a player's
+ * PING jitters. Neither is a change an operator needs to read about,
+ * so the console's drawer must not fill with them — and the only way
+ * to know that is for the fake engine to do what the real one does.
+ */
+const startedAt = Date.now();
+
+/** How many times the engine has answered. The ping jitters with it. */
+let answers = 0;
+
 socket.on('message', (buf, rinfo) => {
   const text = buf.toString('binary');
   // `rcon <password> <command>` — the command is everything after the
   // password.
   const parts = text.split(' ');
   const command = parts.slice(2).join(' ').trim();
+
+  // THE MAP TIMER COUNTS DOWN, the way the engine's does.
+  if (command === 'mp_timeleft') {
+    const left = Math.max(0, 875 - Math.floor((Date.now() - startedAt) / 1000));
+    socket.send(print(`"mp_timeleft" is "${left}"\n`), rinfo.port, rinfo.address);
+    return;
+  }
+
+  // THE PING JITTERS. The engine measures a player's ping on every
+  // reply, and it is never the same number twice.
+  if (command === 'status') {
+    answers += 1;
+    const ping = 45 + (answers % 3);
+    const reply = REPLIES.status.replace(/ 45  0 172\.17\.0\.1/, ` ${ping}  0 172.17.0.1`);
+    for (const line of reply.split('\n')) {
+      socket.send(print(`${line}\n`), rinfo.port, rinfo.address);
+    }
+    return;
+  }
+
   const reply = REPLIES[command];
   if (reply === undefined) {
     // The engine flushes its redirect even when it printed nothing.
