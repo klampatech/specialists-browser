@@ -10,6 +10,15 @@
  * §2.1): the request is `\xff\xff\xff\xffrcon <password> <command>\n`
  * and the reply is `\xff\xff\xff\xffprint\n<text>`, one datagram per
  * printed line.
+ *
+ * THE FAKE ENDS EVERY LINE WITH A NEWLINE, BECAUSE THE ENGINE DOES.
+ * The engine's redirect buffer ends with '\n' and the flush sends the
+ * buffer as it is (`Rcon_Print`, engine/server/sv_client.c), so the
+ * text of a reply is the CONCATENATION of the datagrams — each one
+ * already carrying its own newline. A fake that drops the newline
+ * would let the client invent a fiction: a reply joined with '\n'
+ * would look right and would put a blank line between every line of
+ * the real thing.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,6 +31,19 @@ function print(text) {
     Buffer.from('\xff\xff\xff\xffprint\n', 'binary'),
     Buffer.from(text, 'binary'),
   ]);
+}
+
+/**
+ * A PRINTED LINE, the way the engine sends it.
+ *
+ * The engine's redirect buffer ends with a newline, so the flushed
+ * datagram ends with one too.
+ *
+ * @param {string} text
+ * @returns {Buffer}
+ */
+function line(text) {
+  return print(`${text}\n`);
 }
 
 /**
@@ -89,8 +111,9 @@ test('the reply is MANY datagrams and the reader stops when it goes quiet', asyn
   ];
   await withFakeEngine(
     (buf, rinfo, socket) => {
-      // One datagram per printed line, as the engine's redirect does.
-      for (const line of lines) socket.send(print(line), rinfo.port, rinfo.address);
+      // One datagram per printed line, as the engine's redirect does —
+      // and each one ends with the engine's own newline.
+      for (const l of lines) socket.send(line(l), rinfo.port, rinfo.address);
     },
     async ({ port }) => {
       const res = await rcon({
@@ -104,8 +127,35 @@ test('the reply is MANY datagrams and the reader stops when it goes quiet', asyn
       assert.equal(res.outcome, 'ok');
       assert.equal(res.packets, lines.length);
       assert.deepEqual(res.lines, lines);
-      assert.equal(res.text, lines.join('\n'));
       assert.equal(res.empty, false);
+    },
+  );
+});
+
+test("the reply is the engine's text: concatenated, with no blank line between", async () => {
+  // THE EXACT TEXT. The engine's redirect buffer ends with a newline
+  // and the flush sends it as it is, so the reply is the datagrams
+  // CONCATENATED. Joining them with '\n' would put a blank line
+  // between every line — and would break a line that the engine's
+  // 2032-byte redirect cap had split in two.
+  await withFakeEngine(
+    (buf, rinfo, socket) => {
+      socket.send(line('line1'), rinfo.port, rinfo.address);
+      socket.send(line('line2'), rinfo.port, rinfo.address);
+    },
+    async ({ port }) => {
+      const res = await rcon({
+        host: '127.0.0.1',
+        port,
+        password: 'pw',
+        command: 'status',
+        timeoutMs: 500,
+        quietMs: 120,
+      });
+      assert.equal(res.outcome, 'ok');
+      assert.equal(res.text, 'line1\nline2\n');
+      assert.notEqual(res.text, 'line1\n\nline2\n');
+      assert.deepEqual(res.lines, ['line1', 'line2']);
     },
   );
 });
@@ -154,10 +204,40 @@ test('NO reply at all is a refusal, and it waits for the timeout', async () => {
   });
 });
 
-test('the engine can say the password is wrong', async () => {
+test('a refusal says what it cannot know', async () => {
+  // "No reply" is ONE observation, and the protocol cannot tell the
+  // four causes apart: a wrong password, RCON disabled on that
+  // instance, UDP filtered, and a busy engine all look the same from
+  // here. The detail has to name all four — a refusal that says only
+  // "wrong password" sends the operator after the one cause that is
+  // not a configuration problem.
+  await withFakeEngine(null, async ({ port }) => {
+    const res = await rcon({
+      host: '127.0.0.1',
+      port,
+      password: 'pw',
+      command: 'status',
+      timeoutMs: 200,
+      quietMs: 100,
+    });
+    assert.equal(res.outcome, 'refused');
+    assert.match(res.detail, /password/i);
+    assert.match(res.detail, /disabled/i);
+    assert.match(res.detail, /filtered/i);
+    assert.match(res.detail, /busy/i);
+  });
+});
+
+test('a build that says "Bad rcon_password" is understood — but the pinned engine never says it', async () => {
+  // WHAT THIS PROVES: the client recognises the string IF it ever
+  // sees one. It is NOT evidence about the engine we ship: the pinned
+  // FWGS build takes a rate-limit token and RETURNS WITHOUT REPLYING
+  // when the password is wrong, so a wrong password there is a
+  // silence, not a sentence. The refusal in the test above is the
+  // shape a wrong password actually takes.
   await withFakeEngine(
     (buf, rinfo, socket) => {
-      socket.send(print('Bad rcon_password.'), rinfo.port, rinfo.address);
+      socket.send(line('Bad rcon_password.'), rinfo.port, rinfo.address);
     },
     async ({ port }) => {
       const res = await rcon({
@@ -171,6 +251,53 @@ test('the engine can say the password is wrong', async () => {
       assert.equal(res.outcome, 'refused');
       assert.equal(res.packets, 1);
       assert.match(res.text, /Bad rcon_password/);
+    },
+  );
+});
+
+test('an engine that keeps talking cannot hang the request forever', async () => {
+  // THE HANG. The reply has no terminator: the reader stops when the
+  // socket goes QUIET, and every datagram restarts the quiet clock. An
+  // engine that dribbles a packet out every 250ms therefore keeps the
+  // promise pending FOREVER — the HTTP request hangs and the socket
+  // leaks, and one misbehaving instance hangs the whole fleet read.
+  //
+  // The OVERALL DEADLINE is the second clock, and it settles whatever
+  // the traffic. It is not a refusal either: the engine IS talking,
+  // it just never finished, and the reply cannot be trusted.
+  let ticker = null;
+  await withFakeEngine(
+    (buf, rinfo, socket) => {
+      ticker = setInterval(() => {
+        socket.send(line('tick'), rinfo.port, rinfo.address);
+      }, 250);
+    },
+    async ({ port }) => {
+      const started = Date.now();
+      try {
+        const res = await rcon({
+          host: '127.0.0.1',
+          port,
+          password: 'pw',
+          command: 'status',
+          timeoutMs: 500,
+          // The quiet window is WIDER than the trickle, which is what
+          // makes the quiet timer useless: every datagram arrives
+          // before the socket has been quiet long enough.
+          quietMs: 400,
+          deadlineMs: 700,
+        });
+        const elapsed = Date.now() - started;
+        assert.ok(res.packets > 0, 'the fake engine must have sent something');
+        assert.notEqual(res.outcome, 'ok', 'an unfinished reply is not an answer');
+        assert.notEqual(res.outcome, 'refused', 'a refusal means the engine said nothing');
+        assert.equal(res.outcome, 'unreachable');
+        assert.match(res.detail, /never finished/);
+        assert.ok(elapsed >= 600, `the call took ${elapsed}ms, not the deadline`);
+        assert.ok(elapsed < 3000, `the call took ${elapsed}ms, far past the deadline`);
+      } finally {
+        if (ticker) clearInterval(ticker);
+      }
     },
   );
 });
@@ -220,7 +347,7 @@ test('a closed port is UNREACHABLE, not refused', async () => {
 test('the colour codes are stripped out of the reply', async () => {
   await withFakeEngine(
     (buf, rinfo, socket) => {
-      socket.send(print('^1Error: ^7banid: no such player'), rinfo.port, rinfo.address);
+      socket.send(line('^1Error: ^7banid: no such player'), rinfo.port, rinfo.address);
     },
     async ({ port }) => {
       const res = await rcon({
@@ -231,7 +358,7 @@ test('the colour codes are stripped out of the reply', async () => {
         timeoutMs: 500,
         quietMs: 120,
       });
-      assert.equal(res.text, 'Error: banid: no such player');
+      assert.equal(res.text, 'Error: banid: no such player\n');
       assert.doesNotMatch(res.text, /\^\d/);
     },
   );
@@ -244,7 +371,7 @@ test('the reply is decoded as latin1, not UTF-8', async () => {
       socket.send(
         Buffer.concat([
           Buffer.from('\xff\xff\xff\xffprint\n', 'binary'),
-          Buffer.from([0x4a, 0x65, 0x72, 0xf3, 0x09]),
+          Buffer.from([0x4a, 0x65, 0x72, 0xf3, 0x09, 0x0a]),
         ]),
         rinfo.port,
         rinfo.address,
@@ -259,7 +386,7 @@ test('the reply is decoded as latin1, not UTF-8', async () => {
         timeoutMs: 500,
         quietMs: 120,
       });
-      assert.equal(res.text, 'Jeró\t');
+      assert.equal(res.text, 'Jeró\t\n');
     },
   );
 });
