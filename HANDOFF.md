@@ -16,13 +16,53 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-29, `main` — **the client now caps the tick rate the
-engine is offered**, and the character picker and the pre-join identity
-modal are LIVE in production. webXash #25 and specialists-browser #81
-were merged (the latter as `c12dba3`), then #82 (the deploy gate) and #83
-(the console-FIFO fix) were merged on 2026-10-28, then #85 (the
-abandoned approaches' code) and #86 (the BB favicon, the turning dial,
-the top nav links gone). The game server image is `ts-server:0.27`.
+**As of:** 2026-10-31, `main` — **the admin console is SPECIFIED, not
+built** (PR #104, `docs/ADMIN-CONSOLE.md`). Everything else below is
+unchanged from the 2026-10-29 state: the client caps the tick rate the
+engine is offered, the character picker and the pre-join identity modal
+are LIVE in production, and the game server image is `ts-server:0.27`.
+
+## The admin console is specified (PR #104, 2026-10-31)
+
+Kyle supplied a mock of a single-admin web console for the fleet
+(servers, a stat bar, a live console, map and server controls, a ranked
+player list) and asked for a spec and a plan. The spec is
+**`docs/ADMIN-CONSOLE.md`**; PR #104 is open and **awaiting Kyle's
+approval** (the agent does not approve its own PRs).
+
+The spec's load-bearing claims were **measured** against production
+`ts-0` (read-only) and a disposable CI-stack instance, which was
+destroyed afterwards. Four measurements contradicted the earlier drafts
+(PRs #102 and #103, now closed and carried forward with the errors
+corrected and marked):
+
+1. **A successful `kick` DOES print into the RCON reply.** The earlier
+   draft said it prints nothing. The rule derived from it — the reply is
+   never the evidence, the state after the command is — survives.
+2. **`rcon_password` can be set at runtime.** No restart, no kicked
+   players.
+3. **A runtime-set `rcon_password` survives a map change**, which
+   re-executes `server.cfg`. The earlier draft rejected the runtime set
+   on the grounds that the re-exec would stomp it; it does not.
+4. **The game mode is a property of the MAP**, decided at rules
+   install. `mp_teamplay 1` is accepted and the mode does not change.
+
+**RCON works on the deployed engine**, which is what makes the console
+small: a new `services/admin` on loopback, talking to the game servers
+over loopback UDP, needing **no Docker socket** — which is what decides
+it over the console FIFO the registry uses.
+
+**Two features in the mock cannot work as drawn and are waiting on
+Kyle:** *mute* (there is no administrative mute anywhere in the
+engine, the port or the registry) and the *game mode* dropdown (see
+above). Five questions are listed in `docs/ADMIN-CONSOLE.md` §8.
+
+**Security is decided and simple:** the service binds `127.0.0.1:8095`,
+is not routed by the public Caddy vhost, and is reached over an SSH
+tunnel whose key already exists. One password, a server-owned lockout,
+an HttpOnly session cookie. No public surface at all.
+
+**Nothing is built yet.** The build plan is five phases, each a PR.
 
 ## The CI browser gate was playing in production (2026-10-30)
 
