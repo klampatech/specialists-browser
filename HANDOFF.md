@@ -16,28 +16,37 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-31, branch `feat/admin-console-phase4` — **the admin
-console's PHASE 4 (THE MUTATING ACTIONS) IS BUILT**, on top of phase 3
-(the read-only UI, on Kyle's own mock), phase 2 (the password, the
-session, the lockout, the CSRF token, the audit line and `adminctl`)
-and phase 1 (the RCON client, the fleet discovery and the read-only
-API), and on top of the specification in `docs/ADMIN-CONSOLE.md`
-(PR #104, awaiting Kyle's approval). **The console can now touch a
-live server**: five endpoints — kick, map change, broadcast, restart
-round and the time limit — each one behind the session gate and the
-CSRF token, each one writing one audit line, and each one answering
-with the §5 envelope. **Every action is confirmed by a re-read, never
-by its own reply**; the cached probe is dropped before that re-read,
-and a failed RCON call is reported and never retried. The UI follows
-§6.2: the kick is one click with an optional reason and **no modal**
-and is **not a red button**, the map change is the **only** action
-with a modal (it names the player count and `server.cfg` before the
-click), and the broadcast, the round restart and the time limit are
-live with no modal. **The free-form command box is still disabled** —
-over RCON `banid` works — and the ban stub is still a 501. Everything
-else below is unchanged from the 2026-10-29 state: the client caps
-the tick rate the engine is offered, the character picker and the
-pre-join identity modal are LIVE in production, and the game server
+**As of:** 2026-10-31, branch `feat/admin-console-phase5` — **the admin
+console's PHASE 5 (THE DEPLOYMENT, THE SECRET AND THE RUNBOOK) IS
+BUILT**, on top of phase 4 (the mutating actions), phase 3 (the
+read-only UI, on Kyle's own mock), phase 2 (the password, the session,
+the lockout, the CSRF token, the audit line and `adminctl`) and phase 1
+(the RCON client, the fleet discovery and the read-only API), and on
+top of the specification in `docs/ADMIN-CONSOLE.md` (PR #104, awaiting
+Kyle's approval). **The console can now be deployed, and the mechanism
+is in place: the image (`services/admin/Dockerfile.admin`, uid **10006**),
+the deploy entry (`replace admin`, loopback only, no docker socket), the
+RCON secret as a FILE (`RCON_PASSWORD_FILE`, **0640 `root:tsrcon`**, one
+file and two readers), the boot config (the entrypoint appends the
+password to the COPY of `server.cfg`, never to the committed one), the
+CI wiring, the tunnel (`tools/admin/tunnel.sh`) and the runbook
+(`docs/ADMIN-CONSOLE-RUNBOOK.md`).** **The cut-over was NOT done and
+was not to be done in this phase: nothing was deployed to `bb-prod`, no
+RCON password was set anywhere, no game server was touched, and nothing
+was restarted.** The console's behaviour is otherwise unchanged from
+phase 4: five endpoints behind the session gate and the CSRF token, each
+one writing one audit line and each one answering with the §5 envelope,
+**every action confirmed by a re-read, never by its own reply**; the
+cached probe is dropped before that re-read, and a failed RCON call is
+reported and never retried. The UI follows §6.2: the kick is one click
+with an optional reason and **no modal** and is **not a red button**, the
+map change is the **only** action with a modal (it names the player count
+and `server.cfg` before the click), and the broadcast, the round restart
+and the time limit are live with no modal. **The free-form command box is
+still disabled** — over RCON `banid` works — and the ban stub is still a
+501. Everything else below is unchanged from the 2026-10-29 state: the
+client caps the tick rate the engine is offered, the character picker and
+the pre-join identity modal are LIVE in production, and the game server
 image is `ts-server:0.27`.
 
 ## The admin console is specified (PR #104, 2026-10-31)
@@ -892,6 +901,141 @@ wiring, the `rcon_password` provisioning (runtime first, boot config
 second), the SSH tunnel alias and the runbook — so the console is
 reachable from Kyle's machine over the tunnel and the secret survives
 a container restart.
+
+## The admin console: phase 5 is built — THE DEPLOYMENT, THE SECRET AND THE RUNBOOK (2026-10-31, `feat/admin-console-phase5`)
+
+**The mechanism is built. The cut-over is NOT done, and was not done on
+purpose.** There is no console running on `bb-prod`, no RCON password
+anywhere, no game server was touched and nothing was restarted. The
+mechanism is what phase 5 built; the cut-over is done by hand, after
+review.
+
+### The image — `services/admin/Dockerfile.admin`
+
+- **`node:22-bookworm-slim`** — the same base as the other control-plane
+  images: one base to patch, one libc, one set of behaviours. The service
+  has no native dependencies, so alpine's smaller libc buys nothing.
+- **One `COPY` per directory** (`lib/`, `public/`), because the registry
+  shipped an image whose service could not import its own module when
+  somebody forgot a `COPY` line, and it crash-looped in production for
+  it. The build context is **allowlisted** (`Dockerfile.admin.dockerignore`)
+  for the same reason: the repository root is 1.1 GB of game assets.
+- **No `npm install`** — the service has no dependencies. A Dockerfile
+  that grows an install step is a service that can fail to be built.
+- **uid 10006 (`admin`)** — the next free number in the allocated block
+  (10001 gameserver, 10002 a2s, 10003 bridge, 10004 registry, 10005
+  orchestrator). It is FIXED, not derived: the state directory and the
+  audit log on the host are owned by it, and a uid that moved with the
+  build would leave the console unable to read its own state.
+- **gid 10007 (`tsrcon`)** — the shared secret group (§ below).
+- **No game assets, no secret, no docker socket.** The CI checks the
+  first two; the last one is the design (§3.3).
+
+### The secret — a FILE, and 0640, not 0600
+
+`RCON_PASSWORD_FILE` points at a file whose contents are the password. It
+is read at startup, the trailing newline is trimmed, and the value is
+**never** logged, returned or audited. `RCON_PASSWORD` stays supported —
+the interim and the tests use it — and **both set is a refusal to
+start**, with the reason: two ways to say one thing is how a secret ends
+up being the wrong one. A file that cannot be read is also a refusal to
+start, with the path in the message.
+
+**The file's mode is 0640, owned by `root:tsrcon` (gid 10007) — NOT the
+0600 §3.4 originally said, and the reason is that the secret has TWO
+readers with TWO uids**: the console (10006) and the game server's
+entrypoint (10001), which writes the password into the config the engine
+execs. A 0600 file owned by the console is unreadable by the game
+server, so the boot-config path would need a **second copy** of the
+secret — and two copies drift apart, which looks exactly like a network
+fault (every instance `refused`, nothing in the logs). 0644 would be
+world-readable; 0600 owned by root would be readable by neither. The
+console's user is in the group and the game container is started with
+`--group-add 10007`.
+
+### The boot config — the engine's own `server.cfg`, and nothing committed
+
+The entrypoint appends `rcon_password "<value>"` to the **copy** of
+`server.cfg` it execs, from the **same mounted file** the console reads.
+The committed `tools/deploy/config/server.cfg` never changes. A **missing**
+secret does **not** stop the fleet from booting: the instance starts with
+RCON off and says so on stderr. A missing optional secret must never stop
+a game server from starting — that would be a much worse outage than the
+one it prevents.
+
+### The deploy entry — `replace admin`
+
+Host network, `ADMIN_HOST=127.0.0.1`, `ADMIN_PORT=8095` (loopback only),
+`TS_PORT_BASE=27015`, `TS_INSTANCE_COUNT=8`, the secret **read-only**, the
+administrator's record **read-only as a DIRECTORY** (`adminctl` writes it
+atomically with a rename, and a bind-mounted *file* would keep pointing at
+the old inode forever), the audit log's **DIRECTORY writable** (a
+bind-mounted log file has to exist and be owned correctly before the
+container starts, and docker creates a missing source as root), and **no
+docker socket**. The deploy **builds** the image from the repository when
+the repository is there, so a deploy cannot ship a stale console, and it **skips the console until the secret is provisioned** (loudly —
+the console has not been cut over yet, and the registry, the orchestrator
+and the bridge have players on them). A secret that is **empty** or
+**world-readable** stops the deploy: that is an operator's mistake, not a
+cut-over that has not happened.
+
+### The CI, the tunnel and the runbook
+
+- **CI** builds the admin image, checks it for `*.bsp` / `*.pak` /
+  `*.mdl`, checks that it carries no `rcon_password` file and no
+  `auth.json`, checks that `RCON_PASSWORD` is not in its environment, and
+  **runs** it with a real secret and a real record
+  (`tools/smokes/admin-image-smoke.sh`). The deploy workflow streams
+  `admin:<sha>` and the deploy script runs it.
+- **The tunnel is a script**, `tools/admin/tunnel.sh`, not an alias in
+  `~/.ssh/config`: an alias is a change to ONE machine, and the repository
+  is the thing anybody else can use. It **refuses to start twice** and it
+  **leaves nothing behind** (the tunnel is a child process and the script
+  kills it on every path out).
+- **The runbook** is `docs/ADMIN-CONSOLE-RUNBOOK.md`: the tunnel, the
+  secret's provisioning, `adminctl` (which refuses to run as root, so it
+  runs as uid **10006**), the runtime `rcon_password` command and **when
+  it is needed**, the fact that **the engine prints the password in its
+  log** (so the game server's logs are as secret as the file), and the
+  **tri-state** — `ok` / `refused` / `unreachable`, where `refused` means
+  the console cannot talk to the server and **not** that the server is
+  down.
+
+### How it was proven
+
+- **20 new unit tests** (`tests/unit/admin-deploy.test.mjs`) and **14**
+  (`tests/unit/admin-secret.test.mjs`): the image's shape and its
+  contents, the deploy block, the entrypoint (the copy gets the line, the
+  committed file does not change, a missing secret still boots), the
+  tunnel (refuses twice, leaves nothing behind), and the secret (read and
+  trimmed, never logged, both-set refusal, missing-file error).
+- **The image, running for real** — `tools/smokes/admin-image-smoke.sh`:
+  the secret file is `root:10007` 0640, the state directory is
+  `10006:10006`, the record is written by `adminctl` as uid 10006, the
+  console answers `/` with **HTTP 200**, the login answers **HTTP 200**,
+  and `GET /admin/servers` answers with **`"rcon": "ok"`** — and the
+  secret is in neither the log, nor the audit log, nor a response. The
+  game server's uid (10001) can read the same file through the group, and
+  uid 10002 cannot.
+
+### What is NOT in phase 5
+
+**No production cut-over.** Nothing was deployed to `bb-prod`, no RCON
+password was set anywhere, no running game server was touched, and
+nothing was restarted. **No public exposure** — the console is loopback
+only, it is not in the Caddy vhost and it has no DNS record. **No secret
+in the repository** and **no `rcon_password` in the committed
+`server.cfg`**. **No second administrator, no roles, and no change to the
+auth, the session, the lockout, the CSRF gate or the audit.**
+
+**NEXT TASK (admin console): the cut-over, by hand, after review.**
+Provision the secret and the administrator's record on `bb-prod`
+(`docs/ADMIN-CONSOLE-RUNBOOK.md` §2 and §3), deploy, enable RCON at
+runtime on every instance (§4.1 — a runtime password is per instance, so
+a new instance needs it too), open the tunnel and check the tri-state
+(§6). Then, and only then, the console is "reachable from Kyle's machine
+over the tunnel, and the secret survives a container restart" — the phase
+5 done-when.
 
 ## The CI browser gate was playing in production (2026-10-30)
 

@@ -1,0 +1,131 @@
+# admin — the BulletBallet admin console.
+#
+#   docker build -f services/admin/Dockerfile.admin -t admin:0.1 .
+#   docker run -d --name admin --restart unless-stopped --network host \
+#     -e ADMIN_HOST=127.0.0.1 -e ADMIN_PORT=8095 \
+#     -e RCON_PASSWORD_FILE=/srv/ts-admin/rcon_password \
+#     -v /srv/ts-admin/rcon_password:/srv/ts-admin/rcon_password:ro \
+#     -v /srv/ts-admin/auth:/srv/ts-admin/auth:ro \
+#     -v /srv/ts-admin/audit:/srv/ts-admin/audit \
+#     admin:0.1
+#
+# THE IMAGE IS THE SERVICE AND NOTHING ELSE
+# -----------------------------------------
+# It carries the console's own code, its own modules, the static UI it
+# serves, and `adminctl` (the CLI that writes the administrator's
+# password record). That is all.
+#
+# WHAT THIS IMAGE MAY NOT CARRY
+# -----------------------------
+# - THE RCON PASSWORD. It is a file on the host, mounted read-only
+#   (docs/ADMIN-CONSOLE.md §3.5). A password baked into an image is a
+#   password in every layer cache, in every backup of those layers, and
+#   in every `docker save` of the image — and `docker inspect` prints
+#   an environment variable in one command, so a secret there is not a
+#   secret either.
+# - THE ADMINISTRATOR'S PASSWORD RECORD. It is a scrypt record on the
+#   host, mounted read-only, and it is written by `adminctl` on the
+#   host — not by an image build.
+# - GAME ASSETS. The console reads the fleet over RCON and needs none
+#   of them. The CI job checks the built image for `*.bsp`, `*.pak`
+#   and `*.mdl`, the same way it checks the other service images.
+# - THE DOCKER SOCKET. The console talks to the game servers over
+#   loopback UDP precisely SO THAT IT DOES NOT NEED IT (§3.3). A
+#   socket here would be root-equivalent on the host, and the whole
+#   point of the design is that the console's blast radius is "can
+#   kick players on this box", not "is root on the game box".
+#
+# NO `npm install`
+# ----------------
+# The service has no dependencies at all: it is plain ESM on node's
+# built-ins (`node:http`, `node:dgram`, `node:crypto`, `node:fs`).
+# So there is no install step, no `node_modules` in the image, and
+# nothing that can fail because a package registry was slow. If a
+# dependency ever appears, that is a design failure to raise and
+# argue about — not a Dockerfile to grow. A service that needs a
+# registry at build time is a service that can fail to be built.
+#
+# WHY ONE COPY PER DIRECTORY
+# --------------------------
+# The registry's Dockerfile used to have one COPY line per module in
+# `lib/`, so that each module could carry a comment saying why it is
+# a separate module. That is a good reason for a module to exist and
+# a terrible reason for a build to break: adding a module meant
+# remembering to add a line, and forgetting it shipped an image whose
+# service could not import its own module. The registry crash-looped
+# in production on 2026-10-28 with ERR_MODULE_NOT_FOUND, and the
+# unit suite was green throughout.
+#
+# So the whole directory is copied, once. A new module is in the image
+# because it exists, not because somebody remembered.
+
+FROM node:22-bookworm-slim
+
+# bookworm-slim, not alpine: the service has no native dependencies,
+# so musl's smaller libc buys nothing — and the other two
+# control-plane images are on bookworm-slim too, which means one base
+# image to patch, one to cache in CI and one set of behaviours. A
+# different libc for one service in a fleet of four is a class of bug
+# bought for nothing.
+
+WORKDIR /app
+
+COPY services/admin/package.json /app/services/admin/package.json
+COPY services/admin/service.mjs /app/services/admin/service.mjs
+COPY services/admin/adminctl.mjs /app/services/admin/adminctl.mjs
+
+# The modules, as a DIRECTORY. See the header for why.
+COPY services/admin/lib/ /app/services/admin/lib/
+
+# The static UI the console serves at `/`. It is part of the service:
+# there is no separate web app, no build step and no bundler, and the
+# HTML/CSS/JS are copied exactly as they are in the repository.
+COPY services/admin/public/ /app/services/admin/public/
+
+ENV ADMIN_HOST=127.0.0.1 \
+    ADMIN_PORT=8095 \
+    TS_HOST=127.0.0.1 \
+    TS_PORT_BASE=27015 \
+    TS_INSTANCE_COUNT=8 \
+    RCON_PASSWORD_FILE=/srv/ts-admin/rcon_password \
+    ADMIN_AUTH_FILE=/srv/ts-admin/auth/auth.json \
+    ADMIN_AUDIT_PATH=/srv/ts-admin/audit/actions.log
+
+# Documentation only: `EXPOSE` publishes nothing. The container runs
+# with `--network host` and the service binds 127.0.0.1, so the port
+# exists on the host's loopback and nowhere else.
+EXPOSE 8095
+
+# THE UID: 10006.
+#
+# The block is allocated in order — 10001 gameserver, 10002 a2s, 10003
+# bridge, 10004 registry, 10005 orchestrator — so 10006 is the next
+# free one, and an operator reading `docker inspect` can see the
+# console belongs to the same family as the rest of the control
+# plane. The uid is FIXED, not derived: the audit log and the
+# administrator's password record are owned by it on the host, and a
+# uid that moved with the build would leave the console unable to
+# read its own state.
+#
+# THE GROUP: 10007, `tsrcon`.
+#
+# The RCON password is read by TWO services — the console (uid
+# 10006) and the game server (uid 10001, `gameserver`), which writes
+# it into the config the engine execs. Two readers, one file, one
+# copy of the secret on the host. They cannot both own it, so the
+# file is owned by ROOT and readable by the shared group, and the
+# console's user is a member of that group.
+#
+# The group id is fixed for the same reason the uid is: the file's
+# group on the host has to be the same number as the group inside
+# this image, and `run-instance.sh` passes `--group-add 10007` to the
+# game container for exactly this reason (the game image is built by
+# hand on the host and cannot carry the membership).
+RUN groupadd --gid 10006 admin \
+ && groupadd --gid 10007 tsrcon \
+ && useradd --create-home --uid 10006 --gid 10006 --groups tsrcon --shell /usr/sbin/nologin admin \
+ && chown -R admin:admin /app
+
+USER admin
+
+CMD ["node", "/app/services/admin/service.mjs"]

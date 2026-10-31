@@ -275,6 +275,7 @@ jobs:
           docker build -f services/registry/Dockerfile.registry -t registry:${{ github.sha }} .
           docker build -f services/orchestrator/Dockerfile.orchestrator -t orchestrator:${{ github.sha }} .
           docker build -f tools/deploy/Dockerfile.bridge -t ts-bridge:${{ github.sha }} .
+          docker build -f services/admin/Dockerfile.admin -t admin:${{ github.sha }} .
 
       - name: Ship the service images
         if: steps.changed.outputs.services == '1'
@@ -287,7 +288,8 @@ jobs:
           for pair in \
             "registry:${{ github.sha }} registry" \
             "orchestrator:${{ github.sha }} orchestrator" \
-            "ts-bridge:${{ github.sha }} ts-bridge"; do
+            "ts-bridge:${{ github.sha }} ts-bridge" \
+            "admin:${{ github.sha }} admin"; do
             set -- $pair
             echo "  streaming $1"
             docker save "$1" | gzip -1 | ssh -F ~/.ssh/config prod 'gunzip | docker load'
@@ -330,6 +332,15 @@ jobs:
           scp -F ~/.ssh/config tools/deploy/config/server.cfg prod:/home/ubuntu/server.cfg
           scp -F ~/.ssh/config tools/deploy/config/gameinfo.txt prod:/home/ubuntu/gameinfo.txt
           scp -F ~/.ssh/config tools/deploy/config/mapcycle.txt prod:/home/ubuntu/mapcycle.txt
+          # `adminctl`, for the same reason: the administrator's password
+          # record is written ON THE HOST, by a human, as the uid the
+          # console runs as -- and the console's image carries the CLI, but
+          # the console's state directory is mounted read-only, so the CLI
+          # cannot write the record from inside the container. It is shipped
+          # here so the runbook's command is one the host can run.
+          ssh -F ~/.ssh/config prod 'mkdir -p /home/ubuntu/adminctl/lib'
+          scp -F ~/.ssh/config services/admin/adminctl.mjs prod:/home/ubuntu/adminctl/adminctl.mjs
+          scp -F ~/.ssh/config services/admin/lib/auth.mjs prod:/home/ubuntu/adminctl/lib/auth.mjs
           ssh -F ~/.ssh/config prod '
             set -euo pipefail
             sudo cp /home/ubuntu/server.cfg /srv/ts-config/server.cfg
@@ -348,6 +359,7 @@ jobs:
             REGISTRY_IMAGE=registry:'"${{ github.sha }}"' \
             ORCHESTRATOR_IMAGE=orchestrator:'"${{ github.sha }}"' \
             BRIDGE_IMAGE=ts-bridge:'"${{ github.sha }}"' \
+            ADMIN_IMAGE=admin:'"${{ github.sha }}"' \
             /home/ubuntu/deploy-services.sh
           '
 
