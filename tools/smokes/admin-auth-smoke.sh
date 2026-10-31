@@ -14,6 +14,8 @@
 #   - the fleet is readable with that cookie;
 #   - the session endpoint answers with the CSRF token and the
 #     expiries;
+#   - the ban is refused, and it is refused because of the gate (401
+#     with no session, 403 with no CSRF token, 501 with both);
 #   - the logout ends the session, and the cookie stops working.
 #
 # It is a SMOKE, not a test: the tests are in tests/unit, and they
@@ -118,8 +120,34 @@ curl -s -o "$WORK/body" -w 'HTTP %{http_code}\n' -b "$JAR" "$BASE/admin/session"
 cat "$WORK/body"
 
 echo
-echo "== 8. POST /admin/logout (with the CSRF token) =="
+echo "== 8. POST /admin/servers/ts-0/ban (with the cookie and the CSRF token) =="
 CSRF="$(node -e 'const fs=require("fs");const b=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(b.csrfToken)' "$WORK/body")"
+curl -s -o "$WORK/body" -w 'HTTP %{http_code}\n' -D "$WORK/headers" \
+  -b "$JAR" -H "X-CSRF-Token: $CSRF" \
+  -H 'Content-Type: application/json' \
+  -d '{"userid": 165, "minutes": 1440, "reason": "cheating"}' \
+  -X POST "$BASE/admin/servers/ts-0/ban"
+cat "$WORK/body"
+
+echo
+echo "== 9. the same ban WITHOUT the CSRF token =="
+curl -s -o "$WORK/body" -w 'HTTP %{http_code}\n' \
+  -b "$JAR" \
+  -H 'Content-Type: application/json' \
+  -d '{"userid": 165, "minutes": 1440}' \
+  -X POST "$BASE/admin/servers/ts-0/ban"
+cat "$WORK/body"
+
+echo
+echo "== 10. the same ban with NO session at all =="
+curl -s -o "$WORK/body" -w 'HTTP %{http_code}\n' \
+  -H 'Content-Type: application/json' \
+  -d '{"userid": 165, "minutes": 1440}' \
+  -X POST "$BASE/admin/servers/ts-0/ban"
+cat "$WORK/body"
+
+echo
+echo "== 11. POST /admin/logout (with the CSRF token) =="
 curl -s -o "$WORK/body" -w 'HTTP %{http_code}\n' -D "$WORK/headers" \
   -b "$JAR" -H "X-CSRF-Token: $CSRF" \
   -X POST "$BASE/admin/logout"
@@ -127,7 +155,7 @@ grep -i '^set-cookie' "$WORK/headers"
 cat "$WORK/body"
 
 echo
-echo "== 9. GET /admin/servers with the SAME cookie again =="
+echo "== 12. GET /admin/servers with the SAME cookie again =="
 curl -s -o "$WORK/body" -w 'HTTP %{http_code}\n' -b "$JAR" "$BASE/admin/servers"
 cat "$WORK/body"
 
