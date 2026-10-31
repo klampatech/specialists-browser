@@ -45,11 +45,25 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-the-image-smoke-password}"
 # life of this script, in a temp directory, and it is never printed.
 RCON_SECRET_VALUE="${RCON_SECRET_VALUE:-the-image-smoke-rcon-password}"
 
-WORK="$(mktemp -d)"
+# THE WORK DIRECTORY MUST BE SOMEWHERE THE CONSOLE'S UID CAN REACH.
+#
+# `mktemp -d` follows $TMPDIR, and on this machine TMPDIR is the Hermes
+# scratch directory, which lives under /home/kyle — and /home/kyle is
+# mode 0700. So the uid this smoke drops to (the console's own uid,
+# 10006) could not even TRAVERSE into the directory holding the CLI it
+# was asked to run: node reported "Cannot find module .../ctl/adminctl.mjs",
+# which reads like a missing file and is really an unreachable parent
+# directory.
+#
+# On the host this is not a problem — the CLI lives in the deploy user's
+# own area, and the state directory is what the console reads. In a
+# smoke it has to be /tmp, which is world-traversable, or the smoke
+# proves nothing about the image and everything about $HOME.
+WORK="$(mktemp -d /tmp/admin-image-smoke.XXXXXX)"
 # The smoke's OWN scratch. The state fixture lives in $WORK, which is
 # owned by the console's uid and mode 0700 -- so the files this script
 # writes for itself live somewhere else.
-OUT="$(mktemp -d)"
+OUT="$(mktemp -d /tmp/admin-image-smoke-out.XXXXXX)"
 CONTAINER="admin-image-smoke"
 ENGINE_PID=""
 
