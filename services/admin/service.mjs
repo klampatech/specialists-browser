@@ -16,6 +16,11 @@
  *   POST /admin/logout   ends the session
  *   GET  /admin/session  who am I, and when does this expire
  *
+ * and one endpoint that refuses, on purpose:
+ *
+ *   POST /admin/servers/:id/ban   always 501 — the ban is a stub
+ *                                 (§5.1; see lib/ban.mjs)
+ *
  * EVERY ENDPOINT BUT /admin/login NEEDS A SESSION. A request with no
  * session cookie, or with one that has expired, is refused with a
  * 401 — including the three read endpoints phase 1 built, which were
@@ -59,6 +64,24 @@
  * A request with no session is a 401 even if its CSRF token is also
  * wrong: an unauthenticated caller gets to learn ONE thing, which is
  * that it is not logged in.
+ *
+ * THE BAN IS HERE, AND IT CANNOT BAN
+ * ----------------------------------
+ * `POST /admin/servers/:id/ban` answers **501** and nothing else —
+ * whatever the method, whatever the body, whatever the instance. It
+ * is the ONE mutating endpoint that may not touch the engine, and it
+ * ships in phase 2 for two reasons: it is the honest end-to-end
+ * proof of the CSRF gate (a real mutating endpoint that takes the
+ * token and refuses to do anything — a CSRF failure on the logout
+ * is nearly harmless, so the gate would barely be exercised), and it
+ * gives phase 3's ban button an endpoint to call instead of
+ * nothing.
+ *
+ * The order for it is the spec's: **session (401) → CSRF token
+ * (403) → 501.** Only a properly authenticated request ever reaches
+ * the 501, and the 501 says `banned: false`, so a client that
+ * ignores the status code still cannot conclude that a ban happened.
+ * It does not read the fleet either — there is nothing to read.
  *
  * THE LOGIN ENDPOINT IS THROTTLED TWICE
  * -------------------------------------
@@ -158,6 +181,7 @@ import {
   verifyPasswordAsync,
 } from './lib/auth.mjs';
 import { createAuditSink, DEFAULT_AUDIT_PATH } from './lib/audit.mjs';
+import { banCapabilities, banUnavailableBody } from './lib/ban.mjs';
 import {
   attachTsStatus,
   clampInstanceCount,
@@ -436,6 +460,26 @@ const SESSION_PATH = /^\/admin\/session$/;
 const FLEET_PATH = /^\/admin\/servers$/;
 const PLAYERS_PATH = /^\/admin\/servers\/([^/]+)\/players$/;
 const STATUS_PATH = /^\/admin\/servers\/([^/]+)\/status$/;
+const BAN_PATH = /^\/admin\/servers\/([^/]+)\/ban$/;
+
+/**
+ * A path segment, decoded — without throwing.
+ *
+ * A malformed percent-escape is the CLIENT's mistake, and the
+ * server's answer is not a stack trace. The segment is only used as
+ * an id (a log line, a lookup), so the raw text is a perfectly good
+ * fallback.
+ *
+ * @param {string} segment
+ * @returns {string}
+ */
+function safeDecode(segment) {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return segment;
+  }
+}
 
 /**
  * Build the service.
@@ -786,7 +830,16 @@ export function createAdminService(opts = {}) {
       return;
     }
 
-    if (mutating && !csrfMatches(session.csrfToken, req.headers[CSRF_HEADER])) {
+    // THE BAN PATH IS A MUTATING PATH WHATEVER THE METHOD SAYS.
+    //
+    // It is the one endpoint whose entire purpose is a mutation, so
+    // a request to it has to carry the CSRF token even when the
+    // method is wrong. The order is the one the spec fixes:
+    // session (401) → CSRF token (403) → the endpoint (501).
+    const banMatch = BAN_PATH.exec(path);
+    const needsCsrf = mutating || banMatch !== null;
+
+    if (needsCsrf && !csrfMatches(session.csrfToken, req.headers[CSRF_HEADER])) {
       // This is only reached WITH a valid session, so the 403 does
       // not tell an unauthenticated caller anything they did not
       // already know.
@@ -794,6 +847,29 @@ export function createAdminService(opts = {}) {
         error: 'csrf_failed',
         detail: `a mutating request needs the CSRF token in the ${CSRF_HEADER} header`,
       });
+      return;
+    }
+
+    // THE BAN IS A STUB. It is the ONE mutating endpoint that may
+    // not touch the engine, and it is here in phase 2 because it is
+    // the honest way to prove the CSRF gate end to end: a real
+    // mutating endpoint, taking the token, refusing to do anything.
+    //
+    // The answer is ALWAYS 501, whatever the method, whatever the
+    // body and whatever the instance — a valid body, a malformed
+    // one, an empty one. The body is not even parsed: the request
+    // shape is fixed in the spec (§5.1) so the UI never has to
+    // move, but the stub has no use for it. The body is drained so
+    // the connection stays usable, and then dropped.
+    //
+    // It does not read the fleet either — there is nothing to read:
+    // the instance is not probed, and no `banid` and no `addip` is
+    // ever sent. See lib/ban.mjs for why the ban cannot be real
+    // yet, and what it would remove if it were.
+    if (banMatch) {
+      req.resume();
+      writeAudit('ban', safeDecode(banMatch[1]), 'unavailable');
+      sendJson(res, 501, banUnavailableBody());
       return;
     }
 
@@ -826,6 +902,11 @@ export function createAdminService(opts = {}) {
         expiresAt: sessions.effectiveExpiry(session),
         absoluteExpiresAt: session.absoluteExpiresAt,
         idleExpiresAt: session.idleExpiresAt,
+        // What the console can do — the UI renders the ban
+        // affordance from this flag and nothing else (§5.1). It
+        // flips to true when the per-browser identity lands, and
+        // the button enables with no change to the UI.
+        capabilities: banCapabilities(),
       });
       return;
     }
