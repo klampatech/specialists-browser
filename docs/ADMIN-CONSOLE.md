@@ -671,9 +671,10 @@ All endpoints are under `/admin`, all require a session except
 | `POST` | `/admin/login` | `{password}` → session cookie. Returns the lockout state. |
 | `POST` | `/admin/logout` | Ends the session. |
 | `GET` | `/admin/session` | Who am I, when does this expire. |
-| `GET` | `/admin/servers` | The fleet: one row per instance — id, name, map, **mode** (read-only), players, bots, max, tickrate, map seconds left, uptime, health, and **`rcon: ok \| refused \| unreachable`**. |
+| `GET` | `/admin/servers` | The fleet: one row per instance — id, name, map, **mode** (read-only), players, bots, max, tickrate, map seconds left, and **`rcon: ok \| refused \| unreachable`**. |
+| `GET` | `/admin/servers/:id/status` | Map, mode, tickrate, player counts, map timer, rcon reachability. |
 | `GET` | `/admin/servers/:id/players` | The player table: **userid**, name, uniqueid, frag, ping, loss, connect time, bot flag, plus the port's `ts_status` line when present. |
-| `GET` | `/admin/servers/:id/status` | Map, mode, tickrate, player counts, map timer, uptime, rcon reachability. |
+| `GET` | `/admin/servers/:id/status` | Map, mode, tickrate, player counts, map timer, rcon reachability. |
 | `GET` | `/admin/servers/:id/maps` | The map list, from `maps *`, with the cycle first. |
 | `POST` | `/admin/servers/:id/command` | `{command}` — the free-form escape hatch. One command only. |
 | `POST` | `/admin/servers/:id/kick` | `{userid, reason?}` → outcome. |
@@ -683,6 +684,14 @@ All endpoints are under `/admin`, all require a session except
 | `POST` | `/admin/servers/:id/broadcast` | `{message}` → a `say` to everyone on that instance. |
 | `POST` | `/admin/servers/:id/restart-round` | The port's `restartround`. |
 | `POST` | `/admin/servers/:id/timelimit` | `{minutes}` → `mp_timelimit`. The **only** setting the console writes. |
+
+**Two fields the mock shows that the engine cannot supply over RCON:**
+`uptime` (there is no uptime command in the engine, the port or the registry —
+it would come from the orchestrator's instance rows, which carry the
+container start time, and the admin service does not talk to the
+orchestrator yet) and the **game mode** as a control (§2.4, §8 Q2). The
+fleet row carries the **map timer** (`mp_timeleft`) instead, which is the
+"how long into this map are we" number an operator actually wants.
 
 **There is no mute endpoint** — not written, §2.6.
 
