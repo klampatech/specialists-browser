@@ -52,15 +52,35 @@ small: a new `services/admin` on loopback, talking to the game servers
 over loopback UDP, needing **no Docker socket** — which is what decides
 it over the console FIFO the registry uses.
 
-**Two features in the mock cannot work as drawn and are waiting on
-Kyle:** *mute* (there is no administrative mute anywhere in the
-engine, the port or the registry) and the *game mode* dropdown (see
-above). Five questions are listed in `docs/ADMIN-CONSOLE.md` §8.
+**Two features in the mock cannot work as drawn, and Kyle has decided
+what happens to them (2026-10-31):**
+- **Mute → dropped.** TS's *squelch* exists and the port implements it
+  (`crates/client/src/voice.rs` — the scoreboard's squelch mode, `vban`,
+  and the chat drop in `hud/mod.rs:1297`), but it is a **local,
+  per-listener** mute: the muting player blocks someone on their own
+  client. There is no administrative form, and GoldSrc's TFC-era
+  `ignore` command does not exist in FWGS. A real admin mute would be a
+  small **server-side** port change (drop `say`/`say_team` from a muted
+  player in `host_say`), not a console change.
+- **Ban → held.** There is **no unique per-browser id today** — every
+  browser client on an instance presents the same authid and the same
+  uniqueid, which is exactly what the anti-cheat research found and
+  what its FEAT-004 (the **bridge-minted** signed id) exists to fix.
+  Until that lands, `banid` is a mass disconnect with a duration, so
+  the console ships with **kick and no ban**.
 
-**Security is decided and simple:** the service binds `127.0.0.1:8095`,
-is not routed by the public Caddy vhost, and is reached over an SSH
-tunnel whose key already exists. One password, a server-owned lockout,
-an HttpOnly session cookie. No public surface at all.
+**Game mode is a readout, not a control** (also decided 2026-10-31):
+the mode is decided by the **map** at rules install, the servers will
+not switch modes often, and the plan is eventually **one server per
+game mode** — so the console reads the mode from the A2S rules string
+and never writes `mp_teamplay` / `lastmanstanding` / `mp_theonemode`.
+
+**Access is the SSH tunnel** (`ssh -N -L 8095:127.0.0.1:8095 bb-prod`),
+not a public vhost and not Tailscale. **The console manages the game
+server and nothing else** — no instance restart, no fleet scaling, no
+VPS operations, which is why it needs no Docker socket.
+
+All five decisions are written up in `docs/ADMIN-CONSOLE.md` §8.
 
 **Nothing is built yet.** The build plan is five phases, each a PR.
 

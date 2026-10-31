@@ -16,11 +16,14 @@ three places where it does.
 - The mock is a good design. Eleven of its thirteen features map onto
   something the deployed engine actually does, and the mapping is
   measured, not assumed (§1, §2).
-- **Two features cannot work as drawn.** *Mute* has no engine or port
-  equivalent at all — there is no administrative mute anywhere in this
-  stack. *Game mode* is a property of the **map**, not a live switch:
-  the port decides it when the rules are installed, and the rules are
-  installed on a map change (§2.4). Both need Kyle's decision (§8).
+- **Three features change shape, by Kyle's decision (§8).** *Mute* is
+  **dropped** — TS's "squelch" exists, but it is a local, per-listener
+  mute with no administrative form (§2.6). The *game mode* dropdown is
+  **dropped**, because the mode is a property of the map and the plan
+  is eventually one server per mode (§2.4). *Ban* is **held**, because
+  a ban today removes every browser player on the instance and the
+  per-player identity it needs is the bridge-minted id, which is a
+  separate project (§2.5).
 - **RCON works.** Measured against the deployed engine, on a disposable
   instance: every command the mock needs, over UDP, with the reply
   captured per command (§2.1). The fleet has no `rcon_password` today,
@@ -51,7 +54,7 @@ Here is what each of its parts maps to.
 | Stat bar — Tickrate | `sys_ticrate` over RCON; the registry already polls it. | ✅ |
 | Live console + command input | RCON. One command, one reply, scoped. | ✅ |
 | Map list + "Change map" | `changelevel <map>`; `maps *` lists what the server actually has. | ✅ |
-| Game mode dropdown | `mp_teamplay` / `lastmanstanding` / `mp_theonemode` — but see §2.4. | ⚠️ decision needed |
+| Game mode dropdown | `mp_teamplay` / `lastmanstanding` / `mp_theonemode` — but see §2.4. | ➖ **dropped** — read-only readout instead (§8, Q2) |
 | Time limit dropdown | `mp_timelimit` (minutes); `mp_timeleft` is the live countdown. | ✅ |
 | Broadcast ("Say") | The engine's `say` server command. | ✅ with a quoting caveat (§2.2) |
 | "Restart round" | The port's own `restartround` server command. | ✅ |
@@ -60,9 +63,9 @@ Here is what each of its parts maps to.
 | Players — ping | `ping` in `status`. | ✅ |
 | Players — search | Name and Steam ID. There are no Steam IDs here — the identity is the engine's `uniqueid` (a uuid) and the `userid`. | ✅ relabel |
 | Players — Kick | `kick #<userid> "<reason>"`. The target is the **userid**. | ✅ |
-| Players — Ban | `banid <minutes> <uniqueid> kick`. The target is the **uniqueid** — and every browser player on an instance shares one (§2.5). | ⚠️ decision needed |
-| Players — **Mute** | **Nothing.** No administrative mute exists in the engine, in the Rust port, or in the registry. | ❌ decision needed |
-| Tabs: All / Muted / High ping | "High ping" is real (`ping > 100`). "Muted" depends on the mute answer. | ⚠️ follows mute |
+| Players — Ban | `banid <minutes> <uniqueid> kick`. The target is the **uniqueid** — and every browser player on an instance shares one (§2.5). | ⏸️ **held** until the per-player identity exists (§8, Q3) |
+| Players — **Mute** | TS's **squelch** exists, but it is a local, per-listener mute with no administrative form (§2.6). | ➖ **dropped** (§8, Q1) |
+| Tabs: All / Muted / High ping | "High ping" is real (`ping > 100`). "Muted" follows the mute decision. | ✅ High ping; ➖ Muted |
 | (not in the mock) | **Security.** | ➕ added, §4 |
 
 **The mock's player list shows Steam IDs and three named servers.** Both
@@ -198,8 +201,21 @@ The honest design for the mock's mode dropdown is therefore either:
   cvars *and* issues a `changelevel` in one action, so the mode the
   operator picked is the mode that takes effect.
 
-The mock draws it as a live dropdown next to a "Change map" button, which
-reads as (a) but behaves like neither. This is decision **Q2** in §8.
+**Decision (Q2): neither — the dropdown is dropped, and the mode is a
+read-only label.** Kyle's reasoning: the servers will not switch game
+modes often, if at all, because the plan is eventually **one server per
+game mode**. Switching maps is the useful control, and switching the
+mode is a property of *which server you are talking to*, not a thing
+the console changes.
+
+That decision also has a consequence for the fleet, and it is a good
+one: with one instance per mode, the mode stops being a runtime
+question entirely. Each instance boots into its own mode (its map's
+`gamemode` keyvalue decides it, §2.4), and the console just **reads**
+the mode from the A2S rules string — which the registry already parses
+into the `mode` field of `/api/servers`. **The console never writes
+`mp_teamplay`, `lastmanstanding` or `mp_theonemode`.** The only setting
+it writes is the time limit.
 
 The mode is readable without a console round-trip: the port advertises
 it in the A2S rules string (`The Specialists v3.0.2 (DM)`), which the
@@ -231,17 +247,86 @@ So the console must:
   removed; and
 - treat the ban button as **the thing the identity work replaces**.
 
-The identity fix is already specified: `~/Obsidian/specs/bulletballet-anticheat-and-identity.md`,
-FEAT-004 — the bridge is the trust boundary and stamps its own
-unforgeable id into the connect packet, so `banid` becomes per-player.
-Until that ships, a ban in the console is a mass-disconnect with a
-duration. This is decision **Q3** in §8.
+**Decision (Q3): hold the ban.** Kyle's instruction was "if we don't
+have a way to do that, then let's hold on it for now" — and we do not.
+A ban today is a **mass disconnect with a duration**: it removes every
+human on the instance and it does not survive a server restart (the
+engine never execs `banned.cfg`).
 
-Two other engine facts the console must respect:
+**The correction to a natural assumption, because it is the opposite of
+it:** there is **no unique per-browser id** today. Kyle's recollection
+was that each browser presents its own `authid`, and the measurement
+says the reverse — every browser client on an instance presents the
+**same** one (`ID_7dea…`), because the WASM engine's "CD key" is
+`MD5(COM_RandomLong(...))` from an unseeded generator, and the authid
+is derived from it. The unique id is not something to find; it is
+something to **mint**.
+
+The minting is already specified: **`~/Obsidian/specs/bulletballet-anticheat-and-identity.md`,
+FEAT-004 — "Player identity: the bridge-minted signed id"**. The bridge
+terminates the WebSocket, so it is the trust boundary; it stamps its
+own unforgeable id over the client's claim in the connect packet, and
+the server enforces against that. It is a separate project with its own
+plan, and until it ships, **the console has no ban**.
+
+So the first release of the console has **kick** and no ban. The ban
+endpoint, the ban button and the ban modal are **not built** — not
+hidden behind a flag, not built and disabled. When the identity lands,
+the ban is a small addition on top of a console that already has the
+player list, the userid and the outcome envelope.
+
+The bans **panel** stays, read-only: `listid` and `listip` are two
+commands, and knowing what the engine currently has filtered is
+diagnostic when something has gone wrong (an old ban still in place, an
+IP entry nobody remembers adding).
+
+Two other engine facts the console must respect, for when the ban does
+land:
 
 - `banid` only works on a **live** player ("no such player with userid").
 - A ban does **not** disconnect the player unless the command ends with
   `kick`. The console sends `banid <minutes> <uuid> kick`.
+
+### 2.6 "Squelch" — it exists, and it is not an administrative mute
+
+Kyle's memory was right: TS has **squelch**. The port implements it:
+
+| Thing | Where |
+|---|---|
+| `Start/StopSquelchMode`, `IsInSquelchMode` | `crates/client/src/voice.rs` |
+| The scoreboard's squelch mode — click a row to mute that player | `crates/client/src/menus/scoreboard.rs` |
+| `vban <hex mask>` — the client's own block list | `crates/client/src/voice.rs` |
+| `IsPlayerBlocked` — "the player's unique id is in **my** ban list" | `crates/client/src/voice.rs:417` |
+| The chat drop: a muted player's `SayText` never reaches the HUD | `crates/client/src/hud/mod.rs:1297` |
+
+**So a player can mute another player — on their own client.** That is
+the whole of it. Three facts make it unusable as an administrative
+control:
+
+1. **It is local.** The block list is the muting player's own; the
+   server has no "mute this player for everyone" command. The server
+   computes a *voice* mask per listener (`rules_mask`,
+   `crates/server/src/rules/voice.rs`), but that governs voice, and
+   browser clients have no microphone, so it buys nothing.
+2. **The chat drop is the client's, not the server's.** The server
+   broadcasts every `say` to every client; the mute filter runs in the
+   receiving client's HUD. A server-side mute has to be a **server**
+   change: drop `say`/`say_team` from a muted player in `host_say`
+   (`crates/server/src/rules/commands.rs`).
+3. **The local mute is keyed on the unique id** — the same shared value
+   as everything else (§2.5). On a browser client, muting one player
+   mutes **all of them** on that client.
+
+**GoldSrc's TFC-era `ignore` command does not exist here.** FWGS has no
+`ignore`; the `ignorecmdtime` in the engine source is the
+"commands arrived too fast" anti-cheat timer and is unrelated.
+
+**Decision (Q1): drop the mute button.** If an administrative mute is
+wanted later, it is a small server-side port change — a mute table
+keyed by `userid` with an expiry, checked in `host_say`, plus a
+`ts_mute <userid> <minutes>` server command — and **not** a client
+change. That is a separate piece of work with its own spec, and it
+would not be in the console's first release.
 
 ---
 
@@ -437,19 +522,20 @@ All endpoints are under `/admin`, all require a session except
 | `POST` | `/admin/login` | `{password}` → session cookie. Returns the lockout state. |
 | `POST` | `/admin/logout` | Ends the session. |
 | `GET` | `/admin/session` | Who am I, when does this expire. |
-| `GET` | `/admin/servers` | The fleet: one row per instance — id, name, map, mode, players, bots, max, tickrate, map seconds left, uptime, health, and **`rcon: ok \| refused \| unreachable`**. |
+| `GET` | `/admin/servers` | The fleet: one row per instance — id, name, map, **mode** (read-only), players, bots, max, tickrate, map seconds left, uptime, health, and **`rcon: ok \| refused \| unreachable`**. |
 | `GET` | `/admin/servers/:id/players` | The player table: **userid**, name, uniqueid, frag, ping, loss, connect time, bot flag, plus the port's `ts_status` line when present. |
 | `GET` | `/admin/servers/:id/status` | Map, mode, tickrate, player counts, map timer, uptime, rcon reachability. |
 | `GET` | `/admin/servers/:id/maps` | The map list, from `maps *`, with the cycle first. |
 | `POST` | `/admin/servers/:id/command` | `{command}` — the free-form escape hatch. One command only. |
 | `POST` | `/admin/servers/:id/kick` | `{userid, reason?}` → outcome. |
-| `POST` | `/admin/servers/:id/ban` | `{userid, minutes, reason}` → outcome **plus `affected`**, the number of players sharing the uniqueid. |
-| `GET` | `/admin/servers/:id/bans` | The id-ban list and the read-only IP filter. |
-| `DELETE` | `/admin/servers/:id/bans/:uniqueid` | Removes an id ban. |
+| `GET` | `/admin/servers/:id/bans` | The id-ban list and the read-only IP filter. **Read-only — there is no ban action (§2.5).** |
 | `POST` | `/admin/servers/:id/map` | `{map}` → the confirmed new map. |
 | `POST` | `/admin/servers/:id/broadcast` | `{message}` → a `say` to everyone on that instance. |
 | `POST` | `/admin/servers/:id/restart-round` | The port's `restartround`. |
-| `POST` | `/admin/servers/:id/settings` | `{mode?, timelimit?}` — see Q2. |
+| `POST` | `/admin/servers/:id/timelimit` | `{minutes}` → `mp_timelimit`. The **only** setting the console writes. |
+
+**There is no ban endpoint and no mute endpoint.** Not "disabled" — not
+written (§2.5, §2.6).
 
 **Every mutating endpoint returns the same envelope**, because the
 console's output drawer needs the same four parts for every action:
@@ -516,15 +602,19 @@ content to put in the mock's frame.
    slot, name, **userid**, **uniqueid**, frags, time, ping, loss.
    Bots are marked by `uniqueid = BOT` — **not** by a name heuristic
    (the registry had to guess from the `Bot ` prefix; the engine knows).
-   Tabs: All / High ping / (Muted, if Q1 lands). Search by name or id.
+   Tabs: **All** and **High ping**. Search by name or id. One action per
+   row: **KICK**.
 5. **Map.** The current map, the server's own map list, and a
    confirmation that names the disruption — a map change disconnects
    everyone on the instance, and that reconnect is the exact moment the
-   browser engine has been aborting with an OOM.
+   browser engine has been aborting with an OOM. Beside it, the **mode**
+   as a **read-only label** and the **time limit** as the one writable
+   setting (§8, Q2).
 6. **Console.** A single-line command box. Not a shell: one command,
    one result, no pipes, no `&&`, no history.
-7. **Bans.** The id-ban list (remove only), and the IP filter
-   **read-only**.
+7. **Bans.** The id-ban list and the IP filter, both **read-only**.
+   There is no ban action in this release (§2.5) — the panel is there to
+   see what the engine has filtered, not to change it.
 
 ### 6.2 The destructive-action rules
 
@@ -533,14 +623,19 @@ content to put in the mock's frame.
   The target is the **userid**, never the name — `SV_ClientByName`
   returns the *first* exact match, and the fleet has two players called
   `Specialist`.
-- **Ban** — a modal, because it is not reversible in any way that
-  matters. It counts the affected players **from the live list**, says
-  that they all share the uniqueid and will all be removed, says that
-  the ban ends at the next server restart (the engine never execs
-  `banned.cfg`), asks for the **userid** to be typed, and its confirm
-  button is red.
-- **Map change** — a modal that says how many players will be dropped
-  and that `server.cfg` will be re-executed.
+- **Map change** — the only other action that needs a modal, and it
+  says how many players will be dropped and that `server.cfg` will be
+  re-executed.
+- **There is no ban and no mute** in this release (§2.5, §2.6), so
+  there is no ban modal, no typed confirmation and no red confirm
+  button. The player row carries **one** action: `KICK`.
+
+The rules that were written for the ban modal — count the affected
+players from the live list, say the ban ends at the next restart, ask
+for the userid to be typed, keep the confirm button red — are **kept
+here** as the specification for the ban when the identity lands. They
+are written down so that the ban does not get built by someone who has
+not read this section.
 
 ### 6.3 The output drawer
 
@@ -600,13 +695,15 @@ touch nothing.
 - Done when: the mock's read-only half works against a live instance.
 
 ### Phase 4 — The mutating actions
-Kick, ban (with the blast-radius count and the typed confirmation),
-map change, broadcast, restart round, and the settings endpoint.
-Every one returns the §5 envelope and is confirmed by a re-read.
+Kick, map change, broadcast, restart round, and the time limit. Every
+one returns the §5 envelope and is confirmed by a re-read.
 
-- Done when: every action reports an honest outcome, and the three
-  traps have tests: a kick whose target left, a ban that removes every
-  browser player, and a round restart that prints nothing.
+- Done when: every action reports an honest outcome, and the two traps
+  have tests — a kick whose target left between the list refresh and
+  the click, and a round restart that prints nothing.
+
+**Not in this phase, and not in this release:** ban (§2.5) and mute
+(§2.6).
 
 ### Phase 5 — Deployment, the secret, and the docs
 The `deploy-services.sh` entry, the Dockerfile, the CI wiring, the
@@ -618,75 +715,101 @@ SSH tunnel alias, the `HANDOFF.md` update, and a runbook.
 
 ---
 
-## 8. Open questions
+## 8. Decisions
 
-These are the decisions that are Kyle's, not mine.
+Kyle answered all five questions on 2026-10-31. They are recorded here
+so the implementation follows them and so the reasons survive.
 
-**Q1 — What is "mute"?**
-There is no administrative mute in this stack. The engine and the port
-have nothing; the only mute-like thing is `vban`, which is a
-**client-side** per-listener voice mute — each player mutes others
-locally, and it does not silence anybody. The mock's mute button, as
-drawn, toggles a flag in the browser and changes nothing in the game.
-Options:
-  - **(a) Drop it.** The button goes away; the "Muted" tab goes with it.
-  - **(b) Make it a console-side annotation.** A local flag with a
-    reason and a timestamp, used to filter the list and to record "this
-    one was warned". Honest only if it is **labelled** as
-    console-side — it does not stop the player talking.
-  - **(c) Build a real one.** A server-side chat mute in the Rust port
-    (`ts_mute <userid> <minutes>`, dropping `say`/`say_team` from that
-    client). It is our code, so it is feasible — but it is a change to
-    the game server DLL, its own spec, its own build, and it ships in
-    the next `ts-server` image.
-*Recommendation: (a) for the first release, (c) as a follow-up if it is
-wanted. (b) risks being mistaken for a real mute.*
+### Q1 — What is "mute"? → **Dropped**
 
-**Q2 — Is the game mode a control or a readout?**
-The mode is decided by the **map**, at rules install, on a map change
-(§2.4). So:
-  - **(a) Readout.** Show the current mode; the map picker is how you
-    change it.
-  - **(b) "Set mode, then change map."** One action: write the three
-    cvars **and** issue a `changelevel`, so the mode the operator picked
-    is the mode that lands. This is what the mock's dropdown implies.
-*Recommendation: (b) — it is what the mock means, and it is honest as
-long as the modal says the map will change.*
+Kyle's recollection was "squelch", and he was right that TS has one.
+The port implements it (`crates/client/src/voice.rs`, the scoreboard's
+squelch mode, `vban`, and the chat drop in `hud/mod.rs:1297`) — but it
+is a **local, per-listener** mute: the muting player blocks someone on
+their own client. There is no administrative form, and GoldSrc's
+TFC-era `ignore` command does not exist in FWGS. §2.6 has the detail.
 
-**Q3 — Is a ban worth offering, given that it bans everybody?**
-`banid` is keyed on the uniqueid, and every browser player on an
-instance shares one. So the console's ban button removes **everyone**
-human on that instance. Options:
-  - **(a) Offer it, with the live count and a loud warning.** Honest,
-    and sometimes exactly what is wanted ("clear the server").
-  - **(b) Hide the ban button** and leave only kick, until the
-    bridge-minted identity ships (§2.5) and a ban means one person.
-  - **(c) Offer a server-wide "clear the server" action instead**,
-    named for what it actually does.
-*Recommendation: (a) now, with the warning, and (c) as the label
-until the identity work lands.*
+**Decision: the mute button goes, and so does the "Muted" tab.** Kyle:
+*"No big deal if we can't mute, I'll just kick em / ban em."* If an
+administrative mute is wanted later it is a small server-side port
+change (a mute table keyed by userid, checked in `host_say`, plus a
+`ts_mute` command) — not a console change, and not a client change.
 
-**Q4 — SSH tunnel, or Tailscale on the VPS?**
-The tunnel is zero new surface and works today; Tailscale is nicer to
-use (any device, no tunnel) but adds a network path to production.
-*Recommendation: the tunnel first. Tailscale as a follow-up if the
-tunnel gets tiresome.*
+### Q2 — Is the game mode a control or a readout? → **Readout only**
 
-**Q5 — Should the console be able to restart an instance or scale the
-fleet?**
-The orchestrator owns fleet lifecycle, and a restart kicks every player
-on that instance. The mock does not show it. *Recommendation: no, not
-in the first release — the orchestrator's job, and it is deliberately
-not a button.*
+Kyle: *"I'm thinking the servers won't switch game modes often (if at
+all). I was thinking we could have a server for each game mode
+eventually anyway. Just switching maps is most helpful."*
 
----
+**Decision: the mode dropdown is dropped.** The console reads the mode
+and displays it; it never writes `mp_teamplay`, `lastmanstanding` or
+`mp_theonemode`. The map picker is the control that matters.
+
+This also settles the fleet direction: **one instance per game mode**,
+each booting into its own mode. The mode stops being a runtime
+question — it becomes a property of *which server you are talking to*.
+
+### Q3 — Is a ban worth offering? → **Held**
+
+Kyle: *"We'll need to modify this to use the unique authId from each
+browser we could use — you found this when you were doing the anti
+cheat research. If we don't have a way to do that, then let's hold on
+it for now."*
+
+**The correction, because it is the opposite of the recollection:**
+there is **no unique per-browser id today**. Every browser client on an
+instance presents the **same** authid and the same uniqueid (§2.5) —
+that is exactly what the anti-cheat research found, and it is why the
+research specifies **minting** one at the bridge (the trust boundary)
+rather than looking for one.
+
+**Decision: no ban in this release.** Not built, not hidden behind a
+flag. The ban endpoint, the ban button and the ban modal are not
+written; the ban arrives with the bridge-minted identity, as a small
+addition to a console that already has the player list and the
+outcome envelope. The bans **panel** stays, read-only.
+
+### Q4 — SSH tunnel, or Tailscale on the VPS? → **SSH tunnel**
+
+Kyle: *"recommend"* — and the recommendation was the tunnel. The admin
+service binds `127.0.0.1:8095` and is reached over
+`ssh -N -L 8095:127.0.0.1:8095 bb-prod`. Tailscale on the VPS stays on
+the list as a later convenience, not a first move.
+
+### Q5 — May the console restart an instance or touch fleet size? → **No**
+
+Kyle: *"No, this is to manage the half life server, not the VPS."*
+
+**Decision: the console manages the game server and nothing else.** No
+instance restart, no fleet scaling, no container operations, no VPS
+operations. The orchestrator owns fleet lifecycle, and the admin
+service does not hold the Docker socket (which is what makes this
+trivially true — §3.3).
+
+### What is left open
+
+Nothing that blocks Phase 1. The remaining items are:
+
+- **The time limit control.** It stays (`mp_timelimit`, live-changeable,
+  measured). Whether it belongs in the console or in the per-instance
+  boot config is a small thing; it is in the console for now because the
+  mock has it and it works.
+- **Uptime** is in the A2S reply but the current parser drops it. A
+  two-line change, or a display of "—" until then.
+- **The broadcast's quoting.** A multi-word `say` over RCON shows its
+  quotes to players (§2.2). Cosmetically imperfect; not worth solving
+  unless it matters.
 
 ## 9. Out of scope
 
 - Multi-user, roles, permissions, an audit trail beyond one line per
   action.
-- Player-facing chat moderation.
+- Player-facing chat moderation — including any administrative mute
+  (§2.6).
+- **Banning** (§2.5) — it arrives with the bridge-minted identity.
 - Editing the map cycle (the port owns it), or the fleet's size.
+- **Anything about the VPS.** The console manages the game server and
+  nothing else (§8, Q5).
 - Any public exposure of the console.
 - The identity work itself (§2.5) — that is its own project, with its
   own spec already written.
