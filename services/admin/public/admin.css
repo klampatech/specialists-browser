@@ -173,8 +173,21 @@ dialog p{line-height:1.6;color:var(--mute)}dialog p b{color:var(--ghost)}
  * The login screen is NOT in the mock, so it is built in the mock's
  * language: the same bars, the same brand block, the same void, and
  * a card of the same kind as the mock's other cards.
+ *
+ * THE CARD IS CENTRED IN THE SPACE BELOW THE BRAND, not offset from
+ * the top and not centred with the brand. The first version used
+ * `margin:8vh auto 0`, which looked right on a laptop and wrong on a
+ * tall window: the card sat near the top with a screenful of dead
+ * space under it. Centring the whole WRAP was the next mistake — the
+ * brand block is a page header, and dragging it down to sit on top of
+ * the card made the card look like a caption. So: the brand stays
+ * where the mock put it, and the CARD takes the space that is left.
+ * `view-login` is on the <body>, so the shell layout (which hangs off
+ * a fixed top bar) does not move with it.
  */
-.login{max-width:420px;margin:8vh auto 0}
+body.view-login .stage{min-height:100vh;display:flex;flex-direction:column}
+body.view-login .wrap{flex:1;display:flex;flex-direction:column}
+.login{max-width:420px;margin:auto}
 .login .card{margin-bottom:0}
 .login h2.d{font-size:22px;letter-spacing:.14em;margin-bottom:4px}
 .login .sub{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--mute);margin-bottom:18px}
