@@ -106,6 +106,19 @@ correct client — `tools/port/tsp-rs/xtask/src/a2s.rs` — and the
 reference implementation of the protocol details lives in
 `docs/ADMIN-CONSOLE.md` §2.1 of the earlier draft.
 
+Each datagram's text already **ends with a newline** — the engine's
+redirect buffer does, and the flush sends the buffer as it is — so
+the reply is the **concatenation** of the datagrams, the way the
+reference client does it (`out.push_str(...)`). Joining them with
+`'\n'` would put a blank line between every line, and would break a
+line that the engine's 2032-byte redirect cap had split in two.
+
+There are **two clocks**, not one. The quiet timer ends the REPLY
+(300 ms of silence); an overall deadline ends the REQUEST (5 s),
+whatever the traffic — because every datagram restarts the quiet
+timer, so an instance that keeps talking would otherwise hang the
+request forever.
+
 Two traps, both real:
 
 - **The packet is raw bytes.** `Buffer.from(cmd)` in Node encodes `0xff`
@@ -113,7 +126,9 @@ Two traps, both real:
   looks "broken" when the network is fine. Use `Buffer.from(str,
   'binary')` or build the buffer from literal bytes.
 - **The reply is many datagrams.** `status` on a 16-player server is
-  ~20 packets. Read until the socket goes quiet.
+  ~20 packets. Read until the socket goes quiet — and bound the whole
+  exchange with an overall deadline, because every datagram restarts
+  the quiet timer.
 
 ### 2.2 What every command in the mock actually returns
 
@@ -576,6 +591,31 @@ this box" — not "is root on the game box".
   it can land at the next natural one. **No forced restart, no kicked
   players.**
 
+**And the ENGINE logs it.** This is not a flaw in the console — it is a
+fact about the engine, and the runbook has to carry it. On every RCON
+command the engine prints the whole datagram, **password included**
+(`SV_RemoteCommand`, `engine/server/sv_client.c`):
+
+```c
+Con_Printf( "Rcon from %s:\n%s\n", adr, MSG_GetData( msg ) + 4 );
+Log_Printf( "Rcon: \"%s\" from \"%s\"\n", MSG_GetData( msg ) + 4, adr );
+```
+
+The fleet runs with `-log` and a log file on, and the registry tails
+the container's logs — so the `rcon_password` is in the game server's
+stdout and in its log file, **once per command**. The console never
+logs it and never returns it (the service factory hands back a
+redacted config); the engine does, and **the password is readable by
+anything that can read the game server's logs.** The admin service's
+probe cache cuts the volume a long way — five commands per instance
+every five seconds, instead of five commands per instance per request
+— but it does not change what the engine prints.
+
+Two consequences for the deployment: the game server's logs are as
+secret as the password file (same access rules, same backup rules),
+and a password that anyone can read out of a log is a password that
+has to be treated as compromised when the logs are.
+
 ---
 
 ## 4. Security
@@ -673,7 +713,7 @@ All endpoints are under `/admin`, all require a session except
 | `GET` | `/admin/session` | Who am I, when does this expire. |
 | `GET` | `/admin/servers` | The fleet: one row per instance — id, name, map, **mode** (read-only), players, bots, max, tickrate, map seconds left, and **`rcon: ok \| refused \| unreachable`**. |
 | `GET` | `/admin/servers/:id/status` | Map, mode, tickrate, player counts, map timer, rcon reachability. |
-| `GET` | `/admin/servers/:id/players` | The player table: **userid**, name, uniqueid, frag, ping, loss, connect time, bot flag, plus the port's `ts_status` line when present. |
+| `GET` | `/admin/servers/:id/players` | The player table: **userid**, name, uniqueid, frag, ping, loss, connect time, bot flag, plus the port's `ts_status` line when present — and **`partial: true`** when the engine's own count and the rows that arrived disagree. |
 | `GET` | `/admin/servers/:id/status` | Map, mode, tickrate, player counts, map timer, rcon reachability. |
 | `GET` | `/admin/servers/:id/maps` | The map list, from `maps *`, with the cycle first. |
 | `POST` | `/admin/servers/:id/command` | `{command}` — the free-form escape hatch. One command only. |
@@ -692,6 +732,15 @@ container start time, and the admin service does not talk to the
 orchestrator yet) and the **game mode** as a control (§2.4, §8 Q2). The
 fleet row carries the **map timer** (`mp_timeleft`) instead, which is the
 "how long into this map are we" number an operator actually wants.
+
+**One field the player list carries so a moderator can trust it:** the
+engine's own count of humans (`players : N active`, humans only) is
+compared with the rows that actually arrived, because the reply is one
+datagram per printed line and UDP loses datagrams. When they disagree
+the player list answers `partial: true`, with `expectedPlayers` (what
+the engine believes) and `parsedPlayers` (the human rows that arrived).
+The count that is displayed is the **engine's** — that is what the
+server believes — and a short list says so instead of looking complete.
 
 **There is no mute endpoint** — not written, §2.6.
 
@@ -900,6 +949,17 @@ before the login exists.
   the disposable CI stack.
 - Done when: `GET /admin/servers` returns the fleet with live player
   counts, and the unit suite is green.
+
+What phase 1 actually shipped, after the review round of 2026-10-31:
+the reply is the **concatenation** of the datagrams and the client has
+**two clocks** (§2.1); a probe is **cached** per instance — 5 s for
+one that answered, 30 s for one that did not, and concurrent requests
+share one probe — because a probe is five engine commands on the game
+server's game thread; a player list that came back **short** says
+`partial: true` (§5); the factory refuses a non-loopback bind address
+and hands back a **redacted** config, so the RCON password never
+leaves the closure; and the password is **not a console secret** —
+the engine writes it to the game server's log (§3.4).
 
 ### Phase 2 — Auth
 The password, the session, the lockout, the CSRF token, the audit

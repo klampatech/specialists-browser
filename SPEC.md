@@ -85,7 +85,8 @@ are worth keeping:
   is not there — a network problem). Both are silent on the wire
   otherwise, and they need different answers from an operator. The
   engine's rate limiter counts only FAILED attempts, so a refused
-  instance is probed **once** and then reported.
+  instance is probed **once per probe** and then reported — and the
+  probe cache is what bounds how often that happens.
 - **`health` is not a second liveness signal.** It is the RCON
   tri-state collapsed onto one word (`ok` → `up`, `unreachable` →
   `down`, `refused` → `degraded`), so a row cannot say "healthy" and
@@ -94,6 +95,37 @@ are worth keeping:
   and the admin service does not talk to the orchestrator yet; the
   container start time in the orchestrator's instance rows is where the
   number will come from.
+
+Four more, from the phase-1 review (2026-10-31):
+
+- **The probe is CACHED, per instance.** A probe is five engine
+  commands on the game server's game thread, so probing eight
+  instances on every request was forty commands a request. An instance
+  that answered is cached for **5 s**; one that did **not** is cached
+  for **30 s**, because a failed attempt costs the engine's rate-limit
+  bucket a token and a broken instance is not going to fix itself in
+  five seconds. Concurrent requests share one probe. The cache is per
+  process, in memory, and nothing refreshes it in the background.
+- **A READ HAS AN OVERALL DEADLINE.** The quiet timer is a terminator,
+  not a deadline, and every datagram restarts it — an engine that
+  keeps talking would hang the request forever. There are two clocks:
+  the quiet timer (300 ms) and an overall deadline (5 s), armed before
+  the connect so a slow DNS resolver is bounded too.
+- **A SHORT PLAYER LIST SAYS SO.** The engine's own count
+  (`players : N active`, humans only) is compared with the rows that
+  arrived; when they disagree the response carries `partial: true`
+  with `expectedPlayers` and `parsedPlayers`, and the count shown is
+  the engine's. The reply is read once more before that is reported.
+- **THE FACTORY HOLDS THE GUARDS.** The loopback check, the port
+  check and the password check live in `createAdminService()`, not in
+  the command line, and the factory returns a **redacted** config — the
+  RCON password stays in the closure and is never handed to a caller.
+
+**One fact about the deployment, not the code:** the engine prints the
+whole RCON datagram, **password included**, on every command
+(`SV_RemoteCommand`), and the fleet runs with `-log` on — so the RCON
+password is in the game server's stdout and its log file. The console
+never logs it; the engine does. The runbook (phase 5) has to say so.
 
 The service binds **loopback only** and refuses to start on any other
 address. It holds **no Docker socket** — RCON over loopback UDP is
