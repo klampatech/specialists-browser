@@ -274,19 +274,69 @@ export function parseStatus(text) {
  * `RoundTdm`, `Objective`). It is a READ-ONLY fact: the mode is
  * decided by the map's ruleset, not by a cvar the console could write.
  */
-const TS_HEADER = /^\[ts\]\s+status:\s?(.*)$/;
+const TS_HEADER = /\[ts\]\s+status:\s?(.*)$/;
 
 /**
  * One player line of `ts_status`.
  *
- * `[ts]  #<index> <name padded to 16> <state> hp=... ar=... frags=...
- * deaths=... cash=... team='<team>' held=<hex>/<n>s active=<hex>
- * slow=<f>-><f> award=<n> spree=<n> gp=<n> org=(<f> <f> <f>)`
+ *   [ts]  #<index> <name padded to 16> <state> hp=… ar=… frags=…
+ *   deaths=… cash=… team='<team>' held=… active=… slow=… award=…
+ *   spree=… gp=… org=(…)
  *
- * The `team=` field is parsed defensively: it is absent on some lines.
+ * THE LINE IS PARSED BY FIELD, NOT BY ONE BIG REGEX.
+ *
+ * The xtask that drives this port already parses the same lines, and
+ * its parser is the one this follows — because the line is not as
+ * regular as it looks:
+ *
+ *   - `gp` is NOT a number. It is the ruleset the player moves by,
+ *     and before the player's first spawn it is a literal `-`. A
+ *     numeric `gp` drops every row that has not spawned yet.
+ *   - the name may contain spaces ("Bot Number One"), and the name is
+ *     padded to 16 columns, so the name and the state have to be
+ *     separated from the RIGHT.
+ *   - the name may contain the word `alive`, `dead` or `observer`, so
+ *     the state cannot be found by searching forward for it.
+ *   - the team may be empty (`team=''`).
+ *   - the line may carry a `[HH:MM:SS]` console timestamp in front of
+ *     it, depending on which output path it came from.
+ *
+ * So: find ` hp=` (the first field that is always a number), split the
+ * head on its LAST space into name and state, and read every other
+ * field by its own key. A field that is missing is null — never a
+ * guess.
  */
-const TS_PLAYER =
-  /^\[ts\]\s+#(\d+)\s+(.*?)\s+(alive|dead|observer)\s+hp=(-?\d+)\s+ar=(-?\d+)\s+frags=(-?\d+)\s+deaths=(-?\d+)\s+cash=(-?\d+)\s+(?:team='([^']*)'\s+)?held=(\S+)\s+active=(\S+)\s+slow=([\d.]+)->([\d.]+)\s+award=(-?\d+)\s+spree=(-?\d+)\s+gp=(-?\d+)\s+org=\((-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\)$/;
+const TS_LINE = /\[ts\]\s+#(\d+)\s+(.*)$/;
+
+/** The console timestamp some output paths put in front of a line. */
+const TIMESTAMP_PREFIX = /^\[\d{2}:\d{2}:\d{2}\]\s*/;
+
+/** The three states the port prints. */
+const TS_STATES = new Set(['alive', 'dead', 'observer']);
+
+/**
+ * One integer field, by key.
+ *
+ * @param {string} text
+ * @param {string} key
+ * @returns {number|null}
+ */
+function intField(text, key) {
+  const m = new RegExp(`\\b${key}=(-?\\d+)(?:\\s|$)`).exec(text);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * One string field, by key.
+ *
+ * @param {string} text
+ * @param {string} key
+ * @returns {string|null}
+ */
+function strField(text, key) {
+  const m = new RegExp(`\\b${key}=(\\S+)(?:\\s|$)`).exec(text);
+  return m ? m[1] : null;
+}
 
 /**
  * A power-up bitmask, printed in hex.
@@ -319,7 +369,7 @@ export function parseTsStatus(text) {
   const players = [];
 
   for (const raw of String(text ?? '').split('\n')) {
-    const line = raw.replace(/\r/g, '').trim();
+    const line = raw.replace(/\r/g, '').trim().replace(TIMESTAMP_PREFIX, '');
     if (!line) continue;
 
     const h = TS_HEADER.exec(line);
@@ -345,30 +395,62 @@ export function parseTsStatus(text) {
       continue;
     }
 
-    const p = TS_PLAYER.exec(line);
-    if (!p) continue;
-    const heldParts = String(p[10] ?? '').split('/');
+    const m = TS_LINE.exec(line);
+    if (!m) continue;
+    const index = Number(m[1]);
+    const rest = m[2];
+
+    // `hp=` is the first field that is always a number, so it is the
+    // boundary between the head (name + state) and the fields.
+    const hpAt = rest.indexOf(' hp=');
+    if (hpAt === -1) continue;
+    const head = rest.slice(0, hpAt).trimEnd();
+    const fields = rest.slice(hpAt + 1);
+
+    // The state is the LAST word of the head. The name may contain
+    // the words alive/dead/observer, so the state cannot be found by
+    // searching forward for it — but the last word is always it.
+    const split = head.lastIndexOf(' ');
+    if (split === -1) continue;
+    const state = head.slice(split + 1);
+    if (!TS_STATES.has(state)) continue;
+    const name = head.slice(0, split).trim();
+
+    const held = /held=(\S+)\/(\d+)s/.exec(fields);
+    const slow = /slow=([\d.]+)->([\d.]+)/.exec(fields);
+    const org = /org=\(([^)]*)\)/.exec(fields);
+    const team = /team='([^']*)'/.exec(fields);
+
     players.push({
       /** The engine's client index — the same number as the `status` slot. */
-      index: Number(p[1]),
-      name: p[2].trim(),
-      state: p[3],
-      hp: Number(p[4]),
-      armor: Number(p[5]),
-      frags: Number(p[6]),
-      deaths: Number(p[7]),
-      cash: Number(p[8]),
+      index,
+      name,
+      state,
+      hp: intField(fields, 'hp'),
+      armor: intField(fields, 'ar'),
+      frags: intField(fields, 'frags'),
+      deaths: intField(fields, 'deaths'),
+      cash: intField(fields, 'cash'),
       /** Absent on some lines. */
-      team: p[9] !== undefined ? p[9] : null,
-      heldMask: parseMask(heldParts[0]),
-      heldSeconds: heldParts.length > 1 ? Number(String(heldParts[1]).replace(/s$/, '')) : null,
-      activeMask: parseMask(p[11]),
-      slow: Number(p[12]),
-      slowTarget: Number(p[13]),
-      award: Number(p[14]),
-      spree: Number(p[15]),
-      gp: Number(p[16]),
-      origin: [Number(p[17]), Number(p[18]), Number(p[19])],
+      team: team ? team[1] : null,
+      heldMask: held ? parseMask(held[1]) : null,
+      heldSeconds: held ? Number(held[2]) : null,
+      activeMask: parseMask(strField(fields, 'active')),
+      slow: slow ? Number(slow[1]) : null,
+      slowTarget: slow ? Number(slow[2]) : null,
+      award: intField(fields, 'award'),
+      spree: intField(fields, 'spree'),
+      /**
+       * The ruleset the player moves by — a STRING. It is `-` before
+       * the player's first spawn, and a number once they have one.
+       */
+      gp: strField(fields, 'gp'),
+      origin: org
+        ? org[1]
+            .split(/\s+/)
+            .filter(Boolean)
+            .map(Number)
+        : null,
     });
   }
 

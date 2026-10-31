@@ -204,8 +204,73 @@ test('a ts_status player line becomes fields', () => {
   assert.equal(p.slowTarget, 1.0);
   assert.equal(p.award, 0);
   assert.equal(p.spree, 0);
-  assert.equal(p.gp, 0);
+  // `gp` is a STRING, not a number. It is the ruleset the player moves
+  // by, and it is a literal `-` before the player's first spawn.
+  assert.equal(p.gp, '0');
   assert.deepEqual(p.origin, [0, 0, 0]);
+});
+
+test('the ts_status parser matches the port\'s own fixtures', () => {
+  // These are the lines the xtask that drives this port parses, taken
+  // from tools/port/tsp-rs/xtask/src/ts21.rs. They are the ground
+  // truth for the format, and they contain two things a hand-written
+  // regex gets wrong: a NAME WITH SPACES, and `gp=-`.
+  const text =
+    '[ts] status: RoundTdm teamplay=true lms=false theone=false time=12.5\n' +
+    "[ts]  #1 Bot Number One   alive hp=100 ar=0 frags=2 deaths=1 cash=4500 team='Specialists' held=0x0/0s active=0x0 slow=1.00->1.00 award=11 spree=0 gp=21 org=(10 -20 36)\n" +
+    "[ts]  #3 Mercer           observer hp=0 ar=0 frags=0 deaths=0 cash=3000 team='' held=0x0/0s active=0x0 slow=1.00->1.00 award=11 spree=0 gp=- org=(0 0 0)\n";
+  const { header, players } = parseTsStatus(text);
+  assert.equal(header.mode, 'RoundTdm');
+  assert.equal(header.teamplay, true);
+  assert.equal(header.lms, false);
+  assert.equal(header.theone, false);
+  assert.equal(header.time, 12.5);
+  assert.equal(players.length, 2);
+
+  const one = players[0];
+  assert.equal(one.index, 1);
+  assert.equal(one.name, 'Bot Number One');
+  assert.equal(one.state, 'alive');
+  assert.equal(one.hp, 100);
+  assert.equal(one.frags, 2);
+  assert.equal(one.deaths, 1);
+  assert.equal(one.cash, 4500);
+  assert.equal(one.team, 'Specialists');
+  assert.equal(one.award, 11);
+  assert.equal(one.gp, '21');
+  assert.deepEqual(one.origin, [10, -20, 36]);
+
+  // The observer that has not spawned: `gp` is a dash, and the team is
+  // empty. A parser that insists gp is a number drops this row.
+  const three = players[1];
+  assert.equal(three.index, 3);
+  assert.equal(three.name, 'Mercer');
+  assert.equal(three.state, 'observer');
+  assert.equal(three.team, '');
+  assert.equal(three.gp, '-');
+});
+
+test('a player whose NAME contains a state word is still parsed', () => {
+  // The name is padded to 16 columns and the state follows it, so the
+  // state has to be found from the RIGHT. Searching forward for
+  // 'alive' finds the one in the NAME.
+  const { players } = parseTsStatus(
+    "[ts]  #4 alive fish       dead hp=50 ar=10 frags=1 deaths=0 cash=100 team='red' held=0x1/2s active=0x0 slow=1.00->1.00 award=0 spree=0 gp=21 org=(1 2 3)",
+  );
+  assert.equal(players.length, 1);
+  assert.equal(players[0].name, 'alive fish');
+  assert.equal(players[0].state, 'dead');
+  assert.equal(players[0].hp, 50);
+});
+
+test('a ts_status line with a console timestamp is still parsed', () => {
+  // The engine\'s own stdout path prefixes lines with [HH:MM:SS].
+  const { players } = parseTsStatus(
+    "[17:40:20] [ts]  #5 Neo             alive hp=100 ar=0 frags=5 deaths=2 cash=300 team='red' held=0x0/0s active=0x0 slow=1.00->1.00 award=0 spree=0 gp=0 org=(0 0 0)",
+  );
+  assert.equal(players.length, 1);
+  assert.equal(players[0].name, 'Neo');
+  assert.equal(players[0].hp, 100);
 });
 
 test('a ts_status line without a team is parsed anyway', () => {
