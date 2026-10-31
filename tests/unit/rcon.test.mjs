@@ -175,6 +175,27 @@ test('the engine can say the password is wrong', async () => {
   );
 });
 
+test('a host that cannot be resolved is unreachable, and does NOT crash', async () => {
+  // THE CRASH. Node calls the connect callback with the error, and the
+  // error is not optional. Sending anyway means calling `send()` on an
+  // UNCONNECTED socket, where Node reinterprets the 4-argument form as
+  // (msg, port, address, callback) -- so the offset (0) becomes the
+  // port -- and throws ERR_SOCKET_BAD_PORT. That throw happens inside
+  // an async callback, so it is an UNCAUGHT EXCEPTION: it takes the
+  // whole service down, for a host name that simply does not resolve.
+  //
+  // Under the old code this test killed the runner.
+  const r = await rcon({
+    host: 'no-such-host.invalid',
+    port: 27015,
+    password: 'x',
+    command: 'status',
+    timeoutMs: 500,
+  });
+  assert.equal(r.outcome, 'unreachable');
+  assert.match(r.detail, /ENOTFOUND|did not answer/);
+});
+
 test('a closed port is UNREACHABLE, not refused', async () => {
   // The port has to be closed, not silent: an open port with a silent
   // engine is a refusal, and a closed port is an instance that is not

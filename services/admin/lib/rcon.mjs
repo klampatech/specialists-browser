@@ -238,28 +238,64 @@ export async function rcon({
     });
 
     try {
-      socket.connect(port, host, () => {
-        socket.send(request, 0, request.length, (err) => {
-          if (err) {
-            done({
-              outcome: 'unreachable',
-              text: '',
-              lines: [],
-              packets: 0,
-              empty: false,
-              detail: `the instance did not answer (${err.code || 'send failed'})`,
-            });
-            return;
-          }
-          // The clock starts when the question is on the wire — but
-          // only if the answer has not already started arriving. The
-          // send callback can fire AFTER the first reply datagram
-          // (a fast engine on a fast link), and arming the long
-          // first-reply timeout then would overwrite the short quiet
-          // timeout the reply had already armed, so a one-line reply
-          // would take 1500ms instead of 300ms.
-          if (packets === 0) arm(timeoutMs);
-        });
+      socket.connect(port, host, (connectErr) => {
+        // NODE CALLS THIS CALLBACK WITH THE ERROR, AND THE ERROR IS
+        // NOT OPTIONAL. A DNS failure, an unreachable network or a
+        // refused bind all land here — and if the callback sends
+        // anyway, `send()` on an UNCONNECTED socket reinterprets its
+        // arguments: Node reads the 4-argument form as
+        // (msg, port, address, callback), so the offset (0) becomes
+        // the PORT and the length becomes the ADDRESS. It then throws
+        // ERR_SOCKET_BAD_PORT ("Port should be > 0 and < 65536.
+        // Received type number (0)") — and because this runs inside
+        // an async callback, that throw is an UNCAUGHT EXCEPTION and
+        // takes the whole service down.
+        //
+        // A connect that failed is an unreachable instance. Say so.
+        if (connectErr) {
+          done({
+            outcome: 'unreachable',
+            text: '',
+            lines: [],
+            packets: 0,
+            empty: false,
+            detail: `the instance did not answer (${connectErr.code || connectErr.message})`,
+          });
+          return;
+        }
+        try {
+          socket.send(request, 0, request.length, (err) => {
+            if (err) {
+              done({
+                outcome: 'unreachable',
+                text: '',
+                lines: [],
+                packets: 0,
+                empty: false,
+                detail: `the instance did not answer (${err.code || 'send failed'})`,
+              });
+              return;
+            }
+            // The clock starts when the question is on the wire — but
+            // only if the answer has not already started arriving. The
+            // send callback can fire AFTER the first reply datagram
+            // (a fast engine on a fast link), and arming the long
+            // first-reply timeout then would overwrite the short quiet
+            // timeout the reply had already armed, so a one-line reply
+            // would take 1500ms instead of 300ms.
+            if (packets === 0) arm(timeoutMs);
+          });
+        } catch (sendErr) {
+          // Same reasoning: a throw from here would be uncaught.
+          done({
+            outcome: 'unreachable',
+            text: '',
+            lines: [],
+            packets: 0,
+            empty: false,
+            detail: `the instance did not answer (${sendErr.code || sendErr.message})`,
+          });
+        }
       });
     } catch (err) {
       // A bad host or port fails here, not in an event.
