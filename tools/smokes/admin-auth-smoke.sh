@@ -56,7 +56,7 @@ echo
 echo "== starting the console =="
 ADMIN_HOST=127.0.0.1 \
 ADMIN_PORT="$ADMIN_PORT" \
-ADMIN_AUTH_PATH="$WORK/auth.json" \
+ADMIN_AUTH_FILE="$WORK/auth.json" \
 ADMIN_AUDIT_PATH="$WORK/actions.log" \
 TS_HOST=127.0.0.1 \
 TS_PORT_BASE="$ENGINE_PORT" \
