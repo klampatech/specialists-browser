@@ -112,6 +112,42 @@ test('a name with a space in it is one name', () => {
   assert.equal(row.address, '10.0.0.5');
 });
 
+test('a name with a QUOTE and a SPACE in it is still one player', () => {
+  // The player chooses their own name, and `setinfo name "..."` carries
+  // quotes inside it. A row that fails to parse is a row that
+  // DISAPPEARS from the player list, and a player the moderator cannot
+  // see is a player the moderator cannot moderate.
+  const row = parsePlayerRow('# 2     "a"b c" 3 ID_def 1 00:05  10  0 172.17.0.2');
+  assert.ok(row, 'the row must parse, not vanish');
+  assert.equal(row.name, 'a"b c');
+  assert.equal(row.userid, 3);
+  assert.equal(row.slot, 2);
+  assert.equal(row.uniqueid, 'ID_def');
+  assert.equal(row.ping, 10);
+  assert.equal(row.loss, 0);
+  assert.equal(row.address, '172.17.0.2');
+});
+
+test('every row of a table parses, even when the names are hostile', () => {
+  // The count the engine prints and the number of rows in the table
+  // must agree. If a name can make a row disappear, the moderator sees
+  // a player list that silently disagrees with the server.
+  const names = ['Neo', 'a"b c', 'Big Boss', 'x"', '"y', 'tab\tname', 'Ω'];
+  const rows = names.map((n, i) =>
+    `# ${i + 1}     "${n}" ${i + 2} ID_${i} ${i} 0${i}:00  ${i * 3}  0 172.17.0.${i + 1}`,
+  );
+  const parsed = parseStatus(rows.join('\n')).players;
+  assert.equal(parsed.length, names.length);
+  // The names come back with their whitespace collapsed -- a tab in a
+  // name becomes a space, because the row is split on whitespace. The
+  // point of the test is that every ROW survives and every name is
+  // still the name the player chose.
+  assert.deepEqual(
+    parsed.map((p) => p.name),
+    names.map((n) => n.replace(/\s+/g, ' ')),
+  );
+});
+
 test('the table header line is not a player', () => {
   assert.equal(parsePlayerRow('#      name userid uniqueid frag time ping loss adr'), null);
 });

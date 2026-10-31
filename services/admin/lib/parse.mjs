@@ -64,52 +64,119 @@ const PLAYERS_FIELD = /^(\d+)\s+active\s+\((\d+)\s+max\)$/;
 const USERS_FIELD = /^(\d+)\s+users$/;
 
 /**
- * One row of the player table.
+ * One row of the `status` player table.
  *
  * `#%2i %8s %i %s %3i %s %4i %3i %s` — slot, quoted name, userid,
  * uniqueid, frags, connect time, ping, loss, address.
  *
- * The widths are NOT trusted: the engine pads them, but the padding is
- * not something a parser should depend on (and the address column is
- * missing entirely for a client with no IPv4 address — the NA_IP
- * branch). So the row is split on whitespace, with the quoted name
- * taken as one piece because a name may contain a space.
+ * THE ROW IS PARSED FROM THE RIGHT, NOT THE LEFT.
+ *
+ * The name is the only variable-width field, it is quoted, and it may
+ * contain SPACES and QUOTES — a player chooses their own name, and
+ * `setinfo name "..."` will happily carry `"` inside it. Parsing left
+ * to right means guessing where the name ends, and every guess is
+ * wrong for some name:
+ *
+ *   - split on whitespace and the name splits in two;
+ *   - match `"([^"]*)"` and a name with a quote inside it either
+ *     truncates the name or fails the whole row.
+ *
+ * A row that fails to parse is a row that DISAPPEARS from the player
+ * list, and a player list that silently disagrees with the server is
+ * worse than no player list: the moderator cannot see the person they
+ * are moderating. So the name is taken as everything between the slot
+ * and the userid, and the fixed fields are read off the RIGHT, where
+ * they cannot be confused with the name.
+ *
+ * From the right the order is fixed:
+ *
+ *   [address?] loss ping time frags uniqueid userid "name" #slot
+ *
+ * and the address is the only optional one. It is present when the
+ * client has an IPv4 address (the engine's NA_IP branch) and absent
+ * otherwise, and an address is never a bare integer — so "the last
+ * token is a bare integer" means "there is no address".
  *
  * The order of the two numbers after the connect time is PING then
  * LOSS, which is the order of the table's own header (`... frag time
  * ping loss adr`).
  */
-const PLAYER_ROW =
-  /^#\s*(\d+)\s+(?:"([^"]*)"|(\S+))\s+(\d+)\s+(\S+)\s+(-?\d+)\s+(\S+)\s+(\d+)\s+(\d+)\s*(.*)$/;
+
+/** A bare integer, the shape every numeric column has. */
+const INTEGER = /^-?\d+$/;
+
+/** `MM:SS` or `H:MM:SS`. */
+const DURATION = /^\d+(:\d+)*$/;
 
 /**
  * Parse one row of the `status` player table.
  *
  * @param {string} line
  * @returns {object|null} null when the line is not a player row (the
-   table's own header line is not).
+ *   table's own header line is not).
  */
 export function parsePlayerRow(line) {
-  const m = PLAYER_ROW.exec(String(line ?? '').trimEnd());
-  if (!m) return null;
-  const name = m[2] !== undefined ? m[2] : m[3];
+  const text = String(line ?? '').trim();
+  if (!text.startsWith('#')) return null;
+
+  // Everything after the `#`, split on whitespace. The name may be
+  // several tokens; the fields after it may not.
+  const tokens = text.slice(1).trim().split(/\s+/).filter(Boolean);
+
+  // slot + name + userid + uniqueid + frags + time + ping + loss.
+  if (tokens.length < 8) return null;
+
+  const slot = tokens[0];
+  if (!INTEGER.test(slot)) return null;
+
+  // The address is the last token, and only when it is not a bare
+  // integer (loss is).
+  let address = null;
+  let end = tokens.length;
+  const last = tokens[end - 1];
+  if (!INTEGER.test(last)) {
+    address = last;
+    end -= 1;
+  }
+
+  // Six fixed fields, read backwards from the end.
+  const loss = tokens[end - 1];
+  const ping = tokens[end - 2];
+  const connectTime = tokens[end - 3];
+  const frag = tokens[end - 4];
+  const uniqueid = tokens[end - 5];
+  const userid = tokens[end - 6];
+  if (![loss, ping, frag, userid].every((v) => INTEGER.test(v))) return null;
+  if (!DURATION.test(connectTime)) return null;
+  if (!uniqueid) return null;
+
+  // Everything between the slot and the userid is the name.
+  const nameTokens = tokens.slice(1, end - 6);
+  if (nameTokens.length === 0) return null;
+  let name = nameTokens.join(' ');
+  // The engine quotes the name. Strip the quotes the engine added —
+  // but only the outer pair, so a quote inside the name survives.
+  if (name.length >= 2 && name.startsWith('"') && name.endsWith('"')) {
+    name = name.slice(1, -1);
+  }
+
   return {
     /** The client-array slot — the `#` column. NOT the kick target. */
-    slot: Number(m[1]),
+    slot: Number(slot),
     /** The userid — what `kick #<userid>` wants. */
-    userid: Number(m[4]),
+    userid: Number(userid),
     name,
-    uniqueid: m[5],
+    uniqueid,
     /** A bot is a row whose uniqueid is `BOT`. Nothing else is a bot. */
-    bot: m[5] === 'BOT',
-    frag: Number(m[6]),
+    bot: uniqueid === 'BOT',
+    frag: Number(frag),
     /** `MM:SS` or `H:MM:SS`, as the engine prints it. */
-    connectTime: m[7],
-    connectSeconds: parseDuration(m[7]),
-    ping: Number(m[8]),
-    loss: Number(m[9]),
+    connectTime,
+    connectSeconds: parseDuration(connectTime),
+    ping: Number(ping),
+    loss: Number(loss),
     /** Absent for a client with no IPv4 address. */
-    address: m[10] && m[10].trim() ? m[10].trim() : null,
+    address,
   };
 }
 
