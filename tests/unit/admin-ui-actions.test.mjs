@@ -141,7 +141,20 @@ test('the map change confirm button is RED, and it is the only red button', () =
 test('the write controls are LIVE, and the command box is still disabled', () => {
   // The command box is NOT in this phase.
   assert.match(HTML, /id="cmd"[^>]*disabled/);
-  assert.match(HTML, /the actions arrive with phase 4/);
+  // And the page says so. It used to say "the actions arrive with
+  // phase 4", which was true when the console was read-only and a lie
+  // the moment phase 4 landed. The assertion is on the MEANING, not on
+  // one literal string, so the wording can be fixed without the test
+  // pretending the wording was never wrong.
+  assert.match(HTML, /the free-form command box is not in this release/);
+  // The hint line under the drawer must not call a console that can
+  // now kick, change the map and broadcast "read-only". Only the
+  // visible line matters: the header comment above the markup is
+  // allowed to talk about the read-only phases it remembers.
+  const hint = HTML.match(/<div class="hint">([^<]*)</);
+  assert.ok(hint, 'the console has a hint line');
+  assert.doesNotMatch(hint[1], /read-only/);
+  assert.match(hint[1], /the five actions are live/);
   // The five actions' controls are enabled.
   for (const id of ['say', 'sayBtn', 'restart', 'tlBtn']) {
     const re = new RegExp(`id="${id}"[^>]*>`);
