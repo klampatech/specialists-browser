@@ -20,7 +20,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
-import { mkdtempSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +38,10 @@ import {
   isLoopbackHost,
   readConfig,
 } from '../../services/admin/service.mjs';
+import {
+  createAuthStore,
+  createPasswordRecord,
+} from '../../services/admin/lib/auth.mjs';
 
 /** The service's entry point, for the command-line tests. */
 const SERVICE_PATH = fileURLToPath(new URL('../../services/admin/service.mjs', import.meta.url));
@@ -250,18 +254,59 @@ test('a player with no ts_status line is still a player', () => {
 /* the service                                                         */
 /* ------------------------------------------------------------------ */
 
-/** Start the service on an ephemeral port and run `fn` against it. */
+/**
+ * The console's password, in the tests.
+ *
+ * PHASE 2: THE TESTS LOG IN FOR REAL. There is no "skip auth" switch
+ * and there is not going to be one — a switch that turns the gate off
+ * is a footgun that phase 4 would trip over, with the tests still
+ * green. So the helper below logs in through the same scrypt path and
+ * the same cookie a browser would, and hands the cookie to the test.
+ */
+const TEST_PASSWORD = 'phase-one-test-password';
+
+/**
+ * Start the service on an ephemeral port, log in, and run `fn`.
+ *
+ * @param {object} opts the factory's options
+ * @param {(port: number, cookie: string, csrfToken: string) => Promise<void>} fn
+ */
 async function withService(opts, fn) {
-  const { server } = createAdminService({ port: 0, ...opts });
+  const { server } = createAdminService({
+    port: 0,
+    auth: createAuthStore({ record: createPasswordRecord(TEST_PASSWORD) }),
+    ...opts,
+  });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
   try {
-    await fn(server.address().port);
+    // The login, for real: the same endpoint, the same password, the
+    // same cookie.
+    const res = await fetch(`http://127.0.0.1:${port}/admin/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: TEST_PASSWORD }),
+    });
+    assert.equal(res.status, 200, 'the test could not log in');
+    const cookie = res.headers.getSetCookie()[0].split(';')[0];
+    // The CSRF token comes back in the body, not in a cookie.
+    const { csrfToken } = await res.json();
+    await fn(port, cookie, csrfToken);
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
 }
 
-const get = (port, path) => fetch(`http://127.0.0.1:${port}${path}`);
+/**
+ * A GET, with the session cookie.
+ *
+ * @param {number} port
+ * @param {string} path
+ * @param {string} cookie
+ * @returns {Promise<Response>}
+ */
+const get = (port, path, cookie) =>
+  fetch(`http://127.0.0.1:${port}${path}`, { headers: { cookie } });
 
 /* ------------------------------------------------------------------ */
 /* a TRUNCATED status reply                                            */
@@ -335,8 +380,8 @@ function fakeScriptedFleet(statusTexts) {
 
 test('a truncated status reply is read again, and the second read is used', async () => {
   const { makeAsk, asked } = fakeScriptedFleet([TRUNCATED_STATUS, COMPLETE_STATUS]);
-  await withService({ makeAsk, count: 1, password: 'pw' }, async (port) => {
-    const res = await get(port, '/admin/servers/ts-0/players');
+  await withService({ makeAsk, count: 1, password: 'pw' }, async (port, cookie, csrfToken) => {
+    const res = await get(port, '/admin/servers/ts-0/players', cookie);
     assert.equal(res.status, 200);
     const body = await res.json();
     // The second read was complete, so the console reports a complete
@@ -355,8 +400,8 @@ test('a truncated status reply is read again, and the second read is used', asyn
 
 test('a reply that is still short is reported as partial, with both counts', async () => {
   const { makeAsk } = fakeScriptedFleet([TRUNCATED_STATUS]);
-  await withService({ makeAsk, count: 1, password: 'pw' }, async (port) => {
-    const res = await get(port, '/admin/servers/ts-0/players');
+  await withService({ makeAsk, count: 1, password: 'pw' }, async (port, cookie, csrfToken) => {
+    const res = await get(port, '/admin/servers/ts-0/players', cookie);
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.partial, true);
@@ -417,12 +462,12 @@ test('a reply that is still short is reported as partial, with both counts', asy
 
 test('two fleet reads in a row do not probe the engine twice', async () => {
   const { makeAsk, asked } = fakeFleet();
-  await withService({ makeAsk, count: 2, password: 'pw' }, async (port) => {
-    const first = await get(port, '/admin/servers');
+  await withService({ makeAsk, count: 2, password: 'pw' }, async (port, cookie, csrfToken) => {
+    const first = await get(port, '/admin/servers', cookie);
     assert.equal(first.status, 200);
     const afterFirst = asked.length;
     assert.ok(afterFirst > 0, 'the first read must probe');
-    const second = await get(port, '/admin/servers');
+    const second = await get(port, '/admin/servers', cookie);
     assert.equal(second.status, 200);
     assert.equal(asked.length, afterFirst, 'the second read must not touch the engine');
   });
@@ -431,13 +476,13 @@ test('two fleet reads in a row do not probe the engine twice', async () => {
 test('a read after the TTL probes the engine again', async () => {
   let clock = 1_000_000;
   const { makeAsk, asked } = fakeFleet();
-  await withService({ makeAsk, count: 1, password: 'pw', now: () => clock }, async (port) => {
-    await get(port, '/admin/servers');
+  await withService({ makeAsk, count: 1, password: 'pw', now: () => clock }, async (port, cookie, csrfToken) => {
+    await get(port, '/admin/servers', cookie);
     const afterFirst = asked.length;
-    await get(port, '/admin/servers');
+    await get(port, '/admin/servers', cookie);
     assert.equal(asked.length, afterFirst, 'the cached read did not probe');
     clock += 5_001;
-    await get(port, '/admin/servers');
+    await get(port, '/admin/servers', cookie);
     assert.ok(asked.length > afterFirst, 'the TTL expired, so the read probed again');
   });
 });
@@ -458,8 +503,11 @@ test('two concurrent reads share one probe', async () => {
       detail: '',
     };
   };
-  await withService({ makeAsk, count: 1, password: 'pw' }, async (port) => {
-    await Promise.all([get(port, '/admin/servers'), get(port, '/admin/servers')]);
+  await withService({ makeAsk, count: 1, password: 'pw' }, async (port, cookie, csrfToken) => {
+    await Promise.all([
+      get(port, '/admin/servers', cookie),
+      get(port, '/admin/servers', cookie),
+    ]);
     assert.equal(
       asked.filter((c) => c === 'status').length,
       1,
@@ -560,8 +608,8 @@ test('the fleet size is clamped', () => {
 
 test('a malformed percent-escape is a 400, not a 500', async () => {
   const { makeAsk } = fakeFleet();
-  await withService({ makeAsk, count: 1, password: 'pw' }, async (port) => {
-    const res = await get(port, '/admin/servers/%ZZ/players');
+  await withService({ makeAsk, count: 1, password: 'pw' }, async (port, cookie, csrfToken) => {
+    const res = await get(port, '/admin/servers/%ZZ/players', cookie);
     assert.equal(res.status, 400);
     const body = await res.json();
     assert.equal(body.error, 'bad_request');
@@ -580,12 +628,17 @@ test('the service starts when the entry point is a symlink', async () => {
   symlinkSync(SERVICE_PATH, link);
   const port = await freePort();
 
+  // The console's own password, in a file, the way the host has it.
+  const authPath = join(dir, 'auth.json');
+  writeFileSync(authPath, JSON.stringify(createPasswordRecord(TEST_PASSWORD)));
+
   const child = spawn(process.execPath, [link], {
     env: {
       ...process.env,
       ADMIN_PORT: String(port),
       TS_INSTANCE_COUNT: '1',
       RCON_PASSWORD: 'pw',
+      ADMIN_AUTH_PATH: authPath,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -618,8 +671,20 @@ test('the service starts when the entry point is a symlink', async () => {
       });
     });
     assert.match(started, /admin listening on 127\.0\.0\.1:/);
-    // And it really is serving.
-    const res = await fetch(`http://127.0.0.1:${port}/admin/servers`);
+    // And it really is serving — behind the login, like everything
+    // else: the file the CLI writes is the one the service reads.
+    const refused = await fetch(`http://127.0.0.1:${port}/admin/servers`);
+    assert.equal(refused.status, 401);
+    const login = await fetch(`http://127.0.0.1:${port}/admin/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: TEST_PASSWORD }),
+    });
+    assert.equal(login.status, 200);
+    const cookie = login.headers.getSetCookie()[0].split(';')[0];
+    const res = await fetch(`http://127.0.0.1:${port}/admin/servers`, {
+      headers: { cookie },
+    });
     assert.equal(res.status, 200);
   } finally {
     child.kill('SIGTERM');
@@ -628,8 +693,8 @@ test('the service starts when the entry point is a symlink', async () => {
 
 test('the fleet endpoint returns one row per instance, and 200 even when some are down', async () => {
   const { makeAsk } = fakeFleet();
-  await withService({ makeAsk, count: 3, password: 'pw' }, async (port) => {
-    const res = await get(port, '/admin/servers');
+  await withService({ makeAsk, count: 3, password: 'pw' }, async (port, cookie, csrfToken) => {
+    const res = await get(port, '/admin/servers', cookie);
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type'), /application\/json/);
     const body = await res.json();
@@ -655,8 +720,8 @@ test('the fleet endpoint returns one row per instance, and 200 even when some ar
 
 test('the fleet endpoint reports a down instance as a row, not as an error', async () => {
   const down = fakeFleet(REPLIES, { status: 'unreachable' });
-  await withService({ makeAsk: down.makeAsk, count: 2, password: 'pw' }, async (port) => {
-    const res = await get(port, '/admin/servers');
+  await withService({ makeAsk: down.makeAsk, count: 2, password: 'pw' }, async (port, cookie, csrfToken) => {
+    const res = await get(port, '/admin/servers', cookie);
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.servers.length, 2);
@@ -666,8 +731,8 @@ test('the fleet endpoint reports a down instance as a row, not as an error', asy
 });
 
 test('with no password configured every instance is refused, and the endpoint says why', async () => {
-  await withService({ count: 2, password: '' }, async (port) => {
-    const res = await get(port, '/admin/servers');
+  await withService({ count: 2, password: '' }, async (port, cookie, csrfToken) => {
+    const res = await get(port, '/admin/servers', cookie);
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.rconConfigured, false);
@@ -681,8 +746,8 @@ test('with no password configured every instance is refused, and the endpoint sa
 
 test('the player endpoint returns the player table, with the slot and the userid apart', async () => {
   const { makeAsk } = fakeFleet();
-  await withService({ makeAsk, count: 1, password: 'pw' }, async (port) => {
-    const res = await get(port, '/admin/servers/ts-0/players');
+  await withService({ makeAsk, count: 1, password: 'pw' }, async (port, cookie, csrfToken) => {
+    const res = await get(port, '/admin/servers/ts-0/players', cookie);
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.counts.players, 1);
@@ -711,8 +776,8 @@ test('the player endpoint returns the player table, with the slot and the userid
 
 test('the status endpoint returns the instance in detail', async () => {
   const { makeAsk } = fakeFleet();
-  await withService({ makeAsk, count: 1, password: 'pw' }, async (port) => {
-    const res = await get(port, '/admin/servers/ts-0/status');
+  await withService({ makeAsk, count: 1, password: 'pw' }, async (port, cookie, csrfToken) => {
+    const res = await get(port, '/admin/servers/ts-0/status', cookie);
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.id, 'ts-0');
@@ -732,8 +797,8 @@ test('the status endpoint returns the instance in detail', async () => {
 
 test('a known but unreachable instance is a 200, not a 404', async () => {
   const { makeAsk } = fakeFleet(REPLIES, { status: 'unreachable' });
-  await withService({ makeAsk, count: 2, password: 'pw' }, async (port) => {
-    const res = await get(port, '/admin/servers/ts-1/status');
+  await withService({ makeAsk, count: 2, password: 'pw' }, async (port, cookie, csrfToken) => {
+    const res = await get(port, '/admin/servers/ts-1/status', cookie);
     assert.equal(res.status, 200);
     const body = await res.json();
     assert.equal(body.rcon, 'unreachable');
@@ -743,8 +808,8 @@ test('a known but unreachable instance is a 200, not a 404', async () => {
 
 test('an unknown instance is a 404', async () => {
   const { makeAsk } = fakeFleet();
-  await withService({ makeAsk, count: 2, password: 'pw' }, async (port) => {
-    const res = await get(port, '/admin/servers/ts-9/status');
+  await withService({ makeAsk, count: 2, password: 'pw' }, async (port, cookie, csrfToken) => {
+    const res = await get(port, '/admin/servers/ts-9/status', cookie);
     assert.equal(res.status, 404);
     const body = await res.json();
     assert.equal(body.error, 'unknown_server');
@@ -754,8 +819,8 @@ test('an unknown instance is a 404', async () => {
 
 test('an unknown path is a 404 with a JSON body', async () => {
   const { makeAsk } = fakeFleet();
-  await withService({ makeAsk, count: 1, password: 'pw' }, async (port) => {
-    const res = await get(port, '/admin/nope');
+  await withService({ makeAsk, count: 1, password: 'pw' }, async (port, cookie, csrfToken) => {
+    const res = await get(port, '/admin/nope', cookie);
     assert.equal(res.status, 404);
     assert.match(res.headers.get('content-type'), /application\/json/);
     const body = await res.json();
@@ -765,9 +830,14 @@ test('an unknown path is a 404 with a JSON body', async () => {
 
 test('a mutating method is refused: this service is read-only', async () => {
   const { makeAsk } = fakeFleet();
-  await withService({ makeAsk, count: 1, password: 'pw' }, async (port) => {
+  await withService({ makeAsk, count: 1, password: 'pw' }, async (port, cookie, csrfToken) => {
     for (const method of ['POST', 'PUT', 'DELETE', 'PATCH']) {
-      const res = await fetch(`http://127.0.0.1:${port}/admin/servers`, { method });
+      // The CSRF token is checked BEFORE the method: the caller is
+      // logged in and knows the token, and the method is still wrong.
+      const res = await fetch(`http://127.0.0.1:${port}/admin/servers`, {
+        method,
+        headers: { cookie, 'X-CSRF-Token': csrfToken },
+      });
       assert.equal(res.status, 405, `${method} must not be allowed`);
       const body = await res.json();
       assert.equal(body.error, 'method_not_allowed');

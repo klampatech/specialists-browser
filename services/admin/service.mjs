@@ -1,19 +1,73 @@
 /**
  * admin — the BulletBallet admin console's service.
  *
- * PHASE 1: THE SERVICE AND THE TRANSPORT
- * ---------------------------------------
- * A small read-only HTTP service that talks to the game-server fleet
- * over RCON and answers three questions:
+ * PHASE 2: THE ENDPOINTS ARE BEHIND A SESSION
+ * -------------------------------------------
+ * A small HTTP service that talks to the game-server fleet over RCON
+ * and answers three questions about the fleet:
  *
  *   GET /admin/servers              the fleet
  *   GET /admin/servers/:id/players  the player table
  *   GET /admin/servers/:id/status   one instance, in detail
  *
- * There is no UI, no login and no way to change anything yet. That is
- * on purpose: the service binds the loopback interface from the first
- * commit, so it is safe to run before the login exists
- * (docs/ADMIN-CONSOLE.md §7, phase 1).
+ * and three questions about the administrator:
+ *
+ *   POST /admin/login    {password} -> a session cookie
+ *   POST /admin/logout   ends the session
+ *   GET  /admin/session  who am I, and when does this expire
+ *
+ * EVERY ENDPOINT BUT /admin/login NEEDS A SESSION. A request with no
+ * session cookie, or with one that has expired, is refused with a
+ * 401 — including the three read endpoints phase 1 built, which were
+ * deliberately open before the login existed and are deliberately
+ * closed now.
+ *
+ * THERE IS NO "SKIP AUTH" SWITCH, AND THERE WILL NOT BE ONE. The
+ * tests log in for real: the same scrypt path, the same cookie, the
+ * same gate. A switch that turns the gate off is a footgun, and
+ * phase 4 (the mutating actions) would trip over it — and nobody
+ * would notice, because the tests would still be green.
+ *
+ * THE COOKIE IS HttpOnly AND SameSite=Strict — AND NOT `Secure`
+ * --------------------------------------------------------------
+ * NOT `Secure`, ON PURPOSE, and this comment is here so that nobody
+ * "fixes" it later. The console is served over plain HTTP on
+ * loopback, and the SSH tunnel (`ssh -N -L 8095:127.0.0.1:8095
+ * bb-prod`) IS the encryption layer. A `Secure` cookie is only sent
+ * over HTTPS, so adding it to the loopback deployment would mean the
+ * browser never sends the cookie and the console can never be
+ * logged into. It would protect nothing that the tunnel does not
+ * already protect, and it would break the only thing the loopback
+ * deployment has to get right. If the console is ever put behind a
+ * TLS vhost, the cookie gains `Secure` and nothing else about it
+ * changes.
+ *
+ * THE CSRF TOKEN IS NOT A COOKIE
+ * -----------------------------
+ * The session cookie stays HttpOnly, so a script cannot read it.
+ * The CSRF token is a DIFFERENT secret, in the JSON body of the
+ * login response and of `/admin/session`, and the browser has to put
+ * it in the `X-CSRF-Token` header on every mutating request.
+ * `SameSite=Strict` is the primary defence — a page on another site
+ * cannot make the browser attach the cookie — and the token is the
+ * belt for the day the console is served from a different origin
+ * than the API.
+ *
+ * THE ORDER OF THE CHECKS IS THE POINT
+ * ------------------------------------
+ * Session first, then the CSRF token (on a mutating request only).
+ * A request with no session is a 401 even if its CSRF token is also
+ * wrong: an unauthenticated caller gets to learn ONE thing, which is
+ * that it is not logged in.
+ *
+ * THE LOGIN ENDPOINT IS THROTTLED TWICE
+ * -------------------------------------
+ * The lockout (five failures, five minutes, doubling to an hour) and
+ * the rate limit (ten attempts a minute) are separate counters with
+ * separate rules — see lib/lockout.mjs for why they are not the same
+ * thing. The countdown the client is given comes from the SERVER's
+ * clock, and the check that matters is made on the server, so a
+ * client that ignores the countdown gets 423 again.
  *
  * WHY RCON AND NOT THE CONSOLE FIFO
  * --------------------------------
@@ -24,10 +78,11 @@
  * carve its answers out of a shared stdout, and writing to it needs
  * the Docker socket, which is root-equivalent on the host.
  *
- * This service holds NO Docker socket, writes NO host file, and talks
- * to the fleet over loopback UDP. If it is compromised, the blast
- * radius is "can ask the game servers questions" — not "is root on the
- * game box" (docs/ADMIN-CONSOLE.md §3.3).
+ * This service holds NO Docker socket, writes NO host file outside
+ * its own state directory (the password record and the audit log),
+ * and talks to the fleet over loopback UDP. If it is compromised, the
+ * blast radius is "can ask the game servers questions" — not "is root
+ * on the game box" (docs/ADMIN-CONSOLE.md §3.3).
  *
  * LOOPBACK ONLY
  * -------------
@@ -39,8 +94,9 @@
  * THE GUARD IS IN THE FACTORY, NOT IN THE COMMAND LINE. Every path to
  * a listening socket goes through `createAdminService()`, so THAT is
  * where the address is checked — a guard that only the CLI happens to
- * go through is a guard the next caller walks around, and phase 2
- * imports the factory.
+ * go through is a guard the next caller walks around. Phase 2 does
+ * import the factory (the tests do), which is exactly why the guard
+ * is there and not in the command line.
  *
  * CONFIG (env)
  *   ADMIN_HOST         bind address               default 127.0.0.1
@@ -49,6 +105,16 @@
  *   TS_PORT_BASE       first game-server port     default 27015
  *   TS_INSTANCE_COUNT  number of instances        default 8
  *   RCON_PASSWORD      the RCON password          default (empty)
+ *   ADMIN_AUTH_PATH    the password record        default /srv/ts-admin/auth.json
+ *   ADMIN_AUDIT_PATH   the audit log              default /srv/ts-admin/actions.log
+ *
+ * THE ADMINISTRATOR'S PASSWORD IS NOT IN THE ENVIRONMENT
+ * ------------------------------------------------------
+ * The RCON password is an environment variable because the ENGINE
+ * takes it on the command line. The console's own password is not:
+ * it is a scrypt record in a 0600 file, written by `adminctl
+ * set-password`, and there is no environment variable that could put
+ * the plaintext on a host that has the record file.
  *
  * THE RCON PASSWORD
  * -----------------
@@ -87,6 +153,12 @@ import http from 'node:http';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
+  createAuthStore,
+  DEFAULT_AUTH_PATH,
+  verifyPasswordAsync,
+} from './lib/auth.mjs';
+import { createAuditSink, DEFAULT_AUDIT_PATH } from './lib/audit.mjs';
+import {
   attachTsStatus,
   clampInstanceCount,
   createProbeCache,
@@ -96,6 +168,8 @@ import {
   makeRconAsk,
   probeInstance,
 } from './lib/fleet.mjs';
+import { createLoginGuard } from './lib/lockout.mjs';
+import { createSessionTable, csrfMatches } from './lib/session.mjs';
 
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
 
@@ -104,6 +178,15 @@ export const DEFAULT_BIND_HOST = '127.0.0.1';
 
 /** The port the console lives on. */
 export const DEFAULT_BIND_PORT = 8095;
+
+/** The name of the session cookie. */
+export const SESSION_COOKIE = 'ts_admin';
+
+/** The header a mutating request carries the CSRF token in. */
+export const CSRF_HEADER = 'x-csrf-token';
+
+/** The largest a request body may be. */
+const MAX_BODY_BYTES = 4096;
 
 /**
  * The message a non-loopback bind address gets, wherever it is caught.
@@ -222,6 +305,10 @@ export function readConfig(env = process.env) {
     // The fleet's size is clamped: see MAX_INSTANCE_COUNT.
     count: clampInstanceCount(count),
     password: checkRconPassword(env.RCON_PASSWORD || ''),
+    // The console's own password record, and the audit log. Both live
+    // in the service's state directory, which phase 5 provisions.
+    authPath: env.ADMIN_AUTH_PATH || DEFAULT_AUTH_PATH,
+    auditPath: env.ADMIN_AUDIT_PATH || DEFAULT_AUDIT_PATH,
   };
 }
 
@@ -242,8 +329,110 @@ function sendJson(res, status, body) {
 }
 
 /**
+ * Read a JSON body.
+
+ * The limit is there because the body is read into memory: an
+ * endpoint that accepts a password should not be willing to accept
+ * four gigabytes of it.
+ *
+ * @param {http.IncomingMessage} req
+ * @param {number} [limit] the most bytes that are read
+ * @returns {Promise<object>}
+ */
+async function readJsonBody(req, limit = MAX_BODY_BYTES) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > limit) {
+      throw new Error('the request body is too large');
+    }
+    chunks.push(chunk);
+  }
+  const text = Buffer.concat(chunks).toString('utf8');
+  if (!text.trim()) return {};
+  return JSON.parse(text);
+}
+
+/**
+ * The session cookie.
+ *
+ * `HttpOnly` so a script cannot read it; `SameSite=Strict` so a page
+ * on another site cannot make the browser send it; `Path=/admin` so
+ * it is not attached to anything else the service might serve later.
+ *
+ * NOT `Secure` — the console is plain HTTP on loopback and the SSH
+ * tunnel is the encryption layer. See the header comment: adding
+ * `Secure` here would mean the browser never sends the cookie, and
+ * the console could never be logged into.
+ *
+ * @param {string} token
+ * @param {number} maxAgeSeconds the session's remaining absolute life
+ * @returns {string}
+ */
+export function sessionCookie(token, maxAgeSeconds) {
+  return (
+    `${SESSION_COOKIE}=${token}; Path=/admin; Max-Age=${maxAgeSeconds}; ` +
+    'HttpOnly; SameSite=Strict'
+  );
+}
+
+/**
+ * The cookie that ends a session.
+ *
+ * @returns {string}
+ */
+export function clearSessionCookie() {
+  return `${SESSION_COOKIE}=; Path=/admin; Max-Age=0; HttpOnly; SameSite=Strict`;
+}
+
+/**
+ * The session token out of the request's cookies.
+ *
+ * @param {http.IncomingMessage} req
+ * @returns {string|null}
+ */
+export function readSessionCookie(req) {
+  const header = req.headers.cookie;
+  if (!header) return null;
+  for (const part of String(header).split(';')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    if (part.slice(0, eq).trim() !== SESSION_COOKIE) continue;
+    const value = part.slice(eq + 1).trim();
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  }
+  return null;
+}
+
+/**
+ * Where a request came from.
+ *
+ * The lockout is keyed to this: there is one administrator, and what
+ * is being protected is the endpoint, not an account. An IPv4
+ * address arriving over a dual-stack socket is `::ffff:127.0.0.1`,
+ * and it is the same source as `127.0.0.1` — so the prefix is
+ * stripped, or the same host would get two lockouts.
+ *
+ * @param {http.IncomingMessage} req
+ * @returns {string}
+ */
+export function sourceAddress(req) {
+  const raw = String(req.socket?.remoteAddress ?? '');
+  const stripped = raw.replace(/^::ffff:/, '');
+  return stripped || 'unknown';
+}
+
+/**
  * The routes. Everything lives under `/admin`.
  */
+const LOGIN_PATH = /^\/admin\/login$/;
+const LOGOUT_PATH = /^\/admin\/logout$/;
+const SESSION_PATH = /^\/admin\/session$/;
 const FLEET_PATH = /^\/admin\/servers$/;
 const PLAYERS_PATH = /^\/admin\/servers\/([^/]+)\/players$/;
 const STATUS_PATH = /^\/admin\/servers\/([^/]+)\/status$/;
@@ -267,6 +456,11 @@ const STATUS_PATH = /^\/admin\/servers\/([^/]+)\/status$/;
  * else. The service still needs the password, so it stays in the
  * closure.
  *
+ * The AUTH configuration is an ARGUMENT, not a guess. The tests hand
+ * the factory an in-memory auth store; the host hands it the file at
+ * `/srv/ts-admin/auth.json`. There is no default that silently turns
+ * the gate off.
+ *
  * @param {object} [opts]
  * @param {string} [opts.host]
  * @param {number} [opts.port]
@@ -276,6 +470,11 @@ const STATUS_PATH = /^\/admin\/servers\/([^/]+)\/status$/;
  * @param {string} [opts.password]
  * @param {(opts: object) => (command: string) => Promise<object>} [opts.makeAsk]
  * @param {() => number} [opts.now] the clock — injectable for tests
+ * @param {{load: () => (object|null)}} [opts.auth] where the password record comes from
+ * @param {object|null} [opts.authRecord] a record, instead of a store
+ * @param {string} [opts.authPath] the record's file, when there is no store
+ * @param {{record: (action: string, target: string, outcome: string) => boolean}} [opts.audit]
+ * @param {string} [opts.auditPath] the audit log, when there is no sink
  * @returns {{server: http.Server, config: object, instances: object[]}}
  */
 export function createAdminService(opts = {}) {
@@ -298,9 +497,52 @@ export function createAdminService(opts = {}) {
   };
   const instances = fleetInstances({ portBase: config.portBase, count: config.count });
   const makeAsk = opts.makeAsk ?? makeRconAsk;
+  // ONE CLOCK for everything: the probe cache, the sessions, the
+  // lockout and the audit line. A test that can move the clock can
+  // then test a twelve-hour idle expiry and a five-minute lockout
+  // without waiting for either.
+  const now = opts.now ?? (() => Date.now());
   // The probe cache: one probe per instance per TTL, and concurrent
   // requests share one probe (lib/fleet.mjs has the why).
-  const cache = createProbeCache({ now: opts.now ?? (() => Date.now()) });
+  const cache = createProbeCache({ now });
+
+  // WHERE THE PASSWORD COMES FROM. A store is anything with a
+  // `load()` that returns the scrypt record (or null). On the host it
+  // is the file; in the tests it is a record in memory.
+  const auth =
+    opts.auth && typeof opts.auth.load === 'function'
+      ? opts.auth
+      : opts.authRecord
+        ? createAuthStore({ record: opts.authRecord })
+        : createAuthStore({ path: opts.authPath ?? DEFAULT_AUTH_PATH });
+
+  // WHERE THE AUDIT LINE GOES. Injectable, so the tests capture the
+  // lines instead of writing to /srv.
+  const audit =
+    opts.audit && typeof opts.audit.record === 'function'
+      ? opts.audit
+      : createAuditSink({ path: opts.auditPath ?? DEFAULT_AUDIT_PATH, now });
+
+  // The sessions (in memory) and the login throttles.
+  const sessions = createSessionTable({ now });
+  const guard = createLoginGuard({ now });
+
+  /**
+   * Is there a password record?
+   *
+   * A best-effort look at the store, for the redacted config. It
+   * never throws: a missing file is a console that has not been
+   * given a password yet, and the login answers 503 for that.
+   *
+   * @returns {boolean}
+   */
+  function authConfigured() {
+    try {
+      return Boolean(auth.load());
+    } catch {
+      return false;
+    }
+  }
 
   /**
    * The function that asks ONE instance a question.
@@ -330,6 +572,159 @@ export function createAdminService(opts = {}) {
       }),
     );
 
+  /**
+   * Write one audit line.
+   *
+   * A write that fails is said out loud on stderr and the request
+   * carries on: an unwritable audit file must not be able to lock
+   * the administrator out of the console. Silence would be worse.
+   *
+   * @param {string} action
+   * @param {string} target
+   * @param {string} outcome
+   */
+  function writeAudit(action, target, outcome) {
+    if (!audit.record(action, target, outcome)) {
+      console.error(`admin: the audit line (${action}) could not be written`);
+    }
+  }
+
+  /**
+   * The login.
+   *
+   * The order of the checks is the point:
+   *
+   *   1. THE LOCKOUT. A locked-out source does not get to spend the
+   *      rate-limit budget, and it does not get to be told whether
+   *      its password was right.
+   *   2. THE RATE LIMIT, which is a different counter with a
+   *      different rule (lib/lockout.mjs has the why).
+   *   3. THE PASSWORD.
+   *
+   * The lockout is checked before the password, so a locked-out
+   * source cannot find out whether a guess was right by watching the
+   * difference between a 401 and a 200.
+   *
+   * @param {http.IncomingMessage} req
+   * @param {http.ServerResponse} res
+   * @param {string} source where the request came from
+   */
+  async function handleLogin(req, res, source) {
+    const lock = guard.state(source);
+    if (lock.locked) {
+      writeAudit('login-locked-out', source, 'locked');
+      sendJson(res, 423, {
+        ok: false,
+        error: 'locked_out',
+        locked: true,
+        // The SERVER's countdown. A client that ignores it and
+        // retries early gets this again.
+        lockoutSecondsRemaining: lock.lockoutSecondsRemaining,
+      });
+      return;
+    }
+
+    const rate = guard.consumeRateLimit(source);
+    if (!rate.allowed) {
+      writeAudit('login', source, 'throttled');
+      sendJson(res, 429, {
+        ok: false,
+        error: 'rate_limited',
+        locked: false,
+        lockoutSecondsRemaining: 0,
+        retryAfterSeconds: rate.secondsRemaining,
+      });
+      return;
+    }
+
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch {
+      sendJson(res, 400, {
+        error: 'bad_request',
+        detail: 'the request body is not JSON',
+      });
+      return;
+    }
+    // The password is NOT trimmed and NOT normalised: it is compared
+    // against exactly what was hashed.
+    const password = typeof body.password === 'string' ? body.password : '';
+
+    // The record is read at the moment of the login, not once at
+    // startup — so a password set with `adminctl set-password` takes
+    // effect without a restart.
+    const record = await auth.load();
+    if (!record) {
+      writeAudit('login', source, 'not-configured');
+      sendJson(res, 503, {
+        ok: false,
+        error: 'auth_not_configured',
+        detail:
+          'this console has no password record yet; ' +
+          'adminctl set-password writes one',
+      });
+      return;
+    }
+
+    const correct = await verifyPasswordAsync(record, password);
+    if (!correct) {
+      const after = guard.recordFailure(source);
+      writeAudit('login', source, 'fail');
+      // A 423 when the failure tripped the lockout, a 401 otherwise.
+      // The lockout state is in the body either way.
+      sendJson(res, after.locked ? 423 : 401, {
+        ok: false,
+        error: 'invalid_credentials',
+        locked: after.locked,
+        lockoutSecondsRemaining: after.lockoutSecondsRemaining,
+        failuresRemaining: after.failuresRemaining,
+      });
+      return;
+    }
+
+    // A successful login resets the lockout — the failure count and
+    // the level — but NOT the rate limit, which is a separate thing.
+    guard.recordSuccess(source);
+
+    const { token, csrfToken, session } = sessions.create();
+    const maxAge = Math.max(
+      0,
+      Math.floor((session.absoluteExpiresAt - now()) / 1000),
+    );
+    res.setHeader('Set-Cookie', sessionCookie(token, maxAge));
+    writeAudit('login', source, 'ok');
+    sendJson(res, 200, {
+      ok: true,
+      csrfToken,
+      // The effective expiry — the earlier of the two clocks.
+      expiresAt: sessions.effectiveExpiry(session),
+      absoluteExpiresAt: session.absoluteExpiresAt,
+      idleExpiresAt: session.idleExpiresAt,
+      // The lockout state, so the UI has one shape for it: the login
+      // always says whether the source is locked and for how long.
+      locked: false,
+      lockoutSecondsRemaining: 0,
+    });
+  }
+
+  /**
+   * The logout.
+   *
+   * The session is gone the moment the request arrives — not when
+   * the cookie expires.
+   *
+   * @param {http.ServerResponse} res
+   * @param {string} token the session token
+   * @param {string} source where the request came from
+   */
+  function handleLogout(res, token, source) {
+    sessions.destroy(token);
+    res.setHeader('Set-Cookie', clearSessionCookie());
+    writeAudit('logout', source, 'ok');
+    sendJson(res, 200, { ok: true });
+  }
+
   const server = http.createServer(async (req, res) => {
     let url;
     try {
@@ -344,6 +739,97 @@ export function createAdminService(opts = {}) {
 
     const path = url.pathname.replace(/\/+$/, '') || '/';
     const method = (req.method || 'GET').toUpperCase();
+    const mutating = method !== 'GET' && method !== 'HEAD';
+    const source = sourceAddress(req);
+
+    // THE LOGIN ENDPOINT IS THE ONLY ONE THAT DOES NOT NEED A
+    // SESSION. Everything else — including the three read endpoints
+    // phase 1 built — goes through the gate below.
+    if (LOGIN_PATH.test(path)) {
+      if (method !== 'POST') {
+        res.setHeader('Allow', 'POST');
+        sendJson(res, 405, {
+          error: 'method_not_allowed',
+          detail: `${method} is not allowed on ${path}; the login is a POST`,
+        });
+        return;
+      }
+      await handleLogin(req, res, source);
+      return;
+    }
+
+    // THE GATE.
+    //
+    // Session first, then the CSRF token. A request with no session
+    // is a 401 even if its CSRF token is also wrong — an
+    // unauthenticated caller gets to learn ONE thing, which is that
+    // it is not logged in.
+    const token = readSessionCookie(req);
+    const { status, session } = sessions.lookup(token);
+    if (status !== 'ok') {
+      if (status === 'idle-expired' || status === 'absolute-expired') {
+        // The line an operator wants: somebody was still using a
+        // session that had already died.
+        writeAudit(
+          'session-expired',
+          source,
+          status === 'idle-expired' ? 'idle' : 'absolute',
+        );
+      }
+      sendJson(res, 401, {
+        error: status === 'missing' ? 'unauthorized' : 'session_expired',
+        detail:
+          status === 'missing'
+            ? 'this endpoint needs a session; log in first'
+            : 'the session has expired; log in again',
+      });
+      return;
+    }
+
+    if (mutating && !csrfMatches(session.csrfToken, req.headers[CSRF_HEADER])) {
+      // This is only reached WITH a valid session, so the 403 does
+      // not tell an unauthenticated caller anything they did not
+      // already know.
+      sendJson(res, 403, {
+        error: 'csrf_failed',
+        detail: `a mutating request needs the CSRF token in the ${CSRF_HEADER} header`,
+      });
+      return;
+    }
+
+    if (LOGOUT_PATH.test(path)) {
+      if (method !== 'POST') {
+        res.setHeader('Allow', 'POST');
+        sendJson(res, 405, {
+          error: 'method_not_allowed',
+          detail: `${method} is not allowed on ${path}; the logout is a POST`,
+        });
+        return;
+      }
+      handleLogout(res, token, source);
+      return;
+    }
+
+    if (SESSION_PATH.test(path)) {
+      if (method !== 'GET') {
+        res.setHeader('Allow', 'GET');
+        sendJson(res, 405, {
+          error: 'method_not_allowed',
+          detail: `${method} is not allowed on ${path}`,
+        });
+        return;
+      }
+      sendJson(res, 200, {
+        // One administrator. The console does not have users yet.
+        user: 'admin',
+        csrfToken: session.csrfToken,
+        expiresAt: sessions.effectiveExpiry(session),
+        absoluteExpiresAt: session.absoluteExpiresAt,
+        idleExpiresAt: session.idleExpiresAt,
+      });
+      return;
+    }
+
     const playersMatch = PLAYERS_PATH.exec(path);
     const statusMatch = STATUS_PATH.exec(path);
     const known = FLEET_PATH.test(path) || Boolean(playersMatch) || Boolean(statusMatch);
@@ -356,9 +842,9 @@ export function createAdminService(opts = {}) {
       return;
     }
 
-    // Phase 1 is read-only. There is no mutating endpoint to reach, so
-    // a mutating method on a real path is a mistake, not an attack to
-    // be handled carefully.
+    // The fleet endpoints are read-only. The gate and the CSRF check
+    // have already run, so this 405 is for a caller who is logged in
+    // and knows the token.
     if (method !== 'GET') {
       res.setHeader('Allow', 'GET');
       sendJson(res, 405, {
@@ -480,6 +966,18 @@ export function createAdminService(opts = {}) {
       count: config.count,
       /** Whether an RCON password is configured — not the password. */
       rconConfigured: Boolean(config.password),
+      /**
+       * Whether a password record was found — NOT the record, and
+       * not the hash. This is a SNAPSHOT, taken when the factory was
+       * called: the login reads the record fresh every time, so a
+       * password set after the service started works without a
+       * restart even while this says false.
+       */
+      authConfigured: authConfigured(),
+      /** Where the record lives. A path is not a secret. */
+      authPath: auth.path,
+      /** Where the audit log lives. */
+      auditPath: audit.path,
     },
     instances,
   };
@@ -525,6 +1023,13 @@ export function start(config = null) {
     console.log(
       `rcon password ${
         resolved.password ? 'configured' : 'NOT CONFIGURED — every instance will be refused'
+      }`,
+    );
+    // The state of the console's own password, so the operator can
+    // see at a glance whether the console can be logged into at all.
+    console.log(
+      `admin password ${
+        service.config.authConfigured ? 'configured' : 'NOT CONFIGURED - no one can log in'
       }`,
     );
   });
