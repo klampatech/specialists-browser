@@ -286,7 +286,29 @@ is absent, the entrypoint says so and the instance boots with RCON off. A
 missing optional secret must never stop a game server from starting; that
 would be a much worse outage than the one it prevents.
 
-### 4.3 The boot config, in one paragraph
+### 4.4 The engine's RCON is not on the internet
+
+**Measured on `bb-prod`, 2026-10-31.** This is worth knowing before the cut-over,
+because the natural fear is that turning RCON on puts a remote-code-ish surface on
+the public internet. It does not.
+
+- **The game server binds loopback.** `ss -lunp` on the host shows
+  `UNCONN 0 0 127.0.0.1:27015` — the engine's UDP socket, which is where RCON
+  lives, is bound to `127.0.0.1`, not to `0.0.0.0`.
+- **The firewall allows no UDP at all.** `ufw status` on the host: `22/tcp`,
+  `443/tcp`, `80/tcp`, and nothing else. Not one UDP port is open.
+- **The only public path to the game is the bridge**, over WebSocket on 443, and
+  it relays to the loopback socket.
+
+So the engine's RCON is reachable from **the host, and nowhere else** — which is
+exactly where the console runs. The 40-character password and the engine's own
+rate limiter are the second and third layers, not the first.
+
+**What this does NOT change:** the secret is still in the game server's logs
+(§5), and the logs are on this box. The exposure is the **log**, not the
+**network**. Do not let "it is not on the internet" become a reason to skip §5.
+
+### 4.5 The boot config, in one paragraph
 
 `tools/deploy/config/server.cfg` is committed and stays secret-free. The
 entrypoint copies it to `$GAME_TS/server.cfg` and appends the password from
