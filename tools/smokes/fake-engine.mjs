@@ -105,12 +105,20 @@ const REPLIES = {
   // then the map's title, its compiler and its generator — and the
   // engine's summary at the end. The colour codes are here because the
   // engine prints them; the RCON client strips them.
+  //
+  // `SS_HQ_f3` IS THE REAL ONE'S MAP, and it is here because the real
+  // CI instance has 60 maps and exactly one of them has capital
+  // letters. The console's map validation was lower-case only, so it
+  // refused a map that was in its own map list — and the fake engine,
+  // whose maps were all lower-case, agreed with the bug. A fake that
+  // only ever shows the easy case teaches the test suite nothing.
   'maps *': [
     '           ts_casa (Half-Life extended) ^3Casa^7 ^2Hammer 3.0^7',
     '        ts_hideout (Half-Life extended) ^3Hideout^7 ^2Hammer 3.0^7',
     '       ts_lobby (Half-Life extended) ^3Lobby^7 ^2Hammer 3.0^7',
+    '       SS_HQ_f3 (Half-Life extended) ^3HQ^7 ^2Hammer 3.0^7',
     '-------------------',
-    'Directory: "ts/maps" - Maps listed: 3',
+    'Directory: "ts/maps" - Maps listed: 4',
   ].join('\n'),
   // The IP filter. The empty one is what the fleet has today.
   listip: 'IP filter list is empty',

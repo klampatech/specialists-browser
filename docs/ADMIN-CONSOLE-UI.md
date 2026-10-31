@@ -746,7 +746,7 @@ two.
 | Kick reason | ≤ 64 chars; no `"` or `\` | The field refuses the character; the count shows at 48+ |
 | Ban reason | ≤ 64 chars; no `"` or `\` | Same |
 | Ban duration | One of 5m / 15m / 1h / 12h / permanent | A select, not free text — the engine takes minutes, and `0` means permanent (`sv_filter.c:92`, `sv_filter.c:96`) |
-| Map name | `^[a-z0-9_]{1,32}$` | The field rejects other characters; the map set is the TS asset names |
+| Map name | `^[A-Za-z0-9_]{1,32}$` | The field rejects other characters. **Not lower-case only**: the fleet's image carries 60 maps and one of them is `SS_HQ_f3`, with capital letters. Measured on production (`ts-0`, `ts/maps/*.bsp`): 60 maps, the longest 18 characters, and not one with a hyphen. "The map set is the TS asset names" was wrong — 59 of the 60 are other assets (`ahl_`, `tm_`, `cs_`, `ctb_`) that live in the same image. |
 | Command | Single command, ≤ 900 chars | The engine's own reply buffer is 1024 bytes for the command line (`sv_client.c:1129`) |
 
 **Why `"` and `\` are rejected:** the reason is re-quoted by

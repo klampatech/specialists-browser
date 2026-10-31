@@ -161,8 +161,27 @@ const ENGINE_REFUSAL =
  * "Validation behaviour"). A name with a space, a quote or a
  * semicolon in it is not a map name, and a name that is not a map
  * name must not become part of a command.
+ *
+ * THE FIRST VERSION WAS LOWER-CASE ONLY, AND THE REAL ENGINE FOUND
+ * IT. The fleet's image carries 60 maps and exactly one of them is
+ * `SS_HQ_f3` — capital letters. The console refused a map that was
+ * sitting right there in its own map list, with "the map name must be
+ * letters, digits and underscores", which was a lie: it WAS letters
+ * and digits and underscores. The fake engine's maps were all
+ * lower-case, so the whole test suite agreed with the bug.
+ *
+ * MEASURED ON PRODUCTION (`ts-0`, the image's `ts/maps/*.bsp`): 60
+ * maps, one with capital letters (`SS_HQ_f3`), the longest 18
+ * characters, and NOT ONE with a hyphen. So upper case is allowed and
+ * the length cap stays at 32 — but a hyphen is still refused, because
+ * the fleet has no hyphenated map and the rule that matters is the one
+ * that keeps a space, a quote or a semicolon out of a command line.
+ *
+ * The doc's claim that "the map set is the TS asset names" was wrong
+ * too: 59 of the 60 are other assets (ahl_, tm_, cs_, ctb_, and two
+ * standalone ones) that happen to live in the same image.
  */
-export const MAP_NAME = /^[a-z0-9_]{1,32}$/;
+export const MAP_NAME = /^[A-Za-z0-9_]{1,32}$/;
 
 /**
  * The longest a reason or a message may be.

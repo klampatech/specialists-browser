@@ -935,6 +935,55 @@ test('a field that is not allowed is refused, and the answer says which rule', a
   });
 });
 
+/**
+ * THE MAP NAME IS NOT LOWER-CASE ONLY.
+ *
+ * The fleet's image carries 60 maps and one of them is `SS_HQ_f3`.
+ * The validation was `^[a-z0-9_]{1,32}$`, so the console refused a
+ * map that was in its own map list — and the fake engine, whose maps
+ * were all lower-case, agreed with the bug. The real engine found it.
+ *
+ * So: upper case is accepted. A hyphen is still refused, because the
+ * fleet has no hyphenated map (measured on production: 60 maps, the
+ * longest 18 characters, none with a hyphen) and a space, a quote or a
+ * semicolon must never reach a command line.
+ */
+test('a map name with capital letters in it is a map name', async () => {
+  await startService(async ({ login, post, engine }) => {
+    const session = await login();
+    const res = await post('map', { map: 'SS_HQ_f3' }, { session });
+    assert.equal(res.status, 200);
+    const env = await res.json();
+    assert.equal(env.outcome, 'done');
+    assert.equal(env.command, 'changelevel SS_HQ_f3');
+    assert.ok(
+      engine.commands.includes('changelevel SS_HQ_f3'),
+      'the capital letters reached the engine',
+    );
+  });
+});
+
+test('a map name that is not a map name never reaches the engine', async () => {
+  await startService(async ({ login, post, engine }) => {
+    const session = await login();
+    for (const map of [
+      'SS_HQ_f3; quit',
+      'SS_HQ_f3 quit',
+      'SS_HQ_f3"',
+      'SS_HQ_f3\nquit',
+      'a'.repeat(33),
+    ]) {
+      const res = await post('map', { map }, { session });
+      assert.equal(res.status, 400, `${map} must be refused`);
+    }
+    assert.equal(
+      engine.count('changelevel'),
+      0,
+      'nothing reached the engine',
+    );
+  });
+});
+
 test('a body that is not JSON is a 400, and nothing reaches the engine', async () => {
   await startService(async ({ request, login, engine }) => {
     const session = await login();
