@@ -67,13 +67,15 @@ instances" capacity figure is still a budget, not a measurement); the FE
 tweaks and the bulletballet re-brand; single-player depth on the
 fallback path.
 
-## The admin console: phase 1 (2026-10-31)
+## The admin console: phases 1 and 2 (2026-10-31)
 
 The console is specified in `docs/ADMIN-CONSOLE.md` (the source of
 truth). Phase 1 is the **service and the transport**: `services/admin`,
 a small Node HTTP service that talks to the fleet over RCON and serves
-three read-only endpoints. It is not deployed yet (phase 5), it has no
-UI (phase 3), no auth (phase 2) and no mutating action (phase 4).
+three read-only endpoints. Phase 2 is the **auth**: the password, the
+session, the lockout, the CSRF token, the audit line and `adminctl`. It
+is not deployed yet (phase 5), it has no UI (phase 3) and no mutating
+action (phase 4).
 
 Three decisions in phase 1 are **not** in the spec document, and they
 are worth keeping:
@@ -129,8 +131,64 @@ never logs it; the engine does. The runbook (phase 5) has to say so.
 
 The service binds **loopback only** and refuses to start on any other
 address. It holds **no Docker socket** — RCON over loopback UDP is
-what makes that possible, and it is the deciding argument over the
+what makes it possible, and it is the deciding argument over the
 console FIFO the registry uses.
+
+### Phase 2 — auth
+
+**Every endpoint but `/admin/login` needs a session**, including the
+three read endpoints phase 1 built. Six decisions in phase 2 are
+**not** in the spec document, and they are worth keeping:
+
+- **THE ORDER OF THE CHECKS IS: SESSION → CSRF TOKEN → ROUTER.** A
+  request with no session is a 401 **even if its CSRF token is also
+  wrong**: an unauthenticated caller gets to learn one thing, which is
+  that it is not logged in. An unknown path is a 401 to an anonymous
+  caller and a 404 to a logged-in one, so the console does not tell a
+  stranger which endpoints it has.
+- **THE SESSION TABLE IS KEYED BY THE SHA-256 OF THE TOKEN.** A dump
+  of the process memory then yields no usable cookie, and a hash of a
+  256-bit random token has nothing to brute-force. The table is in
+  memory: a restart logs the administrator out, which is the correct
+  behaviour for a tool that should be used deliberately.
+- **THE COOKIE IS NOT `Secure`, AND THAT IS DELIBERATE.** The console
+  is plain HTTP on loopback and the SSH tunnel is the encryption
+  layer. A `Secure` cookie is only sent over HTTPS, so adding it
+  would mean the browser never sends the cookie and the console could
+  never be logged into. If the console is ever behind a TLS vhost, the
+  cookie gains `Secure` and nothing else changes.
+- **THE LOCKOUT AND THE RATE LIMIT ARE NOT THE SAME RULE.** The
+  lockout is 5 failures → 5 minutes, doubling to an hour, keyed to the
+  source address. The rate limit is a separate counter: 10 attempts a
+  minute per source, **right or wrong**. The difference is visible —
+  a source that logs in successfully ten times a minute has reset the
+  lockout counter every time and is still throttled. The countdown
+  always comes from the **server's** clock, and the check that matters
+  is made on the server, so a client that ignores it gets 423 again.
+- **A CORRUPT PASSWORD RECORD IS A FAILED LOGIN, NOT A CRASH.** The
+  auth file is on a disk; a disk file can be truncated. A verifier
+  that throws turns a bad file into a service that answers 500 to
+  every login — and the operator's way back in is to fix the file,
+  which they cannot do while it is 500ing.
+- **THERE IS NO "SKIP AUTH" SWITCH.** The tests log in for real — the
+  same scrypt path, the same cookie, the same gate — and the factory
+  takes the auth configuration **as an argument**, so the host reads a
+  file and the tests read a record in memory. A switch that turns the
+  gate off is a footgun, and phase 4 would trip over it with the
+  tests still green.
+
+The audit line is **timestamp, action, target, outcome**, one line per
+event, appended and never rewritten, at 0600, in
+`/srv/ts-admin/actions.log`. The target of a login is the **source
+address** — never the password, never a session token, never the CSRF
+token. The password record is `/srv/ts-admin/auth.json`, 0600, a
+scrypt record that **carries its own parameters** so a hash written
+with different ones is still readable; it is read at the moment of the
+login, so a password set with `adminctl set-password` takes effect
+without a restart. `adminctl` reads the password from **stdin with the
+echo off** — never from argv, which is in `ps` output and in the shell
+history — validates the record before it writes it, writes it
+atomically, and refuses to work as root.
 
 ## Client frame pacing — the engine's tick source (2026-10-29)
 

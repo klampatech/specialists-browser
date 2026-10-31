@@ -970,6 +970,49 @@ setting the password.
   is refused, and six wrong passwords lock the endpoint for five
   minutes.
 
+What phase 2 actually shipped (2026-10-31): the password is a
+**scrypt record** — `{version, algo, N, r, p, keylen, salt, hash}` —
+read at the moment of the login rather than once at startup, so a
+password set with `adminctl set-password` takes effect without a
+restart; the record **carries its own parameters** and the verifier
+reads them from the record instead of hard-coding them, so a hash
+written with different ones is still readable. The comparison is
+`crypto.timingSafeEqual`, and a **corrupt record is a failed login,
+not a crash**. The session table is **in memory** and is keyed by the
+**SHA-256 of the token**, so a dump of the process memory yields no
+usable cookie; the idle clock (12 h) and the absolute clock (24 h) are
+separate, and the idle clock is refreshed by use while the absolute
+one is not. The **lockout is 5 failures → 5 minutes, doubling to an
+hour** — 5, 10, 20, 40, 60 minutes — and the failure count starts
+again from zero when a lock expires, so the doubling is one lockout
+per five failures. The **rate limit is a separate counter** (10
+attempts a minute per source, right or wrong), which is why a source
+that logs in successfully ten times in a minute is still throttled:
+the two rules are not the same rule. The lockout answers **423** and
+the rate limit **429**, and both carry a countdown computed from the
+**server's** clock. The **CSRF token is a second, separate secret**,
+returned in the JSON body — the session cookie stays HttpOnly and
+SameSite=Strict, and the token goes in a header. The cookie is
+**not** `Secure`, on purpose: the console is plain HTTP on loopback
+and the SSH tunnel is the encryption layer. The audit line is
+**timestamp, action, target, outcome** — one line per event,
+appended and never rewritten — and the target of a login is the
+**source address**, never the password. `adminctl hash` reads the
+password from stdin with the echo off, `adminctl set-password`
+validates the record before it writes it and writes it atomically at
+0600, and both refuse to work as root.
+
+Two things the spec did not say, and the implementation had to decide:
+
+- **A login with no record on the host is a 503, not a 401.** "Wrong
+  password" and "no password has been provisioned yet" are different
+  situations, and the operator has to be able to tell them apart.
+- **The CSRF check runs BEFORE the router.** The order is the
+  session, then the CSRF token, then the endpoint — so an
+  unauthenticated caller cannot even learn which endpoints exist
+  (an unknown path is a 401 to an anonymous caller and a 404 to a
+  logged-in one).
+
 ### Phase 3 — The read-only UI
 The mock, wired to the API: the login screen, the shell, the fleet
 rail, the status panel, the player list with its filters and search,

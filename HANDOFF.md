@@ -16,18 +16,18 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-31, branch `feat/admin-console-phase1` — **the admin
-console's PHASE 1 IS BUILT AND REVIEWED** (`services/admin`: the RCON
-client, the fleet discovery and the read-only API), on top of the
-specification in `docs/ADMIN-CONSOLE.md` (PR #104, awaiting Kyle's
-approval). The cross-vendor review's thirteen findings are fixed on
-this branch — see the admin section below, and note the one that is a
-fact about the DEPLOYMENT rather than about the code: **the engine
-logs the RCON password, on every command.** Everything else below is
-unchanged from the 2026-10-29 state: the client caps the tick rate the
-engine is offered, the character picker and the pre-join identity
-modal are LIVE in production, and the game server image is
-`ts-server:0.27`.
+**As of:** 2026-10-31, branch `feat/admin-console-phase2` — **the admin
+console's PHASE 2 (AUTH) IS BUILT**, on top of phase 1 (the RCON
+client, the fleet discovery and the read-only API, reviewed and
+merged into this branch) and on top of the specification in
+`docs/ADMIN-CONSOLE.md` (PR #104, awaiting Kyle's approval). The
+console now has a password, a session, a lockout, a CSRF token, an
+audit line and `adminctl` — and **every endpoint but `/admin/login`
+is behind a session**, including the three read endpoints phase 1
+built. Everything else below is unchanged from the 2026-10-29 state:
+the client caps the tick rate the engine is offered, the character
+picker and the pre-join identity modal are LIVE in production, and
+the game server image is `ts-server:0.27`.
 
 ## The admin console is specified (PR #104, 2026-10-31)
 
@@ -301,13 +301,183 @@ dead one `unreachable`, `GET /admin/servers/ts-0/players` returned the
 player table with `partial: false`, and a second fleet read inside the
 cache's TTL sent the engine **no** commands at all.
 
-**NEXT TASK (admin console, phase 2): auth.** The password (scrypt
-hash), the session cookie, the lockout, the CSRF token, the audit
-line, and `adminctl`. The contract is fixed in
-`docs/ADMIN-CONSOLE.md` §4 and §5 — phase 2 changes the code, not the
-shapes. Phase 2 imports `createAdminService()`, which is why the
-loopback guard, the port check and the password check live there and
-not in the command line.
+(Phase 2 — auth — is built; see the next section.)
+
+## The admin console: phase 2 is built — AUTH (2026-10-31, `feat/admin-console-phase2`)
+
+`services/admin` now has a password, a session, a lockout, a CSRF
+token, an audit line and `adminctl`. **Every endpoint but
+`/admin/login` needs a session now** — including the three read
+endpoints phase 1 built, which were deliberately open before the login
+existed and are deliberately closed now.
+
+**Nothing in phase 1 was touched.** The RCON client, the fleet
+discovery and the parsers are exactly as the review left them. The
+only phase-1 file that changed is `services/admin/service.mjs`, and
+what changed in it is the gate, the three auth endpoints and the
+factory's arguments.
+
+### The five pieces, and the trap in each
+
+**THE PASSWORD** (`lib/auth.mjs`) is a scrypt record — `{version,
+algo, N, r, p, keylen, salt, hash}` — with N=16384, r=8, p=1, a
+32-byte key and a **per-password 16-byte salt**. The record **carries
+its own parameters** and the verifier reads them from the record, so a
+hash written with different ones is still readable (a verifier that
+hard-codes them cannot read it, and a hash file that does not say how
+it was made cannot be migrated). The comparison is
+`crypto.timingSafeEqual` — `===` on a hash is a timing oracle — and
+**a malformed record is a failed login, not a crash**: a truncated
+`auth.json` must not turn into a 500 on every login, because the
+operator's way back in is to FIX the file, which they cannot do while
+it is 500ing. The plaintext never touches the disk.
+
+**THE SESSION** (`lib/session.mjs`) is 32 random bytes in an
+**HttpOnly, SameSite=Strict** cookie, and the table is keyed by the
+**SHA-256 of the token** — a dump of the process memory then yields no
+usable cookie, and a hash of a 256-bit random token has nothing to
+brute-force. Two clocks: **12 h idle, 24 h absolute**. The idle clock
+is refreshed by use; the absolute one is not, which is the whole point
+of having it. The table is **in memory**: a restart logs the
+administrator out, and that is the correct behaviour.
+
+**THE CSRF TOKEN** is a **second, separate secret** (another 32 random
+bytes), returned in the **JSON body** of the login and of
+`/admin/session`, because the browser has to read it and put it in the
+`X-CSRF-Token` header. The session cookie stays HttpOnly; the CSRF
+token does not, and must not.
+
+**THE LOCKOUT** (`lib/lockout.mjs`) is **5 failures → 5 minutes,
+doubling to an hour** (5, 10, 20, 40, 60), keyed to the **source
+address** — there is one administrator, and what is protected is the
+endpoint, not an account. The countdown is the **server's**: the lock
+is a timestamp, and the check that matters is `now < lockedUntil`, so
+a client that ignores the countdown gets 423 again. The **rate limit
+is a separate counter** (10 attempts a minute per source, right or
+wrong): the two rules are not the same rule, and the difference shows
+— a source that logs in successfully ten times a minute has reset the
+lockout counter every time and is **still** throttled.
+
+**THE AUDIT LINE** (`lib/audit.mjs`) is **timestamp, action, target,
+outcome**, one line per event, appended and never rewritten, at 0600.
+The target of a login is the **source address** — never the password,
+never a session token, never the CSRF token.
+
+### The three decisions the spec did not make
+
+1. **A login with no record on the host is a 503, not a 401.** "Wrong
+   password" and "no password has been provisioned yet" are different
+   situations and the operator has to be able to tell them apart.
+2. **The order of the checks is: session → CSRF token → the router.**
+   A request with no session is a 401 **even if its CSRF token is
+   also wrong** — an unauthenticated caller gets to learn one thing,
+   which is that it is not logged in. And an unknown path is a 401 to
+   an anonymous caller and a 404 to a logged-in one, so the console
+   does not tell a stranger which endpoints it has.
+3. **The failure count starts again from zero when a lock expires.**
+   A lockout cycle is five failures and then a wait; the LEVEL is
+   kept, so the next lock is twice as long. A **successful** login
+   resets everything, including the level — the administrator who got
+   in does not carry a longer lock into their next typo.
+
+### Two things that are deliberate and must not be "fixed"
+
+- **The session cookie is NOT `Secure`.** The console is plain HTTP
+  on loopback and the **SSH tunnel is the encryption layer**. A
+  `Secure` cookie is only sent over HTTPS, so adding it to the
+  loopback deployment would mean the browser never sends the cookie
+  and the console can never be logged into. It protects nothing that
+  the tunnel does not already protect. If the console is ever put
+  behind a TLS vhost, the cookie gains `Secure` and nothing else
+  changes. The comment in `service.mjs` says so, so that the next
+  reader does not helpfully break the login.
+- **THERE IS NO "SKIP AUTH" SWITCH.** The phase-1 tests log in for
+  real — the same scrypt path, the same cookie, the same gate — and
+  the factory takes the auth configuration **as an argument** (an
+  in-memory store in the tests, the file on the host). A switch that
+  turns the gate off is a footgun, and phase 4 (the mutating
+  actions) would trip over it with the tests still green.
+
+### The paths
+
+- `/srv/ts-admin/auth.json` — the password record, 0600, written by
+  `adminctl set-password`.
+- `/srv/ts-admin/actions.log` — the audit log, 0600, appended.
+
+**Phase 5 provisions that directory; phase 2 deploys nothing.** The
+service reads the record at the moment of the login, so a password set
+after the service started takes effect without a restart.
+
+### `adminctl` (`services/admin/adminctl.mjs`)
+
+- `adminctl hash` — reads the password from **stdin with the echo
+  off** (never from argv: argv is in `ps` output and in the shell
+  history) and prints the record as one line of JSON.
+- `adminctl set-password` — reads that record from stdin, **validates
+  it** (the algo must be scrypt, the parameters must be the ones this
+  build supports, the salt and the hash must be hex of the right
+  length) and writes it **atomically** — a temporary file in the same
+  directory, then a rename — at 0600. **A malformed record is
+  refused, and the existing file is left alone.**
+- The write **refuses to run as root** and refuses a directory that
+  is not owned by the uid doing the writing: a root-owned record in
+  the service's directory is a file the service may not be able to
+  read, which is a console nobody can log into.
+- `--help` works and needs no password.
+
+### How it was proven
+
+**The unit suite** (75 new tests, 433 in all) covers the scrypt
+verifier (the right password, a wrong one of the same length, a wrong
+one of a different length, and a malformed record that does not
+throw), the two session clocks (the idle expiry at 12 h, the absolute
+one at 24 h with the session in use right up to the end, and the idle
+clock refreshed by use), the lockout (five failures lock it, the
+countdown comes from the server's clock, it doubles and is capped at
+an hour, a success resets it), the rate limit being independent of
+the lockout, the audit line (one line per event, appended, 0600, and
+**no password, session token or CSRF token in any of them**), the
+cookie (`HttpOnly`, `SameSite=Strict`, and the CSRF token **not** in
+a cookie at all), the gate (no session → 401 on every endpoint but the
+login, an expired session → 401 and audited, a wrong CSRF token →
+403, and a request with no session and a wrong CSRF token → **401**,
+not 403), and the CLI round trip (`hash` → `set-password` → the
+service logs in with that password; a malformed record is refused and
+the file is left alone).
+
+**And for real**, against a fake engine that speaks the protocol
+(`tools/smokes/admin-auth-smoke.sh`; the output is in the commit
+message that added it): an unauthenticated `GET /admin/servers` is a
+**401**, the
+wrong password is a **401**, the fifth wrong password trips the
+lockout and the sixth is a **423** with `lockoutSecondsRemaining:
+300`, the right password is a **200** with a `Set-Cookie` that is
+`HttpOnly; SameSite=Strict` and a `csrfToken` in the body, the fleet
+is **200** with that cookie, `/admin/session` answers with the CSRF
+token and the expiries, and the logout **ends the session** — the
+same cookie is a 401 again.
+
+**The clock is injected** everywhere it matters: the service takes it
+as an argument, and the tests move it by hand. A test that waited
+twelve hours for an idle expiry, or five minutes for a lockout, would
+be a test that never runs.
+
+### What is NOT in phase 2
+
+No UI (phase 3), no mutating engine action (phase 4), no deployment, no
+Dockerfile, no systemd unit, no TLS, no usernames, no roles, no
+password reset. **The state directory is not provisioned either** —
+phase 5 does that.
+
+**NEXT TASK (admin console, phase 3): the read-only UI.** The mock,
+wired to the API: the login screen, the shell, the fleet rail, the
+status panel, the player list with its filters and search, the map
+list, the bans list and the output drawer. **No mutating controls** —
+the console can look at everything and touch nothing. The contract is
+fixed in `docs/ADMIN-CONSOLE.md` §5 and §6. The phase-3 UI has to
+speak the phase-2 API: `POST /admin/login` for the cookie and the
+CSRF token, the cookie on every request, and the CSRF token in the
+`X-CSRF-Token` header on every mutating one.
 
 ## The CI browser gate was playing in production (2026-10-30)
 
