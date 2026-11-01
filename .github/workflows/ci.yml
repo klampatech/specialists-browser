@@ -161,6 +161,7 @@ jobs:
           docker build -f services/registry/Dockerfile.registry -t registry:ci .
           docker build -f services/orchestrator/Dockerfile.orchestrator -t orchestrator:ci .
           docker build -f tools/deploy/Dockerfile.bridge -t ts-bridge:ci .
+          docker build -f services/admin/Dockerfile.admin -t admin:ci .
 
       - name: The service images must not contain game assets
         # The server image is asset-free on purpose: the assets are a
@@ -168,7 +169,7 @@ jobs:
         # 1.1 GB image.
         run: |
           set -euo pipefail
-          for img in registry:ci orchestrator:ci ts-bridge:ci; do
+          for img in registry:ci orchestrator:ci ts-bridge:ci admin:ci; do
             size=$(docker image inspect "$img" --format '{{.Size}}')
             echo "  $img: $((size / 1000000)) MB"
             if docker run --rm --entrypoint sh "$img" -c \
@@ -178,7 +179,38 @@ jobs:
               exit 1
             fi
           done
-          echo "  all three images are asset-free"
+          echo "  all four images are asset-free"
+
+      - name: The admin image must not carry the secret
+        # The RCON password is a FILE on the host, mounted read-only, and
+        # the administrator's password record is a file on the host too.
+        # An image that carried either would put the secret in every layer
+        # cache and every backup of those layers -- and `docker inspect`
+        # prints an environment variable in one command, so the password
+        # must not be in the image's environment either.
+        run: |
+          set -euo pipefail
+          if docker run --rm --entrypoint sh admin:ci -c \
+            'find / -xdev \( -name "rcon_password*" -o -name "auth.json" -o -name "actions.log" \) 2>/dev/null | head -5' \
+            | grep -q .; then
+            echo "::error::the admin image contains a secret file"
+            exit 1
+          fi
+          if docker run --rm --entrypoint env admin:ci | grep -q '^RCON_PASSWORD='; then
+            echo "::error::the admin image has the RCON password in its environment"
+            exit 1
+          fi
+          echo "  the admin image carries no secret"
+
+      - name: The admin image RUNS, with a real secret and a real record
+        # The job above proves the image BUILDS and that it carries
+        # nothing it should not. This proves the other half: that it
+        # starts, that it reads the secret as a FILE -- through the
+        # shared group, as its own uid, and not as root -- that the
+        # record `adminctl` wrote is accepted, that the fleet it reports
+        # is `ok` over RCON, and that the secret is in neither the log
+        # nor the audit trail nor a response.
+        run: tools/smokes/admin-image-smoke.sh
 
   port:
     name: Port — the Rust client and server tests

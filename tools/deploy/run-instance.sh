@@ -90,6 +90,39 @@ MAP="${TS_MAP:-ts_casa}"
 # for a container started by hand with no volume attached.
 CONFIG="${TS_CONFIG:-/srv/ts-config}"
 
+# THE RCON PASSWORD, IF THE OPERATOR HAS PROVISIONED ONE.
+#
+# The engine re-execs server.cfg on every map change, so a password that
+# exists only on the command line is lost at the first map change unless it
+# is in a file the engine execs. So the file is MOUNTED into the instance
+# and the entrypoint appends it to the config the engine actually execs --
+# the COPY, never the committed server.cfg.
+#
+# It is the SAME file the admin console reads, so there is one secret on
+# the host and not two copies that can drift apart. A drifted pair looks
+# exactly like a network fault: every instance comes back "refused" and
+# nobody can say why.
+#
+# It is mounted READ-ONLY: the game server only ever READS the secret, and
+# a writable mount is a mount a compromised game server could use to change
+# the fleet's password.
+#
+# The mount is only added when the file is really there. Docker creates a
+# missing bind source as a DIRECTORY, and a directory where a password file
+# should be looks like a password file to everything that reads it.
+#
+# The group is what makes the file readable: it is owned by root and the
+# group "tsrcon" (gid 10007), and the game's uid (10001, gameserver) is
+# added to that group here. The game image is built BY HAND on the host,
+# so the membership cannot live in the image -- it has to be asked for at
+# `docker run` time, the same way the registry is given the docker group.
+RCON_SECRET="${TS_RCON_SECRET:-/srv/ts-admin/rcon_password}"
+RCON_GID="${TS_RCON_GID:-10007}"
+RCON_MOUNTS=()
+if [ -f "$RCON_SECRET" ]; then
+  RCON_MOUNTS=(--group-add "$RCON_GID" -v "$RCON_SECRET:/srv/secrets/rcon_password:ro")
+fi
+
 # ── log rotation ────────────────────────────────────────────────────────────
 # The game server's log grows without bound. Measured on production
 # 2026-10-26: 268 bytes/second, so ~22 MB/day from a single instance, and
@@ -152,6 +185,7 @@ docker run -d \
   -e TS_MAP="$MAP" \
   -v "$ASSETS:/srv/assets:ro" \
   -v "$CONFIG:/srv/config:ro" \
+  ${RCON_MOUNTS[@]+"${RCON_MOUNTS[@]}"} \
   "$IMAGE" >/dev/null
 
 # Wait for the healthcheck rather than guessing at a sleep. It verifies the

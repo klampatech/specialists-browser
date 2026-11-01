@@ -34,14 +34,45 @@
 #                        it never writes them. A writable mount would let
 #                        a bug in the registry corrupt the assets that
 #                        every server on the box depends on.
+#
+#   no docker socket      The ADMIN CONSOLE is the one service that does
+#                        not get one. It talks to the game servers over
+#                        loopback UDP precisely so that it does not need
+#                        one (docs/ADMIN-CONSOLE.md §3.3): the socket is
+#                        root-equivalent on the host, and the console's
+#                        whole blast radius is supposed to be "can kick
+#                        players on this box". A socket in the console's
+#                        container would undo that decision silently.
+#
+#   the admin's loopback  The console binds 127.0.0.1:8095 and has no
+#                        public vhost and no DNS record. It is reached
+#                        through an SSH tunnel (docs/ADMIN-CONSOLE.md
+#                        §4.1) and through nothing else.
 
 set -euo pipefail
 
 REGISTRY_IMAGE="${REGISTRY_IMAGE:-registry:0.7}"
 ORCHESTRATOR_IMAGE="${ORCHESTRATOR_IMAGE:-orchestrator:0.3}"
 BRIDGE_IMAGE="${BRIDGE_IMAGE:-ts-bridge:0.6}"
+ADMIN_IMAGE="${ADMIN_IMAGE:-admin:0.1}"
 
 ASSETS="${ASSETS:-/srv/ts-data}"
+
+# THE ADMIN CONSOLE'S STATE DIRECTORY.
+#
+# It holds the administrator's password record, the audit log, and the
+# engine's RCON password. The layout is three things and not one file, and
+# the reasons are in the provisioning block below.
+ADMIN_DIR="${ADMIN_DIR:-/srv/ts-admin}"
+# The admin service's uid and gid, and the shared secret group's gid. They
+# are FIXED numbers and not derived from anything: the state directory on
+# the host is owned by the first, and the secret file's group is the
+# second, and both have to be the same inside the container and on the
+# host. See services/admin/Dockerfile.admin for why 10006 and 10007.
+ADMIN_UID=10006
+ADMIN_GID=10006
+SECRET_GID=10007
+RCON_SECRET="${RCON_SECRET:-$ADMIN_DIR/rcon_password}"
 
 # Where the leaderboard's board lives. It is a VOLUME, not a path
 # inside the container: a container that is replaced loses its
@@ -66,6 +97,86 @@ DOCKER_GID="$(getent group docker | cut -d: -f3)"
 sudo mkdir -p "$LEADERBOARD_DIR"
 sudo chown 10004:10004 "$LEADERBOARD_DIR"
 sudo chmod 0755 "$LEADERBOARD_DIR"
+
+# ── the admin console's state directory ─────────────────────────────────────
+# It has to exist before the container is created, and the parts the
+# container WRITES have to be owned by the uid the container runs as: docker
+# creates a missing bind-mount source as root, and then the console cannot
+# write its audit log to it.
+#
+# The layout is three things and not one file, and each one is there for a
+# reason that bit us or would have:
+#
+#   auth/auth.json     the scrypt record, MOUNTED AS A DIRECTORY and
+#                      read-only. adminctl writes it ATOMICALLY -- a
+#                      temporary file and a rename -- and a rename replaces
+#                      the DIRECTORY ENTRY, so a bind-mounted FILE keeps
+#                      pointing at the OLD inode and the console would read
+#                      the OLD password forever. A directory mount sees the
+#                      rename.
+#   audit/             the audit log's DIRECTORY, mounted read-write. A
+#                      bind-mounted FILE for a log that is APPENDED to is a
+#                      footgun: the file has to exist and be owned
+#                      correctly before the container starts, and docker
+#                      creates a missing source as root. A directory lets
+#                      the console create its own file, as its own uid, and
+#                      the log survives the container being replaced.
+#   rcon_password      the engine's RCON password. Owned by root and
+#                      readable by the shared group, because TWO services
+#                      read it -- the console and the game server's
+#                      entrypoint -- and one file cannot have two owners.
+#                      It is NOT created here: it is a secret, and it is
+#                      provisioned ONCE, BY HAND
+#                      (docs/ADMIN-CONSOLE-RUNBOOK.md).
+sudo mkdir -p "$ADMIN_DIR/auth" "$ADMIN_DIR/audit"
+sudo chown "$ADMIN_UID:$ADMIN_GID" "$ADMIN_DIR" "$ADMIN_DIR/auth" "$ADMIN_DIR/audit"
+sudo chmod 0700 "$ADMIN_DIR" "$ADMIN_DIR/auth"
+sudo chmod 0750 "$ADMIN_DIR/audit"
+
+# IS THE CONSOLE READY TO BE DEPLOYED?
+#
+# The console is deployed only when its secret is provisioned and sane.
+# There are three states, and they are NOT the same:
+#
+#   - NO SECRET AT ALL: the console has never been cut over. The deploy
+#     SKIPS it -- loudly -- and deploys the rest of the control plane.
+#     This is the state of the host between this phase and the cut-over,
+#     and a deploy that failed there would block the registry, the
+#     orchestrator and the bridge -- the services that have PLAYERS on
+#     them -- over a console nobody is using yet.
+#   - A SECRET THAT IS EMPTY OR WORLD-READABLE: the operator made a
+#     mistake, and the deploy STOPS. An empty file is a provisioning
+#     accident (`touch` and a forgotten `cat`) and a world-readable file
+#     is a leaked password; neither is something to deploy around.
+#   - A PROPER SECRET: the console is deployed.
+#
+# The console refuses to start without a password, so deploying it with
+# no secret would ship a crash-looping container and call it a
+# deployment. And a console with no password reports every instance as
+# "refused", which looks exactly like a network fault.
+#
+# The checks happen BEFORE a single container is replaced.
+ADMIN_READY=1
+if [ ! -f "$RCON_SECRET" ]; then
+  ADMIN_READY=0
+  ADMIN_SKIP_REASON="the RCON secret is not provisioned: $RCON_SECRET"
+elif [ ! -s "$RCON_SECRET" ]; then
+  echo "the admin console's RCON secret is EMPTY: $RCON_SECRET" >&2
+  echo "  an empty file is not a password: docs/ADMIN-CONSOLE-RUNBOOK.md" >&2
+  exit 1
+else
+  # THE MODE IS THE SECURITY PROPERTY. The file is readable by the
+  # console's uid and by the game server's uid through the shared group,
+  # and by nobody else. 0644 is a secret every uid on the box can read.
+  SECRET_MODE="$(stat -c '%a' "$RCON_SECRET")"
+  case "$SECRET_MODE" in
+    *[1-7])
+      echo "the admin console's RCON secret is world-accessible (mode $SECRET_MODE): $RCON_SECRET" >&2
+      echo "  it must be 0640, owned by root and the shared group: docs/ADMIN-CONSOLE-RUNBOOK.md" >&2
+      exit 1
+      ;;
+  esac
+fi
 
 log() { echo "  $*"; }
 
@@ -158,6 +269,58 @@ replace bridge \
   -e BRIDGE_TARGETS=default=127.0.0.1:27015@40.160.225.81:27015 \
   "$BRIDGE_IMAGE"
 
+# ── the admin console: the fleet's console, on loopback ─────────────────────
+# The image is BUILT, not assumed. A deploy that starts a container from an
+# image that happened to be on the host is a deploy that can ship a STALE
+# console: the tag is the same, the code is not, and nothing says so. So
+# the image is built from the repository whenever the repository is here.
+#
+# On the production host this script is copied to /home/ubuntu and the
+# repository is NOT there, so the build is skipped and the image the deploy
+# workflow streamed -- built from the same commit and tagged with its SHA --
+# is the one that runs. That image cannot be a stale one.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ADMIN_CONTEXT="${ADMIN_CONTEXT:-}"
+if [ -z "$ADMIN_CONTEXT" ] && [ -f "$SCRIPT_DIR/../../services/admin/Dockerfile.admin" ]; then
+  ADMIN_CONTEXT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+fi
+if [ -n "$ADMIN_CONTEXT" ]; then
+  log "building the admin image from $ADMIN_CONTEXT"
+  docker build -f "$ADMIN_CONTEXT/services/admin/Dockerfile.admin" -t "$ADMIN_IMAGE" "$ADMIN_CONTEXT"
+fi
+
+# LOOPBACK ONLY. The console is reached through an SSH tunnel
+# (docs/ADMIN-CONSOLE.md §4.1): it binds 127.0.0.1:8095 on the host's own
+# network namespace, and it has no public vhost and no DNS record. The
+# service itself refuses a non-loopback bind, so this is belt and braces.
+#
+# NO DOCKER SOCKET. The console talks to the game servers over loopback UDP
+# precisely SO THAT IT DOES NOT NEED ONE (§3.3). A socket here would be
+# root-equivalent on the host, and the console's whole blast radius is
+# supposed to be "can kick players on this box", not "is root on the game
+# box".
+if [ "$ADMIN_READY" = "1" ]; then
+  replace admin \
+    --network host \
+    --group-add "$SECRET_GID" \
+    -e ADMIN_HOST=127.0.0.1 \
+    -e ADMIN_PORT=8095 \
+    -e TS_HOST=127.0.0.1 \
+    -e TS_PORT_BASE=27015 \
+    -e TS_INSTANCE_COUNT=8 \
+    -e RCON_PASSWORD_FILE=/srv/ts-admin/rcon_password \
+    -e ADMIN_AUTH_FILE=/srv/ts-admin/auth/auth.json \
+    -e ADMIN_AUDIT_PATH=/srv/ts-admin/audit/actions.log \
+    -v "$RCON_SECRET:/srv/ts-admin/rcon_password:ro" \
+    -v "$ADMIN_DIR/auth:/srv/ts-admin/auth:ro" \
+    -v "$ADMIN_DIR/audit:/srv/ts-admin/audit" \
+    "$ADMIN_IMAGE"
+else
+  # THE CONSOLE IS NOT CUT OVER YET. Say so, loudly, and deploy the rest.
+  log "SKIPPING the admin console: $ADMIN_SKIP_REASON"
+  log "  it is provisioned once, by hand: docs/ADMIN-CONSOLE-RUNBOOK.md"
+fi
+
 # ── wait for the control plane to answer ─────────────────────────────────
 # A container that is "up" is not the same as a service that is ready.
 # The registry answers when it has polled; the bridge answers /health
@@ -166,17 +329,30 @@ replace bridge \
 for _ in $(seq 1 30); do
   reg="$(curl -fsS --max-time 3 http://127.0.0.1:8081/api/registry 2>/dev/null || echo '')"
   brg="$(curl -fsS --max-time 3 http://127.0.0.1:27017/health 2>/dev/null || echo '')"
-  if [ -n "$reg" ] && [ -n "$brg" ]; then
-    log "registry and bridge are answering"
+  # The console is only waited for when it was deployed. An OLD console
+  # may still be running from a previous deploy, and its answering says
+  # nothing about the container that was just replaced.
+  if [ "$ADMIN_READY" = "1" ]; then
+    adm="$(curl -fsS --max-time 3 http://127.0.0.1:8095/ 2>/dev/null || echo '')"
+  else
+    adm="skipped"
+  fi
+  if [ -n "$reg" ] && [ -n "$brg" ] && [ -n "$adm" ]; then
+    if [ "$ADMIN_READY" = "1" ]; then
+      log "registry, bridge and the admin console are answering"
+    else
+      log "registry and bridge are answering"
+    fi
     break
   fi
   sleep 2
 done
 
-if [ -z "${reg:-}" ] || [ -z "${brg:-}" ]; then
+if [ -z "${reg:-}" ] || [ -z "${brg:-}" ] || { [ "$ADMIN_READY" = "1" ] && [ -z "${adm:-}" ]; }; then
   echo "the control plane did not come up" >&2
   docker logs --tail 30 registry >&2 || true
   docker logs --tail 30 bridge >&2 || true
+  [ "$ADMIN_READY" = "1" ] && { docker logs --tail 30 admin >&2 || true; }
   exit 1
 fi
 

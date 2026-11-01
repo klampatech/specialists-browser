@@ -33,12 +33,38 @@
 #   /srv/assets/valve/  — the Half-Life base folder from the same copy
 #
 # Read-only. This container never writes to it.
+#
+# RCON SECRET CONTRACT
+# --------------------
+#   /srv/secrets/rcon_password  — the engine's RCON password, optional
+#
+# Read-only, and the SAME file the admin console reads. It is mounted
+# only when it exists, because docker creates a missing bind source as
+# a DIRECTORY — and a directory where a password should be is a trap.
+# The file is optional: an instance with no secret boots without RCON.
 
 set -eu
 
-GAME_TS=/srv/ts
-GAME_VALVE=/srv/valve
-ASSETS=/srv/assets
+# THE PATHS ARE OVERRIDABLE, and the defaults are the deployment's.
+#
+# Nothing in production sets these: the container's mounts are at
+# /srv/assets, /srv/config and /srv/server, and the game tree is
+# composed at /srv/ts and /srv/valve. They are variables so that this
+# script can be EXERCISED — by the unit test that proves the RCON
+# password lands in the copied config and not in the committed one —
+# without a container and without writing to /srv.
+GAME_TS="${GAME_TS:-/srv/ts}"
+GAME_VALVE="${GAME_VALVE:-/srv/valve}"
+ASSETS="${ASSETS:-/srv/assets}"
+CONFIG="${CONFIG:-/srv/config}"
+SERVER_DLL="${SERVER_DLL:-/srv/server/ts_amd64_amd64.so}"
+
+# WHERE THE RCON PASSWORD IS, IF IT IS PROVISIONED AT ALL.
+#
+# It is a FILE on the host, mounted read-only, and it is the SAME file
+# the admin console reads — one secret, one copy, two readers. The
+# file is optional: an instance with no secret boots without RCON.
+RCON_SECRET="${RCON_SECRET:-/srv/secrets/rcon_password}"
 
 die() { echo "entrypoint: $*" >&2; exit 1; }
 
@@ -56,8 +82,60 @@ die() { echo "entrypoint: $*" >&2; exit 1; }
 
 # ── ours: config + the Rust server DLL ───────────────────────────────────────
 mkdir -p "$GAME_TS/dlls"
-cp /srv/config/gameinfo.txt "$GAME_TS/gameinfo.txt"
-cp /srv/config/server.cfg   "$GAME_TS/server.cfg"
+cp "$CONFIG/gameinfo.txt" "$GAME_TS/gameinfo.txt"
+cp "$CONFIG/server.cfg"   "$GAME_TS/server.cfg"
+
+# ── the RCON password, IF ONE IS PROVISIONED ────────────────────────────────
+# The engine re-execs server.cfg on every map change, so a password that
+# exists only on the command line is lost at the first map change unless it
+# is in a file the engine execs. So the password is appended to the COPY,
+# and the committed server.cfg stays secret-free and the git history stays
+# clean.
+#
+# The value comes from the mounted secret file — the SAME file the admin
+# console reads — so there is one secret on the host and not two copies that
+# can drift apart. A drifted pair looks exactly like a network fault: every
+# instance comes back "refused" and nobody can say why.
+#
+# A MISSING SECRET IS NOT AN ERROR. The fleet must still boot: RCON simply
+# is not enabled on that instance, and the console reports it as "refused".
+# A missing optional secret must never stop a game server from starting —
+# that would be a much worse outage than the one it prevents. The same goes
+# for a secret that cannot be READ (wrong mode, wrong group) and for one
+# that is not a single word: the instance boots, RCON is off, and the
+# entrypoint says so on stderr.
+#
+# The value is NEVER printed. Not here, not in the config's directory
+# listing, not in the container's log.
+if [ -e "$RCON_SECRET" ]; then
+  if rcon_password="$(cat "$RCON_SECRET" 2>/dev/null)"; then
+    # The engine reads the password as ONE argument, so it cannot contain
+    # whitespace, and the config parser's own quoting means it cannot
+    # contain a double quote.
+    case "$rcon_password" in
+      *[[:space:]]*|*'"'*)
+        echo "entrypoint: the RCON secret at $RCON_SECRET is not a single word" >&2
+        echo "entrypoint: RCON is NOT enabled on this instance (the value is not printed)" >&2
+        ;;
+      "")
+        echo "entrypoint: the RCON secret at $RCON_SECRET is EMPTY" >&2
+        echo "entrypoint: RCON is NOT enabled on this instance" >&2
+        ;;
+      *)
+        printf 'rcon_password "%s"\n' "$rcon_password" >> "$GAME_TS/server.cfg"
+        # The copy carries the secret now, so it is not world-readable
+        # either. The engine reads it as the uid it already runs as.
+        chmod 0600 "$GAME_TS/server.cfg"
+        echo "entrypoint: RCON enabled on this instance (the password is not printed)"
+        ;;
+    esac
+  else
+    echo "entrypoint: the RCON secret at $RCON_SECRET could not be READ (mode or ownership?)" >&2
+    echo "entrypoint: RCON is NOT enabled on this instance" >&2
+  fi
+else
+  echo "entrypoint: no RCON secret at $RCON_SECRET — this instance boots without RCON"
+fi
 
 # Our map cycle. The asset tree ships the STOCK Half-Life one — undertow,
 # snark_pit, boot_camp, lambda_bunker, datacore, stalkyard — and not one of
@@ -68,11 +146,11 @@ cp /srv/config/server.cfg   "$GAME_TS/server.cfg"
 #
 # So ours is copied in, and the asset tree's is excluded from the symlink
 # loop below. One mapcycle.txt in the tree, and it is the one we shipped.
-cp /srv/config/mapcycle.txt "$GAME_TS/mapcycle.txt"
+cp "$CONFIG/mapcycle.txt" "$GAME_TS/mapcycle.txt"
 
 # FWGS's dlopen path is amd64-aware and looks for this exact name. The
 # built artifact is libts.so; renaming here keeps the cargo name honest.
-cp /srv/server/ts_amd64_amd64.so "$GAME_TS/dlls/ts_amd64_amd64.so"
+cp "$SERVER_DLL" "$GAME_TS/dlls/ts_amd64_amd64.so"
 
 # ── theirs: symlink the asset tree in ────────────────────────────────────────
 mkdir -p "$GAME_VALVE"

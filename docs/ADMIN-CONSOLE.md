@@ -573,13 +573,18 @@ this box" — not "is root on the game box".
 
 `rcon_password` is a real secret and it does not go in a committed file.
 
-- **On the host:** one file, `/srv/ts-admin/rcon_password`, mode 0600,
-  owned by the admin service's uid, bind-mounted **read-only** into the
-  container. It is provisioned once, by hand.
+- **On the host:** one file, `/srv/ts-admin/rcon_password`, mode
+  **0640**, owned by **root** and readable by the shared group
+  **`tsrcon`** (gid 10007), bind-mounted **read-only** into the
+  container. It is provisioned once, by hand. (Phase 5 shipped **0640
+  and a shared group**, not the 0600 this section originally said — see
+  the phase-5 paragraph in §7 for why: the file has **two** readers
+  with **two** different uids, and a 0600 file owned by one of them is
+  unreadable by the other.)
 - **In the game servers:** the boot config. `server.cfg` is committed and
   must stay secret-free, so the **entrypoint** appends
   `rcon_password "<value>"` to the config the engine actually execs,
-  reading the value from the same 0600 file. The engine execs
+  reading the value from the same file. The engine execs
   `server.cfg` again on every map change, so the password must live in
   a file that is exec'd, not only on the command line.
 - **In the interim:** because the password can be set at runtime (§2.2),
@@ -1229,6 +1234,102 @@ SSH tunnel alias, the `HANDOFF.md` update, and a runbook.
 
 - Done when: the console is reachable from Kyle's machine over the
   tunnel, and the secret survives a container restart.
+
+**What phase 5 actually shipped (2026-10-31):** the image
+(`services/admin/Dockerfile.admin`), the deploy entry, the secret as a
+**file**, the boot config, the CI wiring, the tunnel script and the
+runbook (`docs/ADMIN-CONSOLE-RUNBOOK.md`) — and **no cut-over**. Nothing
+was deployed, no RCON password was set anywhere, no game server was
+touched, and the console is not running on `bb-prod` yet.
+
+**The image is the service and nothing else.**
+`node:22-bookworm-slim` — the same base as the other control-plane
+images, so there is one base to patch, one libc and one set of
+behaviours — and **one `COPY` per directory** (`lib/`, `public/`), for
+the reason the registry's Dockerfile says out loud: a build that breaks
+when somebody forgets a `COPY` line shipped an image whose service could
+not import its own module, and the registry crash-looped in production
+for it. **No `npm install`**: the service has no dependencies, and a
+Dockerfile that grows an install step is a service that can fail to be
+built. It runs as **uid 10006** (`admin`) — the next free number in the
+allocated block (10001 gameserver, 10002 a2s, 10003 bridge, 10004
+registry, 10005 orchestrator) — because the state directory and the
+audit log on the host are owned by that uid, and a uid that moved with
+the build would leave the console unable to read its own state.
+
+**The secret is a FILE, and the file's mode is 0640, not 0600.** This is
+the one place where phase 5 **changed** §3.4, and the reason is that the
+secret has **two readers with two different uids**: the console (10006)
+and the game server's entrypoint (10001), which writes the password into
+the config the engine execs. A file owned by 10006 with mode 0600 is
+**unreadable by the game server**, so the boot-config path would need a
+**second copy** of the secret — and two copies drift apart, which looks
+exactly like a network fault (every instance `refused`, nothing in the
+logs to say why). So the file is owned by **root** and readable by a
+**shared group**, `tsrcon` (gid **10007**): the console's user is a
+member of it, and the game container is started with `--group-add
+10007`. **0644** would be world-readable, and **0600 owned by root**
+would be readable by neither of them. The environment variable stays
+supported for the interim and the tests, but **both** `RCON_PASSWORD` and
+`RCON_PASSWORD_FILE` set is a **refusal to start**, with the reason —
+two ways to say one thing is how a secret ends up being the wrong one. A
+`RCON_PASSWORD_FILE` that cannot be read is also a refusal to start,
+with the path in the message: a console with no password reports every
+instance as `refused`, which looks exactly like a network fault. The
+value is **never** logged, never returned and never audited.
+
+**The boot config is the engine's own `server.cfg`, and nothing
+committed.** The entrypoint appends `rcon_password "<value>"` to the
+**copy** it execs, from the **same mounted file** the console reads, so
+there is one secret on the host and not two copies that can drift. The
+committed `tools/deploy/config/server.cfg` never changes. A **missing**
+secret does **not** stop the fleet from booting: the instance starts with
+RCON off and says so on stderr, because a missing optional secret must
+never stop a game server from starting.
+
+**The deploy entry is `replace admin`, and it is deliberately small.**
+Host network, `127.0.0.1:8095` (loopback only), the fleet's real shape
+(`TS_PORT_BASE=27015`, `TS_INSTANCE_COUNT=8`), the secret **read-only**,
+the administrator's record **read-only as a DIRECTORY** (`adminctl`
+writes it atomically with a rename, and a bind-mounted *file* would keep
+pointing at the old inode forever), the audit log's **DIRECTORY
+writable** (a bind-mounted log file has to exist and be owned correctly
+before the container starts, and docker creates a missing source as
+root), and **no docker socket** — the console uses RCON precisely so
+that it does not need one. The deploy **builds** the image from the
+repository when the repository is there, so a deploy cannot ship a stale
+console, and it **skips the console until the secret is provisioned** —
+loudly, because the console has not been cut over yet and the other
+control-plane services have players on them. A secret that is **empty** or
+**world-readable** stops the deploy instead: that is an operator's
+mistake, not a cut-over that has not happened.
+
+**The CI builds the console's image and checks it like the others**: no
+`*.bsp`, `*.pak`, `*.mdl`, no `rcon_password` file, no `auth.json`, and
+no `RCON_PASSWORD` in the image's environment. The deploy workflow
+streams `admin:<sha>` and the deploy script runs it.
+
+**The tunnel is a script in the repository**, `tools/admin/tunnel.sh`,
+not an alias in `~/.ssh/config`: an alias is a change to one machine, and
+the repository is the thing anybody else can use. It **refuses to start
+twice** (a second `ssh -L` fails deep inside ssh, late, with a message
+that reads like a network problem) and it **leaves nothing behind** (the
+tunnel is a child process and the script kills it on every path out).
+
+**And the runbook carries the parts that are easy to get wrong**: the
+secret's provisioning (0640, `root:tsrcon`, and **why not 0600**), the
+administrator's record (`adminctl` refuses to run as root, so it runs as
+uid **10006**), the runtime `rcon_password` command and **when it is
+needed** (a runtime password is per instance, so **a new instance needs
+it too**, and the orchestrator creates instances), the fact that **the
+engine prints the password in its log** (so the game server's logs are
+as secret as the file, and a password anybody can read out of a log is a
+password to treat as compromised when the logs are), and the
+**tri-state** (`ok` / `refused` / `unreachable` — `refused` means the
+console cannot talk to the server, **not** that the server is down).
+
+**Not in this phase:** the cut-over. No console was deployed, no password
+was set, no game server was touched, and nothing was restarted.
 
 ---
 

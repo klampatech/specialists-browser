@@ -75,10 +75,28 @@ a small Node HTTP service that talks to the fleet over RCON and serves
 three read-only endpoints. Phase 2 is the **auth**: the password, the
 session, the lockout, the CSRF token, the audit line and `adminctl`. It
 also ships the **ban's stub endpoint** (§5.1) — always 501, and it
-never touches the engine. The console is not deployed yet (phase 5), it
-has **no mutating engine action** (phase 4). **Phase 3 is the
-read-only UI** — the page, the login screen and the shell — and it is
-below.
+never touches the engine. **Phase 3 is the read-only UI** — the page,
+the login screen and the shell — and it is below.
+
+Phases 4 and 5 are in `docs/ADMIN-CONSOLE.md` §7 and in `HANDOFF.md`:
+phase 4 added the **mutating actions** (kick, map, broadcast, round
+restart, time limit), and phase 5 built the **deployment mechanism** —
+the image, the deploy entry, the RCON secret as a file, the boot config,
+the CI wiring, the tunnel script and the runbook
+(`docs/ADMIN-CONSOLE-RUNBOOK.md`). **The console is still not deployed**:
+phase 5 is the mechanism, and the cut-over is done by hand, after review.
+
+**The one design change phase 5 made** is the secret's shape. The
+engine's RCON password is a **file** on the host —
+`/srv/ts-admin/rcon_password`, **0640**, owned by `root` and readable by
+the shared group `tsrcon` (gid 10007) — and not an environment
+variable, because `docker inspect` prints an environment variable to
+anyone with docker access. It is **0640 and not 0600** because there are
+**two** readers with **two** different uids: the console (10006) and the
+game server's entrypoint (10001), which writes the password into the
+config the engine execs. A 0600 file owned by one of them would be
+unreadable by the other, and the fix for that would be a second copy of
+the secret — and two copies drift apart.
 
 Three decisions in phase 1 are **not** in the spec document, and they
 are worth keeping:

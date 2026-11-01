@@ -128,8 +128,37 @@
  *   TS_PORT_BASE       first game-server port     default 27015
  *   TS_INSTANCE_COUNT  number of instances        default 8
  *   RCON_PASSWORD      the RCON password          default (empty)
+ *   RCON_PASSWORD_FILE the FILE the RCON password is in  default (empty)
  *   ADMIN_AUTH_FILE    the admin password record  default /srv/ts-admin/auth.json
  *   ADMIN_AUDIT_PATH   the audit log              default /srv/ts-admin/actions.log
+ *
+ * THE RCON PASSWORD IS A FILE IN PRODUCTION
+ * -----------------------------------------
+ * `RCON_PASSWORD` is still read, and still works — the interim and
+ * the tests use it. But PRODUCTION reads it from a FILE, and the
+ * reason is that an environment variable is not a secret on a host
+ * with docker access:
+ *
+ *   - `docker inspect <container>` prints the whole environment, so
+ *     the password is in the output of a command every operator and
+ *     every CI job on the box can run;
+ *   - `/proc/<pid>/environ` is readable by anything that can read the
+ *     process, and the console's own uid can read its own.
+ *
+ * A FILE with the right mode is not: `RCON_PASSWORD_FILE` points at
+ * a file whose contents are the password, it is mounted READ-ONLY
+ * into the container, and it is not world-readable on the host.
+ *
+ * TWO SOURCES IS A CONFIGURATION ERROR
+ * ------------------------------------
+ * If both `RCON_PASSWORD` and `RCON_PASSWORD_FILE` are set, the
+ * service REFUSES TO START and says why. Two ways to say one thing
+ * is how a secret ends up being the wrong one — the console talking
+ * to the engine with a password the engine does not have, and every
+ * instance reported as `refused` for a reason nobody can see. The
+ * same rule the service already applies to `ADMIN_AUTH_PATH` and
+ * `ADMIN_PASSWORD`: an option that is quietly ignored is a service
+ * that starts with the wrong secret.
  *
  * THERE ARE TWO PASSWORDS, AND THE NAMES KEEP THEM APART
  * ------------------------------------------------------
@@ -190,7 +219,7 @@
 
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { realpathSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   createAuthStore,
@@ -328,17 +357,65 @@ export function checkBindPort(host, port, { allowEphemeral = false } = {}) {
  * failure on every instance later.
  *
  * @param {unknown} password
+ * @param {string} [label] what to call it in the message
  * @returns {string}
  */
-export function checkRconPassword(password) {
+export function checkRconPassword(password, label = 'RCON_PASSWORD') {
   const trimmed = String(password ?? '').trim();
   if (trimmed && /\s/.test(trimmed)) {
     throw new Error(
-      'RCON_PASSWORD must not contain whitespace: the engine reads it as one argument, ' +
+      `${label} must not contain whitespace: the engine reads it as one argument, ` +
         'and a newline in it would append a second command to the request',
     );
   }
   return trimmed;
+}
+
+/**
+ * The RCON password, read from a FILE.
+ *
+ * WHY A FILE
+ * ----------
+ * An environment variable is visible to anyone with docker access on
+ * the host — `docker inspect` prints it, and so does
+ * `/proc/<pid>/environ`. A file with the right mode is not.
+ *
+ * WHAT THE FILE HOLDS
+ * -------------------
+ * The password and nothing else. The trailing newline that a shell's
+ * `echo` writes is not part of the password and is stripped; any
+ * OTHER whitespace is refused, exactly as it is in the environment
+ * variable, because the engine reads the password as ONE argument
+ * and a newline in it would append a second command to the request.
+ *
+ * A MISSING FILE IS AN ERROR, NOT A CRASH
+ * ---------------------------------------
+ * The console without a password starts and reports every instance
+ * as `refused` — but that is a console that has not been given its
+ * secret, and it looks like a network fault. So a file that cannot
+ * be read is a refusal to start, with a message that names the path.
+ *
+ * The value NEVER appears in a log, a response or the audit line.
+ *
+ * @param {string} path
+ * @returns {string}
+ */
+export function readRconPasswordFile(path) {
+  let text;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (err) {
+    throw new Error(
+      `RCON_PASSWORD_FILE cannot be read: ${path} (${err.code ?? err.message}). ` +
+        "It is the file that holds the engine's RCON password, and the console " +
+        'refuses to start without it rather than booting with a secret that ' +
+        'cannot work.',
+    );
+  }
+  // The trailing newline is what `echo` writes and what an editor
+  // adds. It is not part of the password.
+  const trimmed = text.replace(/\r?\n$/, '');
+  return checkRconPassword(trimmed, 'RCON_PASSWORD_FILE');
 }
 
 /**
@@ -357,6 +434,11 @@ export function checkRconPassword(password) {
  *     STRING. It does not exist and never will: the password is a
  *     scrypt record on disk. An operator who sets it deserves to be
  *     told, not to watch the console ignore their secret.
+ *
+ * And the RCON password has ONE source, not two: `RCON_PASSWORD` and
+ * `RCON_PASSWORD_FILE` are the same secret in two shapes, and a
+ * service that is given both has to guess which one it is. It
+ * refuses to start instead.
  *
  * @param {object} [env]
  * @returns {object}
@@ -379,6 +461,21 @@ export function readConfig(env = process.env) {
   const rawPort = env.ADMIN_PORT === undefined || env.ADMIN_PORT === '' ? DEFAULT_BIND_PORT : env.ADMIN_PORT;
   const port = checkBindPort(host, rawPort);
   const count = num(env.TS_INSTANCE_COUNT, DEFAULT_INSTANCE_COUNT);
+  // THE ENGINE'S PASSWORD. ONE SOURCE, NOT TWO.
+  const rconPasswordEnv = env.RCON_PASSWORD ?? '';
+  const rconPasswordFile = env.RCON_PASSWORD_FILE ?? '';
+  if (rconPasswordEnv && rconPasswordFile) {
+    throw new Error(
+      'RCON_PASSWORD and RCON_PASSWORD_FILE are both set: the engine\'s ' +
+        'password is configured twice, and the service refuses to guess which ' +
+        'one it is. Unset RCON_PASSWORD and keep the file — the file is what ' +
+        'production uses, because an environment variable is printed by ' +
+        '`docker inspect` and readable in /proc/<pid>/environ.',
+    );
+  }
+  const rconPassword = rconPasswordFile
+    ? readRconPasswordFile(rconPasswordFile)
+    : checkRconPassword(rconPasswordEnv);
   return {
     host,
     port,
@@ -389,7 +486,12 @@ export function readConfig(env = process.env) {
     // The ENGINE's password. The administrator's is a scrypt record
     // and lives in the file below — see the header for why the two
     // are never both called `password`.
-    rconPassword: checkRconPassword(env.RCON_PASSWORD || ''),
+    rconPassword,
+    // WHERE the password came from. A path is not a secret, and an
+    // operator looking at a refused fleet needs to know whether the
+    // console was given the secret at all.
+    rconPasswordSource: rconPasswordFile ? 'file' : rconPassword ? 'environment' : 'none',
+    rconPasswordFile: rconPasswordFile || null,
     // The console's own password record, and the audit log. Both live
     // in the service's state directory, which phase 5 provisions.
     authFile: env.ADMIN_AUTH_FILE || DEFAULT_AUTH_FILE,
@@ -706,6 +808,12 @@ export function createAdminService(opts = {}) {
   // The ENGINE's password. The administrator's is the scrypt record
   // below, and the two are never the same thing.
   const rconPassword = checkRconPassword(opts.rconPassword ?? '');
+  // WHERE it came from: 'file', 'environment' or 'none'. A path is
+  // not a secret and the operator needs it — a fleet that is all
+  // `refused` is a configuration problem far more often than it is a
+  // network one.
+  const rconPasswordSource =
+    opts.rconPasswordSource ?? (rconPassword ? 'environment' : 'none');
   const config = {
     host,
     port,
@@ -713,6 +821,7 @@ export function createAdminService(opts = {}) {
     portBase: opts.portBase ?? DEFAULT_PORT_BASE,
     count: clampInstanceCount(opts.count ?? DEFAULT_INSTANCE_COUNT),
     rconPassword,
+    rconPasswordSource,
   };
   const instances = fleetInstances({ portBase: config.portBase, count: config.count });
   const makeAsk = opts.makeAsk ?? makeRconAsk;
@@ -1376,8 +1485,9 @@ export function createAdminService(opts = {}) {
         };
         if (!config.rconPassword) {
           body.warning =
-            'RCON_PASSWORD is not set on this service, so no instance can be reached; ' +
-            'every instance is reported as refused until it is.';
+            'no RCON password is configured on this service (neither RCON_PASSWORD ' +
+            'nor RCON_PASSWORD_FILE), so no instance can be reached; every ' +
+            'instance is reported as refused until one is.';
         }
         sendJson(res, 200, body);
         return;
@@ -1565,6 +1675,11 @@ export function createAdminService(opts = {}) {
       /** Whether an RCON password is configured — not the password. */
       rconConfigured: Boolean(config.rconPassword),
       /**
+       * WHERE the password came from: 'file', 'environment' or
+       * 'none'. Never the password itself.
+       */
+      rconPasswordSource: config.rconPasswordSource,
+      /**
        * Whether a password record was found — NOT the record, and
        * not the hash. This is a SNAPSHOT, taken when the factory was
        * called: the login reads the record fresh every time, so a
@@ -1621,6 +1736,12 @@ export function start(config = null) {
     console.log(
       `rcon password ${
         resolved.rconPassword ? 'configured' : 'NOT CONFIGURED — every instance will be refused'
+      }${
+        resolved.rconPassword
+          ? ` (from ${resolved.rconPasswordSource}${
+              resolved.rconPasswordFile ? ` ${resolved.rconPasswordFile}` : ''
+            })`
+          : ''
       }`,
     );
     // The state of the console's own password, so the operator can
