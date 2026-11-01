@@ -282,6 +282,16 @@ select:disabled,input:disabled{opacity:.6}
 .log .entry>div:first-child{padding-left:0}
 .log .entry .raw{color:var(--mute);font-size:12px;white-space:pre-wrap}
 
+/*
+ * THE CONFIRMATION. §6.3's fourth part: the re-read of the server's
+ * state, phrased in the past tense. It wears the OUTCOME's colour —
+ * the confirmation is part of the outcome, and a green outcome with
+ * a red confirmation under it would be a contradiction — but it is a
+ * size down, because it is the detail under the line that carries
+ * the verdict.
+ */
+.log .entry .conf{font-size:12px}
+
 /* ------------------------------------------------------------------ */
 /* the fleet cards                                                      */
 /* ------------------------------------------------------------------ */
@@ -312,3 +322,74 @@ select:disabled,input:disabled{opacity:.6}
 .bancols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px}
 @media (max-width:700px){.bancols{grid-template-columns:1fr}}
 #banPanel{margin-top:24px}
+
+/* ==================================================================== */
+/* PHASE 4 — THE MUTATING ACTIONS                                        */
+/* ==================================================================== */
+
+/* ------------------------------------------------------------------ */
+/* the player row's action                                              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * THE KICK BUTTON IS NOT RED.
+ *
+ * A kick is not destructive: the player reconnects. So it gets the
+ * mock's own small action button — the muted border, the muted ink,
+ * and the mock's AMBER hover for a kick (`docs/admin-console-mock.html`
+ * styles `.act.k` amber and `.act.b` red, and there is no ban button
+ * in this release, so the red one is not here either).
+ *
+ * The row is widened by one column to hold it. Nothing else in the row
+ * moves.
+ */
+.prow{grid-template-columns:48px minmax(0,1fr) repeat(5,auto) auto}
+.prow .pacts{display:flex;gap:10px;align-items:center}
+@media (max-width:1180px){.prow{grid-template-columns:48px minmax(0,1fr) repeat(3,auto) auto}.prow .pstat.hide-sm{display:none}}
+@media (max-width:860px){.prow{grid-template-columns:40px minmax(0,1fr) auto;gap:16px}.prow .pstat.p{display:none}.prow .pacts{grid-column:1/-1;justify-content:flex-start}}
+
+/*
+ * THE KICK REASON FIELD.
+ *
+ * One field for the whole list, and it is OPTIONAL: it is the reason
+ * the NEXT kick carries, and a kick with no reason is a kick with an
+ * empty message. It lives beside the search because both are inputs
+ * that apply to the list.
+ */
+.preason{margin-left:auto;align-self:center;margin-bottom:6px;background:#000;border:1px solid var(--line);border-left:4px solid var(--mute);color:var(--ghost);font:500 13px var(--mono);min-height:44px;padding:0 14px;width:220px;max-width:100%}
+.preason::placeholder{color:var(--mute);letter-spacing:.06em}
+.preason:focus-visible{outline:3px solid var(--ghost);outline-offset:2px}
+@media (max-width:700px){.preason{margin:12px 0 14px;width:100%}.psearch{margin:12px 0 14px;width:100%}}
+
+/* ------------------------------------------------------------------ */
+/* the time limit                                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The time limit is the one setting the console writes. It is a
+ * NUMBER, and the unit is MINUTES — the engine's `mp_timelimit` is in
+ * minutes, and a field that did not say so would be a field an
+ * operator could get wrong by three orders of magnitude.
+ */
+#tlVal{background:#000;border:1px solid var(--line);color:var(--ghost);font:500 13px var(--mono);min-height:30px;padding:0 8px;width:74px}
+#tlVal:focus-visible{outline:3px solid var(--ghost);outline-offset:2px}
+.rd #tlVal+.m{color:var(--mute)}
+
+/* ------------------------------------------------------------------ */
+/* the map-change modal                                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The modal is the mock's own `dialog` — the same border, the same
+ * backdrop, the same ghost button and the same RED confirm button.
+ * The red is the point: a destructive confirm is red, never green
+ * (the signal rule), and this is the only destructive action in the
+ * console.
+ *
+ * The body says the two things the operator needs BEFORE the click:
+ * how many players will be dropped, and that `server.cfg` will be
+ * re-executed. Both are facts about the server, and both are in the
+ * engine's own terms.
+ */
+#mapBody b{color:var(--ghost)}
+#mapBody .warnline{display:block;margin-top:14px;color:var(--ghost)}
