@@ -1111,14 +1111,20 @@ console still holds **no socket** and **no root** — `docs/ADMIN-CONSOLE.md`
 §3.3 now says so explicitly, and the runbook has the orchestrator as a
 dependency (§1.1) with what the console shows when it is down.
 
-**PUSHED AS PR #111, AND ALREADY LIVE.** It is on `fix/admin-fleet-list`
-(stacked on PR #110) and the cut-over has been done BY HAND with this
-code, so the console on production already publishes one server. The
-parent PR (#110) is still to be approved and merged; until it is, the
-next CI deploy would upload main's deploy script — the one whose gate
-cannot see the secret — and SKIP the console. The console that is
-running would keep running (a skipped console is not replaced), but
-the fix has to land for the next console update to work.
+**MERGED AS PR #111, AND LIVE.** It was on `fix/admin-fleet-list` (stacked
+on PR #110), and all three are now merged: **#110 → 8f432f7** (the deploy
+gate), **#111 → 844835a** (the fleet list, and the orchestrator's slots),
+**#112 → 9b83ba2** (the boot config, end to end). They were merged with
+**merge commits, not squashes**, on purpose: the branches' commits are the
+ones Kyle reviewed, commit for commit, and a squash would replace them with
+a new SHA and hide what was actually approved.
+
+**THE FIRST CI DEPLOY THAT ACTUALLY DEPLOYED THE CONSOLE.** The gate fix
+is what made that possible — every deploy before it skipped the console
+with "the RCON secret is not provisioned" for a secret that was
+provisioned. Now every control-plane image on `bb-prod` is built from
+main's SHA by the deploy itself, and there is no hand-built image
+anywhere.
 
 ## THE CONSOLE IS LIVE ON PRODUCTION (2026-11-01)
 
@@ -1238,7 +1244,30 @@ an allowlist of read-only commands) and the uptime stat (the spec's
 claim that the orchestrator's instance rows carry the container's start
 time is false — the record is `{id, container, unresponsiveSince,
 degradedSince, lastActionAt, actions}` — so it needs the orchestrator to
-start recording it).
+start recording it). Neither gates anything; both are decisions, not
+bugs.
+
+**TS-0 WAS REPLACED, AND THE SECRET NOW SURVIVES A RESTART.** The
+instance that was running was created from `ts-server:0.27`, which
+predates the boot config, so its password was a runtime one — in the
+engine's memory, and gone at the next container restart. It has been
+replaced by the same script the orchestrator runs, and the new
+container is `ts-server:0.28` with the secret **mounted**
+(`/srv/ts-admin/rcon_password → /srv/secrets/rcon_password`),
+`GroupAdd=[10007]`, and the entrypoint saying *"RCON enabled on this
+instance (the password is not printed)"*.
+
+**With nobody re-applying the password**: RCON answered `outcome=ok
+packets=24`. After a `docker restart`: `outcome=ok packets=17`. The
+spec's last done-when — *"the secret survives a container restart"* — is
+met in production. The game came back clean: map `ts_casa`, 16 bots,
+tickrate 100.
+
+**THE VISUAL PROOF**, in a browser through the tunnel: signed in as
+`admin`, **one** server card — `ts-0`, port 27015, `ts_casa` / Dm, **UP**
+and **RCON OK**, 0/32 players, 16 bots, tickrate 100 — and the console
+drawer reading *"done — 1 instances, 1 up"*. The seven phantom cards
+are gone.
 
 ## The CI browser gate was playing in production (2026-10-30)
 

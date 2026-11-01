@@ -1,0 +1,24 @@
+[Unit]
+Description=SSH tunnel to the BulletBallet admin console on bb-prod
+Documentation=docs/ADMIN-CONSOLE-RUNBOOK.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# It runs as kyle, not root, because the `bb-prod` alias -- the host
+# name, the user, the key and the known_hosts entry -- lives in
+# /home/kyle/.ssh/config. Root's home is /root, which has no such
+# config, and ssh there fails with "Could not resolve hostname
+# bb-prod" (exit 255) before it ever gets to the key.
+User=kyle
+Group=kyle
+# The console on bb-prod binds 127.0.0.1:8095 and nothing else. This
+# forwards m5's loopback to it, so Tailscale Serve can publish it to the
+# tailnet -- and to nothing else.
+ExecStart=/usr/bin/ssh -N -L 127.0.0.1:8095:127.0.0.1:8095 -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o BatchMode=yes bb-prod
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
