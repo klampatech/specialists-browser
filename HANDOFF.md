@@ -1040,9 +1040,9 @@ a new instance needs it too), open the tunnel and check the tri-state
 (§6). Then, and only then, the console is "reachable from Kyle's machine
 over the tunnel, and the secret survives a container restart" — the phase
 5 done-when. **The fleet-list fix has to reach the branch that is cut
-over** (`fix/admin-fleet-list`, committed locally, not pushed): without
-it the console publishes the port range again, and the fleet view is
-eight servers instead of one.
+over** (`fix/admin-fleet-list`, PR #111): without it the console
+publishes the port range again, and the fleet view is eight servers
+instead of one.
 
 ## The admin console's FLEET LIST: ask the orchestrator (2026-10-31, `fix/admin-fleet-list`)
 
@@ -1111,8 +1111,84 @@ console still holds **no socket** and **no root** — `docs/ADMIN-CONSOLE.md`
 §3.3 now says so explicitly, and the runbook has the orchestrator as a
 dependency (§1.1) with what the console shows when it is down.
 
-**NOT DEPLOYED, NOT PUSHED.** This is on `fix/admin-fleet-list`, committed
-locally. The parent PR (#110) and the deploy are by hand.
+**PUSHED AS PR #111, AND ALREADY LIVE.** It is on `fix/admin-fleet-list`
+(stacked on PR #110) and the cut-over has been done BY HAND with this
+code, so the console on production already publishes one server. The
+parent PR (#110) is still to be approved and merged; until it is, the
+next CI deploy would upload main's deploy script — the one whose gate
+cannot see the secret — and SKIP the console. The console that is
+running would keep running (a skipped console is not replaced), but
+the fix has to land for the next console update to work.
+
+## THE CONSOLE IS LIVE ON PRODUCTION (2026-11-01)
+
+**`https://127.0.0.1:8095/` over the tunnel.** The container is `admin`,
+it binds **127.0.0.1:8095 only** (`ss -ltnp` confirms), and it has **no
+docker socket**. The tunnel is `tools/admin/tunnel.sh`, which opens
+`ssh -N -L 8095:127.0.0.1:8095 bb-prod`.
+
+**The secret and the administrator's record are provisioned on `bb-prod`:**
+
+| what | where | mode | owner |
+|---|---|---|---|
+| the state directory | `/srv/ts-admin` | 0700 | 10006:10006 |
+| the RCON secret | `/srv/ts-admin/rcon_password` | 0640 | root:10007 (`tsrcon`) |
+| the administrator's record | `/srv/ts-admin/auth/auth.json` | 0600 | 10006:10006 |
+| the audit log | `/srv/ts-admin/audit/actions.log` | 0600 | 10006:10006 |
+
+**VERIFIED ON PRODUCTION, IN A BROWSER, THROUGH THE TUNNEL:**
+
+- logged in as `admin` with the scrypt record; the session cookie is
+  HttpOnly + SameSite=Strict; the CSRF token comes back in the body.
+- `ts-0`: map `ts_central` / `Dm`, 0 players, 16 bots, tickrate 100,
+  time limit 15 minutes, **`rcon: ok`, `health: up`**.
+- the maps endpoint returns the real **60** maps, including the
+  uppercase `SS_HQ_f3` (the phase 4 fix works in production).
+- the bans endpoint returns the stub's honest note.
+- **a mutating action, end to end:** without the CSRF token the POST
+  was refused with `csrf_failed`; with it,
+  `POST /admin/servers/ts-0/timelimit {minutes:15}` returned
+  `outcome: done`, `command: mp_timelimit 15`,
+  `detail: the time limit is 15 minutes`, and the re-read confirmed 15.
+  **Deliberately set to the value it already had**, so the whole path
+  is proven with zero gameplay change.
+- the audit log is 0600, records `login ... ok` and
+  `timelimit ts-0/15 done`, and the **RCON password appears nowhere in
+  it**.
+
+**RCON WAS ENABLED ON `ts-0` AT RUNTIME** — no restart, nobody kicked.
+The password was applied through the container's console pipe with the
+value read INSIDE the shell, so it never appeared in any process's
+argv.
+
+**THE DEPLOY GATE HAD A REAL BUG, AND IT SHIPPED** — PR #110. The
+deploy skipped the console with "the RCON secret is not provisioned"
+for a secret that was provisioned and correct: the gate asked as the
+deploy user, who cannot traverse into the 0700 state directory. The
+fix is to ask with authority (`sudo test -f`, `sudo test -s`,
+`sudo stat`), and the two tests that asserted the gate's SHAPE — and
+so pinned the bug — now assert the right thing.
+
+**THE ENGINE'S RCON IS NOT ON THE INTERNET.** `ss -lunp` shows the
+engine's UDP socket (where RCON lives) bound to `127.0.0.1:27015`, not
+`0.0.0.0`, and `ufw` allows 22/tcp, 443/tcp, 80/tcp and **no UDP at
+all**, with an explicit DROP rule for `udp dpt:27015` on anything that
+is not loopback. The only public path to the game is the bridge, over
+WebSocket on 443. So the engine's RCON is reachable from the host and
+nowhere else — which is exactly where the console runs. **The exposure
+is the LOG, not the network**: the engine prints the whole RCON
+datagram, password included, on every command, so the game server's
+logs are as secret as the password file, the secret is rewritten into
+them continuously, and it stays readable in the rotated logs for
+**days**. Clearing the logs does not clear the secret; the console
+rewrites it seconds later.
+
+**STILL OPEN:** the free-form command box (recommended: none; runner-up:
+an allowlist of read-only commands) and the uptime stat (the spec's
+claim that the orchestrator's instance rows carry the container's start
+time is false — the record is `{id, container, unresponsiveSince,
+degradedSince, lastActionAt, actions}` — so it needs the orchestrator to
+start recording it).
 
 ## The CI browser gate was playing in production (2026-10-30)
 
