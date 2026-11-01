@@ -594,6 +594,96 @@ test('an orchestrator that answers with NO instances: an empty fleet, and NOT th
   }
 });
 
+test('a shape the console does NOT understand is an ERROR, not an empty fleet', async () => {
+  // THE WORST FAILURE MODE FOR AN ADMIN CONSOLE IS AN EMPTY ONE.
+  //
+  // The orchestrator says which instances exist with a boolean
+  // `deployed` on each row. If the field is renamed -- or the shape
+  // changes -- every row fails the check, and a naive reader publishes
+  // an EMPTY fleet. The operator then sees no servers at all and
+  // cannot tell whether the fleet is empty or the console is broken.
+  //
+  // So a shape we do not understand is an error: the fleet falls back
+  // to the port range AND SAYS SO, rather than pretending.
+  const orchestrator = await orchestratorAnswering({
+    instances: [
+      { id: 'ts-0', running: true },
+      { id: 'ts-1', running: true },
+    ],
+  });
+  try {
+    await withService(
+      { makeAsk: fakeFleet().makeAsk, orchestratorUrl: orchestrator.url, count: 8 },
+      async (port, cookie) => {
+        const res = await get(port, '/admin/servers', cookie);
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.equal(body.fleetSource, 'port-range');
+        assert.match(body.detail, /deployed/);
+        assert.equal(body.count, 8);
+      },
+    );
+  } finally {
+    await orchestrator.close();
+  }
+});
+
+test('a row that does not say whether it is deployed is REPORTED, not dropped', async () => {
+  // A malformed row and an absent instance are different things. One
+  // of them is a shape we do not understand; the other is a fleet. A
+  // malformed row is reported in `skipped`, so the operator can see
+  // that the orchestrator said something odd.
+  const orchestrator = await orchestratorAnswering({
+    instances: [
+      { id: 'ts-0', deployed: true },
+      { id: 'ts-1', deployed: 'yes' },
+    ],
+  });
+  try {
+    await withService(
+      { makeAsk: fakeFleet().makeAsk, orchestratorUrl: orchestrator.url, count: 8 },
+      async (port, cookie) => {
+        const res = await get(port, '/admin/servers', cookie);
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.equal(body.fleetSource, 'orchestrator');
+        assert.equal(body.count, 1);
+        assert.equal(body.servers[0].id, 'ts-0');
+        assert.match(JSON.stringify(body.skipped ?? []), /ts-1/);
+      },
+    );
+  } finally {
+    await orchestrator.close();
+  }
+});
+
+test('two ids for one port: ONE server, and the other is reported', async () => {
+  // "ts-0" and "ts-00" derive the same port. Publishing both would
+  // show the operator the same server twice under two names -- and the
+  // second one would then be kicked or re-mapped by mistake.
+  const orchestrator = await orchestratorAnswering({
+    instances: [
+      { id: 'ts-0', deployed: true },
+      { id: 'ts-00', deployed: true },
+    ],
+  });
+  try {
+    await withService(
+      { makeAsk: fakeFleet().makeAsk, orchestratorUrl: orchestrator.url, count: 8 },
+      async (port, cookie) => {
+        const res = await get(port, '/admin/servers', cookie);
+        assert.equal(res.status, 200);
+        const body = await res.json();
+        assert.equal(body.count, 1);
+        assert.equal(body.servers[0].id, 'ts-0');
+        assert.match(JSON.stringify(body.skipped ?? []), /ts-00/);
+      },
+    );
+  } finally {
+    await orchestrator.close();
+  }
+});
+
 test('a HUNG orchestrator does not hang the fleet endpoint', async () => {
   const orchestrator = await fakeOrchestrator(() => {
     /* never answers */

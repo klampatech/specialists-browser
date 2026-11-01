@@ -298,6 +298,37 @@ function deployedFrom(body, portBase) {
   const instances = [];
   const skipped = [];
 
+  // A SHAPE WE DO NOT UNDERSTAND IS NOT AN EMPTY FLEET.
+  //
+  // The orchestrator says which instances exist with a boolean
+  // `deployed` on each row. If the answer has rows and NOT ONE of them
+  // carries that flag, then this is not a list of instances we know how
+  // to read -- the field was renamed, or the shape changed, and we are
+  // looking at something else entirely.
+  //
+  // Publishing an empty fleet for that is the worst possible outcome
+  // for an admin console: the operator sees NO SERVERS and cannot tell
+  // whether the fleet is empty or the console is broken. So it is an
+  // error -- the caller falls back to the port range and says so.
+  //
+  // An empty LIST is a different thing entirely: that is the
+  // orchestrator saying there are no instances, and it is legitimate.
+  const sawDeployedFlag = rows.some(
+    (row) => row && typeof row === 'object' && typeof row.deployed === 'boolean',
+  );
+  if (rows.length > 0 && !sawDeployedFlag) {
+    throw new OrchestratorError(
+      "not one of the orchestrator's instances says whether it is deployed, " +
+        'so the answer does not say which instances exist',
+    );
+  }
+
+  // ONE PORT, ONE SERVER. Two ids that derive the same port would be
+  // published as two servers that are actually one, and the operator
+  // would see the same instance twice with two different names. The
+  // first id to claim a port keeps it; the other is reported.
+  const claimed = new Map();
+
   for (const row of rows) {
     if (!row || typeof row !== 'object') {
       skipped.push({ id: '', reason: 'the row is not an object, so it has no id to read' });
@@ -311,7 +342,19 @@ function deployedFrom(body, portBase) {
     // NOT DEPLOYED IS NOT IN THE FLEET. The orchestrator knows the
     // slot exists; the container does not. Only a container that is
     // there is an instance an operator can be asked about.
-    if (row.deployed !== true) continue;
+    if (row.deployed === false) continue;
+    // A row with no boolean `deployed` is a malformed row, not a
+    // silently absent instance: the difference matters, because one of
+    // them is a fleet and the other is a shape we do not understand.
+    if (typeof row.deployed !== 'boolean') {
+      skipped.push({
+        id,
+        reason:
+          'the row does not say whether it is deployed, so it cannot be placed in the fleet ' +
+          'and it is not guessed at',
+      });
+      continue;
+    }
 
     const index = instanceIndex(id);
     if (index === null) {
@@ -331,6 +374,17 @@ function deployedFrom(body, portBase) {
       });
       continue;
     }
+    const owner = claimed.get(port);
+    if (owner !== undefined) {
+      skipped.push({
+        id,
+        reason:
+          `the derived port ${port} is already ${owner}, so this is the same server under ` +
+          'another name and it is not published twice',
+      });
+      continue;
+    }
+    claimed.set(port, id);
     instances.push({ id, port });
   }
 
