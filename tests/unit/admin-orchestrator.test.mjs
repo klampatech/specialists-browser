@@ -557,7 +557,15 @@ test('an orchestrator that answers with a MALFORMED body: the fallback, not a cr
         assert.equal(res.status, 200);
         const body = await res.json();
         assert.equal(body.fleetSource, 'port-range');
-        assert.match(body.detail, /the orchestrator did not answer/);
+        // THE ORCHESTRATOR DID ANSWER -- with nonsense. So the detail
+        // must NOT claim it did not answer: that is a different
+        // failure, with a different fix (the orchestrator is down vs
+        // the orchestrator is speaking nonsense), and an operator
+        // reading this needs to know which one it is.
+        assert.doesNotMatch(body.detail, /did not answer/);
+        assert.match(body.detail, /instances list/);
+        // And the list still has to say what it really is.
+        assert.match(body.detail, /COULD be instances/);
         assert.equal(body.count, 4);
       },
     );

@@ -438,7 +438,7 @@ export function createFleetSource({
           instances: range(),
           skipped: [],
           detail:
-            `the orchestrator did not answer (${err?.message ?? err}), so the fleet was ` +
+            `${err?.message ?? err}; the fleet was ` +
             'enumerated from the port range: these are the ports that COULD be instances, ' +
             'not the instances that exist',
         };
