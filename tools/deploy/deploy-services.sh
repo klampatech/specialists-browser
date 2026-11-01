@@ -156,11 +156,26 @@ sudo chmod 0750 "$ADMIN_DIR/audit"
 # "refused", which looks exactly like a network fault.
 #
 # The checks happen BEFORE a single container is replaced.
+#
+# THEY RUN AS ROOT, and that is not incidental.
+#
+# The state directory is 0700 and owned by the console's own uid (10006),
+# and the deploy script runs as the deploy user (ubuntu), who is neither.
+# So a plain `[ -f "$RCON_SECRET" ]` asks a question the deploy user
+# CANNOT ANSWER: it cannot traverse into /srv/ts-admin, so the test
+# returns "not there" for a secret that is right there, and the deploy
+# skips the console with "the RCON secret is not provisioned".
+#
+# That is not hypothetical. It is exactly what happened on 2026-11-01,
+# with the secret provisioned by hand and the console perfectly ready:
+# the deploy skipped it. The directory being private to the console is
+# CORRECT - it is the secret's home - so the fix is to ask the question
+# with the authority to ask it, not to make the directory readable.
 ADMIN_READY=1
-if [ ! -f "$RCON_SECRET" ]; then
+if ! sudo test -f "$RCON_SECRET"; then
   ADMIN_READY=0
   ADMIN_SKIP_REASON="the RCON secret is not provisioned: $RCON_SECRET"
-elif [ ! -s "$RCON_SECRET" ]; then
+elif ! sudo test -s "$RCON_SECRET"; then
   echo "the admin console's RCON secret is EMPTY: $RCON_SECRET" >&2
   echo "  an empty file is not a password: docs/ADMIN-CONSOLE-RUNBOOK.md" >&2
   exit 1
@@ -168,7 +183,7 @@ else
   # THE MODE IS THE SECURITY PROPERTY. The file is readable by the
   # console's uid and by the game server's uid through the shared group,
   # and by nobody else. 0644 is a secret every uid on the box can read.
-  SECRET_MODE="$(stat -c '%a' "$RCON_SECRET")"
+  SECRET_MODE="$(sudo stat -c '%a' "$RCON_SECRET")"
   case "$SECRET_MODE" in
     *[1-7])
       echo "the admin console's RCON secret is world-accessible (mode $SECRET_MODE): $RCON_SECRET" >&2
