@@ -67,13 +67,16 @@ instances" capacity figure is still a budget, not a measurement); the FE
 tweaks and the bulletballet re-brand; single-player depth on the
 fallback path.
 
-## The admin console: phase 1 (2026-10-31)
+## The admin console: phases 1 and 2 (2026-10-31)
 
 The console is specified in `docs/ADMIN-CONSOLE.md` (the source of
 truth). Phase 1 is the **service and the transport**: `services/admin`,
 a small Node HTTP service that talks to the fleet over RCON and serves
-three read-only endpoints. It is not deployed yet (phase 5), it has no
-UI (phase 3), no auth (phase 2) and no mutating action (phase 4).
+three read-only endpoints. Phase 2 is the **auth**: the password, the
+session, the lockout, the CSRF token, the audit line and `adminctl`. It
+also ships the **ban's stub endpoint** (§5.1) — always 501, and it
+never touches the engine. The console is not deployed yet (phase 5), it
+has no UI (phase 3) and no mutating **engine** action (phase 4).
 
 Three decisions in phase 1 are **not** in the spec document, and they
 are worth keeping:
@@ -117,7 +120,7 @@ Four more, from the phase-1 review (2026-10-31):
   with `expectedPlayers` and `parsedPlayers`, and the count shown is
   the engine's. The reply is read once more before that is reported.
 - **THE FACTORY HOLDS THE GUARDS.** The loopback check, the port
-  check and the password check live in `createAdminService()`, not in
+  check and the RCON password check live in `createAdminService()`, not in
   the command line, and the factory returns a **redacted** config — the
   RCON password stays in the closure and is never handed to a caller.
 
@@ -129,8 +132,104 @@ never logs it; the engine does. The runbook (phase 5) has to say so.
 
 The service binds **loopback only** and refuses to start on any other
 address. It holds **no Docker socket** — RCON over loopback UDP is
-what makes that possible, and it is the deciding argument over the
+what makes it possible, and it is the deciding argument over the
 console FIFO the registry uses.
+
+### Phase 2 — auth
+
+**Every endpoint but `/admin/login` needs a session**, including the
+three read endpoints phase 1 built. Eight decisions in phase 2 are
+**not** in the spec document, and they are worth keeping:
+
+- **THE ORDER OF THE CHECKS IS: SESSION → CSRF TOKEN → ROUTER.** A
+  request with no session is a 401 **even if its CSRF token is also
+  wrong**: an unauthenticated caller gets to learn one thing, which is
+  that it is not logged in. An unknown path is a 401 to an anonymous
+  caller and a 404 to a logged-in one, so the console does not tell a
+  stranger which endpoints it has.
+- **THE SESSION TABLE IS KEYED BY THE SHA-256 OF THE TOKEN.** A dump
+  of the process memory then yields no usable cookie, and a hash of a
+  256-bit random token has nothing to brute-force. The table is in
+  memory: a restart logs the administrator out, which is the correct
+  behaviour for a tool that should be used deliberately.
+- **THE COOKIE IS NOT `Secure`, AND THAT IS DELIBERATE.** The console
+  is plain HTTP on loopback and the SSH tunnel is the encryption
+  layer. A `Secure` cookie is only sent over HTTPS, so adding it
+  would mean the browser never sends the cookie and the console could
+  never be logged into. If the console is ever behind a TLS vhost, the
+  cookie gains `Secure` and nothing else changes.
+- **THE LOCKOUT AND THE RATE LIMIT ARE NOT THE SAME RULE.** The
+  lockout is 5 failures → 5 minutes, doubling to an hour, keyed to the
+  source address. The rate limit is a separate counter: 10 attempts a
+  minute per source, **right or wrong**. The difference is visible —
+  a source that logs in successfully ten times a minute has reset the
+  lockout counter every time and is still throttled. The countdown
+  always comes from the **server's** clock, and the check that matters
+  is made on the server, so a client that ignores it gets 423 again.
+- **A CORRUPT PASSWORD RECORD IS A FAILED LOGIN, NOT A CRASH.** The
+  auth file is on a disk; a disk file can be truncated. A verifier
+  that throws turns a bad file into a service that answers 500 to
+  every login — and the operator's way back in is to fix the file,
+  which they cannot do while it is 500ing.
+- **THERE IS NO "SKIP AUTH" SWITCH.** The tests log in for real — the
+  same scrypt path, the same cookie, the same gate — and the factory
+  takes the auth configuration **as an argument**, so the host reads a
+  file and the tests read a record in memory. A switch that turns the
+  gate off is a footgun, and phase 4 would trip over it with the
+  tests still green.
+- **THE BAN STUB IS A MUTATING PATH WHATEVER THE METHOD SAYS.** A
+  `GET` on `/admin/servers/:id/ban` still needs the CSRF token,
+  because the path is the one endpoint whose whole purpose is a
+  mutation — so it is a 403 without the token and the same 501 with
+  it. The order is the spec's: **session (401) → CSRF token (403) →
+  501**. And the attempt is **audited**: one line, `ban <instance>
+  unavailable`.
+- **THERE ARE TWO PASSWORDS, AND THE NAMES KEEP THEM APART.** The
+  **RCON** password is the engine's, has to be a plaintext string at
+  runtime, and is `rconPassword` in the factory and `RCON_PASSWORD`
+  in the environment. The **administrator's** is never a plaintext
+  string: it is a scrypt record, and it is `auth` in the factory (a
+  record or a store) and `ADMIN_AUTH_FILE` in the environment. So
+  the option that is a string is named after the thing it is, and the
+  one that is a record is not called `password` at all. The factory
+  **refuses** `password` and `adminPassword` outright — an option
+  that is quietly ignored is a service that starts with the wrong
+  secret — and the environment refuses the old `ADMIN_AUTH_PATH` and
+  a plaintext `ADMIN_PASSWORD` for the same reason.
+
+The audit line is **timestamp, action, target, outcome**, one line per
+event, appended and never rewritten, at 0600, in
+`/srv/ts-admin/actions.log`. The target of a login is the **source
+address** — never the password, never a session token, never the CSRF
+token. The password record is `/srv/ts-admin/auth.json`, 0600, a
+scrypt record that **carries its own parameters** so a hash written
+with different ones is still readable; it is read at the moment of the
+login, so a password set with `adminctl set-password` takes effect
+without a restart. `adminctl` reads the password from **stdin with the
+echo off** — never from argv, which is in `ps` output and in the shell
+history — validates the record before it writes it, writes it
+atomically, and refuses to work as root.
+
+### The ban stub — in phase 2, and it cannot ban
+
+`POST /admin/servers/:id/ban` ships in phase 2, as the fixed §5.1
+stub: **always 501**, with the body the spec fixes (value and key
+order) and `banned: false` in every one of them. It is the **one
+mutating endpoint that may not touch the engine** — it does not even
+read the fleet: no `banid`, no `addip`, not a `status`. The reason is
+in the body: the engine's ban key is the **uniqueid**, and every
+browser client on an instance shares one (§2.5), so banning it would
+remove everybody, and the IP fallback would be the fleet-wide action
+wearing a per-player tool's clothes.
+
+It is in phase 2 for two reasons: it is the **honest end-to-end proof
+of the CSRF gate** — the logout is the only other mutating endpoint,
+and a CSRF failure on a logout is nearly harmless, so the gate would
+barely be exercised — and it gives **phase 3's ban button an endpoint
+to call** instead of nothing. `GET /admin/session` carries the
+capability the UI renders it from: `{"capabilities": {"ban": false}}`.
+When FEAT-004 and FEAT-005 land, the flag flips and the button
+enables — one flag, no UI change.
 
 ## Client frame pacing — the engine's tick source (2026-10-29)
 

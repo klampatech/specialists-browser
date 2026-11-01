@@ -719,7 +719,7 @@ All endpoints are under `/admin`, all require a session except
 | `POST` | `/admin/servers/:id/command` | `{command}` — the free-form escape hatch. One command only. |
 | `POST` | `/admin/servers/:id/kick` | `{userid, reason?}` → outcome. |
 | `GET` | `/admin/servers/:id/bans` | The id-ban list (the console's own store) and the read-only IP filter (the engine's `listip`). |
-| `POST` | `/admin/servers/:id/ban` | **STUBBED — always 501.** The contract is fixed; the handler is not written (§5.1). |
+| `POST` | `/admin/servers/:id/ban` | **STUBBED — always 501.** The endpoint is live and answers the fixed body (§5.1); the handler that would carry the ban out is not written, and may not be until the per-browser identity exists. |
 | `POST` | `/admin/servers/:id/map` | `{map}` → the confirmed new map. |
 | `POST` | `/admin/servers/:id/broadcast` | `{message}` → a `say` to everyone on that instance. |
 | `POST` | `/admin/servers/:id/restart-round` | The port's `restartround`. |
@@ -748,7 +748,10 @@ server believes — and a short list says so instead of looking complete.
 (2026-10-31): *"stub this in the admin console for now and spec / build
 it out separately."* The request shape, the response shape and the UI
 are written down and fixed; the handler that would carry it out is
-not, because the thing it bans by does not exist yet.
+not, because the thing it bans by does not exist yet. The endpoint
+itself **ships in phase 2** — it is the one mutating endpoint that
+cannot touch the engine, and it is the honest proof that the CSRF
+gate works on something that matters.
 
 ### 5.1 The stubbed ban endpoint
 
@@ -970,6 +973,90 @@ setting the password.
   is refused, and six wrong passwords lock the endpoint for five
   minutes.
 
+What phase 2 actually shipped (2026-10-31): the password is a
+**scrypt record** — `{version, algo, N, r, p, keylen, salt, hash}` —
+read at the moment of the login rather than once at startup, so a
+password set with `adminctl set-password` takes effect without a
+restart; the record **carries its own parameters** and the verifier
+reads them from the record instead of hard-coding them, so a hash
+written with different ones is still readable. The comparison is
+`crypto.timingSafeEqual`, and a **corrupt record is a failed login,
+not a crash**. The session table is **in memory** and is keyed by the
+**SHA-256 of the token**, so a dump of the process memory yields no
+usable cookie; the idle clock (12 h) and the absolute clock (24 h) are
+separate, and the idle clock is refreshed by use while the absolute
+one is not. The **lockout is 5 failures → 5 minutes, doubling to an
+hour** — 5, 10, 20, 40, 60 minutes — and the failure count starts
+again from zero when a lock expires, so the doubling is one lockout
+per five failures. The **rate limit is a separate counter** (10
+attempts a minute per source, right or wrong), which is why a source
+that logs in successfully ten times in a minute is still throttled:
+the two rules are not the same rule. The lockout answers **423** and
+the rate limit **429**, and both carry a countdown computed from the
+**server's** clock. The **CSRF token is a second, separate secret**,
+returned in the JSON body — the session cookie stays HttpOnly and
+SameSite=Strict, and the token goes in a header. The cookie is
+**not** `Secure`, on purpose: the console is plain HTTP on loopback
+and the SSH tunnel is the encryption layer. The audit line is
+**timestamp, action, target, outcome** — one line per event,
+appended and never rewritten — and the target of a login is the
+**source address**, never the password. `adminctl hash` reads the
+password from stdin with the echo off, `adminctl set-password`
+validates the record before it writes it and writes it atomically at
+0600, and both refuse to work as root.
+
+**And the two passwords have different names**, because there are two
+of them. The **engine's** is the RCON password: it has to be a
+plaintext string at runtime, because the engine compares it on the
+wire, so it is `RCON_PASSWORD` in the environment and
+`rconPassword` in the service's factory. The **administrator's** is
+never a plaintext string anywhere — it is the scrypt record, so it
+is `ADMIN_AUTH_FILE` in the environment (the path to the record) and
+`auth` in the factory (the record, or a store that reads one). The
+one that is a string is named after the thing it is, and the one that
+is a record is not called `password` at all. The factory **refuses**
+`password` and `adminPassword` outright, because an option that is
+quietly ignored is a service that starts with the wrong secret. The
+redacted config carries `rconConfigured` **and** `authConfigured`, so
+an operator can tell at a glance whether the console will accept a
+login at all; neither flag is a secret.
+
+**The ban's stub endpoint also ships in phase 2** — §5.1. It is the
+one mutating endpoint that may not touch the engine, and it is here
+for two reasons: it is the honest end-to-end proof of the CSRF gate
+(a real mutating endpoint that takes the token and refuses to do
+anything — a CSRF failure on the logout is nearly harmless, so the
+gate would barely be exercised), and it gives phase 3's ban button an
+endpoint to call instead of nothing. It answers **501** and nothing
+else — whatever the method, whatever the body, whatever the instance
+— with the fixed body from §5.1, `banned: false` in every one of
+them. It does not read the fleet either: no `banid`, no `addip`, not
+even a `status`. The order for it is the spec's: **session (401) →
+CSRF token (403) → 501**, and only a properly authenticated request
+ever reaches the 501.
+
+Four things the spec did not say, and the implementation had to decide:
+
+- **A login with no record on the host is a 503, not a 401.** "Wrong
+  password" and "no password has been provisioned yet" are different
+  situations, and the operator has to be able to tell them apart.
+- **The CSRF check runs BEFORE the router.** The order is the
+  session, then the CSRF token, then the endpoint — so an
+  unauthenticated caller cannot even learn which endpoints exist
+  (an unknown path is a 401 to an anonymous caller and a 404 to a
+  logged-in one).
+- **The ban path is a mutating path whatever the method says.** A
+  `GET` on it still needs the CSRF token, because the path is the one
+  endpoint whose whole purpose is a mutation — so the answer is a
+  403 without the token and the same 501 with it. And the attempt is
+  **audited**: one line, `ban <instance> unavailable`. A refusal
+  that leaves no trace is a refusal nobody can learn from.
+- **The two passwords are named apart, and the ambiguous names are
+  refused.** `password` and `adminPassword` are not options: the
+  factory says so, and says what the right name is. So does the
+  environment, for the old `ADMIN_AUTH_PATH` and for a plaintext
+  `ADMIN_PASSWORD` — neither of which is a thing any more.
+
 ### Phase 3 — The read-only UI
 The mock, wired to the API: the login screen, the shell, the fleet
 rail, the status panel, the player list with its filters and search,
@@ -987,8 +1074,9 @@ one returns the §5 envelope and is confirmed by a re-read.
   have tests — a kick whose target left between the list refresh and
   the click, and a round restart that prints nothing.
 
-**Not in this phase, and not in this release:** ban (§2.5) and mute
-(§2.6).
+**Not in this phase:** the real ban (§2.5) and mute (§2.6). The ban's
+**stub endpoint does ship, in phase 2** — §5.1 — because it never
+touches the engine and it gives the phase-3 UI an endpoint to call.
 
 ### Phase 5 — Deployment, the secret, and the docs
 The `deploy-services.sh` entry, the Dockerfile, the CI wiring, the

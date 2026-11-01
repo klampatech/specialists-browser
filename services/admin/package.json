@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Admin console service: a read-only view of the fleet, over RCON.",
   "scripts": {
-    "start": "node service.mjs"
+    "start": "node service.mjs",
+    "adminctl": "node adminctl.mjs"
   }
 }
