@@ -115,9 +115,10 @@ are worth keeping:
   `down`, `refused` → `degraded`), so a row cannot say "healthy" and
   "refused" at the same time.
 - **`uptime` is `null` in phase 1.** The engine has no uptime command,
-  and the admin service does not talk to the orchestrator yet; the
-  container start time in the orchestrator's instance rows is where the
-  number will come from.
+  and the orchestrator's instance rows do not carry a container start
+  time yet, so there is nothing to read. (The console does talk to the
+  orchestrator — for the fleet list — but the orchestrator does not
+  publish a start time to read.)
 
 Four more, from the phase-1 review (2026-10-31):
 
@@ -143,6 +144,30 @@ Four more, from the phase-1 review (2026-10-31):
   check and the RCON password check live in `createAdminService()`, not in
   the command line, and the factory returns a **redacted** config — the
   RCON password stays in the closure and is never handed to a caller.
+
+**One design change after phase 5 (2026-10-31): the fleet comes from
+the ORCHESTRATOR.** The console enumerated the fleet from a port range
+and published every port it probed, and production showed what that
+costs: the fleet is **one** game server and `TS_INSTANCE_COUNT` is 8,
+so the console published eight servers — seven of them instances
+nobody ever created. A port range cannot tell "this instance exists
+and is SICK" from "this instance was NEVER CREATED", and that
+difference is the health model the tri-state exists to report. So the
+console asks the **orchestrator** (`GET /api/orchestrator`), which owns
+the fleet and reports each slot's `deployed` flag; only the deployed
+ones are probed and published. The port range is the **fallback** when
+the orchestrator cannot be reached, and the fleet response says which
+list it used (`fleetSource: "orchestrator" | "port-range"`, plus a
+`detail`). The ask has a **two-second deadline** and is cached for a
+few seconds. It is a read-only GET on the host's own loopback, so the
+blast radius argument in `docs/ADMIN-CONSOLE.md` §3.3 is unchanged:
+the console still holds **no Docker socket**.
+
+**A sick instance is never a 404.** The per-instance endpoints
+(`/status`, `/players`, `/maps`, `/bans` and the five actions) resolve
+an id against the fleet's list and then against the port range, so an
+instance that is deployed and not answering is still there to be looked
+at — which is the whole point of the tri-state.
 
 **One fact about the deployment, not the code:** the engine prints the
 whole RCON datagram, **password included**, on every command

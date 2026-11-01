@@ -91,6 +91,10 @@ async function startService(fn, opts = {}) {
     count: 1,
     makeAsk: fakeAsk,
     auth: createAuthStore({ record: createPasswordRecord(PASSWORD) }),
+    // No orchestrator in this test: the fleet is the port-range
+    // fallback. The orchestrator's own list has its own tests
+    // (tests/unit/admin-orchestrator.test.mjs).
+    orchestratorUrl: null,
     audit: {
       record: (action, target, outcome) => {
         lines.push({ action, target, outcome });

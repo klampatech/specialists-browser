@@ -223,6 +223,15 @@ test('the admin container gets the fleet\'s real shape', () => {
   assert.match(block, /-e TS_INSTANCE_COUNT=8/);
 });
 
+test('the admin container is told where the ORCHESTRATOR is', () => {
+  const block = adminBlock();
+  // The fleet comes from the orchestrator's deployed list, and the
+  // orchestrator is on the host's own loopback.
+  assert.match(block, /-e ORCHESTRATOR_URL=http:\/\/127\.0\.0\.1:8090/);
+  // And it is still a loopback url: the console reaches nothing else.
+  assert.doesNotMatch(block, /-e ORCHESTRATOR_URL=http:\/\/(?!127\.0\.0\.1)/);
+});
+
 test('the admin container mounts the secret READ-ONLY', () => {
   const block = adminBlock();
   assert.match(block, /-v "\$RCON_SECRET:\/srv\/ts-admin\/rcon_password:ro"/);

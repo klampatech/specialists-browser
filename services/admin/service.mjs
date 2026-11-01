@@ -107,6 +107,31 @@
  * blast radius is "can ask the game servers questions" — not "is root
  * on the game box" (docs/ADMIN-CONSOLE.md §3.3).
  *
+ * THE FLEET COMES FROM THE ORCHESTRATOR
+ * --------------------------------------
+ * The console used to enumerate the fleet from a PORT RANGE
+ * (`TS_PORT_BASE` + `TS_INSTANCE_COUNT`) and publish every port it
+ * probed. Production showed what that costs: the fleet is ONE game
+ * server and `TS_INSTANCE_COUNT` is 8, so the console published eight
+ * servers — seven of them instances nobody ever created.
+ *
+ * A port range cannot tell "this instance exists and is SICK" from
+ * "this instance was NEVER CREATED", and that difference is the whole
+ * health model: the RCON tri-state exists to tell an operator which
+ * one they are looking at. So the console asks the ORCHESTRATOR, which
+ * owns the fleet and says which instances are deployed
+ * (lib/orchestrator.mjs). It is one HTTP GET on loopback, and it
+ * changes the blast radius NOT AT ALL: the orchestrator holds the
+ * Docker socket, the console does not, and a read-only GET on the
+ * same host is not a privilege.
+ *
+ * WHEN THE ORCHESTRATOR CANNOT BE REACHED the console falls back to
+ * the port range — and SAYS SO, in `fleetSource` and `detail`, at the
+ * fleet level. An operator has to be able to tell "this is the fleet"
+ * from "this is every port that could be one". Eight instances and
+ * no word about where the list came from would be the old bug with
+ * less evidence.
+ *
  * LOOPBACK ONLY
  * -------------
  * The service binds 127.0.0.1 and refuses to start on any other
@@ -127,6 +152,7 @@
  *   TS_HOST            where the fleet is         default 127.0.0.1
  *   TS_PORT_BASE       first game-server port     default 27015
  *   TS_INSTANCE_COUNT  number of instances        default 8
+ *   ORCHESTRATOR_URL   the orchestrator's base url default http://127.0.0.1:8090
  *   RCON_PASSWORD      the RCON password          default (empty)
  *   RCON_PASSWORD_FILE the FILE the RCON password is in  default (empty)
  *   ADMIN_AUTH_FILE    the admin password record  default /srv/ts-admin/auth.json
@@ -252,6 +278,11 @@ import {
   probeInstance,
 } from './lib/fleet.mjs';
 import { createLoginGuard } from './lib/lockout.mjs';
+import {
+  createFleetSource,
+  DEFAULT_ORCHESTRATOR_URL,
+  ORCHESTRATOR_TIMEOUT_MS,
+} from './lib/orchestrator.mjs';
 import { parseIpFilter, parseMapList, withCurrentFirst } from './lib/parse.mjs';
 import { createSessionTable, csrfMatches } from './lib/session.mjs';
 
@@ -483,6 +514,12 @@ export function readConfig(env = process.env) {
     portBase: num(env.TS_PORT_BASE, DEFAULT_PORT_BASE),
     // The fleet's size is clamped: see MAX_INSTANCE_COUNT.
     count: clampInstanceCount(count),
+    // WHERE THE ORCHESTRATOR IS. It owns the fleet, and the console
+    // asks it which instances are deployed (lib/orchestrator.mjs). An
+    // EMPTY url disables it, and the console says so in the fleet
+    // response — the port range is the fallback, and a silent
+    // fallback is the bug this replaced.
+    orchestratorUrl: (env.ORCHESTRATOR_URL ?? DEFAULT_ORCHESTRATOR_URL).trim() || null,
     // The ENGINE's password. The administrator's is a scrypt record
     // and lives in the file below — see the header for why the two
     // are never both called `password`.
@@ -773,6 +810,9 @@ function safeDecode(segment) {
  * @param {string} [opts.rconPassword] the ENGINE's password
  * @param {(opts: object) => (command: string) => Promise<object>} [opts.makeAsk]
  * @param {() => number} [opts.now] the clock — injectable for tests
+ * @param {string} [opts.orchestratorUrl] the orchestrator's BASE url; empty disables it
+ * @param {typeof fetch} [opts.orchestratorFetch] the fetch the orchestrator is asked with
+ * @param {number} [opts.orchestratorTimeoutMs] the orchestrator's deadline
  * @param {{load: () => (object|null)}} [opts.auth] where the password record comes from
  * @param {object|null} [opts.authRecord] a record, instead of a store
  * @param {string} [opts.authFile] the record's file, when there is no store
@@ -814,15 +854,28 @@ export function createAdminService(opts = {}) {
   // network one.
   const rconPasswordSource =
     opts.rconPasswordSource ?? (rconPassword ? 'environment' : 'none');
+  // WHERE THE ORCHESTRATOR IS. `undefined` means the caller did not
+  // say, and takes the default; `null` (or an empty string) means
+  // "there is no orchestrator here", and the console says so in the
+  // fleet response instead of quietly publishing a port range.
+  const orchestratorUrl =
+    opts.orchestratorUrl === undefined
+      ? DEFAULT_ORCHESTRATOR_URL
+      : opts.orchestratorUrl === null
+        ? null
+        : String(opts.orchestratorUrl).trim() || null;
   const config = {
     host,
     port,
     targetHost: opts.targetHost ?? '127.0.0.1',
     portBase: opts.portBase ?? DEFAULT_PORT_BASE,
     count: clampInstanceCount(opts.count ?? DEFAULT_INSTANCE_COUNT),
+    orchestratorUrl,
     rconPassword,
     rconPasswordSource,
   };
+  // The port range: the FALLBACK list of instances, and the list the
+  // per-instance endpoints fall back on (see instanceFor()).
   const instances = fleetInstances({ portBase: config.portBase, count: config.count });
   const makeAsk = opts.makeAsk ?? makeRconAsk;
   // ONE CLOCK for everything: the probe cache, the sessions, the
@@ -833,6 +886,20 @@ export function createAdminService(opts = {}) {
   // The probe cache: one probe per instance per TTL, and concurrent
   // requests share one probe (lib/fleet.mjs has the why).
   const cache = createProbeCache({ now });
+  // The fleet's SOURCE: the orchestrator's deployed list, or the port
+  // range when the orchestrator cannot be reached. Cached for a few
+  // seconds, and a failing orchestrator is not re-asked on every
+  // request (lib/orchestrator.mjs has the why).
+  const fleetSource =
+    opts.fleetSource ??
+    createFleetSource({
+      url: config.orchestratorUrl,
+      portBase: config.portBase,
+      count: config.count,
+      timeoutMs: opts.orchestratorTimeoutMs ?? ORCHESTRATOR_TIMEOUT_MS,
+      fetchImpl: opts.orchestratorFetch,
+      now,
+    });
 
   // WHERE THE PASSWORD COMES FROM. A store is anything with a
   // `load()` that returns the scrypt record (or null). On the host it
@@ -911,6 +978,32 @@ export function createAdminService(opts = {}) {
         ask: askFor(instance),
       }),
     );
+
+  /**
+   * The instance with this id, or null.
+   *
+   * THE FLEET FIRST, AND THE PORT RANGE SECOND — and the second one is
+   * the reason this is not simply "is it in the fleet?".
+   *
+   * A sick instance is EXACTLY what the operator is here to look at:
+   * it is in the fleet, it is deployed, and it is not answering. The
+   * fleet's list must never be the thing that hides it — so an id the
+   * fleet does not name still resolves through the port range, and an
+   * instance that cannot be reached is reported as unreachable instead
+   * of as a 404.
+   *
+   * An id that is in neither list was never an instance here, and it
+   * is still a 404.
+   *
+   * @param {string} id
+   * @returns {Promise<object|null>}
+   */
+  async function instanceFor(id) {
+    const fleet = await fleetSource.read();
+    const known = fleet.instances.find((i) => i.id === id);
+    if (known) return known;
+    return instances.find((i) => i.id === id) ?? null;
+  }
 
   /**
    * Write one audit line.
@@ -1393,11 +1486,15 @@ export function createAdminService(opts = {}) {
         });
         return;
       }
-      const instance = instances.find((i) => i.id === id);
+      // The fleet's list first, and the port range second: an
+      // instance that is in the fleet and NOT ANSWERING is exactly
+      // what the operator is trying to look at, and it must not be a
+      // 404 (see instanceFor()).
+      const instance = await instanceFor(id);
       if (!instance) {
         sendJson(res, 404, {
           error: 'unknown_server',
-          detail: `no instance '${id}' in the configured port range`,
+          detail: `no instance '${id}' in the fleet`,
         });
         return;
       }
@@ -1477,10 +1574,25 @@ export function createAdminService(opts = {}) {
 
     try {
       if (FLEET_PATH.test(path)) {
-        const probed = await Promise.all(instances.map((instance) => probe(instance)));
+        // THE FLEET IS THE ORCHESTRATOR'S LIST — the instances that
+        // exist — or the port range, when the orchestrator cannot be
+        // reached. Which one it was is IN THE RESPONSE, because a
+        // console that showed eight instances and said nothing about
+        // where the list came from would be making the old claim with
+        // less evidence.
+        const fleet = await fleetSource.read();
+        const probed = await Promise.all(fleet.instances.map((instance) => probe(instance)));
         const body = {
           servers: probed.map((p) => p.row),
           count: probed.length,
+          // 'orchestrator' is the fleet. 'port-range' is every port
+          // that COULD be an instance, and `detail` says the
+          // orchestrator did not answer.
+          fleetSource: fleet.source,
+          detail: fleet.detail,
+          // The instances the orchestrator named whose port could not
+          // be derived. Reported, not silently dropped.
+          skipped: fleet.skipped,
           rconConfigured: Boolean(config.rconPassword),
         };
         if (!config.rconPassword) {
@@ -1509,11 +1621,15 @@ export function createAdminService(opts = {}) {
         });
         return;
       }
-      const instance = instances.find((i) => i.id === id);
+      // The fleet's list first, and the port range second: an
+      // instance that is in the fleet and NOT ANSWERING is exactly
+      // what the operator is trying to look at, and it must not be a
+      // 404 (see instanceFor()).
+      const instance = await instanceFor(id);
       if (!instance) {
         sendJson(res, 404, {
           error: 'unknown_server',
-          detail: `no instance '${id}' in the configured port range`,
+          detail: `no instance '${id}' in the fleet`,
         });
         return;
       }
@@ -1672,6 +1788,12 @@ export function createAdminService(opts = {}) {
       targetHost: config.targetHost,
       portBase: config.portBase,
       count: config.count,
+      /**
+       * Where the orchestrator is — a url is not a secret. It is
+       * null when the orchestrator is disabled, and the console then
+       * says so in the fleet response.
+       */
+      orchestratorUrl: config.orchestratorUrl,
       /** Whether an RCON password is configured — not the password. */
       rconConfigured: Boolean(config.rconPassword),
       /**
@@ -1742,6 +1864,16 @@ export function start(config = null) {
               resolved.rconPasswordFile ? ` ${resolved.rconPasswordFile}` : ''
             })`
           : ''
+      }`,
+    );
+    // WHERE THE FLEET COMES FROM. The operator wants to know this
+    // before the first fleet read: the orchestrator's deployed list,
+    // or the port range and nothing else.
+    console.log(
+      `orchestrator ${
+        resolved.orchestratorUrl
+          ? resolved.orchestratorUrl
+          : 'NOT CONFIGURED — the fleet will be the port range'
       }`,
     );
     // The state of the console's own password, so the operator can

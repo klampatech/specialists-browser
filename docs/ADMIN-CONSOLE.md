@@ -47,7 +47,7 @@ Here is what each of its parts maps to.
 
 | Mock feature | Real mechanism | Verdict |
 |---|---|---|
-| Server switcher (3 servers) | The fleet is `ts-0 … ts-N`, discovered by **port range** (27015–27022), not by name. The registry already reports every instance with its map, mode, players, tickrate and map timer (`/api/servers`). | ✅ re-shape the list; the data already exists |
+| Server switcher (3 servers) | The fleet is `ts-0 … ts-N`, and the console asks the **orchestrator** which of them are **deployed** (§3.3) — the port range is the fallback. The registry already reports every instance with its map, mode, players, tickrate and map timer (`/api/servers`). | ✅ re-shape the list; the data already exists |
 | Stat bar — Players | `status` gives humans + max; the registry's row gives `humans`, `bots`, `players`, `maxPlayers`. | ✅ |
 | Stat bar — Map | `status` and A2S both give it. | ✅ |
 | Stat bar — Uptime | It is in the A2S_INFO reply, but the current parser (`webxash/vite-a2s-plugin.mjs`) drops it. Two-line change. | ✅ small gap |
@@ -502,7 +502,7 @@ would not be in the console's first release.
 bb-prod (the same OVH box the fleet runs on)
   ├── caddy        :443            (public — unchanged, does NOT route the console)
   ├── registry     127.0.0.1:8081  (public read model, unchanged)
-  ├── orchestrator 127.0.0.1:8090  (fleet lifecycle, unchanged)
+  ├── orchestrator 127.0.0.1:8090  (fleet lifecycle — and the console's fleet list)
   ├── bridge       127.0.0.1:27017 (unchanged)
   ├── admin        127.0.0.1:8095  ← NEW. Loopback only.
   └── N × ts-server containers (udp 27015+, loopback-published)
@@ -561,13 +561,36 @@ both are already paid (§2.1, §2.2).
 **This is the deciding argument.** With RCON:
 
 - the admin service talks to the game servers over **loopback UDP**;
-- it discovers the fleet from a port range, exactly as the registry does
-  (`TS_PORT_BASE` + `TS_INSTANCE_COUNT`);
+- it asks the **orchestrator** which instances are **deployed**, and
+  falls back to the port range (`TS_PORT_BASE` + `TS_INSTANCE_COUNT`)
+  when the orchestrator cannot be reached;
 - it holds **no** Docker socket, **no** root-equivalent privilege, and
   **no** filesystem write access to the game containers.
 
 If it is compromised, the blast radius is "can kick and ban players on
 this box" — not "is root on the game box".
+
+**The orchestrator does not widen the blast radius.** It is a
+read-only `GET http://127.0.0.1:8090/api/orchestrator` on the same
+host, and it hands over a list of ids and a `deployed` flag — no
+command, no socket, no write. The orchestrator is the service that
+**holds** the Docker socket; the console asks it a question, and the
+console still holds none.
+
+And the fleet is the better for asking. A port range cannot tell
+"this instance exists and is sick" from "this instance was never
+created" — and that difference is the whole health model, because the
+RCON tri-state exists to report it. The console published every port
+it probed, so on a one-instance fleet it published eight servers, seven
+of them instances nobody ever created. The orchestrator knows which
+containers exist, so it is the one that answers.
+
+**The fallback is visible.** When the orchestrator cannot be reached
+the console enumerates the port range, and the fleet response says so:
+`fleetSource: "orchestrator" | "port-range"`, with a `detail` that
+names the failure. A console that showed eight instances and said
+nothing about where the list came from would be making the old claim
+with less evidence.
 
 ### 3.4 The secret
 

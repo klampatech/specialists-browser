@@ -54,6 +54,50 @@ internet for a tool that has a private one available.
 
 ---
 
+### 1.1 The orchestrator — where the fleet comes from
+
+The console's other dependency is the **orchestrator**, at
+**`http://127.0.0.1:8090`** (`ORCHESTRATOR_URL` in the deploy script). It
+is on the same host, on loopback, and the console asks it one read-only
+question:
+
+```bash
+curl -fsS http://127.0.0.1:8090/api/orchestrator | head -c 400
+```
+
+**What it is used for:** the console asks which instances are **deployed**,
+and publishes exactly those. The orchestrator owns the fleet — it creates
+and removes the containers — so it is the only service that can tell "this
+instance exists and is sick" from "this instance was never created". That
+difference is the health model: the RCON tri-state (`ok` / `refused` /
+`unreachable`) exists to report it, and a port range cannot.
+
+This is the reason the console shows **one** server on a one-instance
+fleet. It used to enumerate the port range and publish all eight slots,
+seven of them red cards for instances nobody ever created.
+
+**When the orchestrator is down:** the console falls back to the port
+range (`TS_PORT_BASE` + `TS_INSTANCE_COUNT`) — every port that *could* be
+an instance — and it **says so** in the fleet response:
+
+```json
+{ "fleetSource": "port-range", "detail": "the orchestrator did not answer (…)" }
+```
+
+`fleetSource` is `"orchestrator"` when the list is the real fleet, and
+`"port-range"` when it is the fallback. The console draws the fallback as
+a warning in its log drawer. **An empty fleet with
+`fleetSource: "orchestrator"` is a real answer** — the orchestrator says
+there are no deployed instances — and it is not the same thing as the
+fallback.
+
+The orchestrator is asked at most **once every few seconds** (the list is
+cached, and a broken orchestrator is not re-asked on every request), and
+the ask has a **two-second deadline**: a hung orchestrator cannot hang
+the console's fleet endpoint.
+
+---
+
 ## 2. The RCON secret — provisioned once, by hand
 
 ### 2.1 The shape

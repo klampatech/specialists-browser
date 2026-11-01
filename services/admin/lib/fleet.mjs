@@ -1,16 +1,30 @@
 /**
  * The fleet: which instances exist, and what each one says about itself.
  *
- * DISCOVERY IS A PORT RANGE, NOT A LIST
- * -------------------------------------
- * The orchestrator starts instances on ports derived from the index, so
- * the services that watch the fleet have to be able to see an instance
- * that does not exist yet. A fixed list of ports would mean every
- * service needed editing before a scale-out — and the one that was
- * forgotten would be the one that silently failed. So: `ts-0` is
- * `TS_PORT_BASE`, `ts-1` is the next port, and so on. The registry
- * works the same way, and the admin console is not going to be the
- * service that disagrees with it.
+ * DISCOVERY WAS A PORT RANGE, AND THAT SHIPPED A BUG
+ * -------------------------------------------------
+ * The orchestrator starts instances on ports derived from the index,
+ * so the services that watch the fleet have to be able to see an
+ * instance that does not exist yet. A fixed list of ports would mean
+ * every service needed editing before a scale-out — and the one that
+ * was forgotten would be the one that silently failed. So: `ts-0` is
+ * `TS_PORT_BASE`, `ts-1` is the next port, and so on.
+ *
+ * The console published EVERY port in that range, and production
+ * showed what that costs: the fleet is ONE game server and
+ * `TS_INSTANCE_COUNT` is 8, so the console published eight servers —
+ * seven of them instances nobody ever created, all seven of them red.
+ * A port range cannot tell "this instance exists and is sick" from
+ * "this instance was never created", and that difference IS the
+ * health model.
+ *
+ * So the console now asks the ORCHESTRATOR which instances are
+ * deployed (lib/orchestrator.mjs) — it owns the fleet, it creates and
+ * removes the containers, and it says so. The port range is what is
+ * left when the orchestrator cannot be reached: the FALLBACK, and the
+ * fleet response says which of the two the operator is looking at.
+ * The registry is unchanged: it enumerates the same range but
+ * PUBLISHES only the instances that exist.
  *
  * THE FIRST COMMAND IS ALSO THE PROBE
  * -----------------------------------
@@ -93,6 +107,12 @@ export function clampInstanceCount(count) {
 
 /**
  * The fleet's instances, by port range.
+ *
+ * THIS IS THE FALLBACK LIST, not the fleet. It says which ports COULD
+ * be instances; it does not say which instances exist. The console
+ * publishes the orchestrator's deployed list (lib/orchestrator.mjs)
+ * and falls back to this when the orchestrator cannot be reached —
+ * and says which of the two it did.
  *
  * @param {object} [opts]
  * @param {number} [opts.portBase]
