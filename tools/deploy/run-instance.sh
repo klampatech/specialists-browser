@@ -40,7 +40,11 @@ set -euo pipefail
 N="${1:?usage: run-instance.sh <instance-number>}"
 PORT_BASE="${TS_PORT_BASE:-27015}"
 PORT=$((PORT_BASE + N))
-NAME="ts-$N"
+# The container's name. The override is for a DISPOSABLE instance: the
+# orchestrator owns ts-N, and a test instance must not be something the
+# orchestrator will then try to manage. Same reason the entrypoint's
+# paths became overridable -- so the thing can be exercised for real.
+NAME="${TS_INSTANCE_NAME:-ts-$N}"
 # The image tag. 0.21 -> 0.22 for the map cycle and the sixteen-bot
 # roster; 0.22 -> 0.23 for the three classic maps TS 3.0 dropped from
 # its own cycle (ts_dojo, ts_dietrich, ts_bikini); 0.23 -> 0.24 for the
@@ -52,8 +56,12 @@ NAME="ts-$N"
 # on the pipe, and the kernel could hand a console command to it, where
 # it was consumed and DISCARDED. Measured on production before the
 # fix: a console question never answered in 25 seconds, 2 times out of
-# 12. After it: 12 of 12 answered, in 32-269ms. The OLD tag stays on the
-# host so a rollback is one env var: TS_IMAGE=ts-server:0.26.
+# 12. After it: 12 of 12 answered, in 32-269ms. 0.27 -> 0.28 for the
+# RCON SECRET: the entrypoint appends the mounted password to the
+# COPIED server.cfg, so the engine has it from the first second of its
+# life instead of only after somebody types it into the console. The
+# OLD tag stays on the host so a rollback is one env var:
+# TS_IMAGE=ts-server:0.27.
 #
 # WHY THE ROTATION NEEDS AN IMAGE
 # -------------------------------
@@ -61,7 +69,43 @@ NAME="ts-$N"
 # a live server is stomped at the next map change (measured: mp_timelimit
 # 10 at 15:39 became 3 again at the 15:48 map change). The rotation
 # therefore only sticks if it is IN the image's server.cfg.
-IMAGE="${TS_IMAGE:-ts-server:0.27}"
+#
+# WHY RCON NEEDS AN IMAGE TOO, AND IT IS NOT THE SAME REASON
+# -----------------------------------------------------------
+# The RCON password is a cvar like any other, so the same rule applies:
+# set on a live server, it is in the engine's MEMORY, and a container
+# restart takes it with the process. There is no way to write it into a
+# live container's memory from outside — the file the admin console
+# reads is on the HOST, and the engine reads its config at boot.
+#
+# So the password has to be in the image's entrypoint, and the tag has
+# to move. Measured on production, 2026-11-01, on a disposable instance:
+# the 0.28 image answered RCON (outcome=ok, 17 packets) BEFORE a
+# `docker restart` and AFTER it; the 0.27 image, with the very same
+# secret mounted, was `refused` in both cases — because its entrypoint
+# has no idea the secret exists.
+#
+# THE IMAGE IS BUILT BY HAND, AND THE PIPELINE DOES NOT BUILD IT.
+# `tools/deploy/Dockerfile.ts-server` carries the payload (the compiled
+# Rust server DLL), which is a build artifact and is deliberately not
+# committed. So the tag moves the way it has always moved: on the
+# host, with the payload staged in ~/build.
+#
+#   rsync tools/deploy/entrypoint.sh bb-prod:/home/ubuntu/build/entrypoint.sh
+#   ssh bb-prod 'cd ~/build && docker build -f Dockerfile.ts-server -t ts-server:0.28 .'
+#
+# The only thing that changed since 0.27 is the entrypoint: the RCON
+# secret block, and the paths becoming overridable with the SAME
+# defaults so the entrypoint can be exercised by a test without a
+# container. The payload is byte-for-byte the same.
+#
+# (An overlay on 0.27 — FROM ts-server:0.27, COPY the entrypoint,
+# chmod it — was tried first and works too, but it needs `USER root`
+# around the chmod, because the base image runs as gameserver and the
+# COPY lands root-owned. The canonical build has no such trap: the
+# same two lines run BEFORE the "USER gameserver" switch in
+# tools/deploy/Dockerfile.ts-server.)
+IMAGE="${TS_IMAGE:-ts-server:0.28}"
 ASSETS="${TS_ASSETS:-/srv/ts-data}"
 MAXPLAYERS="${TS_MAXPLAYERS:-32}"
 MAP="${TS_MAP:-ts_casa}"
@@ -119,9 +163,59 @@ CONFIG="${TS_CONFIG:-/srv/ts-config}"
 RCON_SECRET="${TS_RCON_SECRET:-/srv/ts-admin/rcon_password}"
 RCON_GID="${TS_RCON_GID:-10007}"
 RCON_MOUNTS=()
-if [ -f "$RCON_SECRET" ]; then
-  RCON_MOUNTS=(--group-add "$RCON_GID" -v "$RCON_SECRET:/srv/secrets/rcon_password:ro")
+
+[ -d "$ASSETS" ] || { echo "asset volume missing: $ASSETS" >&2; exit 1; }
+[ -f "$ASSETS/ts/maps/$MAP.bsp" ] || {
+  echo "map $MAP not found under $ASSETS/ts/maps — the volume looks incomplete" >&2
+  exit 1
+}
+
+# The config volume, checked the same way the asset volume is. The engine copies these three files into the game directory at startup
+# and refuses to start without them, so a config volume that exists
+# but is empty would take the whole game server down rather than fall
+# back to the image's baked-in copy. Checked HERE so the failure names
+# the volume instead of surfacing as an entrypoint error.
+for cfg in server.cfg gameinfo.txt mapcycle.txt; do
+  [ -f "$CONFIG/$cfg" ] || {
+    echo "game config missing: $CONFIG/$cfg — the config volume looks incomplete" >&2
+    exit 1
+  }
+done
+
+# ── the RCON secret: ask the DAEMON, not this container ───────────────────
+#
+# This script runs INSIDE the orchestrator's container, and the secret
+# lives on the HOST. Those are two different filesystems: the
+# orchestrator's container does not have /srv/ts-admin mounted at all,
+# and the state directory is 0700 and owned by the console's uid, so a
+# mount would not be readable either. A test HERE says "not there" for a
+# secret that is right there.
+#
+# That is not hypothetical: it is why the boot config never happened.
+# The secret mounted into the container and the engine never read it,
+# and the console reported `refused` on an instance that was running
+# perfectly well. It is the same mistake as the deploy gate that skipped
+# the console on 2026-11-01 — asking a question about a file without the
+# authority to see it, and believing the answer.
+#
+# The bind source is resolved by the DOCKER DAEMON, on the host, so the
+# question has to be asked in the daemon's namespace. `docker run
+# --mount` FAILS when the source does not exist and creates nothing; the
+# short `-v` form CREATES A DIRECTORY there — and a directory where a
+# password file should be looks like a password file to everything that
+# reads it. So the probe uses --mount, and so does the real mount: if
+# the probe were ever wrong, the mount fails loudly instead of creating
+# a directory.
+if docker run --rm \
+     --mount "type=bind,source=$RCON_SECRET,target=/probe,readonly" \
+     --entrypoint sh "$IMAGE" -c 'test -f /probe' >/dev/null 2>&1; then
+  RCON_MOUNTS=(
+    --group-add "$RCON_GID"
+    --mount "type=bind,source=$RCON_SECRET,target=/srv/secrets/rcon_password,readonly"
+  )
 fi
+
+docker rm -f "$NAME" >/dev/null 2>&1 || true
 
 # ── log rotation ────────────────────────────────────────────────────────────
 # The game server's log grows without bound. Measured on production
@@ -150,27 +244,6 @@ fi
 # enough that eight instances cannot fill a 38 GB disk.
 LOG_MAX_SIZE="${TS_LOG_MAX_SIZE:-10m}"
 LOG_MAX_FILE="${TS_LOG_MAX_FILE:-3}"
-
-[ -d "$ASSETS" ] || { echo "asset volume missing: $ASSETS" >&2; exit 1; }
-[ -f "$ASSETS/ts/maps/$MAP.bsp" ] || {
-  echo "map $MAP not found under $ASSETS/ts/maps — the volume looks incomplete" >&2
-  exit 1
-}
-
-# The config volume, checked the same way the asset volume is. The
-# engine copies these three files into the game directory at startup
-# and refuses to start without them, so a config volume that exists
-# but is empty would take the whole game server down rather than fall
-# back to the image's baked-in copy. Checked HERE so the failure names
-# the volume instead of surfacing as an entrypoint error.
-for cfg in server.cfg gameinfo.txt mapcycle.txt; do
-  [ -f "$CONFIG/$cfg" ] || {
-    echo "game config missing: $CONFIG/$cfg — the config volume looks incomplete" >&2
-    exit 1
-  }
-done
-
-docker rm -f "$NAME" >/dev/null 2>&1 || true
 
 docker run -d \
   --name "$NAME" \
