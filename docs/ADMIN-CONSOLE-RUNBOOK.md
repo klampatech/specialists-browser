@@ -52,6 +52,63 @@ it has no DNS record, and nothing in this phase may put it there. A public
 vhost with a password in front of it puts an authentication surface on the
 internet for a tool that has a private one available.
 
+### 1.0 The tailnet URL — the way in, with no terminal
+
+**`https://m5.tail1b3795.ts.net:8095/`** is the console's address. It is a
+Tailscale URL, so it works from any device on the tailnet, with no SSH
+tunnel, no terminal window, and no key on the machine you are sitting at.
+
+It is **tailnet-only** — not a Funnel, and not a public vhost:
+
+| from | result |
+|---|---|
+| the tailnet (any enrolled device) | HTTP 200 |
+| the public internet (`bb-prod`, off the tailnet) | unreachable — HTTP 000 |
+| `m5`'s own public IP, port 8095 | unreachable — HTTP 000 |
+
+The chain is three hops, and each one is private:
+
+```
+browser ──tailscale (encrypted, tailnet only)──▶ m5
+m5:8095 ──tailscale serve──▶ 127.0.0.1:8095
+m5:127.0.0.1:8095 ──ssh tunnel (systemd)──▶ bb-prod:127.0.0.1:8095
+```
+
+**The console's own authentication is unchanged and still required** — the
+password, the session, the CSRF token, the lockout. The tailnet is the
+network layer; it is not a substitute for the login.
+
+Two durable pieces on `m5`:
+
+```bash
+# 1. the SSH tunnel to the production console, as a service
+sudo cp tools/admin/ts-admin-tunnel.service /etc/systemd/system/
+sudo systemctl enable --now ts-admin-tunnel.service
+
+# 2. the tailnet publication
+sudo tailscale set --operator=kyle          # so serve needs no root
+tailscale serve --bg --https=8095 http://127.0.0.1:8095
+```
+
+The unit runs as **`kyle`, not root**, because the `bb-prod` alias — host,
+user, key and known_hosts entry — lives in `/home/kyle/.ssh/config`. Root's
+home is `/root`, which has no such config, and ssh there fails with
+*"Could not resolve hostname bb-prod"* before it ever reaches the key.
+
+Both pieces survive a reboot: the unit is `enabled`, and `tailscale serve
+--bg` persists its own configuration.
+
+**To take it away again:**
+
+```bash
+tailscale serve --https=8095 off
+sudo systemctl disable --now ts-admin-tunnel.service
+```
+
+**The old tunnel script still works** and is the fallback when the tailnet
+is not an option — a laptop that is not enrolled, or a machine that cannot
+reach the tailnet.
+
 ---
 
 ### 1.1 The orchestrator — where the fleet comes from
