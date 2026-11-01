@@ -265,7 +265,7 @@ test('the deploy SKIPS the console when the secret is not provisioned', () => {
   // stopped over a console nobody is using yet would be a worse outage
   // than the one it prevents: the deploy SKIPS the console, loudly, and
   // deploys the rest.
-  assert.match(deploy, /if \[ ! -f "\$RCON_SECRET" \]; then/);
+  assert.match(deploy, /if ! sudo test -f "\$RCON_SECRET"; then/);
   assert.match(deploy, /ADMIN_READY=0/);
   assert.match(deploy, /SKIPPING the admin console/);
   assert.match(deploy, /ADMIN-CONSOLE-RUNBOOK/);
@@ -278,8 +278,50 @@ test('the deploy STOPS on a secret that is empty or world-readable', () => {
   // An empty file is a provisioning accident -- `touch` and a forgotten
   // `cat` -- and a world-readable file is a leaked password. Neither is
   // something to deploy around: the operator has to fix it.
-  assert.match(deploy, /if \[ ! -s "\$RCON_SECRET" \]; then/);
+  assert.match(deploy, /elif ! sudo test -s "\$RCON_SECRET"; then/);
   assert.match(deploy, /world-accessible/);
+});
+
+test('the deploy asks about the secret WITH AUTHORITY', () => {
+  // THIS IS A REGRESSION TEST FOR A BUG THAT SHIPPED.
+  //
+  // The state directory is 0700 and owned by the console's own uid
+  // (10006). The deploy script runs as the deploy user (ubuntu), who is
+  // neither that uid nor in the shared group -- so it CANNOT TRAVERSE
+  // into /srv/ts-admin. A plain `[ -f "$RCON_SECRET" ]` therefore
+  // answers "no such file" for a secret that is provisioned and correct,
+  // and the deploy skipped the console on 2026-11-01 with the message
+  // "the RCON secret is not provisioned".
+  //
+  // The directory being private is CORRECT -- it is the secret's home.
+  // So the gate has to ask the question with the authority to ask it.
+  // Every check on the secret must be sudo, and none of them may be the
+  // bare form.
+  assert.match(deploy, /sudo test -f "\$RCON_SECRET"/);
+  assert.match(deploy, /sudo test -s "\$RCON_SECRET"/);
+  assert.match(deploy, /sudo stat -c '%a' "\$RCON_SECRET"/);
+  // And the bare forms must be gone: one of them coming back is the
+  // bug coming back.
+  assert.doesNotMatch(deploy, /\[ ! -f "\$RCON_SECRET" \]/);
+  assert.doesNotMatch(deploy, /\[ ! -s "\$RCON_SECRET" \]/);
+  // The lookbehind matters: `sudo stat -c ...` CONTAINS `stat -c ...`,
+  // so a plain negative pattern would fail on the FIXED line and pass
+  // on the broken one, which is exactly backwards.
+  assert.doesNotMatch(deploy, /(?<!sudo )stat -c '%a' "\$RCON_SECRET"/);
+  // The runbook pins the directory's mode, so the two facts cannot
+  // drift apart: 0700 is what makes the unprivileged check a lie.
+  const runbook = readFileSync(join(repoRoot, 'docs/ADMIN-CONSOLE-RUNBOOK.md'), 'utf8');
+  assert.match(runbook, /chmod 0700 \/srv\/ts-admin \/srv\/ts-admin\/auth/);
+});
+
+test('the state directory the deploy makes is PRIVATE to the console', () => {
+  // The other half of the same fact, pinned on the deploy side: the
+  // deploy creates the state directory 0700 and owned by the console's
+  // uid. If this ever becomes 0755 the gate's sudo would be
+  // unnecessary -- and if it becomes 0777 the secret is exposed to
+  // every uid on the box.
+  assert.match(deploy, /sudo chmod 0700 "\$ADMIN_DIR" "\$ADMIN_DIR\/auth"/);
+  assert.match(deploy, /sudo chown "\$ADMIN_UID:\$ADMIN_GID" "\$ADMIN_DIR"/);
 });
 
 test('the deploy builds the admin image when the repository is here', () => {
