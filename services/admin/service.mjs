@@ -189,6 +189,7 @@
  */
 
 import http from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
@@ -198,6 +199,7 @@ import {
 } from './lib/auth.mjs';
 import { createAuditSink, DEFAULT_AUDIT_PATH } from './lib/audit.mjs';
 import { banCapabilities, banUnavailableBody } from './lib/ban.mjs';
+import { createBanStore, ID_BANS_NOTE } from './lib/bans.mjs';
 import {
   attachTsStatus,
   clampInstanceCount,
@@ -209,6 +211,7 @@ import {
   probeInstance,
 } from './lib/fleet.mjs';
 import { createLoginGuard } from './lib/lockout.mjs';
+import { parseIpFilter, parseMapList, withCurrentFirst } from './lib/parse.mjs';
 import { createSessionTable, csrfMatches } from './lib/session.mjs';
 
 const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
@@ -507,6 +510,91 @@ const FLEET_PATH = /^\/admin\/servers$/;
 const PLAYERS_PATH = /^\/admin\/servers\/([^/]+)\/players$/;
 const STATUS_PATH = /^\/admin\/servers\/([^/]+)\/status$/;
 const BAN_PATH = /^\/admin\/servers\/([^/]+)\/ban$/;
+const MAPS_PATH = /^\/admin\/servers\/([^/]+)\/maps$/;
+const BANS_PATH = /^\/admin\/servers\/([^/]+)\/bans$/;
+
+/* ------------------------------------------------------------------ */
+/* the static files                                                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * THE STATIC FILES, AND WHY THERE ARE EXACTLY THREE.
+ *
+ * The console is a page, a stylesheet and a script. No build step, no
+ * framework, no dependency: the mock is static HTML, and a static
+ * page does not need a framework to work.
+ *
+ * THESE THREE PATHS ARE NOT BEHIND THE SESSION GATE, and they are the
+ * only three that are not. The login page needs its CSS and its
+ * JavaScript, and the page has to load before anybody can log in —
+ * a console whose own stylesheet is behind the login is a console
+ * with an unstyled login screen.
+ *
+ * EVERYTHING ELSE UNDER `/admin` IS EXACTLY WHERE IT WAS. The API is
+ * behind the gate, and a static path and an API path can never
+ * collide: `/admin.css` and `/admin.js` are not under `/admin/`, and
+ * the API's paths all start with `/admin/`.
+ *
+ * The HTML is `no-store`, so a deploy shows up on the next reload
+ * without a hard refresh. The stylesheet and the script are cached
+ * briefly — they change with a deploy, and a minute of caching is
+ * the right amount of caching for a console on loopback.
+ */
+const STATIC_FILES = new Map([
+  [
+    '/',
+    { file: 'index.html', type: 'text/html; charset=utf-8', cache: 'no-store' },
+  ],
+  [
+    '/admin.css',
+    { file: 'admin.css', type: 'text/css; charset=utf-8', cache: 'public, max-age=60' },
+  ],
+  [
+    '/admin.js',
+    { file: 'admin.js', type: 'text/javascript; charset=utf-8', cache: 'public, max-age=60' },
+  ],
+]);
+
+/** Where the static files live: next to this file, in `public/`. */
+const PUBLIC_DIR = new URL('./public/', import.meta.url);
+
+/**
+ * Serve one static file.
+ *
+ * The file is read per request, so a deploy shows up without a
+ * restart — which is the same promise the `no-store` on the HTML
+ * makes, and it is why there is no build step to bust a cache.
+ *
+ * @param {string} path the request's path
+ * @param {http.ServerResponse} res
+ * @returns {Promise<boolean>} whether the path was a static file
+ */
+async function serveStatic(path, res) {
+  const entry = STATIC_FILES.get(path);
+  if (!entry) return false;
+
+  let body;
+  try {
+    body = await readFile(new URL(entry.file, PUBLIC_DIR));
+  } catch (err) {
+    sendJson(res, 500, {
+      error: 'static_file_unreadable',
+      detail: `${entry.file} could not be read: ${err?.code ?? err?.message ?? err}`,
+    });
+    return true;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': entry.type,
+    'Cache-Control': entry.cache,
+    'Content-Length': body.length,
+    // The browser is told not to guess the type, so a file that is
+    // ever swapped cannot become something executable.
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(body);
+  return true;
+}
 
 /**
  * A path segment, decoded — without throwing.
@@ -575,6 +663,7 @@ function safeDecode(segment) {
  * @param {string} [opts.authFile] the record's file, when there is no store
  * @param {{record: (action: string, target: string, outcome: string) => boolean}} [opts.audit]
  * @param {string} [opts.auditPath] the audit log, when there is no sink
+ * @param {{list: () => object[]}} [opts.bans] the console's own id-ban store
  * @returns {{server: http.Server, config: object, instances: object[]}}
  */
 export function createAdminService(opts = {}) {
@@ -643,6 +732,15 @@ export function createAdminService(opts = {}) {
   // The sessions (in memory) and the login throttles.
   const sessions = createSessionTable({ now });
   const guard = createLoginGuard({ now });
+
+  // THE CONSOLE'S OWN ID-BAN STORE. It is empty today, and it has no
+  // way to become anything else until the per-browser identity exists
+  // (lib/bans.mjs). The IP filter is NOT here — that one is the
+  // engine's, and it is read from `listip` on every read.
+  const bans =
+    opts.bans && typeof opts.bans.list === 'function'
+      ? opts.bans
+      : createBanStore();
 
   /**
    * Is there a password record?
@@ -862,6 +960,25 @@ export function createAdminService(opts = {}) {
     const mutating = method !== 'GET' && method !== 'HEAD';
     const source = sourceAddress(req);
 
+    // THE STATIC FILES ARE NOT BEHIND THE GATE.
+    //
+    // Three paths, and only three: the page, its stylesheet and its
+    // script. The login screen needs all three, and the page has to
+    // load before anybody can log in. Everything else — every API
+    // path — is behind the session gate below, exactly where it was.
+    if (STATIC_FILES.has(path)) {
+      if (method !== 'GET' && method !== 'HEAD') {
+        res.setHeader('Allow', 'GET, HEAD');
+        sendJson(res, 405, {
+          error: 'method_not_allowed',
+          detail: `${method} is not allowed on ${path}; a static file is a GET`,
+        });
+        return;
+      }
+      await serveStatic(path, res);
+      return;
+    }
+
     // THE LOGIN ENDPOINT IS THE ONLY ONE THAT DOES NOT NEED A
     // SESSION. Everything else — including the three read endpoints
     // phase 1 built — goes through the gate below.
@@ -989,7 +1106,14 @@ export function createAdminService(opts = {}) {
 
     const playersMatch = PLAYERS_PATH.exec(path);
     const statusMatch = STATUS_PATH.exec(path);
-    const known = FLEET_PATH.test(path) || Boolean(playersMatch) || Boolean(statusMatch);
+    const mapsMatch = MAPS_PATH.exec(path);
+    const bansMatch = BANS_PATH.exec(path);
+    const known =
+      FLEET_PATH.test(path) ||
+      Boolean(playersMatch) ||
+      Boolean(statusMatch) ||
+      Boolean(mapsMatch) ||
+      Boolean(bansMatch);
 
     if (!known) {
       sendJson(res, 404, {
@@ -1030,7 +1154,9 @@ export function createAdminService(opts = {}) {
 
       let id;
       try {
-        id = decodeURIComponent((playersMatch ?? statusMatch)[1]);
+        id = decodeURIComponent(
+          (playersMatch ?? statusMatch ?? mapsMatch ?? bansMatch)[1],
+        );
       } catch {
         // A malformed percent-escape is the CLIENT's mistake, not the
         // server's. Letting the URIError reach the catch-all below
@@ -1081,6 +1207,90 @@ export function createAdminService(opts = {}) {
             slot: "the client-array slot — the engine's `#` column. It is NOT the kick target.",
             userid: 'the userid — what `kick #<userid>` resolves to. The slot number is not it.',
           },
+        });
+        return;
+      }
+
+      /* ---------------------------------------------------------------- */
+      /* the map list                                                      */
+      /* ---------------------------------------------------------------- */
+
+      if (mapsMatch) {
+        // THE PROBE FIRST, AND THE PROBE'S ANSWER IS THE GATE.
+        //
+        // The probe is cached (five seconds for an instance that
+        // answered), and it is the thing that knows whether the engine
+        // will talk to us at all. A failed RCON call costs the
+        // instance a token from its own rate-limit bucket, so an
+        // instance that already refused is NOT asked again — it is
+        // reported as it is. That is the same rule the probe itself
+        // follows (lib/fleet.mjs).
+        const { row } = await probe(instance);
+        if (row.rcon !== 'ok') {
+          sendJson(res, 200, {
+            id: row.id,
+            maps: [],
+            current: row.map,
+            raw: '',
+            rcon: row.rcon,
+            detail: row.detail,
+          });
+          return;
+        }
+
+        // `maps *` — the engine's own listing of the map files it has.
+        const answer = await askFor(instance)('maps *');
+        const parsed = parseMapList(answer.text);
+        const names = parsed.maps.map((m) => m.name);
+        sendJson(res, 200, {
+          id: row.id,
+          // The cycle, with the map the instance is ON first.
+          maps: withCurrentFirst(names, row.map),
+          current: row.map,
+          // The engine's own text, so the output drawer has something
+          // real to show and an operator can read what the engine
+          // actually said.
+          raw: answer.text,
+          rcon: answer.outcome,
+          detail: answer.detail,
+          // What the engine said about the listing itself.
+          listed: parsed.listed,
+          directory: parsed.directory,
+        });
+        return;
+      }
+
+      /* ---------------------------------------------------------------- */
+      /* the bans                                                          */
+      /* ---------------------------------------------------------------- */
+
+      if (bansMatch) {
+        const { row } = await probe(instance);
+        let ipFilter = [];
+        let rcon = row.rcon;
+        let detail = row.detail;
+
+        if (row.rcon === 'ok') {
+          // `listip` — the engine's own IP filter. It PRINTS at
+          // `developer 1`, so unlike `listid` it can be asked.
+          const answer = await askFor(instance)('listip');
+          rcon = answer.outcome;
+          detail = answer.detail;
+          ipFilter = parseIpFilter(answer.text).filters;
+        }
+
+        sendJson(res, 200, {
+          id: row.id,
+          // THE CONSOLE'S OWN STORE. It is empty, and it cannot be
+          // anything else: the ban endpoint is a stub and nothing can
+          // create a ban (lib/bans.mjs has the why).
+          idBans: bans.list(),
+          // THE ENGINE'S `listip`, read-only.
+          ipFilter,
+          // Why the id list is empty, in the operator's words.
+          note: ID_BANS_NOTE,
+          rcon,
+          detail,
         });
         return;
       }

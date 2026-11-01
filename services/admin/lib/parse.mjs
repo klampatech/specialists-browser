@@ -556,3 +556,176 @@ export function parseCvar(text) {
     number: Number.isFinite(n) ? n : null,
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* `maps *`                                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ONE LINE OF THE ENGINE'S `maps *` REPLY.
+ *
+ * The engine's own command is `SV_Maps_f`
+ * (engine/server/sv_cmds.c), and it prints one line per map through
+ * `Cmd_ListMaps` (engine/common/con_utils.c):
+ *
+ *     Con_Printf( "%16s (%s) ^3%s^7 ^2%s %s^7\n", mapname,
+ *                 version_description, message, compiler, generator );
+ *
+ * So the line is: the map's FILE BASE NAME, right-aligned in sixteen
+ * columns; the BSP version in brackets; then the map's own title
+ * (its `message` key), its compiler and its generator. The colour
+ * codes are gone by the time the text gets here — the RCON client
+ * strips them (lib/rcon.mjs) — so what is left reads:
+ *
+ *            ts_casa (Half-Life extended) Casa Hammer 3.0
+ *
+ * and the reply ends with the engine's own summary:
+ *
+ *     -------------------
+ *     Directory: "ts/maps" - Maps listed: 24
+ *
+ * THE MAP NAME IS AT THE START, AND IT IS THE ONLY THING THAT
+ * MATTERS. The title, the compiler and the generator are whatever the
+ * map's own `.ent` file said, and a map with no title prints nothing
+ * there — so the name is read from the FRONT of the line and the rest
+ * is decoration.
+ */
+const MAP_LINE = /^\s*(\S.*?)\s+\(([^)]*)\)/;
+
+/** `Directory: "ts/maps" - Maps listed: 24` — the engine's summary. */
+const MAPS_SUMMARY = /^Directory:\s*"([^"]*)"\s*-\s*Maps listed:\s*(\d+)/;
+
+/** The separator the engine prints before the summary. */
+const MAPS_SEPARATOR = /^-{5,}$/;
+
+/**
+ * Parse the engine's `maps *` reply.
+ *
+ * @param {string} text the whole reply, colour codes already stripped
+ * @returns {{
+ *   maps: {name: string, version: string}[],
+ *   listed: number|null,
+ *   directory: string|null
+ * }}
+ */
+export function parseMapList(text) {
+  const maps = [];
+  let listed = null;
+  let directory = null;
+
+  for (const raw of String(text ?? '').split('\n')) {
+    const line = raw.replace(/\r/g, '').trim();
+    if (!line) continue;
+
+    const summary = MAPS_SUMMARY.exec(line);
+    if (summary) {
+      directory = summary[1];
+      listed = Number(summary[2]);
+      continue;
+    }
+    if (MAPS_SEPARATOR.test(line)) continue;
+
+    const m = MAP_LINE.exec(line);
+    if (!m) continue;
+    // The name is the FIRST field, and it is the map's FILE BASE NAME
+    // — the engine prints it without its extension. An extension is
+    // stripped if one is there anyway, and a path is refused: a path
+    // is not a map name, and the console shows map names.
+    const name = m[1].trim().replace(/\.(bsp|map)$/i, '');
+    if (!name || name.includes('/') || name.includes('\\')) continue;
+    maps.push({ name, version: m[2].trim() });
+  }
+
+  return { maps, listed, directory };
+}
+
+/**
+ * Put the current map first.
+ *
+ * The engine's `maps *` lists the map files in the order the
+ * filesystem gave them, and the map the instance is ON is the one an
+ * operator is looking for. So it goes first — and if the engine's own
+ * list does not carry it (a map loaded from a pak, or one that was
+ * deleted from the directory while it was loaded), it is still put
+ * first, because the current map is a fact and the list is a listing.
+ *
+ * @param {string[]} names the engine's map names
+ * @param {string|null} current the map the instance is on
+ * @returns {string[]}
+ */
+export function withCurrentFirst(names, current) {
+  const list = Array.isArray(names) ? names.filter((n) => typeof n === 'string') : [];
+  if (!current) return list;
+  const rest = list.filter((n) => n !== current);
+  // Whether the engine's own listing carries the current map or not,
+  // it goes first: the current map is a fact, and the list is only a
+  // listing.
+  return [current, ...rest];
+}
+
+/* ------------------------------------------------------------------ */
+/* `listip`                                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ONE LINE OF THE ENGINE'S `listip` REPLY.
+ *
+ * `SV_ListIP_f` (engine/server/sv_filter.c) prints either
+ *
+ *     IP filter list is empty
+ *
+ * or a header and then one line per filter, through
+ * `SV_FilterToString`:
+ *
+ *     "%s/%d (permanent)"      or      "%s/%d (%f minutes)"
+ *
+ * so a line reads `1.2.3.4/32 (permanent)` or
+ * `5.6.7.8/24 (300.000000 minutes)`. The address, the prefix length,
+ * and whether the filter ever expires.
+ */
+const IP_FILTER_LINE = /^(\S+)\/(\d+)\s+\((.+)\)$/;
+
+/** `IP filter list is empty` — the engine's way of saying there is none. */
+const IP_FILTER_EMPTY = /^IP filter list is empty$/i;
+
+/** `IP filter list:` — the header before the entries. */
+const IP_FILTER_HEADER = /^IP filter list:$/i;
+
+/**
+ * Parse the engine's `listip` reply.
+ *
+ * @param {string} text the whole reply, colour codes already stripped
+ * @returns {{filters: object[], empty: boolean}}
+ */
+export function parseIpFilter(text) {
+  const filters = [];
+  let empty = false;
+
+  for (const raw of String(text ?? '').split('\n')) {
+    const line = raw.replace(/\r/g, '').trim();
+    if (!line) continue;
+    if (IP_FILTER_EMPTY.test(line)) {
+      empty = true;
+      continue;
+    }
+    if (IP_FILTER_HEADER.test(line)) continue;
+
+    const m = IP_FILTER_LINE.exec(line);
+    if (!m) continue;
+    const permanent = /^permanent$/i.test(m[3]);
+    const minutes = Number(m[3].replace(/\s*minutes?$/i, '').trim());
+    filters.push({
+      /** The address, without the prefix. */
+      address: m[1],
+      /** The prefix length. */
+      prefix: Number(m[2]),
+      /** Minutes left, or null when the filter is permanent. */
+      minutes: permanent || !Number.isFinite(minutes) ? null : minutes,
+      permanent,
+      /** The engine's own line, verbatim. */
+      raw: line,
+    });
+  }
+
+  return { filters, empty };
+}

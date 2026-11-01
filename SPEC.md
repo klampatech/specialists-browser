@@ -67,7 +67,7 @@ instances" capacity figure is still a budget, not a measurement); the FE
 tweaks and the bulletballet re-brand; single-player depth on the
 fallback path.
 
-## The admin console: phases 1 and 2 (2026-10-31)
+## The admin console: phases 1, 2 and 3 (2026-10-31)
 
 The console is specified in `docs/ADMIN-CONSOLE.md` (the source of
 truth). Phase 1 is the **service and the transport**: `services/admin`,
@@ -76,7 +76,9 @@ three read-only endpoints. Phase 2 is the **auth**: the password, the
 session, the lockout, the CSRF token, the audit line and `adminctl`. It
 also ships the **ban's stub endpoint** (§5.1) — always 501, and it
 never touches the engine. The console is not deployed yet (phase 5), it
-has no UI (phase 3) and no mutating **engine** action (phase 4).
+has **no mutating engine action** (phase 4). **Phase 3 is the
+read-only UI** — the page, the login screen and the shell — and it is
+below.
 
 Three decisions in phase 1 are **not** in the spec document, and they
 are worth keeping:
@@ -230,6 +232,69 @@ to call** instead of nothing. `GET /admin/session` carries the
 capability the UI renders it from: `{"capabilities": {"ban": false}}`.
 When FEAT-004 and FEAT-005 land, the flag flips and the button
 enables — one flag, no UI change.
+
+### Phase 3 — the read-only UI
+
+**Kyle's mock is the design contract, and it is in the repo**
+(`docs/admin-console-mock.html`, byte for byte). The console's
+stylesheet is that mock's CSS **extracted verbatim**
+(`services/admin/public/admin.css`) — not a re-implementation, not a
+rewrite, the thing itself. The **palette mirrors the site's**
+`webxash/src/assets/ts-theme.css` (the same values) but under the
+**mock's own token names**, and the names stay the mock's: the site's
+tokens are frozen and `--ts-` prefixed, and rewriting a working
+stylesheet against different names is how a design drifts.
+
+**The console is served by the admin service itself.** Three static
+paths — `/`, `/admin.css`, `/admin.js` — and they are the **only**
+ones not behind the session gate, because the login screen needs its
+own CSS and its own JavaScript. The HTML is `no-store` so a deploy
+shows up; the CSS and the JS are cached for a minute. **No build step,
+no framework, no npm dependency** — the service still has none. The
+API did not move: every `/admin` path is still behind the gate, and a
+static path and an API path cannot collide, because `/admin.css` and
+`/admin.js` are not under `/admin/`.
+
+**Two READ endpoints were added** — both were in §5 and phase 1 did
+not build them:
+
+- **`GET /admin/servers/:id/maps`** — the engine's own `maps *`,
+  parsed out of the engine's **real** output (`SV_Maps_f` →
+  `Cmd_ListMaps`), with the **current map first** and the engine's
+  `raw` text alongside.
+- **`GET /admin/servers/:id/bans`** — the **console's own** id-ban
+  store, which is **empty** (the ban endpoint is a stub and nothing
+  can create a ban), and the engine's `listip`, parsed. The engine's
+  `listid` is **silent** at the fleet's `developer 1`, so the
+  console's own store is the answer and the panel says so.
+
+Neither changes anything, and **neither asks the engine a second time
+when the instance has already refused**: a failed RCON call costs the
+instance a token from its own rate-limit bucket, so an instance that
+is not answering is reported as it is.
+
+**The mock's four corrections are in**: no "Muted" tab (mute was
+dropped, §8 Q1); no ban button and no ban modal (there is no ban in
+this release, §2.5) — the player row carries no affordance, and "Ban
+list" opens a **read-only panel**; the "Try:" hint says the console is
+read-only instead of listing commands that do not exist; and "Signed in
+as root@neo" is "Signed in as admin", because the API says
+`user: "admin"`.
+
+**The write controls are rendered and visibly not available**:
+`disabled`, dimmed in the mock's own idioms, **never green** (the
+signal rule — `--phosphor` is for things that WORK), each with a
+tooltip saying which phase it arrives in. The output drawer is not a
+write: it shows what the console did, in §6.3's four parts.
+
+**One poll interval: five seconds**, which is the service's own
+healthy probe TTL, so the browser never polls faster than the cache.
+The map list and the IP filter are on a slower **thirty-second** beat,
+because `maps *` walks the map directory and reads every BSP's lumps.
+**A hidden tab does not poll**, and **nothing polls while the login
+screen is showing**. **Uptime is `—`** — the engine has no uptime
+command, so the console shows the honest dash with the reason in the
+tooltip rather than a number it made up.
 
 ## Client frame pacing — the engine's tick source (2026-10-29)
 

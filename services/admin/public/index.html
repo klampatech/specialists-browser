@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>BulletBallet Admin</title>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/admin.css">
+</head>
+<!--
+  THE CONSOLE'S MARKUP IS THE MOCK'S MARKUP.
+
+  Kyle's mock (docs/admin-console-mock.html) is the design contract, and
+  this page is that contract's markup with four corrections, which the spec
+  makes and the mock cannot know about:
+
+    1. NO "Muted" tab. Mute was dropped (§8 Q1, §2.6): there is no
+       administrative mute in the engine and "squelch" is local to a
+       listener. The player tabs are All and High ping only.
+    2. NO ban modal and NO ban button. There is no ban in this release
+       (§2.5): the player row carries no ban affordance, and the ban modal
+       is gone. The mock's "Ban list" button becomes a READ-ONLY PANEL.
+    3. NO commands to try. Phase 3 is read-only, so the console's "Try:"
+       hint says that instead of listing commands that do not exist yet.
+    4. "Signed in as root@neo" becomes "Signed in as admin." The API says
+       `user: "admin"` — there is one administrator and no username.
+
+  The write controls — the command box, "Change map", "Say", "Restart
+  round" — ARE rendered, and they are `disabled`: the console shows the
+  operator the shape of what is coming, and it does not pretend. The
+  "Ban list" button is not a write, so it works.
+
+  The login screen is NOT in the mock. It is built in the mock's language:
+  the same top and bottom bars, the same brand block, the same void.
+-->
+<body class="view-login">
+<div class="bar top"><span class="m">Admin / BulletBallet</span><span class="m g" id="clock">RCON secured</span></div>
+<div class="bar bot"><span class="m">Two B’s. One round. You hold the keys.</span></div>
+<div class="stage">
+<div class="rain" aria-hidden="true" style="left:2%;animation-delay:-1s">ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍｦｲｸｺｿﾁﾄﾉﾌﾔﾖﾙﾚﾛﾝ</div><div class="rain" aria-hidden="true" style="left:12%;animation-delay:-4s">ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍｦｲｸｺｿﾁﾄﾉﾌﾔﾖﾙﾚﾛﾝ</div><div class="rain" aria-hidden="true" style="left:88%;animation-delay:-7s">ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍｦｲｸｺｿﾁﾄﾉﾌﾔﾖﾙﾚﾛﾝ</div><div class="rain" aria-hidden="true" style="left:97%;animation-delay:-10s">ﾊﾐﾋｰｳｼﾅﾓﾆｻﾜﾂｵﾘｱﾎﾃﾏｹﾒｴｶｷﾑﾕﾗｾﾈｽﾀﾇﾍｦｲｸｺｿﾁﾄﾉﾌﾔﾖﾙﾚﾛﾝ</div>
+<div class="wrap">
+<div class="nav">
+<div class="brand d"><svg viewBox="0 0 200 460" width="22" height="50" aria-hidden="true" style="color:#00FF41;display:block;flex:none"><g fill="currentColor"><path fill-rule="evenodd" d="M102 20H134L148 170L140 192L156 214V402H102Z M116 38H123L137 166H116Z M116 210H138L144 220V392H116Z"/><path d="M102 412H164V440H102Z"/><g transform="translate(200 0) scale(-1 1)"><path fill-rule="evenodd" d="M102 20H134L148 170L140 192L156 214V402H102Z M116 38H123L137 166H116Z M116 210H138L144 220V392H116Z"/><path d="M102 412H164V440H102Z"/></g></g></svg><span>Bullet<span class="g">Ballet</span> <span style="color:var(--mute);font-size:18px;letter-spacing:.2em">Admin</span></span></div>
+<span class="m" id="whoami"><span class="g">&#9679;</span> <span id="who">not signed in</span></span>
+</div>
+
+<!-- THE LOGIN. One password, five states: idle, verifying, wrong
+     password (with the attempts remaining), locked out (with the
+     SERVER's countdown), and the service unreachable. -->
+<section class="login" id="login">
+<div class="card">
+<h2 class="d">Sign in</h2>
+<div class="sub">one password &middot; the console&rsquo;s own</div>
+<form id="loginForm" autocomplete="off">
+<div class="field" style="margin-top:0">
+<input class="f" id="pw" type="password" placeholder="password" aria-label="Password" spellcheck="false" required>
+<button class="btn" id="loginBtn" type="submit" style="flex:0 0 auto"><span>Sign in</span></button>
+</div>
+</form>
+<div class="state" id="loginState" role="status" aria-live="polite"></div>
+<div class="foot">local service &middot; not exposed publicly</div>
+</div>
+</section>
+
+<!-- THE SHELL -->
+<div id="shell">
+
+<div class="head"><h2 class="d">Servers</h2><span class="m">Select to manage</span></div>
+<div class="servers" id="servers"></div>
+
+<div class="stats">
+<div class="stat"><span class="m" style="font-size:10px">Players</span><b id="sPl">0</b><span class="m" id="sBots" style="font-size:10px">0 bots</span></div>
+<div class="stat"><span class="m" style="font-size:10px">Map</span><b id="sMap" style="font-size:22px;padding-top:6px">-</b></div>
+<div class="stat"><span class="m" style="font-size:10px">Uptime</span><b id="sUp" title="the engine has no uptime command, and the admin service does not talk to the orchestrator yet, so there is nothing to read">—</b></div>
+<div class="stat"><span class="m" style="font-size:10px">Tickrate</span><b id="sTick">-</b></div>
+</div>
+
+<div class="grid">
+<div>
+<div class="head"><h2 class="d">Console</h2><button class="btn ghost" id="clr" style="min-height:36px;font-size:13px"><span>Clear</span></button></div>
+<div class="con card" style="padding:0">
+<div class="conbar"><span class="m g" id="conName">-</span><span class="m" id="conState">rcon / live</span></div>
+<div class="log" id="log" role="log" aria-live="polite"></div>
+<form class="cin" id="cform" autocomplete="off"><span>&gt;</span><input id="cmd" aria-label="Console command" placeholder="read-only &middot; the actions arrive with phase 4" spellcheck="false" disabled title="the actions arrive with phase 4"></form>
+</div>
+<div class="hint">read-only &middot; the actions arrive with phase 4</div>
+
+</div>
+
+<div>
+<div class="head"><h2 class="d">Map</h2><span class="m">Rotation</span></div>
+<div class="card">
+<div class="m" style="font-size:11px">Current: <span class="g" id="curMap">-</span> <span id="mapTimer"></span></div>
+<div class="maps" id="maps"></div>
+<div class="field">
+<span class="rd" id="modeRd"><span class="k">Mode</span> <span id="modeVal">-</span></span>
+<span class="rd" id="tlRd"><span class="k">Limit</span> <span id="tlVal">-</span></span>
+</div>
+<div class="field"><button class="btn" id="apply" style="flex:1;justify-content:center" disabled title="changing the map arrives with phase 4"><span>Change map</span></button></div>
+</div>
+
+<div class="head"><h2 class="d">Server</h2></div>
+<div class="card">
+<div class="field" style="margin-top:0"><input class="f" id="say" placeholder="Broadcast message..." aria-label="Broadcast message" disabled title="broadcasting arrives with phase 4"><button class="btn ghost" id="sayBtn" disabled title="broadcasting arrives with phase 4"><span>Say</span></button></div>
+<div class="field"><button class="btn ghost" id="restart" style="flex:1;justify-content:center" disabled title="restarting a round arrives with phase 4"><span>Restart round</span></button><button class="btn ghost" id="banlist" style="flex:1;justify-content:center" aria-expanded="false" aria-controls="banPanel" title="the ban list is READ-ONLY in this release"><span>Ban list <span id="bc">(0)</span></span></button></div>
+</div>
+</div>
+</div>
+
+<section style="margin-top:8px">
+<div class="head"><h2 class="d">Players</h2><span class="m"><span class="g">&#9679;</span> <span id="plCount"></span> connected</span></div>
+<div class="ptabs" id="ptabs" role="tablist"><button class="ptab" role="tab" data-f="all" aria-selected="true">All</button><button class="ptab" role="tab" data-f="ping" aria-selected="false">High ping</button><input class="psearch" id="psearch" type="search" placeholder="Search name or id  ( / )" aria-label="Search players" autocomplete="off" spellcheck="false"></div>
+<div class="plist" id="plBody"></div>
+</section>
+
+<!-- THE BANS. Read-only, and the reason it is empty is on the panel.
+     It is the LAST thing on the page (§6.1 lists it as screen seven),
+     and it is full width, so the mock's grid — the console on the
+     left, the map and the server on the right — is exactly the
+     mock's grid. -->
+<div class="card" id="banPanel" hidden>
+<div class="head" style="margin-bottom:10px"><h2 class="d" style="font-size:16px">Bans</h2><button class="btn ghost" id="banClose" style="min-height:30px;font-size:11px"><span>Close</span></button></div>
+<div class="bancols">
+<div><div class="m" style="font-size:11px">ID bans</div><div class="banlist" id="idBans"></div></div>
+<div><div class="m" style="font-size:11px">IP filter</div><div class="banlist" id="ipFilter"></div></div>
+</div>
+<div class="hint" id="banNote"></div>
+</div>
+</div>
+
+</div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+<script type="module" src="/admin.js"></script>
+</body>
+</html>

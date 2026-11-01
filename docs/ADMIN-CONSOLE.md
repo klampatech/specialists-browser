@@ -1066,6 +1066,72 @@ touch nothing.
 
 - Done when: the mock's read-only half works against a live instance.
 
+What phase 3 actually shipped (2026-10-31): the console is **served
+by the admin service itself** — `/` is the page, `/admin.css` is the
+mock's stylesheet **verbatim**, and `/admin.js` is the module — and
+those three paths are the **only** ones not behind the session gate,
+because the login screen needs its own CSS and its own JavaScript and
+the page has to load before anybody can log in. The HTML is
+`no-store`, so a deploy shows up; the CSS and the JS are cached for a
+minute. **No build step, no framework and no npm dependency** — the
+admin service still has none, and the mock is static HTML, so a static
+page does not need a framework to work. The API did not move: every
+`/admin` path is still behind the gate, and a static path and an API
+path cannot collide, because `/admin.css` and `/admin.js` are not
+under `/admin/`.
+
+**Kyle's mock is the design contract, and it is in the repo**
+(`docs/admin-console-mock.html`, byte for byte). Its CSS was extracted
+**verbatim** into `services/admin/public/admin.css` — the palette
+mirrors the site's `webxash/src/assets/ts-theme.css` (the same
+values under the mock's own token names) and the token names stay the
+mock's, because a translation of a working stylesheet is a second
+thing to keep in step with the first.
+
+**Two READ endpoints were added**, both of which this section listed
+and phase 1 did not build: `GET /admin/servers/:id/maps` (the
+engine's own `maps *`, parsed out of the engine's own output, with the
+current map first and the engine's raw text alongside) and
+`GET /admin/servers/:id/bans` (the console's own id-ban store —
+**empty**, because the ban endpoint is a stub and nothing can create a
+ban — and the engine's `listip`, parsed). Neither changes anything,
+and neither asks the engine a second time when the instance has
+already refused: a failed RCON call costs the instance a token from
+its own rate-limit bucket, so an instance that is not answering is
+reported as it is.
+
+**And the mock's four corrections are in.** There is **no "Muted"
+tab** — mute was dropped (§8 Q1) — and **no ban button and no ban
+modal**, because there is no ban in this release (§2.5): the player
+row carries no affordance at all, and "Ban list" opens a **read-only
+panel**. The "Try:" hint, which listed commands that do not exist
+yet, now says that the console is read-only. "Signed in as root@neo"
+is **"Signed in as admin"**, because the API says `user: "admin"`.
+
+**The write controls are rendered, and they are visibly not
+available.** The command box, "Change map", "Say" and "Restart round"
+are all `disabled`, dimmed in the mock's own idioms (the muted border
+and the muted ink of the small button — and never green, because
+`--phosphor` is the accent for things that WORK), and each one says
+in its tooltip which phase it arrives in. The output drawer is not a
+write: it shows what the console did, in §6.3's four parts — a
+timestamp, the command echoed, the outcome and the confirmation — and
+the maps read puts the engine's own raw text in it.
+
+**The poll is five seconds, and it is not faster than the cache.** The
+service caches its probes for five seconds on an instance that
+answered, so polling faster would only re-read the cache; the fleet,
+the selected instance's status and its players are all read on that
+one tick, and the map list and the IP filter are read on a slower
+thirty-second beat, because `maps *` walks the map directory and reads
+every BSP's lumps and that is not a thing to do every five seconds.
+**A hidden tab does not poll** (`document.visibilityState`), and
+**nothing polls while the login screen is showing**.
+
+**Uptime is `—`.** The engine has no uptime command, so the console
+shows the honest dash with the reason in the tooltip, rather than a
+number it made up.
+
 ### Phase 4 — The mutating actions
 Kick, map change, broadcast, restart round, and the time limit. Every
 one returns the §5 envelope and is confirmed by a re-read.

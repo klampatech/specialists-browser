@@ -16,18 +16,23 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-31, branch `feat/admin-console-phase2` — **the admin
-console's PHASE 2 (AUTH) IS BUILT**, on top of phase 1 (the RCON
-client, the fleet discovery and the read-only API, reviewed and
-merged into this branch) and on top of the specification in
-`docs/ADMIN-CONSOLE.md` (PR #104, awaiting Kyle's approval). The
-console now has a password, a session, a lockout, a CSRF token, an
-audit line and `adminctl` — and **every endpoint but `/admin/login`
-is behind a session**, including the three read endpoints phase 1
-built. Everything else below is unchanged from the 2026-10-29 state:
-the client caps the tick rate the engine is offered, the character
-picker and the pre-join identity modal are LIVE in production, and
-the game server image is `ts-server:0.27`.
+**As of:** 2026-10-31, branch `feat/admin-console-phase3` — **the admin
+console's PHASE 3 (THE READ-ONLY UI) IS BUILT**, on top of phase 2
+(the password, the session, the lockout, the CSRF token, the audit
+line and `adminctl`) and phase 1 (the RCON client, the fleet discovery
+and the read-only API, reviewed and merged into this branch), and on
+top of the specification in `docs/ADMIN-CONSOLE.md` (PR #104, awaiting
+Kyle's approval). The console now has a **page**: Kyle's own mock,
+which is the design contract, served by the admin service itself and
+wired to the API — the login screen, the shell, the fleet switcher,
+the status bar, the player list, the map list, the bans list and the
+output drawer. **It reads everything and writes nothing**: the command
+box, "Change map", "Say" and "Restart round" are rendered and
+disabled, and the one mutating endpoint that exists (the ban stub) is
+still a 501. Everything else below is unchanged from the 2026-10-29
+state: the client caps the tick rate the engine is offered, the
+character picker and the pre-join identity modal are LIVE in
+production, and the game server image is `ts-server:0.27`.
 
 ## The admin console is specified (PR #104, 2026-10-31)
 
@@ -548,6 +553,174 @@ fixed in `docs/ADMIN-CONSOLE.md` §5 and §6. The phase-3 UI has to
 speak the phase-2 API: `POST /admin/login` for the cookie and the
 CSRF token, the cookie on every request, and the CSRF token in the
 `X-CSRF-Token` header on every mutating one.
+
+## The admin console: phase 3 is built — THE READ-ONLY UI (2026-10-31, `feat/admin-console-phase3`)
+
+**Kyle's own mock is the design contract, and it is in the repo**
+(`docs/admin-console-mock.html`, byte for byte — it used to live only
+in a cache directory that gets pruned, which is a bad place for a
+design contract to live). Its CSS was extracted **verbatim** into
+`services/admin/public/admin.css` — not a re-implementation, not a
+rewrite, the thing itself. The **palette mirrors the site's**
+`webxash/src/assets/ts-theme.css` (the same values — the void
+`#010A04`, the panel `#06150A`, the edge `#123A1C`, the phosphor
+`#00FF41`, the ghost `#D8FFE2`, the muted `#6FA67C`) but under the
+**mock's own token names**, and the names stay the mock's: the site's
+tokens are frozen and `--ts-` prefixed, and rewriting the mock's
+components against different names is how a design drifts.
+
+**The console is served by the admin service itself**, and the three
+static paths — `/`, `/admin.css`, `/admin.js` — are the **only** ones
+not behind the session gate, because the login screen needs its own
+CSS and its own JavaScript and the page has to load before anybody can
+log in. The HTML is `no-store` so a deploy shows up; the CSS and the
+JS are cached for a minute. **No build step, no framework, no npm
+dependency** — the service still has none. The API did not move:
+every `/admin` path is still behind the gate, and a static path and
+an API path cannot collide, because `/admin.css` and `/admin.js` are
+not under `/admin/`.
+
+**Two READ endpoints were added** — both were in §5 and phase 1 did
+not build them:
+
+- **`GET /admin/servers/:id/maps`** — the engine's own `maps *`
+  (`SV_Maps_f` in `engine/server/sv_cmds.c`, one line per map through
+  `Cmd_ListMaps`), parsed out of the engine's **real** output, with
+  the **current map first** and the engine's `raw` text alongside so
+  the output drawer has something real in it.
+- **`GET /admin/servers/:id/bans`** — the **console's own** id-ban
+  store, which is **empty** (the ban endpoint is a stub and nothing
+  can create a ban), plus the engine's `listip`, parsed. The engine's
+  own `listid` is **silent** at the fleet's `developer 1`, so the
+  console's own store is the answer, and the panel says so in words.
+
+Both are read-only, and **neither asks the engine a second time when
+the instance has already refused**: a failed RCON call costs the
+instance a token from its own rate-limit bucket, so an instance that
+is not answering is reported as it is.
+
+### The four corrections, and the write controls
+
+The mock is the design; the spec's decisions beat it. So:
+
+1. **No "Muted" tab** — mute was dropped (§8 Q1). The tabs are **All**
+   and **High ping**.
+2. **No ban button and no ban modal** — there is no ban in this
+   release (§2.5). The player row carries **no** affordance at all,
+   and the mock's "Ban list" button opens a **read-only panel**.
+3. **No commands to try.** The hint says *"read-only · the command box
+   arrives with phase 4"* instead of listing commands that do not
+   exist yet.
+4. **"Signed in as root@neo" → "Signed in as admin"** — the API says
+   `user: "admin"`.
+
+The write controls — the command box, "Change map", "Say" and
+"Restart round" — **are rendered, and they are visibly not available**:
+`disabled`, dimmed in the mock's own idioms (the muted border and the
+muted ink of the small button), **never green**, because `--phosphor`
+is the accent for things that WORK, and each one says in its tooltip
+which phase it arrives in. **"Ban list" is not a write** — it is a
+view, and it works. **The output drawer is not a write** — it shows
+what the console did, in §6.3's four parts: a timestamp, the command
+echoed, the outcome and the confirmation.
+
+### The polling, and the two things it refuses to do
+
+**One interval, five seconds, and it is not faster than the cache.**
+The service caches its probes for five seconds on an instance that
+answered (`OK_TTL_MS = 5_000`), so polling faster would only re-read
+the cache. The fleet, the selected instance's status and its players
+are all read on that one tick; the map list and the IP filter are read
+on a slower **thirty-second** beat, because `maps *` walks the map
+directory and reads every BSP's lumps and that is not a thing to do
+every five seconds.
+
+**A hidden tab does not poll** — `document.visibilityState` stops the
+tick and resumes it (with an immediate refresh) when the tab comes
+back. **And nothing polls while the login screen is showing.**
+
+### The three honest answers
+
+- **Uptime is `—`.** The engine has no uptime command, so the stat
+  shows the honest dash with the reason in the tooltip. It is not
+  faked.
+- **A short player list says so.** `partial: true` (the engine's count
+  and the rows that arrived disagree — the reply is one datagram per
+  printed line, and UDP loses datagrams) is a visible amber warning
+  above the list, not a quiet detail.
+- **The lockout countdown is the server's.** The page counts down from
+  the number the server sent and never decides for itself that the
+  lockout is over; the server's next answer is what decides.
+
+### How it was proven
+
+**The unit suite** (27 new tests, 486 in all) covers the two new
+parsers (`parseMapList`, `withCurrentFirst`, `parseIpFilter`, against
+the engine's **real** output shapes), the two new endpoints (the map
+list is the engine's with the current map first; the bans answer with
+the empty id store and the parsed `listip`; **neither changes
+anything** — the fleet spy counts the commands and finds only `maps *`
+and `listip`, and **never `listid`**), the static serving (the right
+content types, the HTML not cached, a `POST` to a static path
+refused, **and the API still 401 without a session now that files are
+served**).
+
+**And for real**, at the HTTP level (`tools/smokes/admin-ui-smoke.sh`):
+`/` is a **200** `text/html` with `Cache-Control: no-store`,
+`/admin.css` is `text/css`, `/admin.js` is `text/javascript`,
+`GET /admin/servers` with no cookie is still a **401**, a `POST` to a
+static path is a **405**, the map list comes back as
+`["ts_casa","ts_hideout","ts_lobby"]` with `current: "ts_casa"` and
+the engine's own `raw` text, the bans answer with `"idBans": []` and
+the note, and the ban is still a **501**.
+
+**And in a real browser** (`tools/smokes/admin-ui-browser.mjs` — it
+resolves Playwright at RUN time, so the repo still grows no npm
+dependency): the page loads, the **wrong password** is refused with
+the attempts remaining, the **right password** gets in against the
+real service, the shell renders, the fleet appears, the player list
+fills, the map list shows the current map first, the bans panel opens
+and says why the id list is empty, every write control is `disabled`
+and the ban list is not, and the only failing requests in the whole
+session are the two the smoke causes on purpose (the boot probe
+asking whether there is a session, and the wrong password).
+
+**The browser smoke refuses to measure somebody else's console.** It
+checks that both of its ports are FREE before it starts anything, it
+captures the service's own output instead of throwing it away, and it
+stops with the service's message if the service cannot bind. A
+leftover service from an earlier run would otherwise answer the
+smoke's requests — with a constant map timer, and none of this
+phase's behaviour in it — and the smoke would pass against a build
+that was never running.
+
+**The proof that it looks like the mock** is in
+`docs/screenshots/` — `admin-console-mock.png` (the mock, rendered)
+and `admin-console-phase3.png` (the console, against the fake engine),
+at the same viewport, plus `admin-console-login.png`. The differences
+that remain are the **data** (the mock has three instances and four
+players; the console has one instance and two) and the **deliberate**
+corrections above.
+
+### What is NOT in phase 3
+
+**No mutating controls.** The command box, kick, map change,
+broadcast, restart round, the time-limit write and the ban are all
+phase 4 or later; the UI renders them as **not available** and does
+not pretend. **No logout button** — the API has one and it is proven,
+but the mock has no such control and adding one would be a visible
+difference from the contract. **No deployment, no Dockerfile, no
+systemd unit** (phase 5). **No framework, no build step, no npm
+dependency.** No second administrator, no roles. **The RCON client,
+the fleet discovery, the parsers, the auth, the session, the lockout
+and the audit were not touched.**
+
+**NEXT TASK (admin console, phase 4): the mutating actions.** Kick,
+map change, broadcast, restart round and the time limit — every one
+returning the §5 envelope and confirmed by a re-read. The contract is
+`docs/ADMIN-CONSOLE.md` §5 and §6, and the two traps are a kick whose
+target left between the list refresh and the click, and a round
+restart that prints nothing.
 
 ## The CI browser gate was playing in production (2026-10-30)
 
@@ -2719,6 +2892,23 @@ the parts that are known traps.
 - `services/registry/Dockerfile.registry`,
   `services/orchestrator/Dockerfile.orchestrator` — the control-plane images.
 
+**The admin console** (loopback only, not deployed yet — phase 5):
+
+- `services/admin/service.mjs` — the service: the RCON-backed fleet, the
+  session gate, the read endpoints and the two new reads (maps, bans),
+  and it serves the UI's three static paths.
+- `services/admin/public/index.html`, `admin.css`, `admin.js` — the
+  console's page. **The CSS is Kyle's mock's CSS verbatim**, and the
+  mock itself is `docs/admin-console-mock.html` — the design contract.
+- `services/admin/lib/` — the RCON client, the fleet probe, the parsers,
+  the auth, the session, the lockout, the audit and the console's own
+  (empty) id-ban store.
+- `services/admin/adminctl.mjs` — `hash` and `set-password` on the host.
+- `tools/smokes/admin-ui-smoke.sh` — the HTTP-level smoke.
+- `tools/smokes/admin-ui-browser.mjs` — the **real-browser** smoke and
+  the screenshots (`docs/screenshots/`). It resolves Playwright at RUN
+  time, so the repo grows no npm dependency.
+
 **Asset delivery:**
 - `tools/assets/split-tsmod.mjs` — splits the archive into 64 MiB parts.
 - `tools/assets/upload-tsmod.mjs` — uploads to R2. The storage key layout
@@ -2785,6 +2975,20 @@ ssh bb-prod 'curl -sS 127.0.0.1:8081/api/registry'         # fleet detail
 ssh bb-prod 'curl -sS 127.0.0.1:8090/api/orchestrator'      # decisions + history
 ssh bb-prod 'curl -sS 127.0.0.1:27017/health'              # bridge allowlist
 ```
+
+**The admin console, locally** (it is not deployed yet — phase 5):
+
+```bash
+npm test                                                  # the unit suite
+npm run test:ci                                          # the unit suite + a syntax check
+bash tools/smokes/admin-ui-smoke.sh                       # the HTTP surface, for real
+node tools/smokes/admin-ui-browser.mjs                    # the console in a REAL browser
+```
+
+The browser smoke resolves Playwright **at run time** (`PLAYWRIGHT_MODULE`,
+then a bare `playwright`, then a sibling checkout) so the repo grows no
+npm dependency, and it writes the proof screenshots into
+`docs/screenshots/`.
 
 **The browser test that matters** — a real browser at the real URL, a real
 player in a real server:
