@@ -379,6 +379,76 @@ test('the game image smoke asks about the secret WITH AUTHORITY', () => {
   assert.doesNotMatch(smoke, /\[ ! -f "\$SECRET" \]/);
 });
 
+test('the orchestrator can CREATE an instance: it has the config volume', () => {
+  // THE FLEET'S SELF-HEALING WAS DEAD, AND NOTHING SAID SO.
+  //
+  // The orchestrator creates the game containers by running
+  // run-instance.sh INSIDE its own container, and that script checks
+  // the config volume before it creates anything. The orchestrator's
+  // container did NOT have that volume, so the script exited at "game
+  // config missing" and the orchestrator could not create or replace
+  // ANY instance. Measured on production, 2026-11-01: all three config
+  // files missing inside the orchestrator's container, every action
+  // counter zero, and ts-0 up for two days without ever being
+  // replaced.
+  //
+  // The orchestrator logs "docker enabled -- actions will run" and
+  // then quietly fails the first time it tries. A fleet that cannot
+  // replace a failed instance is a fleet with no self-healing, and the
+  // console's "unreachable" would have been the end of the story.
+  assert.match(deploy, /-v "\$CONFIG:\/srv\/ts-config:ro"/);
+  // And the path has to be the SAME on both sides: the script checks
+  // it locally and the daemon resolves the bind source on the host.
+  assert.match(deploy, /CONFIG="\$\{CONFIG:-\/srv\/ts-config\}"/);
+});
+
+test('the secret\x27s gate asks the DAEMON, not the orchestrator\x27s container', () => {
+  // THE BOOT CONFIG NEVER HAPPENED, FOR EXACTLY THIS REASON.
+  //
+  // run-instance.sh runs inside the orchestrator's container; the
+  // secret lives on the HOST, in a 0700 directory owned by the
+  // console\x27s uid, and that directory is not mounted into the
+  // orchestrator at all. So "[ -f $RCON_SECRET ]" there says "not
+  // there" for a secret that is right there -- and the gate silently
+  // dropped the mount, so the engine never got the password. The
+  // console reported `refused` on an instance that was running
+  // perfectly well.
+  //
+  // The bind source is resolved by the DOCKER DAEMON, on the host, so
+  // the question has to be asked there. `docker run --mount` FAILS on a
+  // missing source and creates nothing; the short `-v` form CREATES A
+  // DIRECTORY there, which is the trap the gate exists to avoid.
+  const runInstance = readFileSync(RUN_INSTANCE, 'utf8');
+  assert.match(
+    runInstance,
+    /--mount "type=bind,source=\$RCON_SECRET,target=\/probe,readonly"/,
+    'the probe must use --mount, which fails on a missing source',
+  );
+  assert.match(runInstance, /test -f \/probe/);
+  assert.doesNotMatch(
+    runInstance,
+    /if \[ -f "\$RCON_SECRET" \]; then/,
+    'the old in-container test is exactly the bug',
+  );
+  // And the real mount is the strict form too, so a wrong probe fails
+  // loudly instead of creating a directory where the password goes.
+  assert.match(
+    runInstance,
+    /--mount "type=bind,source=\$RCON_SECRET,target=\/srv\/secrets\/rcon_password,readonly"/,
+  );
+  assert.doesNotMatch(runInstance, /-v "\$RCON_SECRET:\/srv\/secrets\/rcon_password/);
+});
+
+test('a disposable instance can have a name the orchestrator does not own', () => {
+  // The orchestrator owns ts-N. A test instance must not be something
+  // it will then try to manage, and the way to say that is a name it
+  // does not own -- which is also the only way to exercise the REAL
+  // path (the script, inside the orchestrator's container) without
+  // touching ts-0.
+  const runInstance = readFileSync(RUN_INSTANCE, 'utf8');
+  assert.match(runInstance, /NAME="\$\{TS_INSTANCE_NAME:-ts-\$N\}"/);
+});
+
 test('the deploy builds the admin image when the repository is here', () => {
   // A deploy that starts a container from an image that happened to be
   // on the host is a deploy that can ship a stale console.
@@ -528,11 +598,26 @@ test('a MISSING secret does not stop the fleet from booting', async () => {
 
 test('the game container mounts the secret read-only, and only if it is there', () => {
   const script = readFileSync(RUN_INSTANCE, 'utf8');
-  assert.match(script, /-v "\$RCON_SECRET:\/srv\/secrets\/rcon_password:ro"/);
-  // The mount is conditional: docker creates a missing bind source as
-  // a DIRECTORY, and a directory where a password file should be is a
-  // trap.
-  assert.match(script, /if \[ -f "\$RCON_SECRET" \]; then/);
+  // Read-only, and bound to the file itself.
+  //
+  // This test used to assert the SHORT form, `-v
+  // $RCON_SECRET:/srv/secrets/rcon_password:ro`, and the in-container
+  // existence test. Both of those are the bug: the short form creates a
+  // DIRECTORY on the host when the source is missing, and the
+  // in-container test cannot see the host's file at all -- so the
+  // mount was silently dropped and the boot config never happened.
+  // The mount is now `--mount` (strict: it fails rather than creating
+  // a directory) and the existence question is asked of the DOCKER
+  // DAEMON, which is what actually resolves the bind source.
+  assert.match(
+    script,
+    /--mount "type=bind,source=\$RCON_SECRET,target=\/srv\/secrets\/rcon_password,readonly"/,
+  );
+  assert.doesNotMatch(script, /-v "\$RCON_SECRET:\/srv\/secrets\/rcon_password/);
+  // The mount is conditional on the secret being there -- and the
+  // question is asked where the answer lives.
+  assert.match(script, /--mount "type=bind,source=\$RCON_SECRET,target=\/probe,readonly"/);
+  assert.match(script, /test -f \/probe/);
   // And the game server is put in the group that can read it.
   assert.match(script, /--group-add "\$RCON_GID"/);
 });

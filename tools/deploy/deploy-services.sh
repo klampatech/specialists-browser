@@ -58,6 +58,24 @@ ADMIN_IMAGE="${ADMIN_IMAGE:-admin:0.1}"
 
 ASSETS="${ASSETS:-/srv/ts-data}"
 
+# THE GAME SERVER'S CONFIG VOLUME.
+#
+# The orchestrator creates the game containers, and it does it by running
+# run-instance.sh INSIDE its own container. That script checks the config
+# volume before it creates anything, and it bind-mounts the config into
+# the game container -- so the orchestrator's container needs the volume
+# in its filesystem, at the SAME path, for both.
+#
+# It did not have it. Measured on production, 2026-11-01: inside the
+# orchestrator's container all three config files were missing, so
+# run-instance.sh exited at "game config missing" and the orchestrator
+# could not create or replace ANY instance. Its action counters were
+# all zero, and ts-0 had been up for two days without ever being
+# replaced. The fleet's self-healing was dead and nothing said so --
+# the orchestrator logs "docker enabled - actions will run" and then
+# quietly fails when it finally tries.
+CONFIG="${CONFIG:-/srv/ts-config}"
+
 # THE ADMIN CONSOLE'S STATE DIRECTORY.
 #
 # It holds the administrator's password record, the audit log, and the
@@ -255,6 +273,7 @@ replace orchestrator \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v "$RUN_INSTANCE:/usr/local/bin/run-instance.sh:ro" \
   -v "$ASSETS:/srv/ts-data:ro" \
+  -v "$CONFIG:/srv/ts-config:ro" \
   -e ORCH_BIND=127.0.0.1:8090 \
   -e REGISTRY_URL=http://127.0.0.1:8081/api/registry \
   -e TS_INSTANCE_COUNT=8 \

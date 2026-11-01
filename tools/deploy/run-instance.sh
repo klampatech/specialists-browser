@@ -40,7 +40,11 @@ set -euo pipefail
 N="${1:?usage: run-instance.sh <instance-number>}"
 PORT_BASE="${TS_PORT_BASE:-27015}"
 PORT=$((PORT_BASE + N))
-NAME="ts-$N"
+# The container's name. The override is for a DISPOSABLE instance: the
+# orchestrator owns ts-N, and a test instance must not be something the
+# orchestrator will then try to manage. Same reason the entrypoint's
+# paths became overridable -- so the thing can be exercised for real.
+NAME="${TS_INSTANCE_NAME:-ts-$N}"
 # The image tag. 0.21 -> 0.22 for the map cycle and the sixteen-bot
 # roster; 0.22 -> 0.23 for the three classic maps TS 3.0 dropped from
 # its own cycle (ts_dojo, ts_dietrich, ts_bikini); 0.23 -> 0.24 for the
@@ -159,9 +163,59 @@ CONFIG="${TS_CONFIG:-/srv/ts-config}"
 RCON_SECRET="${TS_RCON_SECRET:-/srv/ts-admin/rcon_password}"
 RCON_GID="${TS_RCON_GID:-10007}"
 RCON_MOUNTS=()
-if [ -f "$RCON_SECRET" ]; then
-  RCON_MOUNTS=(--group-add "$RCON_GID" -v "$RCON_SECRET:/srv/secrets/rcon_password:ro")
+
+[ -d "$ASSETS" ] || { echo "asset volume missing: $ASSETS" >&2; exit 1; }
+[ -f "$ASSETS/ts/maps/$MAP.bsp" ] || {
+  echo "map $MAP not found under $ASSETS/ts/maps — the volume looks incomplete" >&2
+  exit 1
+}
+
+# The config volume, checked the same way the asset volume is. The engine copies these three files into the game directory at startup
+# and refuses to start without them, so a config volume that exists
+# but is empty would take the whole game server down rather than fall
+# back to the image's baked-in copy. Checked HERE so the failure names
+# the volume instead of surfacing as an entrypoint error.
+for cfg in server.cfg gameinfo.txt mapcycle.txt; do
+  [ -f "$CONFIG/$cfg" ] || {
+    echo "game config missing: $CONFIG/$cfg — the config volume looks incomplete" >&2
+    exit 1
+  }
+done
+
+# ── the RCON secret: ask the DAEMON, not this container ───────────────────
+#
+# This script runs INSIDE the orchestrator's container, and the secret
+# lives on the HOST. Those are two different filesystems: the
+# orchestrator's container does not have /srv/ts-admin mounted at all,
+# and the state directory is 0700 and owned by the console's uid, so a
+# mount would not be readable either. A test HERE says "not there" for a
+# secret that is right there.
+#
+# That is not hypothetical: it is why the boot config never happened.
+# The secret mounted into the container and the engine never read it,
+# and the console reported `refused` on an instance that was running
+# perfectly well. It is the same mistake as the deploy gate that skipped
+# the console on 2026-11-01 — asking a question about a file without the
+# authority to see it, and believing the answer.
+#
+# The bind source is resolved by the DOCKER DAEMON, on the host, so the
+# question has to be asked in the daemon's namespace. `docker run
+# --mount` FAILS when the source does not exist and creates nothing; the
+# short `-v` form CREATES A DIRECTORY there — and a directory where a
+# password file should be looks like a password file to everything that
+# reads it. So the probe uses --mount, and so does the real mount: if
+# the probe were ever wrong, the mount fails loudly instead of creating
+# a directory.
+if docker run --rm \
+     --mount "type=bind,source=$RCON_SECRET,target=/probe,readonly" \
+     --entrypoint sh "$IMAGE" -c 'test -f /probe' >/dev/null 2>&1; then
+  RCON_MOUNTS=(
+    --group-add "$RCON_GID"
+    --mount "type=bind,source=$RCON_SECRET,target=/srv/secrets/rcon_password,readonly"
+  )
 fi
+
+docker rm -f "$NAME" >/dev/null 2>&1 || true
 
 # ── log rotation ────────────────────────────────────────────────────────────
 # The game server's log grows without bound. Measured on production
@@ -190,27 +244,6 @@ fi
 # enough that eight instances cannot fill a 38 GB disk.
 LOG_MAX_SIZE="${TS_LOG_MAX_SIZE:-10m}"
 LOG_MAX_FILE="${TS_LOG_MAX_FILE:-3}"
-
-[ -d "$ASSETS" ] || { echo "asset volume missing: $ASSETS" >&2; exit 1; }
-[ -f "$ASSETS/ts/maps/$MAP.bsp" ] || {
-  echo "map $MAP not found under $ASSETS/ts/maps — the volume looks incomplete" >&2
-  exit 1
-}
-
-# The config volume, checked the same way the asset volume is. The
-# engine copies these three files into the game directory at startup
-# and refuses to start without them, so a config volume that exists
-# but is empty would take the whole game server down rather than fall
-# back to the image's baked-in copy. Checked HERE so the failure names
-# the volume instead of surfacing as an entrypoint error.
-for cfg in server.cfg gameinfo.txt mapcycle.txt; do
-  [ -f "$CONFIG/$cfg" ] || {
-    echo "game config missing: $CONFIG/$cfg — the config volume looks incomplete" >&2
-    exit 1
-  }
-done
-
-docker rm -f "$NAME" >/dev/null 2>&1 || true
 
 docker run -d \
   --name "$NAME" \
