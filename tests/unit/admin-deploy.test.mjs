@@ -45,6 +45,7 @@ const DEPLOY = join(repoRoot, 'tools/deploy/deploy-services.sh');
 const ENTRYPOINT = join(repoRoot, 'tools/deploy/entrypoint.sh');
 const RUN_INSTANCE = join(repoRoot, 'tools/deploy/run-instance.sh');
 const TUNNEL = join(repoRoot, 'tools/admin/tunnel.sh');
+const SMOKE_GAME_IMAGE = join(repoRoot, 'tools/smokes/admin-game-image-smoke.sh');
 const SERVER_CFG = join(repoRoot, 'tools/deploy/config/server.cfg');
 
 const dockerfile = readFileSync(DOCKERFILE, 'utf8');
@@ -331,6 +332,51 @@ test('the state directory the deploy makes is PRIVATE to the console', () => {
   // every uid on the box.
   assert.match(deploy, /sudo chmod 0700 "\$ADMIN_DIR" "\$ADMIN_DIR\/auth"/);
   assert.match(deploy, /sudo chown "\$ADMIN_UID:\$ADMIN_GID" "\$ADMIN_DIR"/);
+});
+
+test('the game image is at least 0.28, so the boot config is IN it', () => {
+  // THE SECRET'S DURABILITY DEPENDS ON THE IMAGE, AND NOTHING ELSE
+  // CATCHES IT. The RCON password is a cvar in the engine's memory; a
+  // container restart takes it. The boot config puts it in the
+  // config the engine reads at boot -- and the boot config is in the
+  // entrypoint, and the entrypoint is in the IMAGE. The image is built
+  // by hand (the payload is a build artifact), so CI cannot build it
+  // and CI cannot see what is in it.
+  //
+  // Measured on production, 2026-11-01: ts-server:0.27's entrypoint
+  // mentions rcon_password ZERO times, so the secret mounted into the
+  // container and the engine never read it. The console then reports
+  // "refused" on an instance that is running perfectly well, which
+  // looks exactly like a wrong password and is not one.
+  //
+  // So the tag is pinned here, and the floor is 0.28 -- the first tag
+  // whose entrypoint carries the boot config. Rolling the default back
+  // below it silently turns the secret back into a runtime-only secret,
+  // and nothing else in the build would say so.
+  const runInstance = readFileSync(RUN_INSTANCE, 'utf8');
+  const m = runInstance.match(/IMAGE="\$\{TS_IMAGE:-ts-server:(\d+)\.(\d+)\}"/);
+  assert.ok(m, 'the default game image tag must be pinned in run-instance.sh');
+  const tag = Number(`${m[1]}.${m[2]}`);
+  assert.ok(
+    tag >= 0.28,
+    `the default game image is ts-server:${m[1]}.${m[2]}, but the RCON boot config ` +
+      'only exists from 0.28 onwards. Below that the secret is runtime-only again, ' +
+      'and a container restart silently takes it away.',
+  );
+  // And the entrypoint the image would carry must know about the secret.
+  const entrypoint = readFileSync(ENTRYPOINT, 'utf8');
+  assert.match(entrypoint, /rcon_password/);
+});
+
+test('the game image smoke asks about the secret WITH AUTHORITY', () => {
+  // The same lesson as the deploy gate, in a second place: the state
+  // directory is 0700 and owned by the console's uid, so a script that
+  // runs as the deploy user cannot stat the secret inside it -- and
+  // "[ -f ]" says "not provisioned" for a secret that is provisioned.
+  // That is not hypothetical: the smoke hit it the first time it ran.
+  const smoke = readFileSync(SMOKE_GAME_IMAGE, 'utf8');
+  assert.match(smoke, /sudo test -f "\$SECRET"/);
+  assert.doesNotMatch(smoke, /\[ ! -f "\$SECRET" \]/);
 });
 
 test('the deploy builds the admin image when the repository is here', () => {

@@ -52,8 +52,12 @@ NAME="ts-$N"
 # on the pipe, and the kernel could hand a console command to it, where
 # it was consumed and DISCARDED. Measured on production before the
 # fix: a console question never answered in 25 seconds, 2 times out of
-# 12. After it: 12 of 12 answered, in 32-269ms. The OLD tag stays on the
-# host so a rollback is one env var: TS_IMAGE=ts-server:0.26.
+# 12. After it: 12 of 12 answered, in 32-269ms. 0.27 -> 0.28 for the
+# RCON SECRET: the entrypoint appends the mounted password to the
+# COPIED server.cfg, so the engine has it from the first second of its
+# life instead of only after somebody types it into the console. The
+# OLD tag stays on the host so a rollback is one env var:
+# TS_IMAGE=ts-server:0.27.
 #
 # WHY THE ROTATION NEEDS AN IMAGE
 # -------------------------------
@@ -61,7 +65,43 @@ NAME="ts-$N"
 # a live server is stomped at the next map change (measured: mp_timelimit
 # 10 at 15:39 became 3 again at the 15:48 map change). The rotation
 # therefore only sticks if it is IN the image's server.cfg.
-IMAGE="${TS_IMAGE:-ts-server:0.27}"
+#
+# WHY RCON NEEDS AN IMAGE TOO, AND IT IS NOT THE SAME REASON
+# -----------------------------------------------------------
+# The RCON password is a cvar like any other, so the same rule applies:
+# set on a live server, it is in the engine's MEMORY, and a container
+# restart takes it with the process. There is no way to write it into a
+# live container's memory from outside — the file the admin console
+# reads is on the HOST, and the engine reads its config at boot.
+#
+# So the password has to be in the image's entrypoint, and the tag has
+# to move. Measured on production, 2026-11-01, on a disposable instance:
+# the 0.28 image answered RCON (outcome=ok, 17 packets) BEFORE a
+# `docker restart` and AFTER it; the 0.27 image, with the very same
+# secret mounted, was `refused` in both cases — because its entrypoint
+# has no idea the secret exists.
+#
+# THE IMAGE IS BUILT BY HAND, AND THE PIPELINE DOES NOT BUILD IT.
+# `tools/deploy/Dockerfile.ts-server` carries the payload (the compiled
+# Rust server DLL), which is a build artifact and is deliberately not
+# committed. So the tag moves the way it has always moved: on the
+# host, with the payload staged in ~/build.
+#
+#   rsync tools/deploy/entrypoint.sh bb-prod:/home/ubuntu/build/entrypoint.sh
+#   ssh bb-prod 'cd ~/build && docker build -f Dockerfile.ts-server -t ts-server:0.28 .'
+#
+# The only thing that changed since 0.27 is the entrypoint: the RCON
+# secret block, and the paths becoming overridable with the SAME
+# defaults so the entrypoint can be exercised by a test without a
+# container. The payload is byte-for-byte the same.
+#
+# (An overlay on 0.27 — FROM ts-server:0.27, COPY the entrypoint,
+# chmod it — was tried first and works too, but it needs `USER root`
+# around the chmod, because the base image runs as gameserver and the
+# COPY lands root-owned. The canonical build has no such trap: the
+# same two lines run BEFORE the "USER gameserver" switch in
+# tools/deploy/Dockerfile.ts-server.)
+IMAGE="${TS_IMAGE:-ts-server:0.28}"
 ASSETS="${TS_ASSETS:-/srv/ts-data}"
 MAXPLAYERS="${TS_MAXPLAYERS:-32}"
 MAP="${TS_MAP:-ts_casa}"

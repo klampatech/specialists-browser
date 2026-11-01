@@ -325,6 +325,53 @@ re-execs `server.cfg`, and the re-exec does not touch a cvar the file never
 mentions. It does **not** survive a **container restart**, which is why the
 boot config exists.
 
+### 4.6 The game server image has to carry the boot config
+
+**The boot config is in the entrypoint, and the entrypoint is in the image.**
+So the secret's durability depends on the game server image, and that image
+is **built by hand** — `tools/deploy/Dockerfile.ts-server` carries the
+compiled Rust server DLL, which is a build artifact and is deliberately not
+committed, so the pipeline does not build it and CI cannot either.
+
+**Measured on `bb-prod`, 2026-11-01.** The deployed image was `ts-server:0.27`,
+and its `/srv/entrypoint.sh` mentions `rcon_password` **zero** times. So the
+secret mounted into the container, and the engine never read it:
+
+```
+ts-server:0.28  ->  before a restart: outcome=ok packets=17
+                     after  a restart: outcome=ok packets=17
+ts-server:0.27  ->  before a restart: outcome=refused packets=0
+                     after  a restart: outcome=refused packets=0
+```
+
+The contrast is the whole point: the same secret, the same mount, the same
+engine — and the old image says `refused` while the new one says `ok`. The
+symptom in production is a running server that the console reports as
+`refused`, which looks exactly like a wrong password and is not one.
+
+**To build the image with the boot config** (on the host, where the payload
+is staged):
+
+```bash
+rsync tools/deploy/entrypoint.sh bb-prod:/home/ubuntu/build/entrypoint.sh
+ssh bb-prod 'cd ~/build && docker build -f Dockerfile.ts-server -t ts-server:0.28 .'
+```
+
+**To check it** — `tools/smokes/admin-game-image-smoke.sh` starts a disposable
+instance, talks RCON to it, restarts the container, talks RCON again, and
+contrasts the old image. It touches nothing live: the probe containers are
+named `ts-rcon-probe` and `ts-rcon-probe-old` and listen on 27099 and 27098,
+outside the fleet's range and outside the orchestrator's names.
+
+```
+ssh bb-prod 'bash /home/ubuntu/admin-game-image-smoke.sh ts-server:0.28'
+```
+
+**And the tag has to MOVE**, because `tools/deploy/run-instance.sh` pins it:
+`IMAGE="${TS_IMAGE:-ts-server:0.28}"`. A rollback is one env var
+(`TS_IMAGE=ts-server:0.27`) — and that rollback turns the secret back into a
+runtime-only secret, so it must be a deliberate thing to do.
+
 **A missing secret does not stop a game server from starting.** If the file
 is absent, the entrypoint says so and the instance boots with RCON off. A
 missing optional secret must never stop a game server from starting; that
