@@ -314,6 +314,14 @@ fi
 # root-equivalent on the host, and the console's whole blast radius is
 # supposed to be "can kick players on this box", not "is root on the game
 # box".
+#
+# THE ORCHESTRATOR, OVER HTTP. The console asks the orchestrator which
+# instances are DEPLOYED, so the fleet view is the instances that exist and
+# not every port in the range. It is a read-only GET on loopback, to a
+# service that is already on the host: it adds no privilege, and the
+# console still holds no socket. When the orchestrator cannot be reached
+# the console falls back to the port range and says so in the fleet
+# response.
 if [ "$ADMIN_READY" = "1" ]; then
   replace admin \
     --network host \
@@ -323,6 +331,7 @@ if [ "$ADMIN_READY" = "1" ]; then
     -e TS_HOST=127.0.0.1 \
     -e TS_PORT_BASE=27015 \
     -e TS_INSTANCE_COUNT=8 \
+    -e ORCHESTRATOR_URL=http://127.0.0.1:8090 \
     -e RCON_PASSWORD_FILE=/srv/ts-admin/rcon_password \
     -e ADMIN_AUTH_FILE=/srv/ts-admin/auth/auth.json \
     -e ADMIN_AUDIT_PATH=/srv/ts-admin/audit/actions.log \

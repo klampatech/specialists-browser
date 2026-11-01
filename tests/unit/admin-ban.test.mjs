@@ -73,6 +73,10 @@ async function startService(fn) {
   const service = createAdminService({
     port: 0,
     count: 1,
+    // No orchestrator in this test: the fleet is the port-range
+    // fallback. The orchestrator's own list has its own tests
+    // (tests/unit/admin-orchestrator.test.mjs).
+    orchestratorUrl: null,
     makeAsk: () => async (command) => {
       asked += 1;
       return {

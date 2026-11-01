@@ -647,6 +647,13 @@ async function readFleet(log = false) {
   if (body.warning) {
     drawer('fleet', 'GET /admin/servers', `✗ ${body.warning}`, 'er');
   }
+  // WHERE THE LIST CAME FROM. A port range is every port that COULD
+  // be an instance; the orchestrator's list is the instances that
+  // exist. The operator has to be able to tell them apart, and the
+  // fallback says so in `detail`.
+  if (body.fleetSource && body.fleetSource !== 'orchestrator') {
+    drawer('fleet', 'GET /admin/servers', `✗ ${body.detail ?? 'the fleet is the port range'}`, 'er');
+  }
   // THE SWITCHER SELECTS SOMETHING. Until the operator picks another
   // instance, the first one is the one the status and the player list
   // are about — the mock opens on one too.
@@ -853,9 +860,15 @@ function renderServers() {
   const rows = state.fleet?.servers ?? [];
   const el = $('servers');
   if (!rows.length) {
+    // The empty fleet says WHICH list was empty: the orchestrator's
+    // deployed list, or the port range it fell back to.
+    const empty =
+      state.fleet?.fleetSource === 'orchestrator'
+        ? 'the orchestrator reports no deployed instance'
+        : 'the configured port range is empty';
     el.innerHTML =
       '<div class="srv" style="cursor:default"><div><b>No instances</b>' +
-      '<span class="sub">the configured port range is empty</span></div></div>';
+      `<span class="sub">${esc(empty)}</span></div></div>`;
     return;
   }
   el.innerHTML = rows

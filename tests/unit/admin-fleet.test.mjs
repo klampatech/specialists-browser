@@ -133,7 +133,10 @@ async function freePort() {
   return port;
 }
 
-test('the fleet is a port range, not a list', () => {
+test('the fallback list is a port range, not a list', () => {
+  // The fleet itself comes from the orchestrator now — these are the
+  // ports that COULD be instances, and they are what the console
+  // falls back to when the orchestrator cannot be reached.
   const fleet = fleetInstances();
   assert.equal(fleet.length, 8);
   assert.deepEqual(fleet[0], { id: 'ts-0', port: 27015 });
@@ -275,6 +278,12 @@ async function withService(opts, fn) {
   const { server } = createAdminService({
     port: 0,
     auth: createAuthStore({ record: createPasswordRecord(TEST_PASSWORD) }),
+    // THE ORCHESTRATOR IS NOT CONFIGURED IN THESE TESTS, so the
+    // fleet is the port-range FALLBACK — the same list these tests
+    // were written against. The orchestrator's own list (and the
+    // fallback's own reasons) has its own file:
+    // tests/unit/admin-orchestrator.test.mjs.
+    orchestratorUrl: null,
     ...opts,
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -700,6 +709,11 @@ test('the fleet endpoint returns one row per instance, and 200 even when some ar
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type'), /application\/json/);
     const body = await res.json();
+    // There is no orchestrator in this test, so this is the port-range
+    // FALLBACK, and the response says so. The orchestrator's own
+    // list is tested in admin-orchestrator.test.mjs.
+    assert.equal(body.fleetSource, 'port-range');
+    assert.match(body.detail, /port range/);
     assert.equal(body.count, 3);
     assert.equal(body.servers.length, 3);
     assert.deepEqual(
