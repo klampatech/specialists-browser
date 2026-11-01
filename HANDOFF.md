@@ -1169,6 +1169,56 @@ fix is to ask with authority (`sudo test -f`, `sudo test -s`,
 `sudo stat`), and the two tests that asserted the gate's SHAPE — and
 so pinned the bug — now assert the right thing.
 
+**THE BOOT CONFIG NEVER HAPPENED, AND NEITHER DID THE FLEET'S
+SELF-HEALING.** Three gates, all of them asking a question about a
+file without the authority to see it, and all of them believed.
+
+1. **The image.** The deployed `ts-server:0.27` image's
+   `/srv/entrypoint.sh` mentions `rcon_password` **zero** times. The
+   secret mounted into the container and the engine never read it. The
+   console reported `refused` on an instance that was running perfectly
+   well — which looks exactly like a wrong password and is not one.
+   `ts-server:0.28` is now built on the host (the payload is a build
+   artifact, so the image is built by hand; the canonical build is
+   `cd ~/build && docker build -f Dockerfile.ts-server -t
+   ts-server:0.28 .`), and PR #112 pins it.
+2. **The secret's gate.** `run-instance.sh` runs INSIDE the
+   orchestrator's container, and the secret lives on the HOST, in a
+   0700 directory that is not mounted into the orchestrator at all. So
+   `[ -f "$RCON_SECRET" ]` there was false **always**, the mount was
+   dropped silently, and the engine never got the password. The bind
+   source is resolved by the DOCKER DAEMON, so the question has to be
+   asked THERE: `docker run --mount` fails on a missing source and
+   creates nothing, while the short `-v` form CREATES A DIRECTORY —
+   the trap the gate exists to avoid. The real mount is `--mount` too.
+3. **The config volume.** The same script checks the config volume
+   before it creates anything, and the orchestrator's container did
+   not have that volume either — so it exited at "game config missing"
+   and **the orchestrator could not create or replace ANY instance**.
+   Measured: all three config files missing inside the orchestrator's
+   container, every action counter ZERO, ts-0 up for two days without
+   ever being replaced. The orchestrator logs "docker enabled —
+   actions will run" and then quietly fails the first time it tries.
+   The deploy now mounts the config into the orchestrator, at the same
+   path.
+
+**PROVEN THROUGH THE REAL PATH** — the script, inside the
+orchestrator's container, created a disposable instance that came up
+healthy with the secret mounted as a FILE (`-rw-r----- 1 root 10007
+40`, not a directory) and the group added: RCON answered `ok` with 24
+packets BEFORE a `docker restart` and `ok` with 24 packets AFTER it.
+The probe was named `ts-rcon-probe` on port 27099 — outside the
+fleet's range and outside the orchestrator's names — so nothing live
+was touched and `ts-0` was never replaced.
+
+**AND THE TEST THAT PINNED IT IS REWRITTEN.** "the game container
+mounts the secret read-only, and only if it is there" asserted the
+short `-v` form AND the in-container existence test, so it passed on
+the broken code and would have failed on the fix — exactly like the
+deploy gate's test did. It now asserts the strict mount and the
+daemon's probe. **A test that passes on the broken code is not a test;
+it is a fingerprint.**
+
 **THE ENGINE'S RCON IS NOT ON THE INTERNET.** `ss -lunp` shows the
 engine's UDP socket (where RCON lives) bound to `127.0.0.1:27015`, not
 `0.0.0.0`, and `ufw` allows 22/tcp, 443/tcp, 80/tcp and **no UDP at
