@@ -301,6 +301,15 @@ Restyle only. Every control stays: Identity (name, 24 chars), Controls
 needs you alive), Session (Quit to web UI). Green shell, square corners,
 phosphor focus rings, the group legends become mono uppercase labels.
 
+> **Amended 2026-11-01** (the code is right; this file is the thing that
+> needs fixing, per its own rule at the top). The overlay was cleaned up
+> after this plan shipped: the **Camera section is gone** — the engine's
+> own bind still changes camera mode, so the feature survives, but there
+> is no menu entry for it — and the Session button now reads **"Quit"**.
+> The explanatory paragraphs under the character picker, the Buy menu and
+> the Quit button were removed, and the close button was restyled so it
+> reads as a button rather than an empty text field.
+
 ### 5.4 CONNECTION LOST panel — inside `XashCanvas.vue`
 
 Restyle only. Keep the reason line, the "Reconnecting in Ns" countdown
