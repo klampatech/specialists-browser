@@ -197,6 +197,41 @@ async function stopInstance(index) {
 }
 
 /**
+ * Publish the slots, and whether each one is deployed.
+ *
+ * THE SLOTS ARE OURS, NOT THE REGISTRY'S. They come from the
+ * configuration, and whether a slot is deployed is a DOCKER question,
+ * not a registry question -- so they are published even when the
+ * registry cannot be reached.
+ *
+ * That matters because of what an empty list MEANS to the reader.
+ * Before this, the slots were only created inside the loop that runs
+ * after the registry read, so a registry outage returned early and left
+ * this list EMPTY -- and the admin console, which reads this list,
+ * showed an EMPTY FLEET while the game servers were running perfectly
+ * well. Measured on production, 2026-11-01: with the registry
+ * unreachable, `/api/orchestrator` published `instances: []` and the
+ * console said, with confidence, "the orchestrator reports 0 deployed
+ * instance(s)".
+ *
+ * The orchestrator's own comment says the right thing -- "I cannot see
+ * the fleet" and "the fleet is empty" look identical from here and
+ * only one of them is true -- and then it published the one that
+ * looks like the worse news. So the slots are published regardless,
+ * and the registry's absence only stops the orchestrator from ACTING
+ * on what it cannot see.
+ *
+ * @returns {Promise<void>}
+ */
+async function publishSlots() {
+  for (const port of PORTS) {
+    const id = `ts-${port - PORT_BASE}`;
+    const inst = instanceFor(id);
+    inst.deployed = await containerExists(inst.container);
+  }
+}
+
+/**
  * One decision pass.
  *
  * Order matters. Unresponsive instances are handled first because a dead
@@ -206,6 +241,11 @@ async function stopInstance(index) {
  * the only action that reduces capacity, so it has the most to justify.
  */
 async function decide() {
+  // Before the registry is read, and regardless of what it says: the
+  // slots exist because we configured them, and they are what the
+  // console and the bridge read to know the fleet.
+  await publishSlots();
+
   const registry = await readRegistry();
   if (!registry) {
     // The registry is down. Do nothing rather than act on nothing — in
@@ -226,12 +266,11 @@ async function decide() {
 
     // A slot with no container was never deployed. It is not crashed, and
     // restarting it would be a retry against a name that does not exist.
-    if (!(await containerExists(inst.container))) {
+    // (publishSlots() already asked docker, so the answer is here.)
+    if (!inst.deployed) {
       inst.unresponsiveSince = null;
-      inst.deployed = false;
       continue;
     }
-    inst.deployed = true;
 
     // "The registry does not know about this instance" and "the
     // registry says this instance is down" are different statements.
@@ -352,6 +391,23 @@ const server = http.createServer((req, res) => {
 });
 
 const [bindHost, bindPort] = BIND.split(':');
+
+// THE SLOTS ARE PUBLISHED BEFORE THE PORT IS OPEN.
+//
+// The server used to start listening and only then run its first
+// decision pass, so `/api/orchestrator` could answer with a list that
+// was still being filled in -- one slot, or two, out of eight. The
+// admin console reads that list to know the fleet, so it could be told
+// that most of the fleet did not exist.
+//
+// It is not a race you can see on the console's side: the answer is
+// well-formed, it is just incomplete. So the list is finished before
+// anybody can ask for it.
+//
+// (Found by a test that passed on its own and failed in the full suite:
+// the fetch won the race against the first decision pass.)
+await publishSlots();
+
 server.listen(Number(bindPort), bindHost, () => {
   console.log(`orchestrator listening on ${BIND}`);
   console.log(`registry: ${REGISTRY_URL}`);

@@ -388,15 +388,34 @@ test('the fleet source says which list it used', async () => {
   }
 });
 
-test('an orchestrator that says there are NO instances is an EMPTY FLEET, not the fallback', async () => {
+test('an orchestrator that publishes NO instances is an ERROR, not an empty fleet', async () => {
+  // THIS TEST USED TO SAY THE OPPOSITE, AND IT WAS WRONG.
+  //
+  // It asserted that an empty list is a legitimate "the fleet is empty"
+  // answer, on the reasoning that "no instances" and "no answer" have to
+  // be tellable apart. True -- but the premise underneath it was wrong:
+  // the orchestrator does not publish "the instances that exist", it
+  // publishes its CONFIGURED SLOTS, each with a `deployed` flag. So an
+  // empty array never means "the fleet is empty".
+  //
+  // It means the orchestrator could not see the fleet itself -- its
+  // registry is down -- or the thing on the other end is not an
+  // orchestrator. Measured on production, 2026-11-01: with the registry
+  // unreachable, `/api/orchestrator` published `instances: []` and the
+  // console told the operator "the orchestrator reports 0 deployed
+  // instance(s)" -- while the game server was running perfectly well.
+  //
+  // An empty fleet is the worst thing this console can show: the
+  // operator concludes every server is gone. So it is an error, and the
+  // fleet falls back to the port range and SAYS SO.
   const orchestrator = await orchestratorAnswering(orchestratorBody([]));
   try {
-    const source = createFleetSource({ url: orchestrator.url });
+    const source = createFleetSource({ url: orchestrator.url, count: 3 });
     const fleet = await source.read();
-    // The two answers have to be tellable apart, or "no instances" and
-    // "no answer" are the same thing.
-    assert.equal(fleet.source, 'orchestrator');
-    assert.deepEqual(fleet.instances, []);
+    assert.equal(fleet.source, 'port-range');
+    assert.equal(fleet.instances.length, 3);
+    assert.match(fleet.detail, /published no instances at all/);
+    assert.match(fleet.detail, /COULD be instances/);
   } finally {
     await orchestrator.close();
   }
@@ -574,7 +593,11 @@ test('an orchestrator that answers with a MALFORMED body: the fallback, not a cr
   }
 });
 
-test('an orchestrator that answers with NO instances: an empty fleet, and NOT the fallback', async () => {
+test('an orchestrator that publishes NO instances: the fallback, and it says so', async () => {
+  // The end-to-end version of the same fact: the console must not show
+  // an operator an empty fleet because the control plane lost its
+  // registry. It shows the port range, labelled, and the detail says
+  // what happened.
   const orchestrator = await orchestratorAnswering(orchestratorBody([]));
   try {
     await withService(
@@ -583,10 +606,9 @@ test('an orchestrator that answers with NO instances: an empty fleet, and NOT th
         const res = await get(port, '/admin/servers', cookie);
         assert.equal(res.status, 200);
         const body = await res.json();
-        assert.equal(body.count, 0);
-        assert.deepEqual(body.servers, []);
-        // The two answers have to be tellable apart.
-        assert.equal(body.fleetSource, 'orchestrator');
+        assert.equal(body.fleetSource, 'port-range');
+        assert.equal(body.count, 8);
+        assert.match(body.detail, /published no instances at all/);
       },
     );
   } finally {

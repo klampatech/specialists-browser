@@ -298,6 +298,34 @@ function deployedFrom(body, portBase) {
   const instances = [];
   const skipped = [];
 
+  // An EMPTY LIST IS NOT A LEGITIMATE ANSWER.
+  //
+  // The orchestrator publishes its CONFIGURED slots -- ts-0 through
+  // ts-N, each with a `deployed` flag -- so an empty array means one of
+  // two things, and neither of them is "the fleet is empty":
+  //
+  //   * the orchestrator could not see the fleet itself (its registry is
+  //     down), and it had nothing to publish; or
+  //   * the thing on the other end is not an orchestrator.
+  //
+  // Either way, showing an EMPTY FLEET is the worst thing this console
+  // can do: the operator sees no servers and concludes they are all
+  // gone, while the game server is running perfectly well. Measured on
+  // production, 2026-11-01: with the registry unreachable, the
+  // orchestrator published `instances: []` and the console said, with
+  // confidence, "the orchestrator reports 0 deployed instance(s)".
+  //
+  // So an empty list is an ERROR, and the caller falls back to the port
+  // range and says so. The orchestrator is fixed to publish its slots
+  // regardless (the slots are ours, not the registry's), so this is the
+  // backstop for the case that fix does not cover.
+  if (rows.length === 0) {
+    throw new OrchestratorError(
+      "the orchestrator published no instances at all, which it does when it cannot " +
+        'see the fleet itself, so it does not say which instances exist',
+    );
+  }
+
   // A SHAPE WE DO NOT UNDERSTAND IS NOT AN EMPTY FLEET.
   //
   // The orchestrator says which instances exist with a boolean
@@ -310,13 +338,10 @@ function deployedFrom(body, portBase) {
   // for an admin console: the operator sees NO SERVERS and cannot tell
   // whether the fleet is empty or the console is broken. So it is an
   // error -- the caller falls back to the port range and says so.
-  //
-  // An empty LIST is a different thing entirely: that is the
-  // orchestrator saying there are no instances, and it is legitimate.
   const sawDeployedFlag = rows.some(
     (row) => row && typeof row === 'object' && typeof row.deployed === 'boolean',
   );
-  if (rows.length > 0 && !sawDeployedFlag) {
+  if (!sawDeployedFlag) {
     throw new OrchestratorError(
       "not one of the orchestrator's instances says whether it is deployed, " +
         'so the answer does not say which instances exist',
