@@ -16,13 +16,298 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-10-29, `main` — **the client now caps the tick rate the
-engine is offered**, and the character picker and the pre-join identity
-modal are LIVE in production. webXash #25 and specialists-browser #81
-were merged (the latter as `c12dba3`), then #82 (the deploy gate) and #83
-(the console-FIFO fix) were merged on 2026-10-28, then #85 (the
-abandoned approaches' code) and #86 (the BB favicon, the turning dial,
-the top nav links gone). The game server image is `ts-server:0.27`.
+**As of:** 2026-10-31, branch `feat/admin-console-phase1` — **the admin
+console's PHASE 1 IS BUILT AND REVIEWED** (`services/admin`: the RCON
+client, the fleet discovery and the read-only API), on top of the
+specification in `docs/ADMIN-CONSOLE.md` (PR #104, awaiting Kyle's
+approval). The cross-vendor review's thirteen findings are fixed on
+this branch — see the admin section below, and note the one that is a
+fact about the DEPLOYMENT rather than about the code: **the engine
+logs the RCON password, on every command.** Everything else below is
+unchanged from the 2026-10-29 state: the client caps the tick rate the
+engine is offered, the character picker and the pre-join identity
+modal are LIVE in production, and the game server image is
+`ts-server:0.27`.
+
+## The admin console is specified (PR #104, 2026-10-31)
+
+Kyle supplied a mock of a single-admin web console for the fleet
+(servers, a stat bar, a live console, map and server controls, a ranked
+player list) and asked for a spec and a plan. The spec is
+**`docs/ADMIN-CONSOLE.md`**; PR #104 is open and **awaiting Kyle's
+approval** (the agent does not approve its own PRs).
+
+The spec's load-bearing claims were **measured** against production
+`ts-0` (read-only) and a disposable CI-stack instance, which was
+destroyed afterwards. Four measurements contradicted the earlier drafts
+(PRs #102 and #103, now closed and carried forward with the errors
+corrected and marked):
+
+1. **A successful `kick` DOES print into the RCON reply.** The earlier
+   draft said it prints nothing. The rule derived from it — the reply is
+   never the evidence, the state after the command is — survives.
+2. **`rcon_password` can be set at runtime.** No restart, no kicked
+   players.
+3. **A runtime-set `rcon_password` survives a map change**, which
+   re-executes `server.cfg`. The earlier draft rejected the runtime set
+   on the grounds that the re-exec would stomp it; it does not.
+4. **The game mode is a property of the MAP**, decided at rules
+   install. `mp_teamplay 1` is accepted and the mode does not change.
+
+**RCON works on the deployed engine**, which is what makes the console
+small: a new `services/admin` on loopback, talking to the game servers
+over loopback UDP, needing **no Docker socket** — which is what decides
+it over the console FIFO the registry uses.
+
+**Two features in the mock cannot work as drawn, and Kyle has decided
+what happens to them (2026-10-31):**
+- **Mute → dropped.** TS's *squelch* exists and the port implements it
+  (`crates/client/src/voice.rs` — the scoreboard's squelch mode, `vban`,
+  and the chat drop in `hud/mod.rs:1297`), but it is a **local,
+  per-listener** mute: the muting player blocks someone on their own
+  client. There is no administrative form, and GoldSrc's TFC-era
+  `ignore` command does not exist in FWGS. A real admin mute would be a
+  small **server-side** port change (drop `say`/`say_team` from a muted
+  player in `host_say`), not a console change.
+- **Ban → held, with the unblock now named.** The engine DOES have a
+  per-machine id that is unique, persistent across sessions and not a
+  cookie — `ID_GenerateRawId()`, a bloom filter over `/etc/machine-id`,
+  CPU info and disk serials, saved to disk. It is **inert in a
+  browser**, which has none of those, so every client ends up with the
+  same value and `banid` is a mass disconnect. **The ban key is one
+  field**: the server reads `protinfo["uuid"]` out of the connect
+  packet, and that single value is the authid, the `banid` key and the
+  `status` uniqueid. A bridge that overwrote it with a per-browser
+  token would make `banid` remove exactly one player, with **no
+  engine, port or server change**. That is FEAT-004/FEAT-005 of the
+  anti-cheat plan (its Phases 5-6). The vaulted spec had the wrong
+  field name (`cdkey` instead of `uuid`) and wrongly said the bridge
+  already parses the connect packet; both are corrected. The console
+  ships with **kick and no ban**.
+
+**Game mode is a readout, not a control** (also decided 2026-10-31):
+the mode is decided by the **map** at rules install, the servers will
+not switch modes often, and the plan is eventually **one server per
+game mode** — so the console reads the mode from the A2S rules string
+and never writes `mp_teamplay` / `lastmanstanding` / `mp_theonemode`.
+
+**Access is the SSH tunnel** (`ssh -N -L 8095:127.0.0.1:8095 bb-prod`),
+not a public vhost and not Tailscale. **The console manages the game
+server and nothing else** — no instance restart, no fleet scaling, no
+VPS operations, which is why it needs no Docker socket.
+
+All five decisions are written up in `docs/ADMIN-CONSOLE.md` §8.
+
+**Phase 1 is built** (branch `feat/admin-console-phase1`, next section).
+The build plan is five phases, each a PR.
+
+## The admin console: phase 1 is built and REVIEWED (2026-10-31, `feat/admin-console-phase1`)
+
+`services/admin` exists: a small Node HTTP service that talks to the
+fleet over **RCON** and serves three read-only endpoints. No auth, no
+UI, no mutating action — that is phase 1
+(`docs/ADMIN-CONSOLE.md` §7, phase 1).
+
+### The cross-vendor review round (2026-10-31)
+
+A cross-vendor review of phase 1 found thirteen defects. All are fixed
+on this branch, with a test for each. The ones that changed behaviour:
+
+- **A player whose NAME contains `" hp="` vanished.** `hp=` is the
+  boundary between the head (name + state) and the fields of a
+  `ts_status` line, and the name is attacker-chosen bytes printed
+  UNQUOTED — so splitting at the FIRST `" hp="` cut the name in half,
+  the head failed its state check, and the row disappeared. A player
+  the moderator cannot see is a player the moderator cannot moderate.
+  The boundary is now found from the RIGHT: the rightmost `" hp="` is
+  taken only if the head's last word is `alive` / `dead` / `observer`.
+- **The RCON client had no overall deadline.** The quiet timer is a
+  TERMINATOR, not a deadline, and every datagram restarts it — so an
+  engine that dribbled a packet out every 250 ms kept the promise
+  pending forever and the HTTP request hung. There are now TWO clocks:
+  the quiet timer (300 ms) and an overall deadline (5 s), armed BEFORE
+  `socket.connect` so a slow DNS resolver is bounded too. A deadline
+  with traffic on it is `unreachable` ("kept talking but never
+  finished"), NOT `refused` — a refusal means the engine said nothing.
+- **The reply was joined with `'\n'`.** Each datagram's text already
+  ENDS WITH A NEWLINE (the engine's redirect buffer does, and the flush
+  sends it as it is), so joining inserted a blank line between every
+  line and would have broken a line the engine's 2032-byte cap split.
+  The reply is now the CONCATENATION, and the test's fake engine emits
+  the trailing newline, so the test pins the engine's real text.
+- **A truncated `status` reply was reported as a complete one.** The
+  engine's own count (`players : N active`) is compared with the rows
+  that arrived; when they disagree the response says `partial: true`
+  and shows both counts, and the reply is read **once more** first.
+- **The fleet was re-probed on EVERY request** — five engine commands
+  per instance, forty per request, on the game servers' game thread.
+  Each instance's probe is now cached: **5 s** for one that answered,
+  **30 s** for one that did not (a failed attempt costs the engine's
+  rate-limit bucket a token, and 30 s means it can never exhaust its
+  own). Concurrent requests SHARE one probe. The cache is per process,
+  in memory, with no background refresher.
+- **The factory handed out the cleartext password.**
+  `createAdminService()` now returns a REDACTED config
+  (`rconConfigured: true`), and the password stays in the closure.
+- **The loopback guard was only in `start()`** — it is now in the
+  FACTORY, so phase 2 (which imports the factory) cannot walk around
+  it. A malformed percent-escape is a **400**, not a 500; a bad
+  `ADMIN_PORT` is a clean message, not a stack; and a **symlinked**
+  entry point starts the service (the old `isMain` compared a
+  resolved path with a symlink path, so the service silently exited 0
+  with nothing listening).
+
+The comment that said *"A FAILED RCON CALL IS NEVER RETRIED, ANYWHERE"*
+was **false** — it was true within one probe, and the service re-probed
+the same instance on the next request. It now says what is true: a
+failed attempt is never retried *within a probe*, and the cache's TTL
+is what bounds the rate.
+
+### THE ENGINE LOGS THE RCON PASSWORD
+
+This is not a bug in the console — it is a fact about the deployment,
+and the runbook has to say it. The engine prints the whole RCON
+datagram, **password included**, on every command
+(`SV_RemoteCommand`, `engine/server/sv_client.c`):
+
+```c
+Con_Printf( "Rcon from %s:\n%s\n", adr, MSG_GetData( msg ) + 4 );
+Log_Printf( "Rcon: \"%s\" from \"%s\"\n", MSG_GetData( msg ) + 4, adr );
+```
+
+The fleet runs with `-log` and a log file on, and the registry tails
+the container's logs — so the RCON password is in the game server's
+stdout and in its log file, **once per command**. The CONSOLE never
+logs it (the factory does not even return it); the ENGINE does. The
+probe cache cuts the volume enormously — five commands per instance
+every five seconds instead of forty commands per request — but it does
+not change what the engine prints: **the password is readable by
+anything that can read the game server's logs.** Phase 5 (deployment)
+has to say so in the runbook.
+
+### The RCON client, as it now stands
+
+**The RCON client** (`services/admin/lib/rcon.mjs`) is the risky part,
+and it is done with all the traps handled:
+
+- **The packet is raw bytes.** The request is built with
+  `Buffer.from(str, 'binary')`, so the magic number is four `0xff` and
+  not the UTF-8 pair `0xc3 0xbf`; the reply is decoded the same way.
+- **The reply is MANY datagrams** — one per printed line, and `status`
+  on a busy server is ~20 of them. The reader stops when the socket
+  goes **quiet** (300 ms), because there is no length and no terminator.
+- **An empty reply is a success.** The engine flushes its redirect even
+  when the command printed nothing, so "a reply with nothing in it" and
+  "no reply at all" are different things, and they mean different
+  things.
+- **Never retried within a probe.** The engine's rate limiter takes a
+  token on a FAILED attempt only, so a retry loop locks us out. One
+  attempt per instance, then report.
+- **Two clocks.** The quiet timer ends a reply; the 5-second overall
+  deadline ends a REQUEST, whatever the traffic.
+- **A refusal names all four causes** it cannot tell apart: the
+  password may be wrong, RCON may be disabled on that instance, UDP
+  may be filtered, or the engine may be busy. (The pinned FWGS engine
+  never says "Bad rcon_password" — on a wrong password it takes a
+  token and returns **without replying** — so the client keeps the
+  branch for other builds and does not pretend the engine sends it.)
+
+**The three RCON states are kept apart**, because they are three
+different operator situations:
+
+| state | what it means | how it is told apart |
+|---|---|---|
+| `ok` | the engine answered | a reply came back |
+| `refused` | the engine is there and would not talk to us | the port is open and nothing came back |
+| `unreachable` | no usable answer | the host answered ICMP port-unreachable (a **connected** UDP socket reports that as `ECONNREFUSED`), or the engine never finished the reply |
+
+The connected socket is what buys that distinction: a closed port says
+so, an open-but-silent port does not, and without it a down server and
+a misconfigured one would be the same row. With **no `RCON_PASSWORD`**
+set the service still starts, and every instance comes back `refused` —
+the truth, and the reason is the configuration.
+
+**The parsers** (`services/admin/lib/parse.mjs`) read the engine's own
+text, and the two live footguns are handled: the `#` column of the
+`status` table is the **slot**, not the userid (`kick #N` wants the
+userid, so the API exposes `slot` and `userid` as separate fields and
+says which is which), and a bot is a row whose `uniqueid` is `BOT` — not
+a name that starts with "Bot ". The third is the one the review found:
+the `ts_status` head/field boundary is found from the RIGHT, because
+the name is unquoted and may contain `" hp="`; and the `ts_status`
+header pattern is **anchored**, because a name may contain
+`"[ts] status:"`.
+
+**The player list says when it is short.** The engine's own count
+(`players : N active`, humans only) is compared with the human rows
+that arrived; when they disagree the response carries
+`partial: true` with `expectedPlayers` and `parsedPlayers`, and the
+count that is shown is the ENGINE's — that is what the server believes.
+
+**What is NOT in phase 1**, on purpose: no auth, no UI, no
+kick/map/broadcast/restart, no cvar write, **no ban** (held until the
+bridge-stamped identity exists), and **no uptime** — the engine has no
+uptime command, so `uptime` is `null` until the service can ask the
+orchestrator for the container start time.
+
+**AND LIVE, AGAINST THE REAL ENGINE** (2026-10-31). The fake engine is
+a fake; the CI stack is not. The disposable stack was brought up
+(`ci-stack.sh up` → `ts-ci-0` on `127.0.0.1:27025/udp`, `bridge-ci`,
+`registry-ci`), an `rcon_password` was set at runtime on `ts-ci-0`
+through its console pipe, and **this service** was run against it in a
+`node:22-alpine` container on the host's network namespace. The real
+engine answered:
+
+```
+GET /admin/servers  →  {"id":"ts-0","port":27025,
+                        "name":"bulletballet TS CI","map":"ts_casa",
+                        "mode":"Dm","players":0,"bots":0,"max":32,
+                        "tickrate":100,"mapSecondsLeft":874,
+                        "timeLimitMinutes":15,"rcon":"ok","health":"up",
+                        "expectedPlayers":0,"parsedPlayers":0,"partial":false}
+GET /admin/servers/ts-0/status   → the same, as a status document
+GET /admin/servers/ts-0/players  → the player table, partial: false
+a second fleet read inside the cache's TTL → 6 ms, and the engine was
+                                          sent no commands at all
+```
+
+So the RCON transport, the fleet discovery, the parsers and the cache
+are proven against the engine that will actually run them — not only
+against a fake that agrees with our reading of the protocol. The stack
+was torn down afterwards and production was not touched (the four
+production containers were still up with their original uptimes).
+
+The live run also confirmed the **deployment** fact above, from the
+engine's own log rather than from the source:
+
+```
+[15:00:28] Rcon: "rcon cismoke2026 sys_ticrate
+[15:00:28] Rcon from 172.17.0.1:52212:
+```
+
+The password, in the log, once per command. That is the engine's
+behaviour and the console cannot change it — the cache only reduces
+how often it happens.
+
+**Proven, not asserted:** the unit suite covers the wire encoding, the
+multi-datagram read, the exact reply text, the quiet timer, the overall
+deadline, the empty reply, the refusal's four causes, the unreachable
+host, the player table, `ts_status`, the cvars, the probe cache, the
+truncated reply, the redacted config, the loopback guard, the port
+check and the symlinked entry point; and the service was started and
+curled for real against a fake engine that speaks the protocol —
+`GET /admin/servers` returned 200 with the live instance `ok` and the
+dead one `unreachable`, `GET /admin/servers/ts-0/players` returned the
+player table with `partial: false`, and a second fleet read inside the
+cache's TTL sent the engine **no** commands at all.
+
+**NEXT TASK (admin console, phase 2): auth.** The password (scrypt
+hash), the session cookie, the lockout, the CSRF token, the audit
+line, and `adminctl`. The contract is fixed in
+`docs/ADMIN-CONSOLE.md` §4 and §5 — phase 2 changes the code, not the
+shapes. Phase 2 imports `createAdminService()`, which is why the
+loopback guard, the port check and the password check live there and
+not in the command line.
 
 ## The CI browser gate was playing in production (2026-10-30)
 
