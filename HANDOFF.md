@@ -206,6 +206,11 @@ screen offering the akimbo version; and, after the akimbo purchase, the
 loadout's card 2 holding the **Five-seveN** and the card 5 holding the
 **Akimbo Five-seveN** — the live client printing `TSBUY entry 0 1250 10
 2 10 Five-seveN` and `TSBUY entry 0 1250 10 5 10 Akimbo Five-seveN`.
+And the server's own spawn log has the last word on what the player
+holds: `[11:29:00] [ts] evo-pair-1793640501 spawned (#4) with [14, 30]`
+— the Five-seveN (**14**) and the Akimbo Five-seveN (**30**), the pair the
+purchase grants, in the world and not just in the panel.
+
 The port's suite is at **481 tests**, clippy is clean on the client, and
 the frontend's typecheck and build are clean.
 
