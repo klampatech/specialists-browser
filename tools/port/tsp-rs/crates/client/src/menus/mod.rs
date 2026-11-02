@@ -10,6 +10,7 @@
 //! and routes clicks here (TS: VGUI's input, or `IN_MouseEvent` → `CTSBuyMenu::MouseEvent`).
 
 pub mod buy;
+mod buy_modern;
 #[cfg(test)]
 mod buy_pixels;
 #[cfg(test)]
@@ -136,6 +137,7 @@ pub fn init() {
     engine().add_command(c"ts_buy_hide", cmd_buy_hide);
     engine().add_command(c"ts_buy_key", cmd_buy_key);
     engine().add_command(c"ts_buy_state", cmd_buy_state);
+    engine().add_command(c"ts_buy_mode", cmd_buy_mode);
 }
 
 /// ---- the menu commands (port addition, issue #352) ----------------------------------------------
@@ -153,7 +155,6 @@ pub fn init() {
 /// switch) so they cannot silently change behaviour in a normal desktop game. Unlike
 /// `ts_dev_key` they do **not** need `sv_cheats`, which is server-controlled and read-only on the
 /// client.
-
 /// `ts_menu_open [id]`: show a menu the way `ShowVGUIMenu` does. Default 2, the team menu.
 extern "C" fn cmd_menu_open() {
     if !crate::input::dev_script_input_enabled() {
@@ -335,19 +336,29 @@ extern "C" fn cmd_buy_hide() {
     print_buy_state();
 }
 
-/// `ts_buy_key <n> [<page>]`: run the key `n` (1..=11) on the menu's current page, or on the
-/// given page. This is the DOM menu's only write path, and it works whether or not the canvas
-/// menu is hidden: it is the same [`BuyMenu::handle_key`] the canvas menu runs.
+/// `ts_buy_key <n> [<page>]`: run the key `n` (1..=11, and 0 in the modern flow, which is the
+/// design's back badge) on the menu's current page, or on the given page. This is the DOM
+/// menu's only write path, and it works whether or not the canvas menu is hidden: it is the
+/// same [`BuyMenu::handle_key`] the canvas menu runs.
 ///
 /// The page is the one the clicked row belongs to: the menu draws the columns of the page it is
 /// on, and a row of a parent column's key acts on that column's page, as the mouse's hit test
 /// has it. Without a page the key runs on the current page, which is what the digit keys do.
 extern "C" fn cmd_buy_key() {
     let e = engine();
+    // The classic flow's keys are the game's own, 1..11. The modern flow's remove keys run
+    // past them (the loadout's entries are removed by their own keys), so the guard is wider
+    // there — and only there: the classic flow's console behaviour is unchanged. The modern
+    // flow also takes key 0, which is the design's back badge ("0 Back to loadout").
+    let (lo, max) = if with(|m| m.buy.mode == buy::Mode::Modern) {
+        (buy_modern::BACK_KEY_DESIGN, buy_modern::REMOVE_KEY_BASE + buy::ENTRIES as i32 - 1)
+    } else {
+        (1, 11)
+    };
     let n = match e.cmd_argv(1).to_string_lossy().trim().parse::<i32>() {
-        Ok(n) if (1..=11).contains(&n) => n,
+        Ok(n) if (lo..=max).contains(&n) => n,
         _ => {
-            e.print("usage: ts_buy_key <1-11> [<page>]\n");
+            e.print(&format!("usage: ts_buy_key <{lo}-{max}> [<page>]\n"));
             return;
         }
     };
@@ -368,6 +379,29 @@ extern "C" fn cmd_buy_key() {
 /// `ts_buy_state`: print the menu's state, for the DOM menu's initial sync. The port prints the
 /// state on every change too, so the frontend never polls.
 extern "C" fn cmd_buy_state() {
+    print_buy_state();
+}
+
+/// `ts_buy_mode <classic|modern>`: which flow the menu runs.
+///
+/// The classic flow is the game's own canvas menu, and it is the default: the port behaves
+/// exactly as it always has until the browser asks for the modern one. The modern flow is the
+/// loadout flow the redesigned panel drives — the same prices, the same budget, the same saved
+/// loadouts, organised by the classic weapon slot.
+///
+/// The modern flow draws no canvas at all, so this is also the switch that takes the canvas
+/// menu's screen away; `ts_buy_hide` stays what it was.
+extern "C" fn cmd_buy_mode() {
+    let e = engine();
+    let mode = match e.cmd_argv(1).to_string_lossy().trim() {
+        "classic" => buy::Mode::Classic,
+        "modern" => buy::Mode::Modern,
+        _ => {
+            e.print("usage: ts_buy_mode <classic|modern>\n");
+            return;
+        }
+    };
+    with(|m| m.buy.set_mode(mode));
     print_buy_state();
 }
 
@@ -1017,8 +1051,9 @@ pub fn mouse_buttons(state: i32, old: i32, x: i32, y: i32) {
 }
 
 fn click(x: i32, y: i32) {
-    // A hidden menu does not take the mouse either: the browser's DOM menu owns it.
-    if !buy_open() || with(|m| m.buy.hidden) {
+    // A hidden menu does not take the mouse either: the browser's DOM menu owns it. The
+    // modern flow has no canvas at all, so the mouse belongs to the browser's panel.
+    if !buy_open() || with(|m| m.buy.hidden || m.buy.mode == buy::Mode::Modern) {
         return;
     }
     let r = rules();
@@ -1431,11 +1466,7 @@ mod tests {
         for line in lines {
             print_state_line(&line);
         }
-        assert!(
-            told_state().iter().any(|l| l.contains("open=0")),
-            "the DOM menu is told the menu is closed: {:?}",
-            told_state()
-        );
+        assert!(told_state().iter().any(|l| l.contains("open=0")), "the DOM menu is told the menu is closed: {:?}", told_state());
     }
 
     /// `FUN_10036480`: a missing `tsbuylist.tsa` is created empty, an existing one is read, and

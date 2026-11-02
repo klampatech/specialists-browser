@@ -53,6 +53,254 @@ client caps the tick rate the engine is offered, the character picker and
 the pre-join identity modal are LIVE in production, and the game server
 image is `ts-server:0.27`.
 
+**The newest work (2026-11-01, branch `feat/buy-menu-modern-flow`): the
+buy menu grew a SECOND flow.** The classic canvas menu is untouched (its
+pixel diff still passes) and the port's `menus/buy_modern.rs` grew the
+**modern loadout flow** — a loadout screen, a per-slot browse screen and
+an attachments screen, organised by the classic weapon slot
+(`WeaponInfo.hud[0]`), with **apply on purchase**. It is selected by the
+new `ts_buy_mode <classic|modern>` command and **defaults to `classic`**,
+so nothing changes for anybody until the browser asks for it. The
+frontend's half (sending `ts_buy_mode modern`, and the entry record's
+shape) is still open — see § NEXT TASK.
+
+**And then the LIVE GAME showed two rough edges in it (2026-11-01, the
+same branch), and the port's half of both is now fixed.**
+
+1. **The tenth weapon of a slot's list was unreachable.** The port
+   numbered the browse rows 1..N, so the tenth row was key 10 — and
+   key 10 is the game's own "back" key, so it went back instead. The
+   modern flow's rows are now keyed **1–9 and then 11, 12, …** (the
+   game's own rule for a weapon list: the classic flow's list numbers
+   its tenth weapon 11, the `a` key), and the keycap the panel draws is
+   the row's *place* in the list — 1–9, then A, B, … — so the tenth row
+   still wears the design's "A". The shortfall and owned marks carry
+   the row's own key too. The classic flow's numbering is untouched.
+2. **"Back" answers to key 0 as well as key 10.** The design's back
+   button is badged "0" ("0 Back to loadout", "0 Back to Pistols"), so
+   the port takes key 0 on the modern screens (the weapon list, the
+   accessory's items, the attachments and the rail), and key 10 still
+   does. The remove page is the one exception: its keys start at ten
+   and they remove the entry they name.
+3. **The clear row now says "Clear"** — the design's word — instead of
+   the game's "Reset Config". The port owns the labels the panel
+   draws: the browser resolves a title key through the game's own
+   titles and passes a plain label through unchanged, so the port
+   prints the word the design asks for. The classic flow's own reset
+   row keeps the game's title, because the canvas menu must not change.
+
+**And then the playtest (2026-11-02, the same branch): the buy menu's
+rail became the weapon CATEGORIES, and the key space had to be split in
+two.**
+
+1. **The rail is the categories.** The browse screen's left rail lists
+   the six weapon categories — melee, pistols, SMGs, rifles, shotguns
+   and the player accessory — keyed **1–6** by the port. (It listed
+   seven, with special/akimbo among them, until the playtest moved the
+   akimbo onto the guns themselves: see point 7.)
+   The rifles and the shotguns are two entries now, split by the game's
+   own kind (`GetWeaponType`: the Sawed-Off is a shotgun to the game,
+   the Barrett a rifle), and the HUD slot the rail splits (slot 4) is
+   carded "Rifles · Shotguns".
+2. **The browse rail's keys and the loadout cards' HUD slots are two
+   different numberings.** The rail's key 5 is the shotguns; the HUD
+   slot 5 is the akimbo weapons. So the browser never reads a digit as
+   one or the other: it sends the digit to the port's **current page**
+   and the port decides what it means. The breadcrumb stopped claiming
+   a "Slot N" for the same reason — the number would have been a lie.
+3. **The modern flow has its own key space on the loadout screen:** the
+   player accessory is **6**, Random is **7** and Clear is **8**. Clear
+   used to answer on key 4 — the classic flow's inherited reset key —
+   and four is the card that opens the rifles, so a player pressing the
+   card-4 digit wiped the loadout instead. The classic flow's rows and
+   keys are untouched. The HUD slot the rail splits opens the **rifles**
+   on its digit; the shotguns are one rail click away, on the screen that
+   digit opens.
+4. **The focused row does not survive** the trip through the attachments
+   screen, nor a purchase: a row that stays selected reads as "this one
+   is still on your list", which is exactly what it is not, any more.
+5. **The panel's voice (frontend):** the owned weapon's name is the
+   loudest thing on its row and a slot's weapons read as one
+   comma-separated line, with the attachment chips and the price keeping
+   their facts but dropping to a supporting voice. The loadout tabs
+   became a dropdown (the "More" tab was a dead end for eight of the
+   nine), the card's head is the way into that slot's list, the keycaps
+   trail their labels instead of stacking above them, and **the panel
+   scales with the viewport** instead of floating small in the middle of
+   it. The harness gained a "scaled" frame so the scaling can be seen
+   without a game.
+6. **The HUD slot 1 card says "Melee weapons"** (it said "Melee ·
+   Grenades · Swords"): the grenades are map power-ups, not something a
+   player buys, so the card advertised something that is not for sale.
+   The port owns that label, so the client WASM was rebuilt for it. The
+   loadout screen's "Press a slot number to browse it…" paragraph is
+   gone as well — the panel shows it and does not need to explain
+   itself.
+7. **The akimbo weapons are not a category any more.** A player who
+   wants the akimbo Berettas is looking at the **Berettas**, so the
+   akimbo version is offered on the gun itself: the attachments screen
+   of every gun that has a twin carries an **Akimbo** row (key 5), and
+   picking it buys the gun **as its pair**. The rail is **six** entries
+   now (melee, pistols, SMGs, rifles, shotguns, the player accessory)
+   and the rail's "Special" entry is gone; the HUD slot 5's own
+   contents (the akimbo versions and the Golden Colts) are still
+   reachable, from the loadout's **card 5**, which is the game's
+   "Special Purpose" slot.
+
+   **The pair is the gun bought TWICE — the game's own rule**, and the
+   port's own code says so: the client's submit sends an akimbo entry
+   to the server as the gun twice (the second copy without the
+   attachments), and the server's spawn turns the second copy into the
+   pair. So the purchase is the **gun** the player picked (the
+   Five-seveN), not the twin's own id, and it costs the gun's price
+   **twice**: the akimbo Five-seveN is **$2,500**, and the row itself
+   carries the second copy's price ($1,250).
+
+   An earlier version bought the twin's id (30) instead, on the
+   reasoning that the twin is a weapon of its own: the menu showed
+   "Akimbo Five-seveN" at $1,250 and the player got **nothing** — the
+   game does not spawn that id as a pair, so no pistol and no akimbo
+   pistols. The `swap` flag went with it: the akimbo row is one of the
+   purchase's parts, not a version swap. The attachments screen's footer
+   no longer explains the game's buying order either.
+
+   **The loadout shows the gun AND the pair — the game's own truth.**
+   The server's spawn gives the player both: the gun in its own HUD
+   slot and the pair in the slot 5 (the spawn logs the ids, and a
+   player holding a pair holds the gun's id and the twin's id). So the
+   loadout's cards show both, the way the player will really carry
+   them: the **pistols** card carries the Five-seveN, the **card 5**
+   ("Special Purpose") carries the Akimbo Five-seveN. The table agrees
+   the two are the same thing twice — every twin costs and takes
+   exactly what its base costs and takes — so the two cards' prices
+   add up to what the player paid ($1,250 + $1,250 = $2,500, and with
+   a silencer $2,150 + $1,250 = $3,400: the gun twice, the
+   attachments once).
+
+   The port's entry record and its slot count must say the SAME thing
+   about the akimbo entry. They did not, once: the entry said slot 5
+   and the count said slot 2, and the browser draws a card's weapons
+   only when the port says the card holds something — so **every card
+   came up blank** after an akimbo purchase (the playtest of
+   2026-11-02). The port's suite now checks that the slot counts and
+   the entries agree, card for card.
+
+8. **Nothing is lit by default, and the panel does not explain itself.**
+   The playtest found the browse screen opening with the category's
+   first weapon already highlighted — the Mini-Uzi in the SMGs. It read
+   as "this one is chosen", and picking a weapon takes the player to
+   another screen anyway, so a default highlight says nothing true. The
+   port clears its focus when a category opens; the keys pick the rows.
+
+   Three lines of footer text went with it: "Switch categories without
+   going back. No stacked menus.", "Add as many as your budget allows.
+   Pick a gun to choose attachments first." and "Closing keeps your
+   loadout. Nothing to confirm." The modern flow's footer now says
+   nothing at all. The panel shows the answer instead of describing it.
+
+9. **The loadout screen lines up, and the destructive button wears red.**
+   The playtest's nitpicks, fixed in the browser: the rail's "Also" label
+   rides high and the "6 Player Accessory" button sits above the first
+   card, because the left column's first row is the slot picker and the
+   right column's first row was only a label. The label now takes the
+   picker's height, so "Also" sits on the same line as "Loadout slot" and
+   the accessory button starts level with slot 1 — measured at 0px apart
+   in a live client. The Clear confirmation's confirm button is red (the
+   one button that throws the loadout away), the confirm and cancel
+   buttons stay anchored at the footer's right, the primary buttons have a
+   gap before their key cap, and "Deploy with Loadout A" is "Use
+   Loadout A". The "Saves automatically" line is gone from the slot picker —
+   the loadouts save themselves, and the panel saying so is the panel
+   explaining itself again.
+
+**Verified in a real game on the dev server** (2026-11-02): the client
+WASM rebuilt from this port, deployed, and byte-identical to the served
+copy; the panel drawn from the port's own rows and entries in a live
+client, with Clear on key eight, and the Five-seveN's attachments
+screen offering the akimbo version; and, after the akimbo purchase, the
+loadout's card 2 holding the **Five-seveN** and the card 5 holding the
+**Akimbo Five-seveN** — the live client printing `TSBUY entry 0 1250 10
+2 10 Five-seveN` and `TSBUY entry 0 1250 10 5 10 Akimbo Five-seveN`.
+And the server's own spawn log has the last word on what the player
+holds: `[11:29:00] [ts] evo-pair-1793640501 spawned (#4) with [14, 30]`
+— the Five-seveN (**14**) and the Akimbo Five-seveN (**30**), the pair the
+purchase grants, in the world and not just in the panel.
+
+The port's suite is at **481 tests**, clippy is clean on the client, and
+the frontend's typecheck and build are clean.
+
+## The redesigned buy menu runs in a real game on the dev server (2026-11-01)
+
+**The buy menu is playable.** The dev server, a local TS server with bots, and
+the port's rebuilt client WASM — all four pieces are needed. The dev server
+alone serves the assets; it is not a game.
+
+**The URL:** `https://100.95.111.112:5174/` — PLAY, pick a name and a
+character, and you are in. The buy menu opens with **b** (the engine's own
+bind: TS's `config.cfg` binds `"b"` to `"buy"`) or when you die, the way the
+game always did it. **Escape twice** opens the options overlay, where
+**Buy menu: CLASSIC / MODERN** picks the flow; the choice is persisted and
+survives a reload (pinia-plugin-persistedstate writes the picked paths under
+the store's id — `xash` — with the paths nested inside it, so it is
+`{"tsConfig":{"buyMenu":"modern"}}` and not a key per path).
+
+**The stack**, in this order:
+
+1. **the dev server** — `cd webxash && bun run dev` (the vite config already
+   sets `host: 0.0.0.0`, `port: 5174`, and HTTPS when the local certs
+   exist). A headless browser needs `--ignore-certificate-errors` and
+   `--use-gl=swiftshader`.
+2. **the local TS server** — `tools/port/tsp-rs/scripts/start-ts-server.sh`
+   (UDP 27015, bots, the game's own maps). The dev server's `/api/servers`
+   lists it.
+3. **the UDP bridge** — `node tools/port/tsp-rs/scripts/ts-udp-bridge.js
+   --listen 27017 --targets default=127.0.0.1:27015@100.95.111.112:27015`.
+   The browser talks WebSocket to the bridge and the bridge talks UDP to the
+   server. The `internal@public` form is what makes the tailnet address
+   reachable from the browser's origin.
+4. **the port's client WASM** — `FWGS_DIR=/tmp/xash3d-fwgs
+   tools/port/tsp-rs/scripts/build-wasm.sh`, then
+   `tools/port/tsp-rs/scripts/deploy-wasm-to-webxash.sh`, which copies it to
+   `webxash/public/cl_dlls/`. **The dev server serves the wasm from that
+   directory**, so a port change is not in the browser until the wasm is
+   rebuilt AND deployed. After the deploy the port's `dist/` and the served
+   copy are byte-identical.
+
+**The harness** — `https://100.95.111.112:5174/dev-buy.html` — draws the panel
+from the port's records with no engine, so the design can be iterated on
+without launching a game. It has every screen and scenario, and
+`?screen=browse&state=poor` picks one.
+
+**A dev-only bug that hid all of this**: the asset loader built its
+cache-busting URL with `new URL(url)`, which throws on a *relative* URL — and
+`VITE_ASSET_BASE` is unset in development, so the asset base IS relative. The
+throw happened while the candidate list was being built, before the fetch was
+attempted, so the dev server's game data never loaded and the page sat at
+"Fetching game data" at 0%. Production was never affected: the deploy sets an
+absolute asset base. Fixed by resolving against the document.
+
+**The buy menu's own rules** (the design's mockup is the authority — the key
+table in `docs/design-mocks/buy-menu-redesign.html`):
+
+- a browse list's rows are keyed **1–9 and then 11, 12, …**, because key 10
+  is the game's own back key and stays reserved — and the keycap the panel
+  draws is the row's *place* in the list, so the tenth row wears the design's
+  **"A"** and the eleventh **"B"**. (The classic flow's own list already
+  numbered its tenth weapon 11 — the modern flow follows the game's rule
+  rather than inventing one.)
+- **back answers to 0 and to 10** on the modern screens (0 is the design's
+  badge, 10 is the game's own key).
+- the loadout's actions are **R** (Random, no confirmation) and **X**
+  (**Clear**, which asks before it empties the loadout). The port prints the
+  literal `Clear`; the classic canvas row keeps the game's own
+  `#Buy_ResetConfig` title, because the canvas menu must not change.
+- **the loadout screen's key space is its own**: the five cards wear the
+  HUD slots' digits (**1–5**), the player accessory is **6**, Random is
+  **7** and Clear is **8**. The browse screen's rail is a different
+  numbering — the categories, keyed **1–7** — so a digit is only ever sent
+  to the port's current page and the port says what it means. The classic
+  flow keeps the game's own keys (its reset row is still key 4).
+
 ## The admin console is specified (PR #104, 2026-10-31)
 
 Kyle supplied a mock of a single-admin web console for the fleet
@@ -1524,6 +1772,99 @@ frame cap — the production bundle carries `TSBUY`/`ts_buy_key`/
 `ts_buy_hide`/`ts_buy_state` alongside `nocap`/`sustainableFps`, verified
 from the served chunk. The default is still `classic`, so the DOM menu
 does not appear until a player flips the switch.
+
+## The buy menu grows a MODERN flow (2026-11-01, branch `feat/buy-menu-modern-flow`)
+
+**The classic canvas menu is untouched.** The buy menu above (PR #88) is
+a **view** over the port's menu: the port prints its state, the browser
+draws it. What it could not do was the redesigned panel Kyle's mockup
+draws (`docs/design-mocks/buy-menu-redesign.html`): a **loadout screen
+with a card per weapon kind**, a **per-slot browse screen** and an
+**attachments screen**.
+
+**The port grew a SECOND flow for it** (`crates/client/src/menus/
+buy_modern.rs`), selected by a new command beside the other three:
+
+```
+ts_buy_mode <classic|modern>
+```
+
+**It defaults to `classic`**, so nothing changes for anybody until the
+browser asks for the modern one. `ts_buy_hide` is untouched: it is still
+the canvas menu's hidden flag, and it does NOT select the flow.
+
+**The slot is `WeaponInfo.hud[0]`** — the HUD grid column, 1-based. It is
+not a new table: the data was already there. Slot 1 is the melee, the
+grenades and the swords, 2 the pistols, 3 the SMGs, 4 the rifles and the
+shotguns (**the M60E3 is slot 4** — the mockup's screen 4 has it wrong),
+5 the akimbo weapons and the Golden Colts. Slot 6 is the **player
+accessory**, the game's own ITEMS page, not a weapon slot.
+
+**What is different from the classic flow:**
+
+- **Apply on purchase.** A purchase is submitted the moment it is made
+  (`rst_cfg`, `tkw`, `tki`, `tka` — the same four commands the classic
+  flow's "Use New Config" sends), so the pending-config step does not
+  exist here. The classic flow keeps it.
+- **The tabs are the config save slots** (`tsbuylist.tsa`'s nine). The
+  port prints all nine; the panel shows three and reaches the rest. An
+  edit is saved into the active tab, and switching tabs loads that tab's
+  saved config and **applies** it.
+- **An owned row is removed by selecting it**, and its price is refunded
+  (the design's §5/§7 rule). It is therefore never marked unaffordable
+  and carries no shortfall.
+- **The loadout screen reports the slot usage both ways**: how many of
+  the five slots are in use (`slots_in_use`) and how much of the 81-slot
+  pool they take (`slots`, and each slot record's count).
+
+**The rules are still the port's.** The browser computes nothing: it
+never forms a loadout, never sends `tkw`/`tki`/`tka` itself, and never
+decides whether a purchase is allowed. The affordability test is the
+port's own `add()` test — money **and** slots — and the shortfall is the
+port's number (`TSBUY short`), never the browser's subtraction.
+
+**The protocol** (the classic records are byte-identical; the modern flow
+adds `mode`/`screen`/`slot`/`tab` to the state line, and the `slot`,
+`tab`, `short`, `owned` and `sum` records):
+
+```
+TSBUY state ... mode=modern screen=browse slot=2 tab=0 slots_in_use=1 slot_limit=81
+TSBUY slot 2 10 1 Pistols
+TSBUY tab 0 Loadout A 1
+TSBUY row 1 850 0 2 1 Glock-18
+TSBUY short 2 550
+TSBUY owned 1 1
+TSBUY sum 850 29150
+TSBUY end
+```
+
+**The pixel diff still passes unchanged** (`menus/buy_pixels.rs`) — the
+classic menu's drawing did not move, and that test is the proof.
+
+**Two things the FRONTEND still has to do (they are on the frontend's
+side of the fence, in the `webxash` submodule):**
+
+1. **Send `ts_buy_mode modern` at session start.** As of this writing
+   `applyBuyMenuMode()` only sends `ts_buy_hide`, so the port stays in
+   the classic flow and the modern screen never appears.
+2. **The loadout card's "click a weapon to remove it" needs a removal
+   key in the entry record.** The port prints the classic entry shape
+   (`entry <index> <cost> <slots> <name>`, which the frontend's parser
+   accepts and places by counting). The frontend's in-flight parser
+   wants a richer modern entry record
+   (`entry <index> <cost> <slots> <attachments> <slot> <remove_key> <name>`);
+   the port does not print it, so the removal key is 0 and that one
+   click does nothing. The browse screen's owned row removes the weapon
+   today, so nothing is unreachable — but the card's click is inert.
+
+**And one that was on that list is DONE on the port's side** (it was the
+third): the typed "0" on a slot with ten weapons or more picked the tenth
+weapon instead of going back. The modern flow's list rows are keyed 1–9
+and then 11, 12, …, so the tenth weapon is key 11 and key 10 is the back
+key again — and key 0 goes back as well, which is the design's badge. The
+keycap the panel draws is the row's place in the list (1–9, then A, B,
+…), so the panel's own badge lookup finds the tenth row by "A" and sends
+the port's key 11.
 
 ## The client caps the engine's tick rate (PR #87, 2026-10-29)
 
@@ -3079,6 +3420,44 @@ the parts that are known traps.
 
 # § NEXT TASK
 
+> ## THE BUY MENU'S MODERN FLOW: THE FRONTEND'S HALF (2026-11-01)
+>
+> **The port's half of the modern buy flow is DONE** (branch
+> `feat/buy-menu-modern-flow`, the port's `crates/client/src/menus/
+> buy_modern.rs` and the `ts_buy_mode <classic|modern>` command beside
+> `ts_buy_hide`/`ts_buy_key`/`ts_buy_state`). The classic canvas menu
+> is untouched and its pixel diff passes unchanged. The design is in
+> SPEC.md § "The modern buy flow", and the protocol is in the section
+> above.
+>
+> **What is left is the frontend's half, in the `webxash` submodule:**
+>
+> 1. **Send `ts_buy_mode modern` at session start.** `applyBuyMenuMode()`
+>    sends `ts_buy_hide` and nothing else, so the port stays in the
+>    classic flow. Without this the modern screen never appears and the
+>    whole phase is invisible.
+> 2. **Decide the entry record's shape** with the port. The port prints
+>    the classic shape (`entry <index> <cost> <slots> <name>`), which
+>    the frontend's parser places by counting. The frontend's in-flight
+>    parser wants the richer modern shape
+>    (`… <attachments> <slot> <remove_key> <name>`), which is what the
+>    loadout card's "click a weapon to remove it" needs. Either the
+>    port grows that record (and the frontend keeps its parser) or the
+>    frontend drops the click.
+> 3. **The typed "0" conflict.** The port's key alphabet is 1–9, then
+>    "0", then "A"; the design's §6 proposes "A" for the tenth weapon
+>    and "0" for back. On slot 4 (eleven weapons) a typed "0" picks the
+>    tenth weapon. Pick one alphabet and say so here.
+>
+> **Then: rebuild the client WASM** (the port's commands are compiled
+> into it — a client build without `ts_buy_mode` answers "Unknown
+> command" and the frontend must fall back to the classic menu), and
+> **the tier-3 playtest** on a real browser, which is not optional for a
+> phase exit.
+>
+> **Do not touch the `webxash` submodule pointer in the port's PR.** The
+> frontend is landing on its own branch.
+>
 > ## THE AUTOBAN THAT KICKS EVERYONE (2026-10-29)
 >
 > **The engine's IP filters are unusable behind the bridge.** Every

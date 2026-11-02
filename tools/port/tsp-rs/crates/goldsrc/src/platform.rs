@@ -19,6 +19,8 @@ pub mod sdl {
     #[cfg(not(windows))]
     pub(crate) fn lookup(name: &CStr) -> *mut c_void {
         #[cfg(not(target_arch = "wasm32"))]
+        // SAFETY: the block below declares the dlopen/dlsym entry points and calls them
+        // with NUL-terminated names; RTLD_NOLOAD never loads a new library.
         unsafe {
             unsafe extern "C" {
                 fn dlopen(file: *const std::ffi::c_char, mode: c_int) -> *mut c_void;
@@ -26,7 +28,6 @@ pub mod sdl {
             }
             const RTLD_NOW: c_int = 2;
             const RTLD_NOLOAD: c_int = 4;
-            // SAFETY: dlopen/dlsym are called with NUL-terminated names; RTLD_NOLOAD never loads a new library.
             for lib in [c"libSDL2-2.0.so.0", c"libSDL2.so"] {
                 let h = dlopen(lib.as_ptr(), RTLD_NOW | RTLD_NOLOAD);
                 if !h.is_null() {

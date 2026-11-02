@@ -12,8 +12,13 @@
 //! * Cancelling (disconnect, `cl_plugins_cancel`, a withdrawn offer) stops the download between
 //!   reads; the staging file is removed whatever happens.
 
-use super::flow::{CERT_SUFFIX, Fetched, MANIFEST_SUFFIX, SIGNATURE_SUFFIX, Transport};
-use plugin_pkg::{Candidate, Package, Platform, PublicKey, Sha256, Store, Verdict, Verification};
+use super::flow::{Fetched, Transport};
+// The download flow's own names are only used by the real (feature-gated) implementation.
+#[cfg(feature = "tspkg")]
+use super::flow::{CERT_SUFFIX, MANIFEST_SUFFIX, SIGNATURE_SUFFIX};
+#[cfg(feature = "tspkg")]
+use plugin_pkg::{Candidate, Package, Verdict};
+use plugin_pkg::{Platform, PublicKey, Sha256, Store, Verification};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
@@ -74,154 +79,154 @@ pub fn spawn(tx: &Sender<Done>, f: impl FnOnce() -> Done + Send + 'static) {
 use std::time::Duration;
 #[cfg(feature = "tspkg")]
 mod real {
-use super::*;
-use std::fs;
-use std::io::{Read, Write};
-use std::path::Path;
+    use super::*;
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::path::Path;
 
-fn agent(plain_http: bool, body: Duration) -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .https_only(!plain_http)
-        .max_redirects(3)
-        .http_status_as_error(true)
-        .timeout_connect(Some(Duration::from_secs(10)))
-        .timeout_recv_response(Some(Duration::from_secs(30)))
-        .timeout_recv_body(Some(body))
-        .user_agent(format!("the-specialists-rs/{}", shared::protocol::port::VERSION))
-        .build()
-        .into()
-}
+    fn agent(plain_http: bool, body: Duration) -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .https_only(!plain_http)
+            .max_redirects(3)
+            .http_status_as_error(true)
+            .timeout_connect(Some(Duration::from_secs(10)))
+            .timeout_recv_response(Some(Duration::from_secs(30)))
+            .timeout_recv_body(Some(body))
+            .user_agent(format!("the-specialists-rs/{}", shared::protocol::port::VERSION))
+            .build()
+            .into()
+    }
 
-/// Reads `url` whole, up to `limit` bytes. `Ok(None)` for a 404 when `optional`.
-fn get_small(agent: &ureq::Agent, url: &str, limit: u64, optional: bool) -> Result<Option<Vec<u8>>, String> {
-    let resp = match agent.get(url).call() {
-        Ok(r) => r,
-        Err(ureq::Error::StatusCode(404)) if optional => return Ok(None),
-        Err(e) => return Err(format!("{url}: {e}")),
-    };
-    let mut buf = Vec::new();
-    resp.into_body().into_reader().take(limit + 1).read_to_end(&mut buf).map_err(|e| format!("{url}: {e}"))?;
-    if buf.len() as u64 > limit {
-        return Err(format!("{url} is over {limit} bytes"));
-    }
-    Ok(Some(buf))
-}
-
-/// Step 2: the manifest and its signature and countersignature.
-pub fn fetch_manifest(t: &Transport) -> Result<Fetched, String> {
-    let a = agent(t.plain_http, Duration::from_secs(30));
-    let manifest =
-        get_small(&a, &format!("{}{MANIFEST_SUFFIX}", t.base), plugin_pkg::manifest::MAX_MANIFEST_BYTES, false)?.unwrap_or_default();
-    let sig_limit = plugin_pkg::sign::MAX_SIGNATURE_FILE_BYTES;
-    let signature = get_small(&a, &format!("{}{SIGNATURE_SUFFIX}", t.base), sig_limit, true)?;
-    let cert = if signature.is_some() { get_small(&a, &format!("{}{CERT_SUFFIX}", t.base), sig_limit, true)? } else { None };
-    Ok(Fetched { manifest, signature, cert })
-}
-
-/// Steps 4–6: download (or reuse), check, unpack, and verify the install. On success the
-/// installed plugin's verification, from which the approval is written.
-pub fn install(j: &InstallJob, p: &Progress) -> Result<Verification, String> {
-    if !j.reuse {
-        let r = download(j, p).and_then(|()| unpack(j));
-        let _ = fs::remove_file(&j.staging);
-        r?;
-    }
-    let v = plugin_pkg::verify(&Candidate::Package { dir: j.dest.clone() }, j.platform, &j.store, &j.roots, 0);
-    let fail = |why: String| {
-        if !j.reuse {
-            let _ = fs::remove_dir_all(&j.dest);
-        }
-        Err(why)
-    };
-    if v.verdict == Verdict::Refuse {
-        return fail(format!("the installed files don't verify: {}", plugin_pkg::change_lines(&v.changes, 3).join("; ")));
-    }
-    if v.manifest_sha256 != Some(j.manifest_sha256) {
-        return fail("the installed manifest isn't the one approved".into());
-    }
-    if v.signer.key() != j.key {
-        return fail("the installed package's signer isn't the one approved".into());
-    }
-    Ok(v)
-}
-
-fn download(j: &InstallJob, p: &Progress) -> Result<(), String> {
-    let size = u64::from(j.size);
-    // At least 64 KiB/s, and a minute for small packages.
-    let body = Duration::from_secs(60 + size / (64 * 1024));
-    let resp = agent(j.plain_http, body).get(&j.url).call().map_err(|e| format!("download: {e}"))?;
-    let body = resp.into_body();
-    if body.content_length().is_some_and(|n| n != size) {
-        return Err(format!("the server sends {} bytes, the offer says {size}", body.content_length().unwrap_or(0)));
-    }
-    if let Some(dir) = j.staging.parent() {
-        fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    }
-    let mut out = fs::File::create(&j.staging).map_err(|e| format!("{}: {e}", j.staging.display()))?;
-    let mut reader = body.into_reader();
-    let mut buf = vec![0u8; 64 * 1024];
-    let mut total = 0u64;
-    loop {
-        if p.cancelled() {
-            return Err("cancelled".into());
-        }
-        let n = match reader.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
-            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(format!("download: {e}")),
+    /// Reads `url` whole, up to `limit` bytes. `Ok(None)` for a 404 when `optional`.
+    fn get_small(agent: &ureq::Agent, url: &str, limit: u64, optional: bool) -> Result<Option<Vec<u8>>, String> {
+        let resp = match agent.get(url).call() {
+            Ok(r) => r,
+            Err(ureq::Error::StatusCode(404)) if optional => return Ok(None),
+            Err(e) => return Err(format!("{url}: {e}")),
         };
-        total += n as u64;
-        if total > size {
-            return Err(format!("the download is bigger than the offer's {size} bytes"));
+        let mut buf = Vec::new();
+        resp.into_body().into_reader().take(limit + 1).read_to_end(&mut buf).map_err(|e| format!("{url}: {e}"))?;
+        if buf.len() as u64 > limit {
+            return Err(format!("{url} is over {limit} bytes"));
         }
-        out.write_all(&buf[..n]).map_err(|e| format!("{}: {e}", j.staging.display()))?;
-        p.bytes.store(total, Ordering::Relaxed);
+        Ok(Some(buf))
     }
-    if total != size {
-        return Err(format!("the download is {total} bytes, the offer says {size}"));
-    }
-    out.sync_all().map_err(|e| e.to_string())?;
-    drop(out);
-    let (sha, _) = Sha256::of_file(&j.staging).map_err(|e| format!("{}: {e}", j.staging.display()))?;
-    if sha.0 != j.sha256 {
-        return Err("the package's SHA-256 isn't the offer's".into());
-    }
-    Ok(())
-}
 
-/// Step 5 and 6's unpacking: the package's manifest is the card's, its signature still checks
-/// under the same key, and every entry is its manifest's ([`Package::extract`] checks each
-/// file's size and hash, unpacks beside the destination and renames it into place).
-fn unpack(j: &InstallJob) -> Result<(), String> {
-    let mut pkg = Package::open(&j.staging).map_err(|e| format!("package: {e}"))?;
-    if pkg.manifest_sha256() != j.manifest_sha256 {
-        return Err("the package's manifest isn't the one shown".into());
+    /// Step 2: the manifest and its signature and countersignature.
+    pub fn fetch_manifest(t: &Transport) -> Result<Fetched, String> {
+        let a = agent(t.plain_http, Duration::from_secs(30));
+        let manifest =
+            get_small(&a, &format!("{}{MANIFEST_SUFFIX}", t.base), plugin_pkg::manifest::MAX_MANIFEST_BYTES, false)?.unwrap_or_default();
+        let sig_limit = plugin_pkg::sign::MAX_SIGNATURE_FILE_BYTES;
+        let signature = get_small(&a, &format!("{}{SIGNATURE_SUFFIX}", t.base), sig_limit, true)?;
+        let cert = if signature.is_some() { get_small(&a, &format!("{}{CERT_SUFFIX}", t.base), sig_limit, true)? } else { None };
+        Ok(Fetched { manifest, signature, cert })
     }
-    let signer = pkg.check_signature(&j.roots).map_err(|e| format!("package signature: {e}"))?;
-    if signer.key() != j.key {
-        return Err("the package's signer isn't the one shown".into());
-    }
-    set_aside(&j.dest)?;
-    pkg.extract(&j.dest, j.platform).map_err(|e| format!("unpack: {e}"))?;
-    Ok(())
-}
 
-/// Moves an existing (unapproved, or replaced) version directory out of the way: renamed to a
-/// hidden `.<version>.replaced`, which is never a candidate and goes at the next start, or
-/// removed when it can't be renamed.
-fn set_aside(dest: &Path) -> Result<(), String> {
-    if fs::symlink_metadata(dest).is_err() {
-        return Ok(());
+    /// Steps 4–6: download (or reuse), check, unpack, and verify the install. On success the
+    /// installed plugin's verification, from which the approval is written.
+    pub fn install(j: &InstallJob, p: &Progress) -> Result<Verification, String> {
+        if !j.reuse {
+            let r = download(j, p).and_then(|()| unpack(j));
+            let _ = fs::remove_file(&j.staging);
+            r?;
+        }
+        let v = plugin_pkg::verify(&Candidate::Package { dir: j.dest.clone() }, j.platform, &j.store, &j.roots, 0);
+        let fail = |why: String| {
+            if !j.reuse {
+                let _ = fs::remove_dir_all(&j.dest);
+            }
+            Err(why)
+        };
+        if v.verdict == Verdict::Refuse {
+            return fail(format!("the installed files don't verify: {}", plugin_pkg::change_lines(&v.changes, 3).join("; ")));
+        }
+        if v.manifest_sha256 != Some(j.manifest_sha256) {
+            return fail("the installed manifest isn't the one approved".into());
+        }
+        if v.signer.key() != j.key {
+            return fail("the installed package's signer isn't the one approved".into());
+        }
+        Ok(v)
     }
-    let leaf = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let aside = dest.with_file_name(format!(".{leaf}.replaced"));
-    let _ = fs::remove_dir_all(&aside);
-    if fs::rename(dest, &aside).is_ok() {
-        return Ok(());
+
+    fn download(j: &InstallJob, p: &Progress) -> Result<(), String> {
+        let size = u64::from(j.size);
+        // At least 64 KiB/s, and a minute for small packages.
+        let body = Duration::from_secs(60 + size / (64 * 1024));
+        let resp = agent(j.plain_http, body).get(&j.url).call().map_err(|e| format!("download: {e}"))?;
+        let body = resp.into_body();
+        if body.content_length().is_some_and(|n| n != size) {
+            return Err(format!("the server sends {} bytes, the offer says {size}", body.content_length().unwrap_or(0)));
+        }
+        if let Some(dir) = j.staging.parent() {
+            fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        let mut out = fs::File::create(&j.staging).map_err(|e| format!("{}: {e}", j.staging.display()))?;
+        let mut reader = body.into_reader();
+        let mut buf = vec![0u8; 64 * 1024];
+        let mut total = 0u64;
+        loop {
+            if p.cancelled() {
+                return Err("cancelled".into());
+            }
+            let n = match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(format!("download: {e}")),
+            };
+            total += n as u64;
+            if total > size {
+                return Err(format!("the download is bigger than the offer's {size} bytes"));
+            }
+            out.write_all(&buf[..n]).map_err(|e| format!("{}: {e}", j.staging.display()))?;
+            p.bytes.store(total, Ordering::Relaxed);
+        }
+        if total != size {
+            return Err(format!("the download is {total} bytes, the offer says {size}"));
+        }
+        out.sync_all().map_err(|e| e.to_string())?;
+        drop(out);
+        let (sha, _) = Sha256::of_file(&j.staging).map_err(|e| format!("{}: {e}", j.staging.display()))?;
+        if sha.0 != j.sha256 {
+            return Err("the package's SHA-256 isn't the offer's".into());
+        }
+        Ok(())
     }
-    fs::remove_dir_all(dest).map_err(|e| format!("{} is in the way: {e}", dest.display()))
-}
+
+    /// Step 5 and 6's unpacking: the package's manifest is the card's, its signature still checks
+    /// under the same key, and every entry is its manifest's ([`Package::extract`] checks each
+    /// file's size and hash, unpacks beside the destination and renames it into place).
+    fn unpack(j: &InstallJob) -> Result<(), String> {
+        let mut pkg = Package::open(&j.staging).map_err(|e| format!("package: {e}"))?;
+        if pkg.manifest_sha256() != j.manifest_sha256 {
+            return Err("the package's manifest isn't the one shown".into());
+        }
+        let signer = pkg.check_signature(&j.roots).map_err(|e| format!("package signature: {e}"))?;
+        if signer.key() != j.key {
+            return Err("the package's signer isn't the one shown".into());
+        }
+        set_aside(&j.dest)?;
+        pkg.extract(&j.dest, j.platform).map_err(|e| format!("unpack: {e}"))?;
+        Ok(())
+    }
+
+    /// Moves an existing (unapproved, or replaced) version directory out of the way: renamed to a
+    /// hidden `.<version>.replaced`, which is never a candidate and goes at the next start, or
+    /// removed when it can't be renamed.
+    fn set_aside(dest: &Path) -> Result<(), String> {
+        if fs::symlink_metadata(dest).is_err() {
+            return Ok(());
+        }
+        let leaf = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let aside = dest.with_file_name(format!(".{leaf}.replaced"));
+        let _ = fs::remove_dir_all(&aside);
+        if fs::rename(dest, &aside).is_ok() {
+            return Ok(());
+        }
+        fs::remove_dir_all(dest).map_err(|e| format!("{} is in the way: {e}", dest.display()))
+    }
 } // mod real
 
 #[cfg(feature = "tspkg")]
@@ -245,6 +250,7 @@ pub fn install(_j: &InstallJob, _p: &Progress) -> Result<Verification, String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[cfg(feature = "tspkg")]
     use crate::plugins::offers::flow::Transport;
     use std::collections::BTreeMap;
     // `Write` for the test server's `write_all` on its TcpStream, `Path`
@@ -311,7 +317,8 @@ pub(crate) mod tests {
     }
 
     fn job(base: &str, dir: &Path, pkg: &[u8], manifest: &[u8], key: &plugin_pkg::SigningKey) -> InstallJob
-    where Path: std::convert::AsRef<std::ffi::OsStr>, // just to satisfy feature-gated body
+    where
+        Path: std::convert::AsRef<std::ffi::OsStr>, // just to satisfy feature-gated body
     {
         use std::path::PathBuf;
         InstallJob {
@@ -333,8 +340,6 @@ pub(crate) mod tests {
     #[cfg(feature = "tspkg")]
     #[test]
     fn fetch_and_install() {
-        use std::io::Write as _;
-        use std::net::TcpListener;
         let (pkg, manifest, key) = package();
         let sig = plugin_pkg::sign_manifest(&key, &manifest).to_vec();
         let mut files = BTreeMap::new();

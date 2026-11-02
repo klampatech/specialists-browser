@@ -336,7 +336,7 @@ pub fn add_entity(kind: i32, e: &cl_entity_t) {
 
 /// `CHudSpectator::DeathMessage` (`0x10024a60`), from `DeathMsg`: the victim's dead icon for 2 s.
 pub fn death(victim: i32) {
-    if !engine().entity(victim).is_some_and(|e| e.player != 0) {
+    if engine().entity(victim).is_none_or(|e| e.player == 0) {
         return;
     }
     let now = engine().client_time() as f64;
