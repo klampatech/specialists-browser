@@ -35,6 +35,13 @@ body{margin:0}*{box-sizing:border-box}
 .tab{min-height:44px;padding:0 18px;border-radius:8px;border:1px solid #33291d;background:transparent;color:#b3a68e;font:500 14px Inter,sans-serif;cursor:pointer}
 .tab.a{background:#f2b84b;color:#14110d;border-color:#f2b84b}
 .s{font-weight:600}.n{color:#b3a68e;font-size:12px;width:48px}
+/* The rail's first row lines up with the main column's first row: "Also" sits on the
+   same line as the tabs, and the accessory button starts level with the first card. */
+.also{display:flex;align-items:center;min-height:44px}
+/* The destructive action wears red: the Clear confirmation is the one button that
+   throws the player's loadout away, so it does not look like the button that starts
+   the game. */
+.go--danger{background:#e5484d;color:#14110d}
 
 </style></head><body><main class="doc">
 <header class="doc-head"><p class="doc-kicker">Design handoff</p><h1>The Specialists buy menu redesign</h1><p class="doc-lead">A redesign of the in-game buy menu for the Half-Life 1 mod The Specialists. This page holds the mockups and everything an implementing agent needs to know about the game and the intended behavior. The mockups are static. The commands that drive the menu are being mapped separately by the project owner.</p>
@@ -74,10 +81,10 @@ body{margin:0}*{box-sizing:border-box}
 <div class="row" style="justify-content:space-between;align-items:center"><div><h1 class="h">BUY MENU</h1><div class="m">Slots match the in-game weapon slots</div></div><div class="c" style="align-items:flex-end;gap:6px"><div class="m"><b style="color:#f2e9d8;font-size:18px">$23,400</b> left of $30,000 &nbsp;·&nbsp; 2 of 5 slots in use</div><div class="bar"><i style="width:22%"></i></div></div></div>
 <div class="row" style="flex:1;min-height:0"><div class="c" style="flex:1"><div class="row" style="align-items:center;gap:8px"><button class="tab a">Loadout A</button><button class="tab">Loadout B</button><button class="tab">Loadout C</button><span class="m" style="margin-left:auto">Saves automatically</span></div>
 <div class="card" style="flex-direction:column;align-items:stretch;gap:6px;padding:8px 10px"><div class="row" style="align-items:center"><span class="k">1</span><span class="t">Melee weapons</span></div><button class="b" style="min-height:36px;border-color:transparent;background:#262016"><span class="s">Combat Knife</span><span class="p">$100</span></button><button class="b" style="min-height:36px;border-color:transparent;background:#262016"><span class="s">Katana</span><span class="p">$2,900</span></button></div><div class="card" style="flex-direction:column;align-items:stretch;gap:6px;padding:8px 10px"><div class="row" style="align-items:center"><span class="k">2</span><span class="t">Pistols</span></div><button class="b" style="min-height:36px;border-color:transparent;background:#262016"><span class="s">Glock-18</span><span class="row" style="gap:6px"><span class="chip">Silencer</span><span class="chip">Lasersight</span></span><span class="p">$2,550</span></button><button class="b" style="min-height:36px;border-color:transparent;background:#262016"><span class="s">Desert Eagle</span><span class="p">$1,050</span></button></div><div class="card" style="flex-direction:column;align-items:stretch;gap:6px;padding:8px 10px"><div class="row" style="align-items:center"><span class="k">3</span><span class="t">SMGs</span></div></div><div class="card" style="flex-direction:column;align-items:stretch;gap:6px;padding:8px 10px"><div class="row" style="align-items:center"><span class="k">4</span><span class="t">Rifles · Shotguns</span></div></div><div class="card" style="flex-direction:column;align-items:stretch;gap:6px;padding:8px 10px"><div class="row" style="align-items:center"><span class="k">5</span><span class="t">Special Purpose</span></div></div></div>
-<div class="c" style="width:250px"><p class="t">Also</p><button class="b"><span class="k">6</span>Player Accessory</button>
+<div class="c" style="width:250px"><p class="t also">Also</p><button class="b"><span class="k">6</span>Player Accessory</button>
 <div class="row"><button class="ghost" style="flex:1"><span class="k" style="margin-right:8px">R</span>Random</button><button class="ghost" style="flex:1"><span class="k" style="margin-right:8px">X</span>Clear</button></div>
 </div></div>
-<div class="row" style="align-items:center;justify-content:space-between"><div class="row"><button class="ghost">B &nbsp;Close</button><button class="go">Enter &nbsp;Deploy with Loadout A</button></div></div>
+<div class="row" style="align-items:center;justify-content:space-between"><div class="row"><button class="ghost">B &nbsp;Close</button><button class="go">Enter &nbsp;Fight with Loadout #A</button></div></div>
 </div>
 </div></section><section class="doc-fig"><h3>2. Browse a category</h3><p>The category rail on the left replaces the stacked category menus, so switching category needs no “Go Back”. Weapons are in two columns, keyed 1–9 then A. The right column keeps the loadout visible while buying.</p><div class="doc-scroll"><div class="r">
 <div class="row" style="justify-content:space-between;align-items:center"><div><h1 class="h">PISTOLS</h1><div class="m">Loadout A · Buy</div></div><div class="c" style="align-items:flex-end;gap:6px"><div class="m"><b style="color:#f2e9d8;font-size:18px">$25,950</b> left of $30,000 &nbsp;·&nbsp; 2 of 5 slots in use</div><div class="bar"><i style="width:13.5%"></i></div></div></div>
@@ -125,6 +132,9 @@ body{margin:0}*{box-sizing:border-box}
 <tr><td>Empty slot</td><td>Dashed card, “Empty”</td><td>The slot number opens its list</td></tr>
 <tr><td>Low budget</td><td>Budget bar and “left” figure turn amber under about 10% remaining</td><td>Informational only</td></tr></table>
 
+<section class="doc-fig"><h3>The destructive action</h3><p>Clear empties the loadout and refunds it, so it asks first. The confirm button is <b>red</b>: it is the one button in the panel that throws the player's loadout away, so it does not look like the button that starts the game. The confirm and cancel buttons stay anchored at the footer's right, and the key cap keeps its gap from the label.</p><div class="doc-scroll"><div class="r" style="height:130px;justify-content:flex-end">
+<div class="row" style="align-items:center;justify-content:space-between"><span style="color:#f2e9d8;font-size:14px">Clear this loadout? Everything in it is refunded.</span><div class="row"><button class="ghost">Cancel</button><button class="go go--danger">Enter &nbsp;Clear</button></div></div>
+</div></div></section>
 <h2>6. Key bindings (proposed)</h2>
 <table><tr><th>Key</th><th>Loadout</th><th>Browse</th><th>Attachments</th></tr>
 <tr><td>1–5</td><td>Open that HUD slot’s list: 1 melee weapons, 2 pistols, 3 SMGs, 4 rifles, 5 special purpose</td><td>Pick weapon 1–5, or switch the rail’s category</td><td>Toggle attachment 1–4; the akimbo version on 5</td></tr>
@@ -175,5 +185,5 @@ body{margin:0}*{box-sizing:border-box}
 <li>Are keyboard arrow keys supported by the menu system, or only number keys and the mouse?</li></ul>
 
 <h2>11. Scope</h2>
-<p>Not designed: the SMG, rifle, shotgun and accessory lists (they reuse the Browse layout), the Random and Clear confirmations, a first-time hint for new players, and any in-world HUD changes (the weapon bar at the top of the screen is untouched).</p>
+<p>Not designed: the SMG, rifle, shotgun and accessory lists (they reuse the Browse layout), the Random confirmation, a first-time hint for new players, and any in-world HUD changes (the weapon bar at the top of the screen is untouched).</p>
 </main></body></html>
