@@ -1046,7 +1046,7 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> 
         // The loadout screen.
         page::MAIN => match key {
             // The player accessory: the loadout screen's own row.
-            6 => open_rail(b, Rail::Accessory, r),
+            6 => open_rail(b, Rail::Accessory),
             7 => random(b, r, rng, &mut out),
             // "Clear": the design's own word for the game's reset row. Its key is eight, so
             // that every card's digit opens its card (see [`loadout_rows`]).
@@ -1060,7 +1060,7 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> 
             // click away, and the rail is on the screen the digit opens.
             k if (1..=SLOT_COUNT).contains(&k) => {
                 if let Some(rail) = rail_for_hud_slot(k) {
-                    open_rail(b, rail, r);
+                    open_rail(b, rail);
                 }
             }
             // Back: the game's own key and the design's badge both close the menu.
@@ -1076,7 +1076,7 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> 
             // category's list.
             k if (1..=RAIL_COUNT).contains(&k) => {
                 if let Some(rail) = Rail::from_key(k) {
-                    open_rail(b, rail, r);
+                    open_rail(b, rail);
                 }
             }
             k if is_back(k) => back_to_loadout(b),
@@ -1182,9 +1182,12 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> 
 /// The state's `slot=` becomes the rail's key (1..=7) — the entry the player is browsing.
 /// It is not the HUD slot: the rifles and the shotguns share the HUD slot 4, and the rail
 /// gives them two keys.
-fn open_rail(b: &mut BuyMenu, rail: Rail, r: &Rules) {
+fn open_rail(b: &mut BuyMenu, rail: Rail) {
     b.modern_slot = rail.key();
-    b.modern_focus = focus_first(rail, r);
+    // Nothing is focused when a category opens. The playtest said so: a list that
+    // opens with a row highlighted reads as "this one is chosen", and picking a weapon
+    // takes the player to another screen anyway. The keys pick the rows.
+    b.modern_focus = 0;
     b.pending_weapon = -1;
     b.pending_att = 0;
     b.screen = Screen::Browse;
@@ -1210,12 +1213,6 @@ fn item_at(b: &BuyMenu, key: i32, r: &Rules) -> Option<BrowseItem> {
 fn browse_max_key(b: &BuyMenu, r: &Rules) -> i32 {
     let count = browse_items(b.modern_slot, r).len();
     if count == 0 { 0 } else { browse_key(count - 1) }
-}
-
-/// The first row of a rail entry's list: the one the screen focuses when it opens, so that
-/// "Enter picks the focused row" has something to pick.
-fn focus_first(rail: Rail, r: &Rules) -> i32 {
-    browse_items(rail.key(), r).first().map_or(0, |item| item.id)
 }
 
 /// The rail entry a HUD slot's digit opens.
@@ -1677,11 +1674,12 @@ mod tests {
     fn the_focus_does_not_survive_the_trip_through_the_attachments() {
         ts30_gameplay::tables::make_default();
         let r = rules();
-        // The list opens with its first row focused: the design's mockup draws it that way,
-        // and "Enter picks the focused row" needs something to pick.
+        // The list opens with NOTHING focused: a list that opens with a row highlighted
+        // reads as "this one is chosen", and picking a weapon takes the player to
+        // another screen anyway.
         let mut m = modern(&r);
         m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
-        assert_ne!(m.modern_focus, 0, "the list opens with a row focused");
+        assert_eq!(m.modern_focus, 0, "the list opens with nothing focused");
 
         // The gun is focused on the attachments screen.
         m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
