@@ -520,10 +520,6 @@ pub struct RowFlags {
     pub x: bool,
     /// The row is a header: it takes no key.
     pub sep: bool,
-    /// The row is a choice of VERSION, not a purchase line: picking it swaps the gun in
-    /// the purchase for another of its versions, so it is not one of the purchase's lines
-    /// and it is not added to it.
-    pub swap: bool,
 }
 
 impl RowFlags {
@@ -541,9 +537,6 @@ impl RowFlags {
         }
         if self.sep {
             v.push("sep");
-        }
-        if self.swap {
-            v.push("swap");
         }
         if v.is_empty() { "0".to_owned() } else { v.join("+") }
     }
@@ -753,7 +746,7 @@ fn weapons_rows(b: &BuyMenu, r: &Rules) -> Vec<Row> {
             key,
             label: w.name.clone(),
             price: w.cost,
-            flags: RowFlags { on: id == b.pending_weapon, dim, x: !ok, sep: false, swap: false },
+            flags: RowFlags { on: id == b.pending_weapon, dim, x: !ok, sep: false },
             color: if ok { RowColor::Hud } else { RowColor::Bad },
             text: Text::Keyed,
             id,
@@ -803,7 +796,7 @@ fn category_rows(b: &BuyMenu, r: &Rules) -> Vec<Row> {
             label: (*name).into(),
             price: 0,
             // The chosen category is in the state record (`cat`), not in a flag.
-            flags: RowFlags { on: false, dim, x: false, sep: false, swap: false },
+            flags: RowFlags { on: false, dim, x: false, sep: false },
             color: RowColor::Hud,
             text: Text::Keyed,
             id: 0,
@@ -1559,6 +1552,12 @@ impl BuyMenu {
             } else {
                 String::new()
             }
+        } else if e.akimbo {
+            // The akimbo version: the game's own name for the pair.
+            tables()
+                .weapon(e.id as u8)
+                .and_then(|w| u8::try_from(w.akimbo).ok().and_then(|a| tables().weapon(a)))
+                .map_or_else(String::new, |w| w.name.clone())
         } else {
             tables().weapon(e.id as u8).map_or_else(String::new, |w| w.name.clone())
         }

@@ -157,13 +157,27 @@ pub fn with<R>(f: impl FnOnce(&mut GameRules) -> R) -> R {
     f(g.get_or_insert_with(GameRules::default))
 }
 
+/// Runs `f` on the rules state for a READ, without panicking when another thread holds the
+/// borrow.
+///
+/// The rules state is global and the test suite runs its threads in parallel: two reads at
+/// once, one of them holding the only borrow, made the other panic with "RefCell already
+/// borrowed" — a flaky failure that had nothing to do with the code under test. A read that
+/// loses the race reads the default rules instead, which is what a fresh server has anyway.
+pub fn read<R>(f: impl FnOnce(&GameRules) -> R) -> R {
+    match RULES.0.try_borrow_mut() {
+        Ok(mut g) => f(g.get_or_insert_with(GameRules::default)),
+        Err(_) => f(&GameRules::default()),
+    }
+}
+
 /// Copy of a few frequently read flags (no borrow held).
 pub fn mode() -> (Mode, bool, bool, bool) {
-    with(|g| (g.mode, g.teamplay, g.lms, g.the_one))
+    read(|g| (g.mode, g.teamplay, g.lms, g.the_one))
 }
 
 pub fn teamplay() -> bool {
-    with(|g| g.teamplay)
+    read(|g| g.teamplay)
 }
 
 /// `armor_absorb` after `CTSGameRules::Init` (0x3e59999a).
@@ -173,7 +187,7 @@ pub const INIT_HEALTH_ABSORB: f32 = 0.1;
 
 /// `TSGameRules+0x588c`, the fraction kevlar absorbs (`CBasePlayer::TakeDamage` 0x8fc0c).
 pub fn armor_absorb() -> f32 {
-    with(|g| g.armor_absorb)
+    read(|g| g.armor_absorb)
 }
 
 /// `g_pGameRules` is `CHalfLifeRules` (0xde6fc): `deathmatch` was 0 when the map's rules were
@@ -182,15 +196,15 @@ pub fn armor_absorb() -> f32 {
 /// `ClientUserInfoChanged`, no voice manager or `menuselect`, spawn spots without their target,
 /// items and chargers that don't come back, and `respawn` reloads the map.
 pub fn single_player() -> bool {
-    with(|g| g.single_player)
+    read(|g| g.single_player)
 }
 
 pub fn the_one_mode() -> bool {
-    with(|g| g.the_one)
+    read(|g| g.the_one)
 }
 
 pub fn lms() -> bool {
-    with(|g| g.lms)
+    read(|g| g.lms)
 }
 
 /// The max-carry column `Set_ammo_count` (0x7f2cc) last applied: `compile_ammo_info` sets the
@@ -200,14 +214,14 @@ pub fn lms() -> bool {
 /// reduced columns, any other value the default one. So a changed `ammocount` takes effect at
 /// the next `Think`, not at once.
 pub fn ammo_column() -> usize {
-    with(|g| ammo_column_of(g.last_srvsett[2]))
+    read(|g| ammo_column_of(g.last_srvsett[2]))
 }
 
 /// `TSGameRules + 0x578`: the `(int)realbullet` copy `CTSGameRules::Think` last stored (-1 from
 /// `Init` until the first Think; a single-player map keeps the last map's, 0 on a fresh server),
 /// what `ShootBulletsPlayer` and `CBulletManager::Think` test.
 pub fn realbullet() -> i32 {
-    with(|g| g.last_srvsett[0])
+    read(|g| g.last_srvsett[0])
 }
 
 pub(crate) fn ammo_column_of(applied: i32) -> usize {

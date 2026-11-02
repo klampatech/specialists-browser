@@ -447,18 +447,12 @@ pub fn owned(b: &BuyMenu, id: i32, item: bool) -> bool {
 
 /// The weapon the pending purchase is for.
 ///
-/// The attachments screen can offer the weapon's akimbo twin, and picking that row makes
-/// the pending purchase the twin: the gun the player is buying is the akimbo version of
-/// the one they picked. The twin is the game's own weapon (it is in the weapon table, it
-/// has its own price and it lives in the HUD slot 5), so it is bought the way any other
-/// weapon is bought.
+/// The akimbo version of a gun is NOT another weapon: the game's own rule is that the
+/// pair is the gun bought twice. The client's submit sends an akimbo entry to the server
+/// as the gun twice — the second copy without the attachments — and the server's spawn
+/// turns the second copy into the pair. So the pending purchase is always the gun the
+/// player picked, and `pending_akimbo` says it is bought as its pair.
 pub fn pending_gun(b: &BuyMenu) -> i32 {
-    if b.pending_akimbo
-        && let Some(w) = tables().weapon(b.pending_weapon.max(0) as u8)
-        && w.akimbo != -1
-    {
-        return w.akimbo;
-    }
     b.pending_weapon
 }
 
@@ -486,6 +480,14 @@ pub fn purchase_price(b: &BuyMenu, id: i32, att: u32, item: bool) -> i32 {
         return cost(id, 0, false, true);
     }
     let Some(w) = tables().weapon(id as u8) else { return 0 };
+    // The pending purchase's akimbo version: the game's own price for the pair — the gun
+    // twice, at the gun's price, with the attachments once.
+    if b.pending_akimbo && id == b.pending_weapon && w.akimbo != -1 {
+        return match b.current.entries.iter().find(|e| e.id == id && !e.is_item) {
+            Some(e) => cost(id, att | e.att, true, false),
+            None => cost(id, att, true, false),
+        };
+    }
     match b.current.entries.iter().find(|e| e.id == id && !e.is_item) {
         Some(_) if w.stack => w.cost,
         Some(e) if w.akimbo != -1 && !e.akimbo => cost(id, att | e.att, true, false),
@@ -499,6 +501,10 @@ pub fn purchase_slots(b: &BuyMenu, id: i32, item: bool, r: &Rules) -> i32 {
         return slots_for(id, false, true, r);
     }
     let Some(w) = tables().weapon(id as u8) else { return 0 };
+    // The pair takes the slots of both copies: the game's own count.
+    if b.pending_akimbo && id == b.pending_weapon && w.akimbo != -1 {
+        return slots_for(id, true, false, r);
+    }
     match b.current.entries.iter().find(|e| e.id == id && !e.is_item) {
         Some(e) if w.akimbo != -1 && !e.akimbo => w.slots.wrapping_mul(2),
         _ => w.slots,
@@ -522,7 +528,7 @@ pub fn purchase_summary(b: &BuyMenu, r: &Rules) -> Option<(i32, i32)> {
     let total = purchase_price(b, id, b.pending_att, false);
     // A copy of the menu, so the purchase can be run on it without touching the real one.
     let mut probe = b.clone();
-    let left = if probe.add(id, b.pending_att, false, false, r) {
+    let left = if probe.add(id, b.pending_att, b.pending_akimbo, false, r) {
         // The purchase went through on the copy: what is left is the port's own number,
         // the money left after the config and the ammo fill.
         r.cash.wrapping_sub(probe.current.total).wrapping_sub(probe.ammo_spend)
@@ -683,8 +689,8 @@ fn attach_rows(b: &BuyMenu, r: &Rules) -> Vec<ModernRow> {
     let id = pending_gun(b);
     let w = tables().weapon(id.max(0) as u8);
     let mut out = Vec::new();
-    // The gun: the row that takes no key. It is the gun the purchase is for, so it is the
-    // akimbo twin when the player picked the akimbo version.
+    // The gun: the row that takes no key. It is the gun the purchase is for — the gun
+    // itself, whether or not the player also bought it as its akimbo pair.
     out.push(ModernRow {
         key: 0,
         price: w.map_or(0, |w| w.cost),
@@ -709,17 +715,14 @@ fn attach_rows(b: &BuyMenu, r: &Rules) -> Vec<ModernRow> {
         });
     }
     // The akimbo version, for the guns that have one. It is not another attachment: it is
-    // this gun, bought as its twin — the game's own weapon, in the HUD slot 5, at its own
-    // price.
-    //
-    // The row is flagged `swap`: it swaps the gun in the purchase rather than adding to
-    // it, so it is not one of the purchase's lines. The gun's own row carries the twin's
-    // price once the row is on, and the summary adds up.
-    if let Some(twin) = akimbo_twin(b.pending_weapon) {
+    // this gun bought as its pair, which is the game's own rule — the client sends the gun
+    // twice and the server's spawn turns the second copy into the pair. So the row costs
+    // the gun's price again, and the purchase is the gun twice.
+    if akimbo_twin(b.pending_weapon).is_some() {
         out.push(ModernRow {
             key: 5,
-            price: twin.cost,
-            flags: RowFlags { on: b.pending_akimbo, swap: true, ..Default::default() },
+            price: w.map_or(0, |w| w.cost),
+            flags: RowFlags { on: b.pending_akimbo, ..Default::default() },
             page: page::OPTIONS,
             number: "5".to_owned(),
             label: "#Buy_Akimbo".to_owned(),
@@ -779,6 +782,21 @@ fn slot_usage(b: &BuyMenu, r: &Rules, slot: i32) -> (i32, i32) {
             continue;
         }
         let Some(w) = tables().weapon(e.id as u8) else { continue };
+        // The akimbo version is the gun and its pair: the gun in its own slot, the pair
+        // in slot 5. The counts must say the same thing the entries do, or the browser
+        // draws a card with nothing in it.
+        if e.akimbo {
+            let Some(twin) = akimbo_twin(e.id) else { continue };
+            if w.hud[0] as i32 == slot {
+                slots = slots.wrapping_add(w.slots as i32);
+                count += 1;
+            }
+            if twin.hud[0] as i32 == slot {
+                slots = slots.wrapping_add(twin.slots as i32);
+                count += 1;
+            }
+            continue;
+        }
         if w.hud[0] as i32 != slot {
             continue;
         }
@@ -828,6 +846,48 @@ pub fn modern_entries(b: &BuyMenu, r: &Rules) -> Vec<ModernEntry> {
                 continue;
             }
             let Some(w) = tables().weapon(e.id as u8) else { continue };
+            // The akimbo version is the gun AND its pair: the game's own rule is that the
+            // pair is the gun bought twice, and the server's spawn gives the player the
+            // gun and the pair — the gun in its own HUD slot, the pair in slot 5. So the
+            // cards show both, the way the player will really carry them.
+            //
+            // The table agrees the two are the same thing twice: every twin costs and
+            // takes exactly what its base costs and takes, so the two items add up to
+            // what the entry costs and takes.
+            if e.akimbo {
+                let Some(twin) = akimbo_twin(e.id) else { continue };
+                let remove_key = REMOVE_KEY_BASE + i as i32;
+                if w.hud[0] as i32 == slot {
+                    out.push(ModernEntry {
+                        index: i,
+                        // The gun with its attachments: the price the player paid for the
+                        // first copy.
+                        cost: cost(e.id, e.att, false, false),
+                        slots: w.slots as i32,
+                        attachments: attachment_labels(e.att),
+                        slot,
+                        remove_key,
+                        name: w.name.clone(),
+                    });
+                }
+                if twin.hud[0] as i32 == slot {
+                    out.push(ModernEntry {
+                        index: i,
+                        // The pair's own price: the second copy is bought bare, and the
+                        // pair takes the gun's attachments. The two prices add up to the
+                        // entry's cost -- the gun twice, the attachments once.
+                        cost: twin.cost,
+                        slots: twin.slots as i32,
+                        // The pair inherits the gun's attachments: the game's own rule
+                        // (the second copy is sent bare, and the pair takes the gun's).
+                        attachments: attachment_labels(e.att),
+                        slot,
+                        remove_key,
+                        name: twin.name.clone(),
+                    });
+                }
+                continue;
+            }
             if w.hud[0] as i32 != slot {
                 continue;
             }
@@ -1234,7 +1294,7 @@ fn commit(b: &mut BuyMenu, r: &Rules, out: &mut Vec<Action>) {
     let att = b.pending_att;
     let price = purchase_price(b, id, att, false);
     let slots = purchase_slots(b, id, false, r);
-    if affordable(b, r, price, slots) && b.add(id, att, false, false, r) {
+    if affordable(b, r, price, slots) && b.add(id, att, b.pending_akimbo, false, r) {
         apply_and_save(b, out, r);
     }
     b.pending_weapon = -1;
@@ -2342,13 +2402,13 @@ mod tests {
     /// The akimbo version is a choice on the gun, not a section of its own.
     ///
     /// A player who wants the akimbo Berettas is looking at the Berettas, so the akimbo
-    /// version is offered on the gun's attachments screen. It is the game's own weapon —
-    /// the weapon table's pair: the twin has its own price and its own HUD slot (the 5) —
-    /// so picking the row makes the purchase that weapon.
+    /// version is offered on the gun's attachments screen.
     ///
-    /// The row carries the twin's own price — the akimbo Five-seveN is $1,250, and so is
-    /// the Five-seveN — and it is flagged `swap`, because it swaps the gun in the purchase
-    /// rather than adding to it: it is not one of the purchase's lines.
+    /// The game's own rule is what the purchase is: the pair is the gun bought TWICE. The
+    /// client's submit sends an akimbo entry to the server as the gun twice, and the
+    /// server's spawn turns the second copy into the pair. So the purchase is the gun the
+    /// player picked — the Five-seveN, not the twin — with the akimbo flag on it, and it
+    /// costs the gun's price twice: $2,500, and not $1,250.
     #[test]
     fn the_akimbo_version_is_a_choice_on_the_gun() {
         ts30_gameplay::tables::make_default();
@@ -2364,31 +2424,54 @@ mod tests {
         let lines = m.state_lines(&r);
         let rows = dump_rows(&lines);
         let akimbo = rows.iter().find(|(key, ..)| *key == 5).expect("the akimbo row");
-        assert_eq!(akimbo.1, 1250, "the twin's own price: {rows:?}");
+        assert_eq!(akimbo.1, 1250, "the second copy costs the gun's price again: {rows:?}");
         assert_eq!(akimbo.5, "#Buy_Akimbo", "the game's own title for it: {rows:?}");
-        assert!(akimbo.2.contains("swap"), "and it swaps the gun, it does not add to it: {rows:?}");
         // And the gun's own row is the gun the player picked.
         let gun = rows.iter().find(|(key, ..)| *key == 0).expect("the gun row");
         assert_eq!(gun.5, "Five-seveN", "the gun: {rows:?}");
         assert_eq!(gun.1, 1250, "at its price: {rows:?}");
 
-        // Picking the row makes the purchase the twin.
+        // Picking the row buys the pair: the gun twice.
         m.dom_key_on(page::OPTIONS, 5, &r, &mut FixedRng(vec![], 0));
         let lines = m.state_lines(&r);
         let rows = dump_rows(&lines);
         let gun = rows.iter().find(|(key, ..)| *key == 0).expect("the gun row");
-        assert_eq!(gun.5, "Akimbo Five-seveN", "the gun is the twin now: {rows:?}");
-        assert_eq!(gun.1, 1250, "at the twin's price: {rows:?}");
+        assert_eq!(gun.5, "Five-seveN", "the gun is still the gun: {rows:?}");
         let akimbo = rows.iter().find(|(key, ..)| *key == 5).expect("the akimbo row");
         assert!(akimbo.2.contains("on"), "and the row is on: {rows:?}");
+        let sum = m.state_lines(&r).iter().find(|l| l.starts_with("TSBUY sum ")).expect("the summary").clone();
+        assert!(sum.starts_with("TSBUY sum 2500 "), "the pair costs the gun's price twice: {sum}");
 
-        // And the purchase buys the twin: the HUD slot 5's weapon.
+        // And the purchase buys the gun as its pair: the player gets the gun AND the
+        // pair, the way the game's own spawn gives them — the gun in its own HUD slot,
+        // the pair in the slot 5. The two items are what the player paid for: the gun
+        // twice.
         m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
         let lines = m.state_lines(&r);
         let entries = dump_entries(&lines);
-        let twin = entries.iter().find(|(_, _, _, _, _, _, name)| name == "Akimbo Five-seveN").expect("the twin");
-        assert_eq!(twin.4, 5, "the HUD slot 5: {twin:?}");
-        assert_eq!(twin.1, 1250, "and the twin's price: {twin:?}");
+        let gun = entries.iter().find(|(_, _, _, _, _, _, name)| name == "Five-seveN").expect("the gun");
+        assert_eq!(gun.4, 2, "the gun keeps its own HUD slot: {gun:?}");
+        assert_eq!(gun.1, 1250, "at the gun's price: {gun:?}");
+        let pair = entries.iter().find(|(_, _, _, _, _, _, name)| name == "Akimbo Five-seveN").expect("the pair");
+        assert_eq!(pair.4, 5, "the pair is in the HUD slot 5: {pair:?}");
+        assert_eq!(pair.1, 1250, "at the pair's own price: {pair:?}");
+        assert_eq!(gun.1 + pair.1, 2500, "the two are the gun twice, which is what it cost");
+        // And the cards say the same thing the entries do: a card the browser draws empty
+        // because the port's count disagrees with the port's entries is a blank card.
+        let slot_records: Vec<(i32, i32)> = lines
+            .iter()
+            .filter_map(|l| l.strip_prefix("TSBUY slot "))
+            .filter_map(|l| {
+                let mut it = l.split_whitespace();
+                let slot = it.next()?.parse::<i32>().ok()?;
+                let count = it.nth(1)?.parse::<i32>().ok()?;
+                Some((slot, count))
+            })
+            .collect();
+        for (slot, count) in slot_records {
+            let in_slot = entries.iter().filter(|e| e.4 == slot).count() as i32;
+            assert_eq!(count, in_slot, "the slot {slot} count agrees with its entries");
+        }
 
         // A gun with no twin has no such row: the Desert Eagle is one of a kind.
         let mut m = modern(&r);
@@ -2399,6 +2482,82 @@ mod tests {
         let lines = m.state_lines(&r);
         let rows = dump_rows(&lines);
         assert!(!rows.iter().any(|(key, ..)| *key == 5), "no akimbo row: {rows:?}");
+    }
+
+    /// The two cards the player sees are what the player paid for.
+    ///
+    /// The entry is the gun twice with the attachments once: the gun's card carries the
+    /// gun and its attachments, the pair's card carries the pair's own price, and the two
+    /// add up to what the menu charged. A loadout whose cards do not add up to the total
+    /// is a loadout the player cannot trust.
+    #[test]
+    fn the_akimbo_cards_add_up_to_what_the_player_paid() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = BuyMenu { random_first: false, ..BuyMenu::default() };
+        m.set_mode(Mode::Modern);
+        m.open(&r, &mut FixedRng(vec![], 0));
+        // The Five-seveN with a silencer, bought as the pair: the gun twice, the
+        // attachments once.
+        assert!(m.add(14, 1, true, false, &r), "the pair is bought: {:?}", m.current.entries);
+        let entries = modern_entries(&m, &r);
+        let gun = entries.iter().find(|e| e.name == "Five-seveN").expect("the gun");
+        let pair = entries.iter().find(|e| e.name == "Akimbo Five-seveN").expect("the pair");
+        assert_eq!(gun.cost, 2150, "the gun and its silencer: {gun:?}");
+        assert_eq!(pair.cost, 1250, "the pair at its own price: {pair:?}");
+        assert_eq!(gun.cost + pair.cost, m.current.total, "the two cards are what the menu charged");
+        assert_eq!(m.current.total, 3400, "the gun twice, the attachments once");
+    }
+
+    /// The akimbo purchase reaches the server as the gun TWICE.
+    ///
+    /// This is the game's own rule, and the only one the server's spawn understands: the
+    /// client's submit sends an akimbo entry as the gun twice — the second copy without
+    /// the attachments — and the second copy is what makes the pair. A purchase that named
+    /// the twin's own id instead would reach the server as a weapon the game does not
+    /// spawn as a pair, which is what the playtest found: the menu showed the weapon and
+    /// the player got nothing.
+    #[test]
+    fn the_akimbo_purchase_reaches_the_server_as_the_gun_twice() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        let items = browse_items(2, &r);
+        let five = items.iter().position(|i| i.name == "Five-seveN").expect("the Five-seveN") + 1;
+        m.dom_key_on(page::WEAPONS, five as i32, &r, &mut FixedRng(vec![], 0));
+        // The akimbo row, then the commit.
+        m.dom_key_on(page::OPTIONS, 5, &r, &mut FixedRng(vec![], 0));
+        let actions = m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        let cmds: Vec<&str> = actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::ServerCmd(c) => Some(c.as_str()),
+                _ => None,
+            })
+            .collect();
+        let tkw = cmds.iter().find(|c| c.starts_with("tkw ")).expect("the weapons");
+        assert!(tkw.contains("14_0 14_0"), "the Five-seveN twice, the second copy bare: {tkw}");
+    }
+
+    /// The second copy of an akimbo gun is the pair.
+    ///
+    /// This is the game's own rule, and the reason the client's submit sends an akimbo
+    /// entry to the server as the gun twice: the first copy is the gun, and the second
+    /// copy takes the gun's twin — the pair, in the HUD slot 5. The pair's ammo comes from
+    /// the single, so the single has to be there first.
+    #[test]
+    fn the_second_copy_of_an_akimbo_gun_is_the_pair() {
+        ts30_gameplay::tables::make_default();
+        let mut g = shared::weapons::Gun::default();
+        assert_eq!(g.take_weapon(14, None, 0), Some(14), "the first copy is the gun");
+        assert_eq!(g.take_weapon(14, None, 0), Some(30), "the second copy is the pair");
+        assert!(g.status[14].owned, "the gun is owned");
+        assert!(g.status[30].owned, "and so is the pair");
+        // And the pair holds both sides' ammo: the single's clip and its own.
+        let clip = shared::weapons::info(14).expect("the Five-seveN").clip;
+        assert_eq!(g.status[30].left, clip, "the left gun has the single's clip");
+        assert_eq!(g.status[30].right, clip, "and the right one its own");
     }
 
     /// The remove key the entry record named removes that entry: the loadout screen's cards

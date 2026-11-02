@@ -140,17 +140,50 @@ two.**
    wants the akimbo Berettas is looking at the **Berettas**, so the
    akimbo version is offered on the gun itself: the attachments screen
    of every gun that has a twin carries an **Akimbo** row (key 5), and
-   picking it makes the pending purchase the twin — the game's own
-   weapon, at its own price, in the HUD slot 5. The rail is **six**
-   entries now (melee, pistols, SMGs, rifles, shotguns, the player
-   accessory) and the rail's "Special" entry is gone; the HUD slot 5's
-   own contents (the akimbo versions and the Golden Colts) are still
+   picking it buys the gun **as its pair**. The rail is **six** entries
+   now (melee, pistols, SMGs, rifles, shotguns, the player accessory)
+   and the rail's "Special" entry is gone; the HUD slot 5's own
+   contents (the akimbo versions and the Golden Colts) are still
    reachable, from the loadout's **card 5**, which is the game's
-   "Special Purpose" slot. The row is flagged **`swap`** by the port:
-   it swaps the gun in the purchase rather than adding to it, so it is
-   not one of the purchase's lines and the summary still adds up. The
-   attachments screen's footer no longer explains the game's buying
-   order either.
+   "Special Purpose" slot.
+
+   **The pair is the gun bought TWICE — the game's own rule**, and the
+   port's own code says so: the client's submit sends an akimbo entry
+   to the server as the gun twice (the second copy without the
+   attachments), and the server's spawn turns the second copy into the
+   pair. So the purchase is the **gun** the player picked (the
+   Five-seveN), not the twin's own id, and it costs the gun's price
+   **twice**: the akimbo Five-seveN is **$2,500**, and the row itself
+   carries the second copy's price ($1,250).
+
+   An earlier version bought the twin's id (30) instead, on the
+   reasoning that the twin is a weapon of its own: the menu showed
+   "Akimbo Five-seveN" at $1,250 and the player got **nothing** — the
+   game does not spawn that id as a pair, so no pistol and no akimbo
+   pistols. The `swap` flag went with it: the akimbo row is one of the
+   purchase's parts, not a version swap. The attachments screen's footer
+   no longer explains the game's buying order either.
+
+   **The loadout shows the gun AND the pair — the game's own truth.**
+   The server's spawn gives the player both: the gun in its own HUD
+   slot and the pair in the slot 5 (the spawn logs the ids, and a
+   player holding a pair holds the gun's id and the twin's id). So the
+   loadout's cards show both, the way the player will really carry
+   them: the **pistols** card carries the Five-seveN, the **card 5**
+   ("Special Purpose") carries the Akimbo Five-seveN. The table agrees
+   the two are the same thing twice — every twin costs and takes
+   exactly what its base costs and takes — so the two cards' prices
+   add up to what the player paid ($1,250 + $1,250 = $2,500, and with
+   a silencer $2,150 + $1,250 = $3,400: the gun twice, the
+   attachments once).
+
+   The port's entry record and its slot count must say the SAME thing
+   about the akimbo entry. They did not, once: the entry said slot 5
+   and the count said slot 2, and the browser draws a card's weapons
+   only when the port says the card holds something — so **every card
+   came up blank** after an akimbo purchase (the playtest of
+   2026-11-02). The port's suite now checks that the slot counts and
+   the entries agree, card for card.
 
 **Verified in a real game on the dev server** (2026-11-02): the client
 WASM rebuilt from this port, deployed, and byte-identical to the served

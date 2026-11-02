@@ -318,6 +318,21 @@ mod tests {
         (sv, refused)
     }
 
+    /// The client's akimbo purchase reaches the server as the gun TWICE, and the server
+    /// keeps both copies: the second copy is what the spawn turns into the pair.
+    ///
+    /// The pair is the game's own rule — the client sends an akimbo entry as the gun
+    /// twice — and the server charges for both copies, so the two prices agree.
+    #[test]
+    fn the_akimbo_purchase_arrives_as_the_gun_twice() {
+        let (sv, refused) = loadout("tkw", "tkw 14_0 14_0");
+        assert_eq!(refused, None, "the pair is within the budget");
+        assert_eq!(sv.armament.len(), 2, "both copies are kept");
+        assert_eq!(sv.armament[0].id, 14, "the gun");
+        assert_eq!(sv.armament[1].id, 14, "and the gun again");
+        assert_eq!(sv.pending.cost, 2500, "the gun's price twice: $1,250 + $1,250");
+    }
+
     #[test]
     fn id_zero_armament_entries_take_no_slot() {
         let mut a = Vec::new();
