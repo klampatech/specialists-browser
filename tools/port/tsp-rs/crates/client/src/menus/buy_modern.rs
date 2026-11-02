@@ -564,14 +564,23 @@ pub fn modern_rows(b: &BuyMenu, r: &Rules) -> Vec<ModernRow> {
 
 /// The loadout screen's own rows: the player accessory, Random and Clear.
 ///
-/// The accessory and the actions answer on the loadout screen's page. "Clear" is the game's
-/// own reset row (the MAIN page's key 4), and the panel draws the design's keycap for it.
+/// The accessory and the actions answer on the loadout screen's page. "Clear" is the design's
+/// own word for the game's reset row, and the panel draws the design's keycap for it ("X") —
+/// but its KEY is eight, not four.
+///
+/// **Why eight:** the loadout screen's cards wear the HUD slots' own digits (1–5), and the
+/// player's first guess is that the digit on a card opens that card. The clear row used to
+/// answer on key four, which the classic flow inherits from the game's own menu — so in the
+/// modern flow a player pressing the card-4 digit wiped the loadout instead of opening the
+/// rifles. The modern flow has its own key space, so the clear row takes a key of its own
+/// (eight) and every card's digit opens its card. The classic flow's own rows and keys are
+/// untouched.
 ///
 /// The clear row's label is the design's own word, "Clear", and not the game's title:
 /// the port owns the labels the panel draws, and the browser must not rename a port row.
 /// The browser resolves a title key through the game's own titles and passes a plain label
 /// through unchanged, so the port prints the word the design asks for. The classic flow's
-/// own reset row keeps the game's title — the canvas menu must not change.
+/// own reset row keeps the game's title — the classic menu must not change.
 fn loadout_rows() -> Vec<ModernRow> {
     vec![
         ModernRow {
@@ -590,7 +599,7 @@ fn loadout_rows() -> Vec<ModernRow> {
             number: "R".to_owned(),
             label: "#Buy_Random".to_owned(),
         },
-        ModernRow { key: 4, price: 0, flags: RowFlags::default(), page: page::MAIN, number: "X".to_owned(), label: "Clear".to_owned() },
+        ModernRow { key: 8, price: 0, flags: RowFlags::default(), page: page::MAIN, number: "X".to_owned(), label: "Clear".to_owned() },
     ]
 }
 
@@ -913,17 +922,19 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> 
     match pg {
         // The loadout screen.
         page::MAIN => match key {
-            // "Clear" is the game's own reset row, the MAIN page's key 4, so the lists are
-            // opened with the rail's rows (the rail's own page).
-            4 => clear(b, r, &mut out),
             // The player accessory: the loadout screen's own row.
             6 => open_rail(b, Rail::Accessory, r),
             7 => random(b, r, rng, &mut out),
+            // "Clear": the design's own word for the game's reset row. Its key is eight, so
+            // that every card's digit opens its card (see [`loadout_rows`]).
+            8 => clear(b, r, &mut out),
             // The cards' own digits: the digit is the HUD slot of the card, so 1 opens the
-            // melee weapons, 2 the pistols, 3 the SMGs and 5 the akimbo weapons — the same
-            // lists the cards hold. The HUD slot 4 is the one the rail splits (the rifles
-            // and the shotguns), and one digit cannot pick between them, so slot 4 has no
-            // digit of its own: key 4 is the game's own reset row, exactly as it was.
+            // melee weapons, 2 the pistols, 3 the SMGs, 4 the rifles and 5 the akimbo
+            // weapons — the same lists the cards hold.
+            //
+            // The HUD slot 4 is the one the rail splits (the rifles and the shotguns), so
+            // its digit opens the first of the two: the rifles. The shotguns are one rail
+            // click away, and the rail is on the screen the digit opens.
             k if (1..=SLOT_COUNT).contains(&k) => {
                 if let Some(rail) = rail_for_hud_slot(k) {
                     open_rail(b, rail, r);
@@ -979,6 +990,10 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> 
             if is_back(key) {
                 b.pending_weapon = -1;
                 b.pending_att = 0;
+                // The focus does not survive the trip: the player came here to buy a gun,
+                // so the gun they were looking at must not still be selected when they come
+                // back — the selection would read as "this one is still on your list".
+                b.modern_focus = 0;
                 b.screen = Screen::Browse;
                 b.page = page::WEAPONS;
                 return out;
@@ -1076,14 +1091,18 @@ fn focus_first(rail: Rail, r: &Rules) -> i32 {
 /// The loadout screen's cards are the HUD slots, so a digit on the loadout screen is the
 /// card's number and it opens that card's list.
 ///
-/// The HUD slot 4 is the one the rail splits — the rifles and the shotguns — and one digit
-/// cannot pick between them, so it has no digit of its own. That is the same as before the
-/// split: key 4 was the game's own reset row ("Clear") then too.
+/// The digits are the cards' own: 1 is the melee weapons, 2 the pistols, 3 the SMGs and 5
+/// the akimbo weapons.
+///
+/// The HUD slot 4 is the one the rail splits, so its digit opens the first of the two — the
+/// rifles. The shotguns are one rail click away, and the rail is on the screen the digit
+/// opens.
 fn rail_for_hud_slot(slot: i32) -> Option<Rail> {
     match slot {
         1 => Some(Rail::Melee),
         2 => Some(Rail::Pistols),
         3 => Some(Rail::Smgs),
+        4 => Some(Rail::Rifles),
         5 => Some(Rail::Special),
         _ => None,
     }
@@ -1103,6 +1122,9 @@ fn back_to_loadout(b: &mut BuyMenu) {
 /// second kevlar is not a thing, but the rule is one rule.
 fn buy_item(b: &mut BuyMenu, id: i32, r: &Rules, out: &mut Vec<Action>) {
     if b.add(id, 0, false, true, r) {
+        // The focus does not survive the purchase: the item is in the loadout now, and a
+        // row that stayed selected would read as "this one is still on your list".
+        b.modern_focus = 0;
         apply_and_save(b, out, r);
     }
 }
@@ -1145,6 +1167,10 @@ fn commit(b: &mut BuyMenu, r: &Rules, out: &mut Vec<Action>) {
     }
     b.pending_weapon = -1;
     b.pending_att = 0;
+    // The focus does not survive the purchase: the player is back on the list, and a row
+    // that stayed selected would read as "this one is still on your list" when it is in
+    // the loadout now. Nothing is selected until the player picks something.
+    b.modern_focus = 0;
     b.screen = Screen::Browse;
     b.page = page::WEAPONS;
 }
@@ -1302,7 +1328,7 @@ mod tests {
         assert_eq!(own.len(), 3, "the accessory, Random and Clear: {own:?}");
         assert_eq!(own[0].0, 6, "the player accessory");
         assert_eq!(own[1].0, 7, "Random");
-        assert_eq!(own[2].0, 4, "Clear");
+        assert_eq!(own[2].0, 8, "Clear — a key of its own, so every card's digit opens its card");
         assert_eq!(own[2].4, "X", "the design's keycap for Clear");
         // The rail and the tabs are dimmed: they answer on their own pages.
         let dim: Vec<_> = rows.iter().filter(|(_, _, f, ..)| f == "dim").collect();
@@ -1432,6 +1458,105 @@ mod tests {
         assert_eq!(cards.len(), 6, "the five HUD slots and the accessory: {cards:?}");
         assert!(cards[0].ends_with("Melee · Grenades · Swords"), "the HUD slot 1 card: {cards:?}");
         assert!(cards[3].ends_with("Rifles · Shotguns"), "the HUD slot 4 card: {cards:?}");
+    }
+
+    /// The loadout screen's digits are the cards' own, and the clear row does not eat one.
+    ///
+    /// The clear row used to answer on key four — the classic flow's own reset key — so in
+    /// the modern flow a player pressing the card-4 digit wiped the loadout instead of
+    /// opening the rifles. The modern flow has its own key space: the clear row takes key
+    /// eight, and every card's digit opens its card.
+    #[test]
+    fn the_loadout_screen_digits_open_their_cards() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        // Every card's digit opens that card's list.
+        for (key, rail) in [
+            (1, Rail::Melee),
+            (2, Rail::Pistols),
+            (3, Rail::Smgs),
+            (4, Rail::Rifles),
+            (5, Rail::Special),
+        ] {
+            let mut m = modern(&r);
+            m.dom_key_on(page::MAIN, key, &r, &mut FixedRng(vec![], 0));
+            assert_eq!(m.screen, Screen::Browse, "the card-{key} digit opens a list");
+            assert_eq!(m.modern_slot, rail.key(), "the card-{key} digit opens {rail:?}");
+        }
+        // The accessory and Random are the loadout screen's own rows.
+        let mut m = modern(&r);
+        m.dom_key_on(page::MAIN, 6, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.modern_slot, Rail::Accessory.key(), "six is the accessory");
+    }
+
+    /// The clear row answers on key eight, and only on key eight.
+    ///
+    /// The loadout screen's cards wear the HUD slots' own digits, and the player's first
+    /// guess is that the digit on a card opens that card. So the clear row — the game's own
+    /// reset row, which the classic flow keeps on key four — takes a key of its own in the
+    /// modern flow.
+    #[test]
+    fn the_clear_row_answers_on_its_own_key() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        // The weapons in the loadout — the kevlar is not one of them: the game's own
+        // `cl_buykevlar` puts a kevlar into a reset config, so a cleared loadout is not
+        // an empty one.
+        let weapons = |m: &BuyMenu| m.current.entries.iter().filter(|e| e.id != 0 && !e.is_item).count();
+
+        // A pistol in the loadout.
+        let mut m = modern(&r);
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(weapons(&m), 1, "the pistol is in the loadout");
+
+        // Four opens the rifles and clears nothing.
+        m.dom_key_on(page::MAIN, 4, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse, "four opens a list");
+        assert_eq!(m.modern_slot, Rail::Rifles.key(), "four opens the rifles");
+        assert_eq!(weapons(&m), 1, "and it clears nothing");
+
+        // Back to the loadout, and eight empties it.
+        m.dom_key_on(page::WEAPONS, BACK_KEY_DESIGN, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Loadout);
+        m.dom_key_on(page::MAIN, 8, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Loadout, "eight does not open a list");
+        assert_eq!(weapons(&m), 0, "eight empties the loadout");
+    }
+
+    /// The focused row does not survive the trip through the attachments screen.
+    ///
+    /// The playtest: the gun the player had just bought stayed selected when they came
+    /// back to the list, and a selected row reads as "this one is still on your list" —
+    /// which is exactly what it is not, any more. Nothing is selected when they come back.
+    #[test]
+    fn the_focus_does_not_survive_the_trip_through_the_attachments() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        // The list opens with its first row focused: the design's mockup draws it that way,
+        // and "Enter picks the focused row" needs something to pick.
+        let mut m = modern(&r);
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        assert_ne!(m.modern_focus, 0, "the list opens with a row focused");
+
+        // The gun is focused on the attachments screen.
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Attach);
+        assert_ne!(m.modern_focus, 0, "the gun is focused while its attachments are chosen");
+
+        // Back: nothing is focused.
+        m.dom_key_on(page::OPTIONS, BACK_KEY_DESIGN, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse);
+        assert_eq!(m.modern_focus, 0, "the focus does not survive the trip back");
+
+        // And the same after a purchase.
+        let mut m = modern(&r);
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse, "the purchase comes back to the list");
+        assert_eq!(m.modern_focus, 0, "nothing is focused after the purchase");
     }
 
     /// The rifles and the shotguns are two entries now, split by the game's own kind, and
