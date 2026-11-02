@@ -415,6 +415,23 @@ fn read_buylist(path: &str) -> ([buy::Config; buy::SAVED_CONFIGS], String) {
     }
 }
 
+/// The menu's re-`Init`: what a map change (and a connect, and a video-mode change) does.
+///
+/// `BuyMenu::new` is the game's own `Init`: it re-reads `tsbuylist.tsa` and starts the
+/// CLASSIC flow, with the canvas menu showing. The hidden flag and the flow are the
+/// BROWSER's business — the player chose the flow, and a map change must not quietly put
+/// the canvas menu back — so both are put back here.
+///
+/// This is its own function so the behaviour can be tested without an engine: `vid_init`
+/// cannot be called in a test, because it reads the game directory through the engine.
+fn reinit_buy_menu(menu: &mut buy::BuyMenu, saved: [buy::Config; buy::SAVED_CONFIGS]) {
+    let hidden = menu.hidden;
+    let mode = menu.mode;
+    *menu = buy::BuyMenu::new(saved);
+    menu.hidden = hidden;
+    menu.mode = mode;
+}
+
 /// `HUD_VidInit`'s part here: `CHudTSWeapons::VidInit` (`0x1004cb50`) re-runs the buy menu's
 /// `Init` (`0x10036200`, [`BuyMenu::new`]), which re-reads `tsbuylist.tsa` and forgets the
 /// current and last configs. Then the viewport's `ReInitialize` (`0x10060aa0`): menus hidden,
@@ -423,10 +440,9 @@ pub fn vid_init(_first: bool) {
     let (saved, path) = read_buylist(&format!("{}/tsbuylist.tsa", engine().game_directory()));
     with(|m| {
         // The hidden flag is the browser's DOM menu's business, not TS's: a map change must not
-        // bring the canvas menu back.
-        let hidden = m.buy.hidden;
-        m.buy = BuyMenu::new(saved);
-        m.buy.hidden = hidden;
+        // bring the canvas menu back. The MODE is the browser's business too, for the same
+        // reason: the player chose the flow, and a map change must not put it back.
+        reinit_buy_menu(&mut m.buy, saved);
         m.path = path;
         m.queue.clear();
         if let Some(t) = &mut m.team {
@@ -1439,6 +1455,31 @@ mod tests {
         );
         assert_eq!(local_team_of("jointeam 1 "), None);
         assert_eq!(local_team_of("jointeam 01"), None);
+    }
+
+    /// The browser's DOM menu owns the flow and the hidden flag, and a map change must not
+    /// take them away.
+    ///
+    /// `BuyMenu::new` is the game's own `Init`, and it starts the CLASSIC flow — so without
+    /// this the port falls back to the canvas menu on every map change, and the player's
+    /// "modern" preference stops producing the DOM panel.
+    #[test]
+    fn the_browser_flow_survives_a_map_change() {
+        ts30_gameplay::tables::make_default();
+        // The game's own `Init` starts the classic flow — that is what a map
+        // change would fall back to without the browser's flags being put back.
+        let mut menu = buy::BuyMenu::new(Default::default());
+        assert_eq!(menu.mode, buy::Mode::Classic, "the game's Init starts the classic flow");
+
+        // What the browser owns: the flow the player chose, and the hidden flag.
+        menu.set_mode(buy::Mode::Modern);
+        menu.hidden = true;
+
+        // What a map change does: the menu is thrown away and built again.
+        reinit_buy_menu(&mut menu, Default::default());
+
+        assert_eq!(menu.mode, buy::Mode::Modern, "the flow survives the map change");
+        assert!(menu.hidden, "and so does the hidden flag");
     }
 
     /// The DOM menu renders what the port last printed, so a close that does not print leaves

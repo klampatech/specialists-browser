@@ -1,6 +1,42 @@
 [alias]
 xtask = "run -q -p xtask --"
 
+# THE TEST HARNESS RUNS ONE TEST AT A TIME.
+#
+# WHY
+# ---
+# The port's engine state lives in `Global<RefCell<...>>` statics — `MENUS`,
+# `HUD`, `VIEW`, `KB_KEYS` and twenty more. `Global` is `unsafe impl Sync`
+# because IN THE ENGINE every one of those is touched from the single game
+# thread. Cargo's test harness has no such rule: it runs test functions on
+# worker threads, so two tests that both reach the same global overlap and
+# one of them dies with "RefCell already borrowed".
+#
+# That is not a theoretical hazard — it shipped as a real CI flake:
+# `menus::tests::the_browser_flow_survives_a_map_change` failed at
+# `crates/client/src/menus/mod.rs:91` with "RefCell already borrowed",
+# while the SAME test passed alone and under `--test-threads=1`.
+#
+# WHY ONE THREAD AND NOT A LOCK
+# -----------------------------
+# The globals are `RefCell`s on purpose: the engine is single-threaded, and a
+# `Mutex` would add a lock to the frame path for a constraint that does not
+# exist at runtime. Serializing the TESTS is the fix that matches the
+# engine's actual contract.
+#
+# THE COST
+# --------
+# The suite is 1,689 tests; serialized it takes 7.5 s against 7.1 s
+# parallel. Half a second to make the suite deterministic.
+#
+# OVERRIDING IT
+# -------------
+# `RUST_TEST_THREADS=8 cargo test ...` still wins — cargo's `[env]` does not
+# override a variable that is already set in the environment. Use that when
+# hunting a suspected race on purpose.
+[env]
+RUST_TEST_THREADS = "1"
+
 # WASM build settings — see companion vault doc
 # ~/Obsidian/projects/specialists-browser-rust-port.md
 #
