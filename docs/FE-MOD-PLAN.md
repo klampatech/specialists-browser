@@ -186,6 +186,10 @@ it is a real text field — it types instead of firing a hotkey.
   landing page. **Not a black screen** — that was today's behaviour and
   it is the thing Kyle complained about.
 
+> **Amended 2026-11-01.** The third-person **button** was removed from the
+> Options overlay (the engine's own bind still switches camera mode, so
+> the feature survives), and the Quit button's label is now just **"Quit"**.
+
 ### A5. The chat / typing bug — FIXED BY A0
 
 Nothing to do. The bug was the double delivery: Y opened the chat twice
