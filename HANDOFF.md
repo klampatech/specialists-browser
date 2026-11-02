@@ -185,13 +185,29 @@ two.**
    2026-11-02). The port's suite now checks that the slot counts and
    the entries agree, card for card.
 
+8. **Nothing is lit by default, and the panel does not explain itself.**
+   The playtest found the browse screen opening with the category's
+   first weapon already highlighted — the Mini-Uzi in the SMGs. It read
+   as "this one is chosen", and picking a weapon takes the player to
+   another screen anyway, so a default highlight says nothing true. The
+   port clears its focus when a category opens; the keys pick the rows.
+
+   Three lines of footer text went with it: "Switch categories without
+   going back. No stacked menus.", "Add as many as your budget allows.
+   Pick a gun to choose attachments first." and "Closing keeps your
+   loadout. Nothing to confirm." The modern flow's footer now says
+   nothing at all. The panel shows the answer instead of describing it.
+
 **Verified in a real game on the dev server** (2026-11-02): the client
 WASM rebuilt from this port, deployed, and byte-identical to the served
 copy; the panel drawn from the port's own rows and entries in a live
 client, with Clear on key eight, and the Five-seveN's attachments
-screen offering the akimbo version. The port's suite is at **478
-tests**, clippy is clean, and the frontend's typecheck and build are
-clean.
+screen offering the akimbo version; and, after the akimbo purchase, the
+loadout's card 2 holding the **Five-seveN** and the card 5 holding the
+**Akimbo Five-seveN** — the live client printing `TSBUY entry 0 1250 10
+2 10 Five-seveN` and `TSBUY entry 0 1250 10 5 10 Akimbo Five-seveN`.
+The port's suite is at **481 tests**, clippy is clean on the client, and
+the frontend's typecheck and build are clean.
 
 ## The redesigned buy menu runs in a real game on the dev server (2026-11-01)
 
