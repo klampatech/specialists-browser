@@ -198,6 +198,19 @@ two.**
    loadout. Nothing to confirm." The modern flow's footer now says
    nothing at all. The panel shows the answer instead of describing it.
 
+9. **The loadout screen lines up, and the destructive button wears red.**
+   The playtest's nitpicks, fixed in the browser: the rail's "Also" label
+   rides high and the "6 Player Accessory" button sits above the first
+   card, because the left column's first row is the slot picker and the
+   right column's first row was only a label. The label now takes the
+   picker's height, so "Also" sits on the same line as "Loadout slot" and
+   the accessory button starts level with slot 1 — measured at 0px apart
+   in a live client. The Clear confirmation's confirm button is red (the
+   one button that throws the loadout away), the confirm and cancel
+   buttons stay anchored at the footer's right, the primary buttons have a
+   gap before their key cap, and "Deploy with Loadout A" is "Fight with
+   Loadout #A".
+
 **Verified in a real game on the dev server** (2026-11-02): the client
 WASM rebuilt from this port, deployed, and byte-identical to the served
 copy; the panel drawn from the port's own rows and entries in a live
