@@ -32,8 +32,8 @@
 //! The rules are the port's: the browser computes nothing and forms no loadout.
 
 use super::buy::{
-    Action, BuyMenu, ITEM_KEVLAR, ITEM_STEALTH, RowFlags, Rules, Rng, SAVED_CONFIGS, Screen, attachment_price, cost, entry_slots,
-    key_prefix, page, restricted, slots_for,
+    Action, BuyMenu, ENTRIES, ITEM_KEVLAR, ITEM_STEALTH, RowFlags, Rules, Rng, SAVED_CONFIGS, Screen, attachment_price, cost,
+    entry_slots, key_prefix, page, restricted, slots_for,
 };
 use shared::weapons::{WeaponInfo, tables};
 
@@ -42,6 +42,19 @@ pub const SLOT_COUNT: i32 = 5;
 
 /// The player accessory: the ITEMS page, numbered as a sixth slot so the rail can carry it.
 pub const ACCESSORY_SLOT: i32 = 6;
+
+/// The base of the modern flow's remove keys.
+///
+/// The loadout screen's cards are clickable, and a click removes the entry — so the port
+/// prints the key that removes each entry and the browser sends it on the remove page
+/// ([`page::REMOVE`]). The keys start at ten, past the screen's own keys (1..11), so a
+/// remove key can never be one of the keys the screen is using.
+///
+/// The classic flow's remove page is the game's own: its keys are the entry's index plus
+/// one, and its key ten is "back". The modern flow has its own band, so that the remove
+/// keys and the screen's keys cannot be confused — the port prints the key and the port
+/// reads it back, and the browser never derives one.
+pub const REMOVE_KEY_BASE: i32 = 10;
 
 /// The slot labels.
 ///
@@ -86,10 +99,11 @@ pub fn slot_limit() -> i32 {
 /// wherever the rail and the tabs are drawn.
 pub fn page_is_drawn(b: &BuyMenu, pg: i32) -> bool {
     match b.screen {
-        // The loadout: its own page, the rail and the tabs.
-        Screen::Loadout => matches!(pg, page::MAIN | page::CATEGORY | page::LOAD),
-        // A slot's list: its own page, the rail and the tabs.
-        Screen::Browse => matches!(pg, page::WEAPONS | page::ITEMS | page::CATEGORY | page::LOAD),
+        // The loadout: its own page, the rail, the tabs and the remove page (the loadout's
+        // entries are what it removes).
+        Screen::Loadout => matches!(pg, page::MAIN | page::CATEGORY | page::LOAD | page::REMOVE),
+        // A slot's list: its own page, the rail, the tabs and the remove page.
+        Screen::Browse => matches!(pg, page::WEAPONS | page::ITEMS | page::CATEGORY | page::LOAD | page::REMOVE),
         // The attachments: the gun's own page. The rail and the tabs are not drawn here.
         Screen::Attach => matches!(pg, page::OPTIONS),
     }
@@ -206,6 +220,34 @@ pub fn purchase_slots(b: &BuyMenu, id: i32, item: bool, r: &Rules) -> i32 {
         Some(e) if w.akimbo != -1 && !e.akimbo => w.slots.wrapping_mul(2),
         _ => w.slots,
     }
+}
+
+/// The pending purchase's summary: what the gun and its attachments cost together, and what
+/// would be left of the budget after the purchase.
+///
+/// The total is the port's price for the purchase — the gun's price with its attachments and
+/// the akimbo and full-load multipliers, which is not the gun's base price.
+///
+/// The money left is what the port's own rules leave: the purchase is run on a copy of the
+/// menu, so the config's total and the ammo fill are the port's, and not an arithmetic
+/// guess. The browser never adds anything up.
+pub fn purchase_summary(b: &BuyMenu, r: &Rules) -> Option<(i32, i32)> {
+    let id = b.pending_weapon;
+    if id <= 0 {
+        return None;
+ }
+    let total = purchase_price(b, id, b.pending_att, false);
+    // A copy of the menu, so the purchase can be run on it without touching the real one.
+    let mut probe = b.clone();
+    let left = if probe.add(id, b.pending_att, false, false, r) {
+        // The purchase went through on the copy: what is left is the port's own number,
+        // the money left after the config and the ammo fill.
+        r.cash.wrapping_sub(probe.current.total).wrapping_sub(probe.ammo_spend)
+    } else {
+        // It would not go through: the money left is the money there is.
+        r.cash.wrapping_sub(b.current.total).wrapping_sub(b.ammo_spend)
+    };
+    Some((total, left))
 }
 
 /// One row of the modern flow: what the panel draws and what the state dump reports. The
@@ -431,10 +473,34 @@ pub fn tab_records(b: &BuyMenu) -> Vec<String> {
         .collect()
 }
 
+/// One entry of the modern flow's loadout: what a loadout card shows.
+///
+/// The classic flow's entry record is four fields (the index, the cost, the slots and the
+/// name) and stays exactly as it is. The modern one carries three more: the entry's
+/// attachments (the loadout cards show a chip for each), the weapon's classic slot (the
+/// cards are the five slots) and the key that removes the entry (the cards are clickable).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModernEntry {
+    /// The entry's index in the config.
+    pub index: usize,
+    /// What the entry costs: the gun and its attachments.
+    pub cost: i32,
+    /// The inventory slots it takes.
+    pub slots: i32,
+    /// Its attachments: the same title keys the OPTIONS page's rows use, in bit order.
+    pub attachments: Vec<&'static str>,
+    /// The classic weapon slot it belongs to (the HUD grid column).
+    pub slot: i32,
+    /// The key that removes it on the remove page.
+    pub remove_key: i32,
+    /// Its name.
+    pub name: String,
+}
+
 /// The config's entries, grouped by slot and in slot order, so the panel can place them
 /// without knowing which slot a weapon belongs to. The accessory's items are not in this list:
-/// they are the accessory's, and the panel would place them in a weapon slot.
-pub fn modern_entries(b: &BuyMenu, r: &Rules) -> Vec<(usize, i32, i32, String)> {
+/// they are the accessory's, and they have no weapon slot.
+pub fn modern_entries(b: &BuyMenu, r: &Rules) -> Vec<ModernEntry> {
     let mut out = Vec::new();
     for slot in 1..=SLOT_COUNT {
         for (i, e) in b.current.entries.iter().enumerate() {
@@ -445,10 +511,26 @@ pub fn modern_entries(b: &BuyMenu, r: &Rules) -> Vec<(usize, i32, i32, String)> 
             if w.hud[0] as i32 != slot {
                 continue;
             }
-            out.push((i, e.cost, entry_slots(e, r), BuyMenu::entry_name(e)));
+            out.push(ModernEntry {
+                index: i,
+                cost: e.cost,
+                slots: entry_slots(e, r),
+                attachments: attachment_labels(e.att),
+                slot,
+                remove_key: REMOVE_KEY_BASE + i as i32,
+                name: BuyMenu::entry_name(e),
+            });
         }
     }
     out
+}
+
+/// An entry's attachments: the title keys the OPTIONS page's rows use, in bit order.
+///
+/// The labels are the game's own (`#HUD_Silencer` and the rest), so the browser resolves
+/// them exactly the way it resolves every other label — it never builds one.
+pub fn attachment_labels(att: u32) -> Vec<&'static str> {
+    (0..4u32).filter(|bit| att & (1 << bit) != 0).map(|bit| ATTACHMENT_LABELS[bit as usize]).collect()
 }
 
 /// The screen's title: the loadout screen's own, the slot's label, or the gun's name.
@@ -510,14 +592,12 @@ pub fn state_lines(b: &BuyMenu, r: &Rules) -> Vec<String> {
     // The pending purchase's summary, on the attachments screen: what the gun and its
     // attachments together cost, and what would be left of the budget after it.
     //
-    // Both are the port's numbers. The browser adds nothing up.
-    if b.screen == Screen::Attach && b.pending_weapon > 0 {
-        let total = purchase_price(b, b.pending_weapon, b.pending_att, false);
-        let left = r
-            .cash
-            .wrapping_sub(b.current.total)
-            .wrapping_sub(b.ammo_spend)
-            .wrapping_sub(total);
+    // Both are the port's numbers. The browser adds nothing up — a gun's price is not its
+    // base price (the akimbo and full-load multipliers change it), so browser arithmetic
+    // would be wrong for exactly the weapons where it matters.
+    if b.screen == Screen::Attach
+        && let Some((total, left)) = purchase_summary(b, r)
+    {
         out.push(format!("TSBUY sum {total} {left}"));
     }
     // The shortfalls and the owned marks belong to the browse screen's rows, and only to
@@ -542,8 +622,17 @@ pub fn state_lines(b: &BuyMenu, r: &Rules) -> Vec<String> {
             }
         }
     }
-    for (index, cost, slots, name) in modern_entries(b, r) {
-        out.push(format!("TSBUY entry {} {} {} {}", index, cost, slots, name));
+    for e in modern_entries(b, r) {
+        out.push(format!(
+            "TSBUY entry {} {} {} {} {} {} {}",
+            e.index,
+            e.cost,
+            e.slots,
+            e.attachments.join(","),
+            e.slot,
+            e.remove_key,
+            e.name
+        ));
     }
     out.push("TSBUY end".to_owned());
     out
@@ -559,7 +648,10 @@ pub fn state_lines(b: &BuyMenu, r: &Rules) -> Vec<String> {
 /// weapon of a long list.
 pub fn key(b: &mut BuyMenu, pg: i32, key: i32, bare: bool, r: &Rules, rng: &mut dyn Rng) -> Vec<Action> {
     let mut out = Vec::new();
-    if !(1..=r.menu.max_key).contains(&key) {
+    // The remove page's keys run past the key alphabet: the loadout's entries are removed
+    // by their own keys, and there can be more entries than the alphabet has keys.
+    let max = if pg == page::REMOVE { REMOVE_KEY_BASE + ENTRIES as i32 - 1 } else { r.menu.max_key };
+    if !(1..=max).contains(&key) {
         return out;
     }
     match pg {
@@ -646,6 +738,17 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, bare: bool, r: &Rules, rng: &mut 
         page::LOAD if (1..=SAVED_CONFIGS as i32).contains(&key) => {
             switch_tab(b, key as usize - 1, r, &mut out);
         }
+        // The remove page: the loadout's entries.
+        //
+        // The loadout screen's cards are clickable, and a click removes the entry. The key
+        // the entry record named is the one that removes it, and it is the port's key: the
+        // browser sends it and never works out which entry it means.
+        page::REMOVE if key >= REMOVE_KEY_BASE => {
+            let i = (key - REMOVE_KEY_BASE) as usize;
+            if i < ENTRIES && b.current.entries[i].id != 0 {
+                remove_at(b, i, r, &mut out);
+            }
+        }
         _ => {}
     }
     out
@@ -711,6 +814,17 @@ fn remove_item(b: &mut BuyMenu, id: i32, item: bool, r: &Rules, out: &mut Vec<Ac
     let Some(i) = b.current.entries.iter().position(|e| e.id == id && e.is_item == item) else {
         return;
     };
+    remove_at(b, i, r, out);
+}
+
+/// Take the entry at index `i` off the loadout, refund it, and apply the result.
+///
+/// The index is the config's own — the one the entry record carries and the one the remove
+/// key names.
+fn remove_at(b: &mut BuyMenu, i: usize, r: &Rules, out: &mut Vec<Action>) {
+    if i >= ENTRIES || b.current.entries[i].id == 0 {
+        return;
+    }
     let name = BuyMenu::entry_name(&b.current.entries[i]);
     b.remove(i, r);
     b.recompute_ammo(r);
@@ -833,6 +947,26 @@ mod tests {
             .collect()
     }
 
+    /// The `TSBUY entry` records of a state dump: (index, cost, slots, attachments, slot,
+    /// remove key, name).
+    fn dump_entries(lines: &[String]) -> Vec<(usize, i32, i32, String, i32, i32, String)> {
+        lines
+            .iter()
+            .filter_map(|l| l.strip_prefix("TSBUY entry "))
+            .map(|rest| {
+                let mut it = rest.splitn(7, ' ');
+                let index = it.next().unwrap().parse().unwrap();
+                let cost = it.next().unwrap().parse().unwrap();
+                let slots = it.next().unwrap().parse().unwrap();
+                let attachments = it.next().unwrap_or("").to_owned();
+                let slot = it.next().unwrap().parse().unwrap();
+                let remove_key = it.next().unwrap().parse().unwrap();
+                let name = it.next().unwrap_or("").to_owned();
+                (index, cost, slots, attachments, slot, remove_key, name)
+            })
+            .collect()
+    }
+
     /// The modern flow's state dump: the shape the browser's panel reads.
     ///
     /// The three screens each print the state line, the page record, the slot records, the tab
@@ -907,7 +1041,7 @@ mod tests {
         assert_eq!(rows[4].1, 850, "the gun and its attachments together");
         assert_eq!(rows.len(), 5, "the gun, three attachments and the action: {rows:?}");
         // The pending purchase's summary: the port's numbers, never the browser's sum.
-        assert!(lines.contains(&"TSBUY sum 850 29150".to_owned()), "the summary: {lines:?}");
+        assert!(lines.contains(&"TSBUY sum 850 28800".to_owned()), "the summary: {lines:?}");
     }
 
     /// A slot's weapons are the ones whose HUD grid column is that slot.
@@ -1231,5 +1365,196 @@ mod tests {
         assert!(!m.page_is_drawn(page::WEAPONS));
         assert!(!m.page_is_drawn(page::CATEGORY));
         assert!(!m.page_is_drawn(page::LOAD));
+    }
+
+    /// The state line carries the slot pool's limit, so the panel can draw "41/81 slots".
+    ///
+    /// The number is the ruleset's (`combat.toml`'s `slots.total`) — the same table the
+    /// server checks a loadout against — and never a constant of the browser's own.
+    #[test]
+    fn the_state_line_carries_the_slot_pool_limit() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let m = modern(&r);
+        let lines = m.state_lines(&r);
+        assert!(lines[0].contains(&format!("slot_limit={}", tables().combat.slots.total)), "{}", lines[0]);
+        assert_eq!(tables().combat.slots.total, 81, "the ruleset's slot pool");
+        assert_eq!(slot_limit(), tables().combat.slots.total, "the port reads it from the table");
+        // And it is the same number the client's own slot pool is: the two cannot drift.
+        assert_eq!(slot_limit(), super::super::buy::SLOTS);
+    }
+
+    /// The modern entry record carries the entry's attachments, its classic slot and the key
+    /// that removes it: the loadout cards show a chip per attachment, they are grouped into
+    /// the five slots, and they are clickable.
+    ///
+    /// The classic flow's four-field record is untouched.
+    #[test]
+    fn an_entry_carries_its_attachments_its_slot_and_its_remove_key() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+        // The Glock-18 with a silencer and a lasersight: $2,550 and ten slots.
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::OPTIONS, 1, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::OPTIONS, 2, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.pending_att, 1 | 2, "the silencer and the lasersight");
+        // The attachments are the same title keys the OPTIONS page's rows use, so the browser
+        // resolves them exactly the way it resolves every other label.
+        let lines = m.state_lines(&r);
+        assert!(lines.contains(&"TSBUY row 1 900 on 3 1 #HUD_Silencer".to_owned()), "the OPTIONS rows: {lines:?}");
+        assert!(lines.contains(&"TSBUY row 2 800 on 3 2 #HUD_Lasersight".to_owned()), "the OPTIONS rows: {lines:?}");
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+
+        let lines = m.state_lines(&r);
+        assert!(
+            lines.contains(&"TSBUY entry 0 2550 10 #HUD_Silencer,#HUD_Lasersight 2 10 Glock-18".to_owned()),
+            "the entry record: {lines:?}"
+        );
+        // An entry with no attachments prints an empty field.
+        //
+        // The knife's place in slot 1's list depends on the rules (the M61 grenade is only
+        // listed in a teamplay mode), so find it rather than counting. The "Add to loadout"
+        // row's key depends on how many attachment rows the weapon has, so read it too.
+        m.dom_key_on(page::CATEGORY, 1, &r, &mut FixedRng(vec![], 0));
+        let knife_key = browse_items(1, &r)
+            .iter()
+            .position(|i| i.name == "Combat Knife")
+            .expect("the knife is in slot 1's list") as i32
+            + 1;
+        m.dom_key_on(page::WEAPONS, knife_key, &r, &mut FixedRng(vec![], 0));
+        let add_key = m
+            .state_lines(&r)
+            .iter()
+            .find_map(|l| {
+                let mut parts = l.strip_prefix("TSBUY row ")?.splitn(6, ' ');
+                let key: i32 = parts.next()?.parse().ok()?;
+                let label = parts.nth(4)?;
+                if label == "Add to loadout" { Some(key) } else { None }
+            })
+            .expect("the add row");
+        m.dom_key_on(page::OPTIONS, add_key, &r, &mut FixedRng(vec![], 0));
+        let lines = m.state_lines(&r);
+        let entries = dump_entries(&lines);
+        let knife = entries.iter().find(|(_, _, _, _, _, _, name)| name == "Combat Knife").expect("the knife");
+        assert_eq!(knife.3, "", "no attachments: an empty field");
+        assert_eq!(knife.4, 1, "the knife's slot");
+        assert!(knife.5 >= REMOVE_KEY_BASE, "and its remove key: {knife:?}");
+    }
+
+    /// The attachments screen reports the port's own total for the pending gun and its
+    /// attachments, and the money that would be left after adding it.
+    ///
+    /// The browser must not compute it: a gun's price is not its base price (the akimbo and
+    /// full-load multipliers change it), so browser arithmetic would be wrong for exactly the
+    /// weapons where it matters.
+    #[test]
+    fn the_attachments_screen_reports_the_ports_total_and_the_money_left() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        // The silencer and the lasersight: $900 and $800 on top of the $850 gun.
+        m.dom_key_on(page::OPTIONS, 1, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::OPTIONS, 2, &r, &mut FixedRng(vec![], 0));
+        let lines = m.state_lines(&r);
+        // The total is the port's: $2,550, not $850 + $900 + $800 done by the browser.
+        assert!(lines.contains(&"TSBUY sum 2550 27100".to_owned()), "the summary: {lines:?}");
+        // And it is the port's own price for the purchase, not the gun's base price.
+        assert_eq!(purchase_price(&m, 1, 1 | 2, false), 2550);
+        // The summary is on the attachments screen only.
+        m.dom_key_on(page::OPTIONS, 10, &r, &mut FixedRng(vec![], 0));
+        let lines = m.state_lines(&r);
+        assert!(!lines.iter().any(|l| l.starts_with("TSBUY sum")), "the browse screen has no summary: {lines:?}");
+    }
+
+    /// The remove key the entry record named removes that entry: the loadout screen's cards
+    /// are clickable, and the click sends the key on the remove page.
+    #[test]
+    fn the_remove_key_removes_the_entry_it_names() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+        // Two guns: the Glock-18 (slot 2) and the Katana (slot 1).
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::CATEGORY, 1, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.current.entries.len(), super::super::buy::ENTRIES);
+        let lines = m.state_lines(&r);
+        let entries = dump_entries(&lines);
+        let glock = entries.iter().find(|(_, _, _, _, _, _, name)| name == "Glock-18").expect("the Glock-18");
+        let katana = entries.iter().find(|(_, _, _, _, _, _, name)| name == "Katana").expect("the Katana");
+        assert_eq!(glock.4, 2, "the Glock-18's slot");
+        assert_eq!(katana.4, 1, "the Katana's slot");
+        // The remove key is the entry's own index, ten on: the port's key, and the port
+        // reads it back.
+        assert_eq!(glock.5, REMOVE_KEY_BASE + glock.0 as i32);
+        assert_eq!(katana.5, REMOVE_KEY_BASE + katana.0 as i32);
+
+        // The remove page is on screen wherever the loadout is: the cards are there.
+        assert!(m.page_is_drawn(page::REMOVE));
+
+        // The key the record named removes that entry, refunds it, and applies the loadout
+        // that is left.
+        let actions = m.dom_key_on(page::REMOVE, glock.5, &r, &mut FixedRng(vec![], 0));
+        assert!(!m.current.entries.iter().any(|e| e.id == 1), "the Glock-18 is off the loadout");
+        // The Katana's weapon id is 34 (id 13 is a different weapon), and it is still in it.
+        assert!(m.current.entries.iter().any(|e| e.id == 34), "the Katana is still in it");
+        assert_eq!(m.current.total, 2900, "and the Glock's cost is refunded");
+        let cmds: Vec<&str> = actions.iter().filter_map(|a| match a {
+            Action::ServerCmd(c) => Some(c.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(cmds[0], "rst_cfg", "the loadout that is left is applied: {cmds:?}");
+        assert!(!cmds[1].contains("1_0"), "and the Glock-18 is not in it: {cmds:?}");
+        assert!(cmds[1].contains("34_0"), "the Katana is: {cmds:?}");
+
+        // A key that names nothing removes nothing.
+        let before = m.current.clone();
+        m.dom_key_on(page::REMOVE, REMOVE_KEY_BASE - 1, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::REMOVE, REMOVE_KEY_BASE + super::super::buy::ENTRIES as i32, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.current, before, "nothing was removed");
+    }
+
+    /// The classic flow's entry record is untouched: four fields, and no slot and no remove
+    /// key. The browser parses both shapes.
+    #[test]
+    fn the_classic_entry_record_is_unchanged() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = BuyMenu { random_first: false, ..BuyMenu::default() };
+        m.open(&r, &mut FixedRng(vec![], 0));
+        m.handle_key(page::MAIN, 2, &r, &mut FixedRng(vec![], 0));
+        m.handle_key(page::CATEGORY, 1, &r, &mut FixedRng(vec![], 0));
+        m.handle_key(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        m.handle_key(page::OPTIONS, 1, &r, &mut FixedRng(vec![], 0));
+        let lines = m.state_lines(&r);
+        assert!(
+            lines.contains(&"TSBUY entry 0 850 10 Glock-18".to_owned()),
+            "the classic's entry record is four fields: {lines:?}"
+        );
+    }
+    #[test]
+    fn dbg_entries() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        println!("pending={} ", m.pending_weapon);
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        println!("after glock: {:?}", m.current.entries.iter().map(|e| (e.id, e.cost)).collect::<Vec<_>>());
+        m.dom_key_on(page::CATEGORY, 1, &r, &mut FixedRng(vec![], 0));
+        println!("melee list: {:?}", browse_items(1, &r).iter().map(|i| (i.id, i.name.clone())).collect::<Vec<_>>());
+        m.dom_key_on(page::WEAPONS, 2, &r, &mut FixedRng(vec![], 0));
+        println!("pending={}", m.pending_weapon);
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        println!("after katana: {:?}", m.current.entries.iter().map(|e| (e.id, e.cost)).collect::<Vec<_>>());
+        for l in m.state_lines(&r) { println!("{l}"); }
     }
 }

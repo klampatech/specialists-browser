@@ -345,10 +345,18 @@ extern "C" fn cmd_buy_hide() {
 /// has it. Without a page the key runs on the current page, which is what the digit keys do.
 extern "C" fn cmd_buy_key() {
     let e = engine();
+    // The classic flow's keys are the game's own, 1..11. The modern flow's remove keys run
+    // past them (the loadout's entries are removed by their own keys), so the guard is wider
+    // there — and only there: the classic flow's console behaviour is unchanged.
+    let max = if with(|m| m.buy.mode == buy::Mode::Modern) {
+        buy_modern::REMOVE_KEY_BASE + buy::ENTRIES as i32 - 1
+    } else {
+        11
+    };
     let n = match e.cmd_argv(1).to_string_lossy().trim().parse::<i32>() {
-        Ok(n) if (1..=11).contains(&n) => n,
+        Ok(n) if (1..=max).contains(&n) => n,
         _ => {
-            e.print("usage: ts_buy_key <1-11> [<page>]\n");
+            e.print(&format!("usage: ts_buy_key <1-{max}> [<page>]\n"));
             return;
         }
     };

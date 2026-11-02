@@ -1027,6 +1027,7 @@ pub fn entry_slots(e: &Entry, r: &Rules) -> i32 {
     if e.count == 0 { w.slots * (e.akimbo as i32 + 1) } else { w.slots * e.count }
 }
 
+#[derive(Clone)]
 pub struct BuyMenu {
     pub active: bool,
     /// Port addition: the canvas menu is not drawn and the engine's own key and mouse paths
