@@ -38,7 +38,7 @@ body{margin:0}*{box-sizing:border-box}
 
 </style></head><body><main class="doc">
 <header class="doc-head"><p class="doc-kicker">Design handoff</p><h1>The Specialists buy menu redesign</h1><p class="doc-lead">A redesign of the in-game buy menu for the Half-Life 1 mod The Specialists. This page holds the mockups and everything an implementing agent needs to know about the game and the intended behavior. The mockups are static. The commands that drive the menu are being mapped separately by the project owner.</p>
-<div class="doc-note"><b>Updated 2026-11-02, after the playtest.</b> The frames below follow what the playtest changed: the browse screen’s rail is the weapon <b>categories</b> (six of them, and the akimbo weapons are not among them — a player who wants the akimbo Berettas is looking at the Berettas, so the akimbo version is offered on the gun, on its attachments screen), the HUD slot 5 card says <b>Special Purpose</b> (the game’s own name for that slot: the akimbo versions and the Golden Colts), the cards no longer carry a “+ Add” button (the card’s own number opens its list), and the panels no longer explain themselves in their footers. The key table is the port’s key space: the rail’s keys and the HUD slots are two numberings, and the loadout screen has the accessory on 6, Random on 7 and Clear on 8.</div></header>
+<div class="doc-note"><b>Updated 2026-11-02, after the playtest.</b> The frames below follow what the playtest changed: the browse screen’s rail is the weapon <b>categories</b> (six of them, and the akimbo weapons are not among them — a player who wants the akimbo Berettas is looking at the Berettas, so the akimbo version is offered on the gun, on its attachments screen), the HUD slot 5 card says <b>Special Purpose</b> (the game’s own name for that slot: the akimbo versions and the Golden Colts), the cards no longer carry a “+ Add” button (the card’s own number opens its list), and the panels no longer explain themselves in their footers. The akimbo version is <b>the gun bought twice</b> — the game’s own rule, and the server’s spawn gives the player the gun <b>and</b> the pair: the gun in its own card, the pair in the card 5. So the akimbo Five-seveN costs $2,500, not $1,250, and the loadout shows both: the Five-seveN in the pistols card, the Akimbo Five-seveN in Special Purpose. The key table is the port’s key space: the rail’s keys and the HUD slots are two numberings, and the loadout screen has the accessory on 6, Random on 7 and Clear on 8.</div></header>
 
 <h2>1. Game context</h2>
 <p><b>Confirmed by the project owner:</b></p>
@@ -127,9 +127,9 @@ body{margin:0}*{box-sizing:border-box}
 
 <h2>6. Key bindings (proposed)</h2>
 <table><tr><th>Key</th><th>Loadout</th><th>Browse</th><th>Attachments</th></tr>
-<tr><td>1–5</td><td>Open that HUD slot’s list: 1 melee weapons, 2 pistols, 3 SMGs, 4 rifles, 5 special purpose</td><td>Pick weapon 1–5, or switch the rail’s category</td><td>Toggle attachment 1–4</td></tr>
-<tr><td>6</td><td>Player Accessory</td><td>Pick weapon 6, or switch to the accessory</td><td>The akimbo version, for the guns that have one</td></tr>
-<tr><td>7</td><td>Random</td><td>Pick weapon 7</td><td>Add to loadout</td></tr>
+<tr><td>1–5</td><td>Open that HUD slot’s list: 1 melee weapons, 2 pistols, 3 SMGs, 4 rifles, 5 special purpose</td><td>Pick weapon 1–5, or switch the rail’s category</td><td>Toggle attachment 1–4; the akimbo version on 5</td></tr>
+<tr><td>6</td><td>Player Accessory</td><td>Pick weapon 6, or switch to the accessory</td><td>Add to loadout</td></tr>
+<tr><td>7</td><td>Random</td><td>Pick weapon 7</td><td>—</td></tr>
 <tr><td>8</td><td>Clear</td><td>Pick weapon 8</td><td>—</td></tr>
 <tr><td>9, A</td><td>—</td><td>Pick weapon 9, 10th</td><td>—</td></tr>
 <tr><td>0</td><td>—</td><td>Back to loadout</td><td>Back to the weapon list</td></tr>
@@ -144,13 +144,14 @@ body{margin:0}*{box-sizing:border-box}
 <li><b>Adding a gun with attachments:</b> compute the total (gun plus selected attachments). If it exceeds the money left, disable “Add” and show the missing amount. On success, issue the attachment purchases first and the gun second, then update the budget.</li>
 <li><b>Removing:</b> selecting an owned weapon removes it and refunds its price. Removing a gun also removes its attachments (confirm whether the game refunds them).</li>
 <li><b>Clear:</b> empties the active loadout and refunds everything. <b>Random:</b> fills the active loadout within budget.</li>
-<li><b>Budget header:</b> money left, a bar for the share spent, and slots in use out of 5.</li></ul>
+<li><b>Budget header:</b> money left, a bar for the share spent, and slots in use out of 5.</li>
+<li><b>The akimbo version:</b> it is the gun bought twice — the game’s own rule, and the server turns the second copy into the pair. So the row on the gun’s attachments screen costs the gun’s price again (the akimbo Five-seveN is $2,500, not $1,250), and the loadout shows <b>both</b>: the gun in its own card, the pair in the card 5. The two cards’ prices add up to what the player paid.</li></ul>
 
 <h2>8. Data seen so far (from screenshots)</h2>
 <table><tr><th>Slot / category</th><th>Items and prices</th></tr>
 <tr><td>Pistols (Handguns)</td><td>Glock-18 $850 · SOCOM-MK23 $700 · Desert Eagle $1,050 · Five-seveN $1,250 · Beretta 92F $900 · Glock-20C $1,300 · Ruger-MK1 $1,500 · Raging Bull $2,100 · Contender G2 $1,500</td></tr>
 <tr><td>Melee (listed under Special Purpose in the current menu)</td><td>Combat Knife $100 · Katana $2,900 · Seal Knife $100. The list may be longer than the screenshot showed.</td></tr>
-<tr><td>Special Purpose (slot 5)</td><td>Golden Colts $2,600. The akimbo versions of the pistols and SMGs live here too — as the versions of those guns, not as a list of their own</td></tr>
+<tr><td>Special Purpose (slot 5)</td><td>Golden Colts $2,600. The akimbo pairs live here too — each pair next to the gun it belongs to: the gun in its own card, the pair here</td></tr>
 <tr><td>Attachments</td><td>Silencer $900 · Lasersight $800 · Flashlight $500</td></tr>
 <tr><td>SMGs, Rifles, Shotguns, Player Accessory</td><td>Not captured. The mockups don’t show them</td></tr></table>
 <p class="doc-note">The loadouts in the mockups (Combat Knife, Katana, Glock-18 with attachments, Desert Eagle) are invented examples, so totals will not match the owner’s screenshots.</p>
