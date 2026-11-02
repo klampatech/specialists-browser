@@ -3,22 +3,36 @@
 //! The classic canvas menu ([`super::buy`]) is the game's own and stays exactly as it is. This
 //! is a SECOND flow on the same menu, the one the browser's redesigned panel drives: the same
 //! prices, the same budget, the same slot pool and the same saved loadouts — organised by the
-//! classic weapon slot instead of by the game's five categories.
+//! game's weapon CATEGORIES instead of by the HUD slots.
 //!
-//! ## The slot
+//! ## The rail
 //!
-//! A weapon's classic slot is [`WeaponInfo::hud`][0], the HUD grid column, 1-based. It is not a
-//! new table: the data is already there, so the rail is a read and not a migration.
+//! The rail is the browse aid: the categories the player picks a weapon from. It is keyed
+//! 1..=7 and the state line's `slot=` is the rail's key.
 //!
-//! | slot | holds |
-//! | --- | --- |
-//! | 1 | M61 Grenade, Katana, Combat Knife, Seal Knife (and the kung-fu, which is the empty id) |
-//! | 2 | every pistol |
-//! | 3 | every SMG |
-//! | 4 | every rifle and shotgun, plus the Barrett M82A1 and the M60E3 |
-//! | 5 | the akimbo weapons |
+//! | rail | label | lists |
+//! | --- | --- | --- |
+//! | 1 | Melee weapons | the HUD slot 1 weapons: the Katana, the Combat Knife, the Seal Knife and the M61 Grenade |
+//! | 2 | Pistols | the HUD slot 2 weapons |
+//! | 3 | SMGs | the HUD slot 3 weapons |
+//! | 4 | Rifles | the HUD slot 4 weapons the game calls rifles |
+//! | 5 | Shotguns | the HUD slot 4 weapons the game calls shotguns |
+//! | 6 | Special | the HUD slot 5 weapons: the akimbo ones |
+//! | 7 | Player Accessory | the game's ITEMS page: the kevlar and the stealth shoes |
 //!
-//! Slot 6 is the player accessory: the game's ITEMS page, not a weapon slot.
+//! The split is the game's own: the weapon table's [`kind`](shared::weapons::WeaponKind) is
+//! the game's categorisation, read through the game's own correction of it (see
+//! [`Rail::hud_slot`]).
+//!
+//! ## The HUD slot
+//!
+//! A weapon's classic slot is [`WeaponInfo::hud`][0], the HUD grid column, 1-based. It is the
+//! game's own and it never changes: the loadout screen's five cards are the five HUD slots,
+//! and an entry record reports the HUD slot of the weapon it carries. The rail's key and the
+//! HUD slot are two different numbers and they genuinely diverge — the rail's key 5 is the
+//! shotguns and the HUD slot 5 is the akimbo weapons — so the akimbo Golden Colts bought
+//! from the rail are still HUD slot 5, and the shotguns bought from the rail are still HUD
+//! slot 4.
 //!
 //! ## The differences from the classic flow
 //!
@@ -53,8 +67,15 @@ use shared::weapons::{WeaponInfo, tables};
 /// The five classic weapon slots.
 pub const SLOT_COUNT: i32 = 5;
 
-/// The player accessory: the ITEMS page, numbered as a sixth slot so the rail can carry it.
+/// The player accessory: the ITEMS page, numbered as a sixth slot so the loadout's card can
+/// carry it.
+///
+/// It is not a weapon slot: the accessory's items are bought, they are not carried in a
+/// weapon slot.
 pub const ACCESSORY_SLOT: i32 = 6;
+
+/// The rail's entries: the weapon categories the player browses by.
+pub const RAIL_COUNT: i32 = 7;
 
 /// The base of the modern flow's remove keys.
 ///
@@ -128,12 +149,111 @@ fn browse_badge(index: usize) -> String {
     }
 }
 
-/// The slot labels.
+/// The modern flow's rail: the weapon categories the player browses by.
 ///
-/// The first four are the game's own kinds. Slot 5 is the design mockup's "Special": it holds
-/// the akimbo weapons (the HUD grid's fifth column), which the mockup had wrong — the mockup
-/// put the M60E3 there, and the M60E3 is slot 4.
-pub fn slot_label(slot: i32) -> &'static str {
+/// The rail is the browse aid and the HUD slot is the game's own. They are two different
+/// numbers and they genuinely diverge: the rail's key 5 is the shotguns and the HUD slot 5
+/// is the akimbo weapons. So:
+///
+/// - the rail's key is what the state line's `slot=` reports and what the rail's rows are
+///   keyed by;
+/// - the HUD slot is what the loadout's cards and the entry records carry, and it is the
+///   HUD slot of the weapon whatever rail entry it was bought from.
+///
+/// Every place the two are used together says which is which: a weapon bought from the
+/// shotguns still reports the HUD slot 4, and an akimbo bought from the rail still reports
+/// the HUD slot 5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rail {
+    /// The melee weapons: the HUD slot 1 weapons — the Katana, the Combat Knife, the Seal
+    /// Knife and the M61 Grenade (where the rules sell it).
+    Melee,
+    /// The pistols: the HUD slot 2 weapons.
+    Pistols,
+    /// The SMGs: the HUD slot 3 weapons.
+    Smgs,
+    /// The rifles: the HUD slot 4 weapons the game calls rifles.
+    Rifles,
+    /// The shotguns: the HUD slot 4 weapons the game calls shotguns.
+    Shotguns,
+    /// The akimbo weapons: the HUD slot 5 weapons. A HUD slot and not a kind.
+    Special,
+    /// The player accessory: the game's ITEMS page.
+    Accessory,
+}
+
+impl Rail {
+    /// The rail's key: 1..=7.
+    ///
+    /// This is the state's `slot=` and the rail's rows' keys. It is NOT the HUD slot: see
+    /// [`Rail`].
+    pub fn key(self) -> i32 {
+        match self {
+            Rail::Melee => 1,
+            Rail::Pistols => 2,
+            Rail::Smgs => 3,
+            Rail::Rifles => 4,
+            Rail::Shotguns => 5,
+            Rail::Special => 6,
+            Rail::Accessory => 7,
+        }
+    }
+
+    /// The rail's entry for a key.
+    pub fn from_key(key: i32) -> Option<Self> {
+        Some(match key {
+            1 => Rail::Melee,
+            2 => Rail::Pistols,
+            3 => Rail::Smgs,
+            4 => Rail::Rifles,
+            5 => Rail::Shotguns,
+            6 => Rail::Special,
+            7 => Rail::Accessory,
+            _ => return None,
+        })
+    }
+
+    /// The rail's label: the name the panel draws.
+    pub fn label(self) -> &'static str {
+        match self {
+            Rail::Melee => "Melee weapons",
+            Rail::Pistols => "Pistols",
+            Rail::Smgs => "SMGs",
+            Rail::Rifles => "Rifles",
+            Rail::Shotguns => "Shotguns",
+            Rail::Special => "Special",
+            Rail::Accessory => "Player Accessory",
+        }
+    }
+
+    /// The HUD slot the entry's weapons live in.
+    ///
+    /// The rifles and the shotguns SHARE the HUD slot 4: they are one HUD slot, and the
+    /// rail is what divides them. That is why an entry bought from the shotguns still
+    /// reports the HUD slot 4 — the HUD slot is the game's own and the rail is a browse
+    /// aid.
+    ///
+    /// The accessory is not a weapon slot: it is the game's ITEMS page, numbered as the
+    /// sixth slot so the loadout's card can carry it.
+    pub fn hud_slot(self) -> i32 {
+        match self {
+            Rail::Melee => 1,
+            Rail::Pistols => 2,
+            Rail::Smgs => 3,
+            Rail::Rifles | Rail::Shotguns => 4,
+            Rail::Special => 5,
+            Rail::Accessory => ACCESSORY_SLOT,
+        }
+    }
+}
+
+/// The loadout card's label: what the HUD slot holds.
+///
+/// The cards are the player's gear — the five HUD slots and the accessory — and they are
+/// not the rail: the rail is the browse aid and it has seven entries. So the HUD slot 4
+/// card keeps the "Rifles · Shotguns" label, because that card holds both, and the HUD
+/// slot 1 card keeps its own, because that card holds the melee weapons and the grenade.
+pub fn card_label(slot: i32) -> &'static str {
     match slot {
         1 => "Melee · Grenades · Swords",
         2 => "Pistols",
@@ -193,6 +313,50 @@ pub fn slot_weapons(slot: i32, r: &Rules) -> Vec<&'static WeaponInfo> {
     out
 }
 
+/// The game's own categorisation of a weapon: its kind, read through the game's own
+/// correction of it.
+///
+/// `GetWeaponType` ([`shared::weapons::restriction_type`]) is the game's categorisation of a
+/// weapon: it calls the Sawed-Off a shotgun (the weapon table's `kind` says pistol) and the
+/// katana a knife, and the server's `IsRestrictedWeapon` reads the same one. The rail reads
+/// the kind through it, so the Sawed-Off is listed with the shotguns — where the classic
+/// menu's own shotguns column lists it too.
+///
+/// It is only read for the HUD slot 4 split, where it decides between the rifles and the
+/// shotguns. The other rail entries are the HUD slot's own weapons, and the akimbos (the
+/// HUD slot 5) are a HUD slot and not a kind.
+fn rail_kind(w: &WeaponInfo) -> u8 {
+    shared::weapons::restriction_type(w.id)
+}
+
+/// Is this weapon one of the rifles?
+///
+/// The Barrett M82A1 is a sniper rifle: the table's kind is `sniper`, and the classic menu's
+/// rifles column has it.
+fn is_rifle(w: &WeaponInfo) -> bool {
+    matches!(rail_kind(w), shared::weapons::kind::RIFLE | shared::weapons::kind::SNIPER)
+}
+
+/// Is this weapon one of the shotguns?
+fn is_shotgun(w: &WeaponInfo) -> bool {
+    rail_kind(w) == shared::weapons::kind::SHOTGUN
+}
+
+/// The weapons a rail entry lists: the HUD slot's own weapons, in the game's own order.
+///
+/// The rifles and the shotguns are the one split: they share the HUD slot 4, and the rail
+/// divides them by the game's own kind (see [`rail_kind`]). Every other entry lists its
+/// HUD slot's weapons whole.
+pub fn rail_weapons(rail: Rail, r: &Rules) -> Vec<&'static WeaponInfo> {
+    let mut out = slot_weapons(rail.hud_slot(), r);
+    match rail {
+        Rail::Rifles => out.retain(|w| is_rifle(w)),
+        Rail::Shotguns => out.retain(|w| is_shotgun(w)),
+        _ => {}
+    }
+    out
+}
+
 /// One thing the browse screen lists: a weapon of the slot, or an accessory item.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BrowseItem {
@@ -208,9 +372,13 @@ pub struct BrowseItem {
     pub item: bool,
 }
 
-/// The list the browse screen shows: the slot's weapons, or the accessory's items.
-pub fn browse_items(slot: i32, r: &Rules) -> Vec<BrowseItem> {
-    if slot == ACCESSORY_SLOT {
+/// The list the browse screen shows: the rail entry's weapons, or the accessory's items.
+///
+/// The key is the rail's key (1..=7), not the HUD slot: the state's `slot=` is the rail's
+/// entry and the browse screen shows that entry's list.
+pub fn browse_items(rail_key: i32, r: &Rules) -> Vec<BrowseItem> {
+    let Some(rail) = Rail::from_key(rail_key) else { return Vec::new() };
+    if rail == Rail::Accessory {
         let mut out = Vec::new();
         for id in [ITEM_KEVLAR, ITEM_STEALTH] {
             if restricted(id, true, r) {
@@ -227,7 +395,7 @@ pub fn browse_items(slot: i32, r: &Rules) -> Vec<BrowseItem> {
         }
         return out;
     }
-    slot_weapons(slot, r)
+    rail_weapons(rail, r)
         .into_iter()
         .map(|w| BrowseItem { id: w.id as i32, name: w.name.clone(), price: w.cost, slots: w.slots, item: false })
         .collect()
@@ -339,18 +507,22 @@ pub struct ModernRow {
     pub label: String,
 }
 
-/// The rail: the five slots and the accessory. They are dimmed, because they answer on the
-/// rail's own page — the same way a parent column's row answers on the parent's page in the
-/// classic menu.
+/// The rail: the weapon categories. They are dimmed, because they answer on the rail's own
+/// page — the same way a parent column's row answers on the parent's page in the classic
+/// menu.
+///
+/// The row's key is the rail's key (1..=7), which is also what the state line's `slot=`
+/// reports while the entry is open. It is NOT the HUD slot: the rifles and the shotguns
+/// share the HUD slot 4 and the rail's key 5 is the shotguns.
 fn rail_rows() -> Vec<ModernRow> {
-    (1..=ACCESSORY_SLOT)
-        .map(|slot| ModernRow {
-            key: slot,
+    (1..=RAIL_COUNT)
+        .map(|key| ModernRow {
+            key,
             price: 0,
             flags: RowFlags { dim: true, ..Default::default() },
             page: page::CATEGORY,
-            number: slot.to_string(),
-            label: slot_label(slot).to_owned(),
+            number: key.to_string(),
+            label: Rail::from_key(key).map_or(String::new(), |rail| rail.label().to_owned()),
         })
         .collect()
 }
@@ -422,14 +594,15 @@ fn loadout_rows() -> Vec<ModernRow> {
     ]
 }
 
-/// The browse screen's own rows: the slot's weapons, with their prices, the owned mark and
-/// the unaffordable mark.
+/// The browse screen's own rows: the rail entry's weapons, with their prices, the owned mark
+/// and the unaffordable mark.
 ///
 /// The rows are keyed 1–9 and then 11, 12, … (see [`browse_key`]), so that key 10 stays
-/// the back key and the tenth weapon of a long list is still reachable.
+/// the back key and a tenth weapon would still be reachable.
 fn browse_rows(b: &BuyMenu, r: &Rules) -> Vec<ModernRow> {
+    // The state's `slot=` is the rail's key (1..=7): the entry the player is browsing.
     let items = browse_items(b.modern_slot, r);
-    let page = if b.modern_slot == ACCESSORY_SLOT { page::ITEMS } else { page::WEAPONS };
+    let page = if Rail::from_key(b.modern_slot) == Some(Rail::Accessory) { page::ITEMS } else { page::WEAPONS };
     items
         .iter()
         .enumerate()
@@ -506,11 +679,16 @@ fn attachment_allowed(w: Option<&WeaponInfo>, bit: u32) -> bool {
 
 /// The slot records: the slot's number, the inventory slots its weapons take, how many
 /// weapons it holds and its label.
+///
+/// These are the loadout screen's CARDS: the five HUD slots and the accessory, in the
+/// order the game uses. They are the player's gear and they are not the rail: the rail is
+/// the browse aid and it has seven entries. So the HUD slot 4 card is still one card, and
+/// it still holds the rifles and the shotguns together.
 pub fn slot_records(b: &BuyMenu, r: &Rules) -> Vec<String> {
     (1..=ACCESSORY_SLOT)
         .map(|slot| {
             let (slots, count) = slot_usage(b, r, slot);
-            format!("TSBUY slot {slot} {slots} {count} {}", slot_label(slot))
+            format!("TSBUY slot {slot} {slots} {count} {}", card_label(slot))
         })
         .collect()
 }
@@ -603,11 +781,14 @@ pub fn attachment_labels(att: u32) -> Vec<&'static str> {
     (0..4u32).filter(|bit| att & (1 << bit) != 0).map(|bit| ATTACHMENT_LABELS[bit as usize]).collect()
 }
 
-/// The screen's title: the loadout screen's own, the slot's label, or the gun's name.
+/// The screen's title: the loadout screen's own, the rail entry's label, or the gun's name.
+///
+/// The browse screen's title is the rail entry's label: "SHOTGUNS" for the shotguns, and
+/// the state line's `slot=` is the rail's key that goes with it.
 pub fn screen_title(b: &BuyMenu) -> String {
     match b.screen {
         Screen::Loadout => "BUY MENU".to_owned(),
-        Screen::Browse => slot_label(b.modern_slot).to_uppercase(),
+        Screen::Browse => Rail::from_key(b.modern_slot).map_or_else(|| "BROWSE".to_owned(), |rail| rail.label().to_uppercase()),
         Screen::Attach => {
             tables().weapon(b.pending_weapon.max(0) as u8).map_or_else(|| "ATTACHMENTS".to_owned(), |w| w.name.to_uppercase())
         }
@@ -732,12 +913,22 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> 
     match pg {
         // The loadout screen.
         page::MAIN => match key {
-            // The slots. "Clear" is the game's own reset row, the MAIN page's key 4, so the
-            // slots are opened with the rail's rows (the rail's own page).
-            1 | 2 | 3 | 5 => open_slot(b, key, r),
+            // "Clear" is the game's own reset row, the MAIN page's key 4, so the lists are
+            // opened with the rail's rows (the rail's own page).
             4 => clear(b, r, &mut out),
-            6 => open_accessory(b, r),
+            // The player accessory: the loadout screen's own row.
+            6 => open_rail(b, Rail::Accessory, r),
             7 => random(b, r, rng, &mut out),
+            // The cards' own digits: the digit is the HUD slot of the card, so 1 opens the
+            // melee weapons, 2 the pistols, 3 the SMGs and 5 the akimbo weapons — the same
+            // lists the cards hold. The HUD slot 4 is the one the rail splits (the rifles
+            // and the shotguns), and one digit cannot pick between them, so slot 4 has no
+            // digit of its own: key 4 is the game's own reset row, exactly as it was.
+            k if (1..=SLOT_COUNT).contains(&k) => {
+                if let Some(rail) = rail_for_hud_slot(k) {
+                    open_rail(b, rail, r);
+                }
+            }
             // Back: the game's own key and the design's badge both close the menu.
             k if is_back(k) => {
                 b.close();
@@ -747,8 +938,13 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> 
         },
         // The rail.
         page::CATEGORY => match key {
-            1..=SLOT_COUNT => open_slot(b, key, r),
-            ACCESSORY_SLOT => open_accessory(b, r),
+            // The rail's keys are the categories' keys (1..=7), and the key opens that
+            // category's list.
+            k if (1..=RAIL_COUNT).contains(&k) => {
+                if let Some(rail) = Rail::from_key(k) {
+                    open_rail(b, rail, r);
+                }
+            }
             k if is_back(k) => back_to_loadout(b),
             _ => {}
         },
@@ -834,14 +1030,18 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> 
     out
 }
 
-/// Browse a slot.
-fn open_slot(b: &mut BuyMenu, slot: i32, r: &Rules) {
-    b.modern_slot = slot;
-    b.modern_focus = focus_first(slot, r);
+/// Browse a rail entry: the browse screen shows that category's list.
+///
+/// The state's `slot=` becomes the rail's key (1..=7) — the entry the player is browsing.
+/// It is not the HUD slot: the rifles and the shotguns share the HUD slot 4, and the rail
+/// gives them two keys.
+fn open_rail(b: &mut BuyMenu, rail: Rail, r: &Rules) {
+    b.modern_slot = rail.key();
+    b.modern_focus = focus_first(rail, r);
     b.pending_weapon = -1;
     b.pending_att = 0;
     b.screen = Screen::Browse;
-    b.page = page::WEAPONS;
+    b.page = if rail == Rail::Accessory { page::ITEMS } else { page::WEAPONS };
 }
 
 /// The list row a key names: the slot's own list, the accessory's items included.
@@ -865,20 +1065,28 @@ fn browse_max_key(b: &BuyMenu, r: &Rules) -> i32 {
     if count == 0 { 0 } else { browse_key(count - 1) }
 }
 
-/// Browse the player accessory (the ITEMS page).
-fn open_accessory(b: &mut BuyMenu, r: &Rules) {
-    b.modern_slot = ACCESSORY_SLOT;
-    b.modern_focus = focus_first(ACCESSORY_SLOT, r);
-    b.pending_weapon = -1;
-    b.pending_att = 0;
-    b.screen = Screen::Browse;
-    b.page = page::ITEMS;
+/// The first row of a rail entry's list: the one the screen focuses when it opens, so that
+/// "Enter picks the focused row" has something to pick.
+fn focus_first(rail: Rail, r: &Rules) -> i32 {
+    browse_items(rail.key(), r).first().map_or(0, |item| item.id)
 }
 
-/// The first row of a slot's list: the one the screen focuses when it opens, so that
-/// "Enter picks the focused row" has something to pick.
-fn focus_first(slot: i32, r: &Rules) -> i32 {
-    browse_items(slot, r).first().map_or(0, |item| item.id)
+/// The rail entry a HUD slot's digit opens.
+///
+/// The loadout screen's cards are the HUD slots, so a digit on the loadout screen is the
+/// card's number and it opens that card's list.
+///
+/// The HUD slot 4 is the one the rail splits — the rifles and the shotguns — and one digit
+/// cannot pick between them, so it has no digit of its own. That is the same as before the
+/// split: key 4 was the game's own reset row ("Clear") then too.
+fn rail_for_hud_slot(slot: i32) -> Option<Rail> {
+    match slot {
+        1 => Some(Rail::Melee),
+        2 => Some(Rail::Pistols),
+        3 => Some(Rail::Smgs),
+        5 => Some(Rail::Special),
+        _ => None,
+    }
 }
 
 /// Back to the loadout screen.
@@ -1098,9 +1306,9 @@ mod tests {
         assert_eq!(own[2].4, "X", "the design's keycap for Clear");
         // The rail and the tabs are dimmed: they answer on their own pages.
         let dim: Vec<_> = rows.iter().filter(|(_, _, f, ..)| f == "dim").collect();
-        assert_eq!(dim.len(), 6 + SAVED_CONFIGS, "the rail and the tabs");
+        assert_eq!(dim.len(), RAIL_COUNT as usize + SAVED_CONFIGS, "the rail and the tabs");
 
-        // ---- the browse screen: a slot's weapons.
+        // ---- the browse screen: a rail entry's weapons.
         m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
         assert_eq!(m.screen, Screen::Browse);
         let lines = m.state_lines(&r);
@@ -1191,47 +1399,186 @@ mod tests {
         assert_eq!(slot_weapons(1, &solo).len(), 3, "no M61 without a teamplay mode");
     }
 
-    /// The tenth weapon of a long list is reachable by its key.
+    /// The rail is the weapon categories: seven entries, keyed 1..=7.
     ///
-    /// The list's rows are keyed 1–9 and then 11, 12, …, because key 10 is the game's own
-    /// back key and stays reserved. That is the game's own rule for a weapon list — the
-    /// classic flow's list numbers its tenth weapon 11, the "a" key — so the modern flow
-    /// follows it instead of inventing one.
+    /// The rifles and the shotguns used to be one entry ("Rifles · Shotguns") and the
+    /// melee weapons' entry used to promise "Grenades · Swords", which its list did not
+    /// have. The rail's labels are the categories' names now, and the state's `slot=` is
+    /// the rail's key.
     #[test]
-    fn the_tenth_weapon_of_a_long_list_is_reachable_by_its_key() {
+    fn the_rail_is_the_weapon_categories() {
         ts30_gameplay::tables::make_default();
         let r = rules();
         let mut m = modern(&r);
-        // The rifles and the shotguns: eleven of them.
-        m.dom_key_on(page::CATEGORY, 4, &r, &mut FixedRng(vec![], 0));
-        assert_eq!(m.screen, Screen::Browse);
-        let items = browse_items(4, &r);
-        assert_eq!(items.len(), 11, "the rifles and the shotguns: {items:?}");
-        assert_eq!(items[9].name, "Sawed-off", "the tenth: {items:?}");
-        assert_eq!(items[10].name, "USAS-12", "the eleventh: {items:?}");
+        let lines = m.state_lines(&r);
+        let rows = dump_rows(&lines);
+        // The rail's rows: the dimmed ones on the rail's own page.
+        let rail: Vec<_> = rows.iter().filter(|(_, _, f, pg, ..)| f == "dim" && *pg == page::CATEGORY).collect();
+        assert_eq!(rail.len(), 7, "the rail's seven entries: {rail:?}");
+        let labels: Vec<&str> = rail.iter().map(|(_, _, _, _, _, label)| label.as_str()).collect();
+        assert_eq!(labels, ["Melee weapons", "Pistols", "SMGs", "Rifles", "Shotguns", "Special", "Player Accessory"]);
+        // And their keys are the rail's keys, in order.
+        let keys: Vec<i32> = rail.iter().map(|(key, ..)| *key).collect();
+        assert_eq!(keys, [1, 2, 3, 4, 5, 6, 7]);
 
-        // The rows' keys skip the tenth: the ninth is key 9, the tenth is key 11 and the
-        // eleventh is key 12.
+        // Every key opens its own entry, and the state reports the rail's key.
+        for key in 1..=RAIL_COUNT {
+            m.dom_key_on(page::CATEGORY, key, &r, &mut FixedRng(vec![], 0));
+            assert_eq!(m.screen, Screen::Browse, "the rail's key {key} opens a list");
+            assert_eq!(m.modern_slot, key, "and the state's `slot=` is the rail's key");
+        }
+        // The loadout screen's cards are still the five HUD slots and the accessory.
+        let cards: Vec<&str> = lines.iter().filter_map(|l| l.strip_prefix("TSBUY slot ")).collect();
+        assert_eq!(cards.len(), 6, "the five HUD slots and the accessory: {cards:?}");
+        assert!(cards[0].ends_with("Melee · Grenades · Swords"), "the HUD slot 1 card: {cards:?}");
+        assert!(cards[3].ends_with("Rifles · Shotguns"), "the HUD slot 4 card: {cards:?}");
+    }
+
+    /// The rifles and the shotguns are two entries now, split by the game's own kind, and
+    /// each list holds only what it claims.
+    ///
+    /// The kind is the weapon table's, read through the game's own correction of it
+    /// (`GetWeaponType`): the Sawed-Off is a shotgun to the game (the table's `kind` says
+    /// pistol) and the Barrett is a sniper rifle, so it is a rifle here.
+    #[test]
+    fn the_rifles_and_the_shotguns_are_split_by_the_games_own_kind() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let names = |w: &[&'static WeaponInfo]| w.iter().map(|w| w.name.clone()).collect::<Vec<_>>();
+        let rifles = rail_weapons(Rail::Rifles, &r);
+        let shotguns = rail_weapons(Rail::Shotguns, &r);
+        assert_eq!(names(&rifles), ["M4A1", "AK47", "STEYR-AUG", "Barrett M82A1", "M16A4", "M60E3", "USAS-12"]);
+        assert_eq!(names(&shotguns), ["Benelli M3", "SPAS-12", "Mossberg 500", "Sawed-off"]);
+        // Each list holds only its own kind.
+        assert!(rifles.iter().all(|w| is_rifle(w)), "the rifles are rifles: {rifles:?}");
+        assert!(shotguns.iter().all(|w| is_shotgun(w)), "the shotguns are shotguns: {shotguns:?}");
+        // And the two together are the HUD slot 4 whole: the split loses nothing.
+        let mut both = names(&rifles);
+        both.extend(names(&shotguns));
+        both.sort();
+        let mut slot4 = names(&slot_weapons(4, &r));
+        slot4.sort();
+        assert_eq!(both, slot4, "the split loses nothing: {slot4:?}");
+        // The two lists do not overlap.
+        assert!(!rifles.iter().any(|w| shotguns.iter().any(|s| s.id == w.id)), "the lists are disjoint");
+    }
+
+    /// The rail's key and the HUD slot are two different numbers, and the entry record
+    /// carries the HUD slot: a shotgun bought from the shotguns entry is still the HUD
+    /// slot 4, and an akimbo bought from the rail's Special entry is still the HUD
+    /// slot 5.
+    #[test]
+    fn an_entry_bought_from_the_rail_still_reports_the_hud_slot() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+        // The shotguns: the rail's key 5, the HUD slot 4.
+        m.dom_key_on(page::CATEGORY, Rail::Shotguns.key(), &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.modern_slot, 5, "the rail's key is the state's `slot=`");
+        assert_eq!(Rail::Shotguns.hud_slot(), 4, "and the HUD slot is the game's own");
+        // Buy the first shotgun (the Benelli M3).
+        let items = browse_items(Rail::Shotguns.key(), &r);
+        assert_eq!(items[0].name, "Benelli M3", "the first shotgun: {items:?}");
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        let lines = m.state_lines(&r);
+        let entries = dump_entries(&lines);
+        let benelli = entries.iter().find(|(_, _, _, _, _, _, name)| name == "Benelli M3").expect("the Benelli M3");
+        assert_eq!(benelli.4, 4, "the HUD slot, not the rail's key: {benelli:?}");
+        // The loadout's card for the HUD slot 4 holds it: the card is the HUD slot's.
+        assert!(lines.contains(&"TSBUY slot 4 40 1 Rifles · Shotguns".to_owned()), "the HUD slot 4 card: {lines:?}");
+
+        // The akimbo weapons: the rail's key 6, the HUD slot 5.
+        m.dom_key_on(page::CATEGORY, Rail::Special.key(), &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.modern_slot, 6, "the rail's key");
+        assert_eq!(Rail::Special.hud_slot(), 5, "the HUD slot");
+        let items = browse_items(Rail::Special.key(), &r);
+        let colts = items.iter().position(|i| i.name == "Golden Colts").expect("the Golden Colts");
+        m.dom_key_on(page::WEAPONS, colts as i32 + 1, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        let lines = m.state_lines(&r);
+        let entries = dump_entries(&lines);
+        let colts = entries.iter().find(|(_, _, _, _, _, _, name)| name == "Golden Colts").expect("the Golden Colts");
+        assert_eq!(colts.4, 5, "the HUD slot 5, not the rail's key 6: {colts:?}");
+    }
+
+    /// The grenades: the M61 Grenade is a weapon of its own kind, and the game puts it in
+    /// the HUD slot 1 with the melee weapons — so the melee weapons' entry lists it, and
+    /// the entry is called "Melee weapons" because that is what the player asked for.
+    ///
+    /// The game does not sell the grenades in a deathmatch mode (its own rule: they need a
+    /// teamplay mode), and the classic menu hides them there too, so the port hides them
+    /// as well. That is why the list the player saw held only the knives and the katana.
+    #[test]
+    fn the_grenades_are_in_the_melee_weapons_entry() {
+        ts30_gameplay::tables::make_default();
+        // A teamplay mode: the game sells the grenades there.
+        let r = rules();
+        let melee = browse_items(Rail::Melee.key(), &r);
+        let names = melee.iter().map(|i| i.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names, ["M61 Grenade", "Katana", "Combat Knife", "Seal Knife"]);
+        assert_eq!(melee[0].id, 24, "the M61's id");
+        assert_eq!(melee[0].price, 1000, "and its price");
+        // It is the game's own kind: a grenade.
+        assert_eq!(tables().weapon(24).map(|w| w.kind), Some(shared::weapons::WeaponKind::Grenade));
+        // And it can be bought: the flow buys it like any other weapon.
+        let mut m = modern(&r);
+        m.dom_key_on(page::CATEGORY, Rail::Melee.key(), &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        let lines = m.state_lines(&r);
+        let entries = dump_entries(&lines);
+        let grenade = entries.iter().find(|(_, _, _, _, _, _, name)| name == "M61 Grenade").expect("the M61 Grenade");
+        assert_eq!(grenade.1, 1000, "the grenade's cost: {grenade:?}");
+        assert_eq!(grenade.4, 1, "and its HUD slot: {grenade:?}");
+
+        // Without a teamplay mode the game does not sell it, and neither does the port.
+        let solo = Rules { gamemode: 0, ..rules() };
+        let melee = browse_items(Rail::Melee.key(), &solo);
+        assert_eq!(melee.len(), 3, "no M61 without a teamplay mode: {melee:?}");
+        assert!(!melee.iter().any(|i| i.id == 24), "and no grenade: {melee:?}");
+    }
+
+    /// The list's rows are keyed 1–9 and then 11, 12, …, because key 10 is the game's own
+    /// back key and stays reserved.
+    ///
+    /// That is the game's own rule for a weapon list — the classic flow's list numbers its
+    /// tenth weapon 11, the "a" key — so the modern flow follows it instead of inventing
+    /// one.
+    ///
+    /// The rail is the categories now, and no category has ten weapons any more (the
+    /// pistols are the longest, with nine), so the rule has no row to bite on today. It
+    /// still stands, and the panel still draws the keycaps for it, so the key mapping is
+    /// held here: the ninth row is key 9, the tenth is key 11 and the eleventh is key 12.
+    #[test]
+    fn a_lists_rows_are_keyed_one_to_nine_and_then_eleven() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+        // The pistols: the longest list there is now.
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse);
+        let items = browse_items(2, &r);
+        assert_eq!(items.len(), 9, "the nine pistols: {items:?}");
+
+        // The rows' keys are their own places.
         let lines = m.state_lines(&r);
         let guns: Vec<_> = dump_rows(&lines).iter().filter(|(_, _, f, ..)| f != "dim").cloned().collect();
-        assert_eq!(guns.len(), 11, "the list's rows: {guns:?}");
+        assert_eq!(guns.len(), 9, "the list's rows: {guns:?}");
         assert_eq!(guns[8].0, 9, "the ninth is key 9: {guns:?}");
-        assert_eq!(guns[9].0, 11, "the tenth is key 11: {guns:?}");
-        assert_eq!(guns[10].0, 12, "the eleventh is key 12: {guns:?}");
-        // And the keycap is the row's place in the list, so the tenth still wears the
-        // design's "A" and the letters carry on after it.
-        assert_eq!(guns[8].4, "9", "the ninth's keycap: {guns:?}");
-        assert_eq!(guns[9].4, "A", "the tenth's keycap is the design's: {guns:?}");
-        assert_eq!(guns[10].4, "B", "and the eleventh's: {guns:?}");
 
-        // The key reaches the weapon: key 11 is the Sawed-off and key 12 the USAS-12.
-        m.dom_key_on(page::WEAPONS, 11, &r, &mut FixedRng(vec![], 0));
-        assert_eq!(m.screen, Screen::Attach, "the attachments screen");
-        assert_eq!(m.pending_weapon, items[9].id, "the Sawed-off");
-        m.dom_key_on(page::OPTIONS, BACK_KEY, &r, &mut FixedRng(vec![], 0));
-        assert_eq!(m.screen, Screen::Browse, "back to the list");
-        m.dom_key_on(page::WEAPONS, 12, &r, &mut FixedRng(vec![], 0));
-        assert_eq!(m.pending_weapon, items[10].id, "the USAS-12");
+        // The tenth row would be key 11 and the eleventh key 12, and the keycap is the
+        // row's place in the list, so the tenth still wears the design's "A" and the
+        // letters carry on after it.
+        assert_eq!(guns[8].4, "9", "the ninth's keycap: {guns:?}");
+        assert_eq!(browse_key(9), 11, "the tenth row's key");
+        assert_eq!(browse_key(10), 12, "the eleventh row's key");
+        assert_eq!(browse_badge(9), "A", "the tenth row's keycap is the design's");
+        assert_eq!(browse_badge(10), "B", "and the eleventh's");
+        // And the key names the row: key 11 is the tenth row and key 10 is no row at all.
+        assert_eq!(list_index(11), Some(9), "key 11 is the tenth row");
+        assert_eq!(list_index(12), Some(10), "key 12 is the eleventh row");
+        assert_eq!(list_index(10), None, "key 10 is the back key: it names no row");
     }
 
     /// The marks the port prints for a row carry the row's own key: the tenth row's
@@ -1242,24 +1589,26 @@ mod tests {
         // $1,000: everything above it is short, and the keys are the list's own.
         let r = Rules { cash: 1000, ..rules() };
         let mut m = modern(&r);
+        // The rifles.
         m.dom_key_on(page::CATEGORY, 4, &r, &mut FixedRng(vec![], 0));
         let lines = m.state_lines(&r);
-        // The Sawed-off ($1,900) is the tenth row, so it is key 11 and needs $900 more.
-        assert!(lines.contains(&"TSBUY short 11 900".to_owned()), "the shortfalls: {lines:?}");
-        // The USAS-12 ($5,100) is the eleventh row, so it is key 12 and needs $4,100 more.
-        assert!(lines.contains(&"TSBUY short 12 4100".to_owned()), "the shortfalls: {lines:?}");
-        // And no row is short under a key of its own place in the list.
-        assert!(!lines.contains(&"TSBUY short 10 900".to_owned()), "key 10 is the back key: {lines:?}");
+        // The M4A1 ($4,500) is the first row, so it is key 1 and needs $3,500 more.
+        assert!(lines.contains(&"TSBUY short 1 3500".to_owned()), "the shortfalls: {lines:?}");
+        // The USAS-12 ($5,100) is the seventh row, so it is key 7 and needs $4,100 more.
+        assert!(lines.contains(&"TSBUY short 7 4100".to_owned()), "the shortfalls: {lines:?}");
+        // And every row of the list has its own shortfall: seven rifles, seven marks.
+        let shorts = lines.iter().filter(|l| l.starts_with("TSBUY short ")).count();
+        assert_eq!(shorts, 7, "every rifle is out of reach: {lines:?}");
 
-        // Buying the tenth row marks the row with key 11 as owned.
+        // Buying a row marks the row with that row's own key as owned.
         let r = rules();
         let mut m = modern(&r);
         m.dom_key_on(page::CATEGORY, 4, &r, &mut FixedRng(vec![], 0));
-        m.dom_key_on(page::WEAPONS, 11, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
         m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
         assert_eq!(m.screen, Screen::Browse, "back on the list");
         let lines = m.state_lines(&r);
-        assert!(lines.contains(&"TSBUY owned 11 1".to_owned()), "the owned mark: {lines:?}");
+        assert!(lines.contains(&"TSBUY owned 1 1".to_owned()), "the owned mark: {lines:?}");
     }
 
     /// Key 10 is the game's own back key, and it still goes back on the modern screens.
@@ -1285,7 +1634,7 @@ mod tests {
         assert_eq!(m.pending_weapon, -1, "and the gun is off the hook");
 
         // The accessory's items: back to the loadout.
-        m.dom_key_on(page::CATEGORY, ACCESSORY_SLOT, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::CATEGORY, Rail::Accessory.key(), &r, &mut FixedRng(vec![], 0));
         assert_eq!(m.screen, Screen::Browse);
         m.dom_key_on(page::ITEMS, BACK_KEY, &r, &mut FixedRng(vec![], 0));
         assert_eq!(m.screen, Screen::Loadout, "the accessory's back");
@@ -1331,7 +1680,7 @@ mod tests {
         assert_eq!(m.pending_weapon, -1, "and the gun is off the hook");
 
         // The accessory's items: back to the loadout.
-        m.dom_key_on(page::CATEGORY, ACCESSORY_SLOT, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::CATEGORY, Rail::Accessory.key(), &r, &mut FixedRng(vec![], 0));
         assert_eq!(m.screen, Screen::Browse);
         m.dom_key_on(page::ITEMS, BACK_KEY_DESIGN, &r, &mut FixedRng(vec![], 0));
         assert_eq!(m.screen, Screen::Loadout, "the accessory's back");
@@ -1579,20 +1928,20 @@ mod tests {
         assert_eq!(ITEM_STEALTH, 32, "the stealth shoes' id");
         let mut m = modern(&r);
         // Buy the Akimbo Mini-Uzi: it is the weapon with the kevlar's number.
-        m.dom_key_on(page::CATEGORY, 5, &r, &mut FixedRng(vec![], 0));
-        let items = browse_items(5, &r);
+        m.dom_key_on(page::CATEGORY, Rail::Special.key(), &r, &mut FixedRng(vec![], 0));
+        let items = browse_items(Rail::Special.key(), &r);
         let mini_uzi = items.iter().position(|i| i.id == 16).expect("the Akimbo Mini-Uzi");
         m.dom_key_on(page::WEAPONS, mini_uzi as i32 + 1, &r, &mut FixedRng(vec![], 0));
         m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
         assert!(m.current.entries.iter().any(|e| e.id == 16 && !e.is_item), "the gun is in the loadout");
 
         // The accessory's list does not think the kevlar is owned.
-        m.dom_key_on(page::CATEGORY, 6, &r, &mut FixedRng(vec![], 0));
-        assert_eq!(m.modern_slot, ACCESSORY_SLOT);
+        m.dom_key_on(page::CATEGORY, Rail::Accessory.key(), &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.modern_slot, Rail::Accessory.key());
         let lines = m.state_lines(&r);
         assert!(!lines.iter().any(|l| l.starts_with("TSBUY owned")), "the accessory's items are not owned: {lines:?}");
         // And the gun's own row still is.
-        m.dom_key_on(page::CATEGORY, 5, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::CATEGORY, Rail::Special.key(), &r, &mut FixedRng(vec![], 0));
         let lines = m.state_lines(&r);
         assert!(lines.contains(&format!("TSBUY owned {} 1", mini_uzi + 1)), "the gun is owned: {lines:?}");
     }
@@ -1630,9 +1979,9 @@ mod tests {
         // alone.
         let r = Rules { gamemode: 0, ..rules() };
         let mut m = modern(&r);
-        m.dom_key_on(page::CATEGORY, ACCESSORY_SLOT, &r, &mut FixedRng(vec![], 0));
-        assert_eq!(m.modern_slot, ACCESSORY_SLOT);
-        let items = browse_items(ACCESSORY_SLOT, &r);
+        m.dom_key_on(page::CATEGORY, Rail::Accessory.key(), &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.modern_slot, Rail::Accessory.key());
+        let items = browse_items(Rail::Accessory.key(), &r);
         assert_eq!(items.len(), 1, "the kevlar alone: {items:?}");
         assert_eq!(items[0].id, ITEM_KEVLAR);
         let lines = m.state_lines(&r);

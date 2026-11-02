@@ -369,7 +369,8 @@ pub mod page {
 ///
 /// The classic flow is the game's own canvas menu, exactly as it always was. The modern flow
 /// is the loadout flow the browser's redesigned panel drives ([`super::buy_modern`]): the same
-/// prices, the same budget, the same saved loadouts, organised by the classic weapon slot.
+/// prices, the same budget, the same saved loadouts, organised by the game's weapon
+/// categories.
 ///
 /// The classic is the default: the modern flow is asked for (`ts_buy_mode modern`), never
 /// assumed.
@@ -388,7 +389,7 @@ pub enum Screen {
     /// The loadout: the slot cards, the tabs, the budget and the actions.
     #[default]
     Loadout,
-    /// A slot's weapons.
+    /// A rail entry's weapons (the modern flow's browse screen).
     Browse,
     /// A gun's attachments.
     Attach,
@@ -1055,8 +1056,13 @@ pub struct BuyMenu {
     /// Port addition: the modern flow's screen (the loadout, a slot's weapons, a gun's
     /// attachments).
     pub screen: Screen,
-    /// Port addition: the modern flow's slot being browsed (1..5, and 6 for the player
-    /// accessory), 0 on the loadout screen.
+    /// Port addition: the modern flow's rail entry being browsed (1..=7 — the weapon
+    /// categories: the melee weapons, the pistols, the SMGs, the rifles, the shotguns, the
+    /// akimbo weapons and the player accessory), 0 on the loadout screen.
+    ///
+    /// This is the rail's key and NOT the game's HUD slot: the rifles and the shotguns
+    /// share the HUD slot 4, and the rail's key 5 is the shotguns. The HUD slot is the
+    /// game's own and it is what the loadout's cards and the entry records carry.
     pub modern_slot: i32,
     /// Port addition: the modern flow's focused weapon: the row the browser marks as the
     /// selected one.
