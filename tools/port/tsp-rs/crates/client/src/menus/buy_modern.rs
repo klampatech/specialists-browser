@@ -1064,7 +1064,18 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> 
                 }
             }
             // Back: the game's own key and the design's badge both close the menu.
+            //
+            // This is also the DEPLOY, and it is the moment the config has to be
+            // re-submitted. The server clears the player's armament when they die
+            // (`inventory::on_killed`), and the modern flow submits the config only
+            // when the loadout CHANGES — so without this the player respawns
+            // unarmed, with the loadout the panel is showing them and the server
+            // holding nothing. The classic flow does not have this problem: its
+            // "use config" row is a submit, and that is what the server expects.
+            //
+            // The config is re-submitted, not re-saved: the tab already holds it.
             k if is_back(k) => {
+                b.submit_quiet(&mut out, r);
                 b.close();
                 out.push(Action::Close);
             }
@@ -2090,6 +2101,90 @@ mod tests {
         let cheap = rows.iter().find(|(_, _, _, _, _, label)| label == "Combat Knife").expect("the Combat Knife");
         assert!(!cheap.2.contains('x'), "the knife fits: {:?}", cheap.2);
         assert!(!lines.iter().any(|l| l.starts_with("TSBUY short 3")), "the knives fit: {lines:?}");
+    }
+
+    /// The DEPLOY re-submits the loadout.
+    ///
+    /// The server clears the player's armament when they die (`inventory::on_killed`), and
+    /// the modern flow submits the config only when the loadout CHANGES. So the deploy is
+    /// the moment the config has to go back to the server — without it the player respawns
+    /// unarmed, with the panel showing them a loadout the server knows nothing about.
+    #[test]
+    fn the_deploy_submits_the_loadout_again() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+        // Buy the Glock-18: the slot's list, the attachments screen, then "add to loadout".
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.current.total, 850, "the Glock-18 is in the loadout");
+
+        // The player dies, and the deploy is pressed.
+        let actions = m.dom_key_on(page::MAIN, BACK_KEY_DESIGN, &r, &mut FixedRng(vec![], 0));
+        let cmds: Vec<&str> = actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::ServerCmd(c) => Some(c.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cmds.first(), Some(&"rst_cfg"), "the loadout is submitted again: {cmds:?}");
+        assert!(
+            cmds.iter().any(|c| c.starts_with("tkw ") && c.contains("1_")),
+            "with the gun the player picked: {cmds:?}"
+        );
+        assert!(actions.contains(&Action::Close), "and the menu closes: {actions:?}");
+        assert!(!m.active, "the menu is closed");
+    }
+
+    /// The DEPLOY submits the loadout even when nothing was bought in this session.
+    ///
+    /// The loadout the panel shows may have been saved in an earlier session (the tabs are
+    /// the loadouts), and the server's copy of it died with the player. The deploy is what
+    /// puts it back.
+    #[test]
+    fn the_deploy_submits_the_loadout_it_shows() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+        // A loadout in the first tab, saved in an earlier session.
+        let mut saved = m.current.clone();
+        saved.entries[0] = super::super::buy::Entry { id: 13, cost: 3000, ..Default::default() };
+        saved.total = 3000;
+        saved.slots = 40;
+        m.saved[0] = saved.clone();
+        m.current = saved;
+        m.ammo_spend = 0;
+
+        let actions = m.dom_key_on(page::MAIN, BACK_KEY_DESIGN, &r, &mut FixedRng(vec![], 0));
+        let cmds: Vec<&str> = actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::ServerCmd(c) => Some(c.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(cmds.first(), Some(&"rst_cfg"), "the loadout is submitted again: {cmds:?}");
+        assert!(
+            cmds.iter().any(|c| c.starts_with("tkw ") && c.contains("13_")),
+            "with the gun the panel is showing: {cmds:?}"
+        );
+    }
+
+    /// The loadout screen's own rows answer on the loadout screen's page: the player accessory
+    /// is 6, Random is 7 and Clear is 8.
+    ///
+    /// (The port's own rule: the digits 1-5 are the cards' own digits, so the accessory
+    /// cannot be 4 — that is the rifles card.)
+    #[test]
+    fn the_loadout_screens_own_rows_answer_on_its_page() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+        m.dom_key_on(page::MAIN, 6, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse, "six opens the accessory");
+        assert_eq!(m.modern_slot, Rail::Accessory.key(), "the accessory's rail entry");
     }
 
     /// Switching tabs loads that tab's saved config, and an edit is saved into the active tab.

@@ -229,6 +229,62 @@ purchase grants, in the world and not just in the panel.
 The port's suite is at **481 tests**, clippy is clean on the client, and
 the frontend's typecheck and build are clean.
 
+## The buy menu: the deploy arms the player, the flow survives a map change, and the header changed (2026-11-02)
+
+Three things came out of a playtest of the modern panel: the **deploy did
+not arm the player**, the **classic/modern preference did not survive a
+map change**, and the header was to be restyled to a new design (the
+money as the header's hero, the two counters as labelled blocks, and the
+budget's bar across the panel's full width).
+
+1. **THE DEPLOY NOW RE-SUBMITS THE LOADOUT.** The server clears the
+   player's armament when they die — `inventory::on_killed`,
+   `crates/server/src/weapons/inventory.rs:361`, whose own comment says
+   *"the client resubmits it from the buy menu"* — and the modern flow is
+   **apply on purchase**: it submits the config when the loadout
+   CHANGES and never otherwise. The loadout screen's back key (which is
+   what "Use Loadout A" sends, `primary()` → `send(BACK_KEY)`) only
+   closed the menu, so the config never went back to the server and the
+   player respawned **unarmed** with the panel showing them a loadout the
+   server knew nothing about. The classic flow never had this bug: its
+   "use config" row IS a submit. The modern flow's deploy now calls
+   `submit_quiet` before closing (`buy_modern.rs`, the `page::MAIN`
+   branch's `is_back` arm). Two tests: `the_deploy_submits_the_loadout_
+   again` and `the_deploy_submits_the_loadout_it_shows`.
+2. **THE FLOW SURVIVES A MAP CHANGE.** `menus::vid_init` re-runs the
+   game's own `Init` on a map change (and on a connect, and on a
+   video-mode change), and `BuyMenu::new` starts the **CLASSIC** flow —
+   so the port fell back to the canvas menu on every map change even
+   though the player's preference was still "modern". The **hidden** flag
+   was already put back (it is the browser's business); the **mode** is
+   now put back with it, in `reinit_buy_menu` (`menus/mod.rs`). The
+   frontend also re-tells the port when the state line and the stored
+   preference disagree — bounded to three attempts, so it cannot loop.
+3. **THE HEADER.** The money is the hero now: a large gold figure with
+   "LEFT OF $30,000" under it, and the two counters beside it as labelled
+   blocks — **SLOTS** (`slots_in_use` of 5) and **ITEMS** (the shared slot
+   pool, `slots` of `slot_limit`). The budget's bar spans the panel's
+   full width, under the header, instead of a 260px stub inside it. Every
+   number is the port's; the browser counts nothing.
+4. **THE LOADOUT SCREEN SCROLLS.** It did not, and the playtest caught
+   it: the slot cards were **squeezed** to fit the fixed frame
+   (`flex: 0 1 auto`), so a busy slot's last row of guns was clipped with
+   nothing to scroll to. The cards keep their height now (`flex: none`)
+   and the list scrolls (`overflow-y: auto`); the browse screen's weapon
+   grid already scrolled. The focused row is scrolled into view, because
+   the focus is the **port's** and the browser only draws it.
+5. **The loadout screen has no crumb.** It carried "Slots match the
+   in-game weapon slots" — the panel explaining itself, which the
+   playtest has been asking to stop — and it cost the height the cards
+   need above the pinned footer. The new design has none either.
+
+The header's ITEMS block is the one open question: the design shows
+`3 / 81`, where 3 is the number of guns and 81 is the shared pool's
+limit. The panel shows the port's own pool number (`slots` of
+`slot_limit`) instead, because that is the number the port reports and
+the one the panel already showed. Say the word if the gun count is what
+was wanted.
+
 ## The redesigned buy menu runs in a real game on the dev server (2026-11-01)
 
 **The buy menu is playable.** The dev server, a local TS server with bots, and
