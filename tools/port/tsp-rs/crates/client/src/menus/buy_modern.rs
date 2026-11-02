@@ -75,7 +75,7 @@ pub const SLOT_COUNT: i32 = 5;
 pub const ACCESSORY_SLOT: i32 = 6;
 
 /// The rail's entries: the weapon categories the player browses by.
-pub const RAIL_COUNT: i32 = 7;
+pub const RAIL_COUNT: i32 = 6;
 
 /// The base of the modern flow's remove keys.
 ///
@@ -177,6 +177,12 @@ pub enum Rail {
     /// The shotguns: the HUD slot 4 weapons the game calls shotguns.
     Shotguns,
     /// The akimbo weapons: the HUD slot 5 weapons. A HUD slot and not a kind.
+    ///
+    /// **Not a rail entry.** The rail is what the player browses by, and nobody browses by
+    /// "the akimbo ones" — a player who wants the akimbo Berettas is looking at the
+    /// Berettas. So the akimbo version is offered on the gun itself, on its attachments
+    /// screen, and this entry is what the loadout's card 5 opens: the HUD slot's own
+    /// contents (the akimbo versions and the Golden Colts).
     Special,
     /// The player accessory: the game's ITEMS page.
     Accessory,
@@ -194,8 +200,10 @@ impl Rail {
             Rail::Smgs => 3,
             Rail::Rifles => 4,
             Rail::Shotguns => 5,
-            Rail::Special => 6,
-            Rail::Accessory => 7,
+            Rail::Accessory => 6,
+            // Not a rail row: the HUD slot 5's own contents, opened by the loadout's
+            // card 5. Its key is past the rail's, so the rail's rows never carry it.
+            Rail::Special => 7,
         }
     }
 
@@ -207,8 +215,8 @@ impl Rail {
             3 => Rail::Smgs,
             4 => Rail::Rifles,
             5 => Rail::Shotguns,
-            6 => Rail::Special,
-            7 => Rail::Accessory,
+            6 => Rail::Accessory,
+            7 => Rail::Special,
             _ => return None,
         })
     }
@@ -221,7 +229,9 @@ impl Rail {
             Rail::Smgs => "SMGs",
             Rail::Rifles => "Rifles",
             Rail::Shotguns => "Shotguns",
-            Rail::Special => "Special",
+            // The game's own name for the HUD slot 5 category (its classic menu's
+            // `#Buy_SpecialPurpose`): it holds the akimbo versions and the Golden Colts.
+            Rail::Special => "Special Purpose",
             Rail::Accessory => "Player Accessory",
         }
     }
@@ -264,7 +274,7 @@ pub fn card_label(slot: i32) -> &'static str {
         2 => "Pistols",
         3 => "SMGs",
         4 => "Rifles · Shotguns",
-        5 => "Special",
+        5 => "Special Purpose",
         6 => "Player Accessory",
         _ => "",
     }
@@ -435,6 +445,36 @@ pub fn owned(b: &BuyMenu, id: i32, item: bool) -> bool {
     b.current.entries.iter().any(|e| e.id == id && e.id != 0 && e.is_item == item)
 }
 
+/// The weapon the pending purchase is for.
+///
+/// The attachments screen can offer the weapon's akimbo twin, and picking that row makes
+/// the pending purchase the twin: the gun the player is buying is the akimbo version of
+/// the one they picked. The twin is the game's own weapon (it is in the weapon table, it
+/// has its own price and it lives in the HUD slot 5), so it is bought the way any other
+/// weapon is bought.
+pub fn pending_gun(b: &BuyMenu) -> i32 {
+    if b.pending_akimbo
+        && let Some(w) = tables().weapon(b.pending_weapon.max(0) as u8)
+        && w.akimbo != -1
+    {
+        return w.akimbo;
+    }
+    b.pending_weapon
+}
+
+/// The akimbo twin of a weapon, if it has one.
+///
+/// The weapon table holds both ends of the pair: the gun's `akimbo` field names its twin
+/// and the twin's `single` field names the gun. The Golden Colts has no single of its own
+/// (`single` is -1), so it is a weapon on its own and not a twin anybody can pick.
+pub fn akimbo_twin(id: i32) -> Option<&'static WeaponInfo> {
+    let w = tables().weapon(id.max(0) as u8)?;
+    if w.akimbo == -1 {
+        return None;
+    }
+    tables().weapon(w.akimbo as u8)
+}
+
 /// What buying this would cost, the way [`BuyMenu::add`] charges for it.
 ///
 /// The same gun again is the game's own rule: a gun with an akimbo version becomes akimbo (and
@@ -475,7 +515,7 @@ pub fn purchase_slots(b: &BuyMenu, id: i32, item: bool, r: &Rules) -> i32 {
 /// menu, so the config's total and the ammo fill are the port's, and not an arithmetic
 /// guess. The browser never adds anything up.
 pub fn purchase_summary(b: &BuyMenu, r: &Rules) -> Option<(i32, i32)> {
-    let id = b.pending_weapon;
+    let id = pending_gun(b);
     if id <= 0 {
         return None;
     }
@@ -640,10 +680,11 @@ fn browse_rows(b: &BuyMenu, r: &Rules) -> Vec<ModernRow> {
 /// The attachments screen's rows: the chosen gun (the row that takes no key), the attachments
 /// it can take, and the action that adds it to the loadout.
 fn attach_rows(b: &BuyMenu, r: &Rules) -> Vec<ModernRow> {
-    let id = b.pending_weapon;
+    let id = pending_gun(b);
     let w = tables().weapon(id.max(0) as u8);
     let mut out = Vec::new();
-    // The gun: the row that takes no key.
+    // The gun: the row that takes no key. It is the gun the purchase is for, so it is the
+    // akimbo twin when the player picked the akimbo version.
     out.push(ModernRow {
         key: 0,
         price: w.map_or(0, |w| w.cost),
@@ -665,6 +706,23 @@ fn attach_rows(b: &BuyMenu, r: &Rules) -> Vec<ModernRow> {
             page: page::OPTIONS,
             number: key_prefix(key).trim_end().to_owned(),
             label: ATTACHMENT_LABELS[bit as usize].to_owned(),
+        });
+    }
+    // The akimbo version, for the guns that have one. It is not another attachment: it is
+    // this gun, bought as its twin — the game's own weapon, in the HUD slot 5, at its own
+    // price.
+    //
+    // The row is flagged `swap`: it swaps the gun in the purchase rather than adding to
+    // it, so it is not one of the purchase's lines. The gun's own row carries the twin's
+    // price once the row is on, and the summary adds up.
+    if let Some(twin) = akimbo_twin(b.pending_weapon) {
+        out.push(ModernRow {
+            key: 5,
+            price: twin.cost,
+            flags: RowFlags { on: b.pending_akimbo, swap: true, ..Default::default() },
+            page: page::OPTIONS,
+            number: "5".to_owned(),
+            label: "#Buy_Akimbo".to_owned(),
         });
     }
     // The action: the gun and its attachments, at the price they together cost.
@@ -804,7 +862,7 @@ pub fn screen_title(b: &BuyMenu) -> String {
         Screen::Loadout => "BUY MENU".to_owned(),
         Screen::Browse => Rail::from_key(b.modern_slot).map_or_else(|| "BROWSE".to_owned(), |rail| rail.label().to_uppercase()),
         Screen::Attach => {
-            tables().weapon(b.pending_weapon.max(0) as u8).map_or_else(|| "ATTACHMENTS".to_owned(), |w| w.name.to_uppercase())
+            tables().weapon(pending_gun(b).max(0) as u8).map_or_else(|| "ATTACHMENTS".to_owned(), |w| w.name.to_uppercase())
         }
     }
 }
@@ -995,6 +1053,7 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> 
             if is_back(key) {
                 b.pending_weapon = -1;
                 b.pending_att = 0;
+                b.pending_akimbo = false;
                 // The focus does not survive the trip: the player came here to buy a gun,
                 // so the gun they were looking at must not still be selected when they come
                 // back — the selection would read as "this one is still on your list".
@@ -1005,6 +1064,14 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> 
             }
             if key == 6 {
                 commit(b, r, &mut out);
+                return out;
+            }
+            // The akimbo version, for the guns that have one. It is a choice about this
+            // gun, so a second press takes it off again.
+            if key == 5 {
+                if akimbo_twin(b.pending_weapon).is_some() {
+                    b.pending_akimbo = !b.pending_akimbo;
+                }
                 return out;
             }
             // The attachments toggle, so a second press takes one off again.
@@ -1163,7 +1230,7 @@ fn remove_at(b: &mut BuyMenu, i: usize, r: &Rules, out: &mut Vec<Action>) {
 /// Add the chosen gun and its attachments to the loadout, apply it, and go back to the same
 /// slot's list — so a second gun of the same kind is one key away.
 fn commit(b: &mut BuyMenu, r: &Rules, out: &mut Vec<Action>) {
-    let id = b.pending_weapon;
+    let id = pending_gun(b);
     let att = b.pending_att;
     let price = purchase_price(b, id, att, false);
     let slots = purchase_slots(b, id, false, r);
@@ -1172,6 +1239,7 @@ fn commit(b: &mut BuyMenu, r: &Rules, out: &mut Vec<Action>) {
     }
     b.pending_weapon = -1;
     b.pending_att = 0;
+    b.pending_akimbo = false;
     // The focus does not survive the purchase: the player is back on the list, and a row
     // that stayed selected would read as "this one is still on your list" when it is in
     // the loadout now. Nothing is selected until the player picks something.
@@ -1320,7 +1388,7 @@ mod tests {
         assert_eq!(lines[3], "TSBUY slot 2 0 0 Pistols");
         assert_eq!(lines[4], "TSBUY slot 3 0 0 SMGs");
         assert_eq!(lines[5], "TSBUY slot 4 0 0 Rifles · Shotguns");
-        assert_eq!(lines[6], "TSBUY slot 5 0 0 Special");
+        assert_eq!(lines[6], "TSBUY slot 5 0 0 Special Purpose");
         assert_eq!(lines[7], "TSBUY slot 6 0 0 Player Accessory");
         assert_eq!(lines[8], "TSBUY tab 0 Loadout A 1");
         assert_eq!(lines[9], "TSBUY tab 1 Loadout B 0");
@@ -1430,12 +1498,17 @@ mod tests {
         assert_eq!(slot_weapons(1, &solo).len(), 3, "no M61 without a teamplay mode");
     }
 
-    /// The rail is the weapon categories: seven entries, keyed 1..=7.
+    /// The rail is the weapon categories: six entries, keyed 1..=6.
     ///
     /// The rifles and the shotguns used to be one entry ("Rifles · Shotguns") and the
     /// melee weapons' entry used to promise "Grenades · Swords", which its list did not
     /// have. The rail's labels are the categories' names now, and the state's `slot=` is
     /// the rail's key.
+    ///
+    /// The akimbo weapons are NOT a rail entry: a player who wants the akimbo Berettas is
+    /// looking at the Berettas, so the akimbo version is offered on the gun itself (see
+    /// `the_akimbo_version_is_a_choice_on_the_gun`). The HUD slot 5's contents are still
+    /// reachable — from the loadout's card 5, which is that slot's own list.
     #[test]
     fn the_rail_is_the_weapon_categories() {
         ts30_gameplay::tables::make_default();
@@ -1445,12 +1518,14 @@ mod tests {
         let rows = dump_rows(&lines);
         // The rail's rows: the dimmed ones on the rail's own page.
         let rail: Vec<_> = rows.iter().filter(|(_, _, f, pg, ..)| f == "dim" && *pg == page::CATEGORY).collect();
-        assert_eq!(rail.len(), 7, "the rail's seven entries: {rail:?}");
+        assert_eq!(rail.len(), 6, "the rail's six entries: {rail:?}");
         let labels: Vec<&str> = rail.iter().map(|(_, _, _, _, _, label)| label.as_str()).collect();
-        assert_eq!(labels, ["Melee weapons", "Pistols", "SMGs", "Rifles", "Shotguns", "Special", "Player Accessory"]);
+        assert_eq!(labels, ["Melee weapons", "Pistols", "SMGs", "Rifles", "Shotguns", "Player Accessory"]);
         // And their keys are the rail's keys, in order.
         let keys: Vec<i32> = rail.iter().map(|(key, ..)| *key).collect();
-        assert_eq!(keys, [1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(keys, [1, 2, 3, 4, 5, 6]);
+        // The akimbo weapons are not among them.
+        assert!(!labels.contains(&"Special Purpose"), "the akimbos are not a rail entry: {labels:?}");
 
         // Every key opens its own entry, and the state reports the rail's key.
         for key in 1..=RAIL_COUNT {
@@ -1463,6 +1538,9 @@ mod tests {
         assert_eq!(cards.len(), 6, "the five HUD slots and the accessory: {cards:?}");
         assert!(cards[0].ends_with("Melee weapons"), "the HUD slot 1 card: {cards:?}");
         assert!(cards[3].ends_with("Rifles · Shotguns"), "the HUD slot 4 card: {cards:?}");
+        // The HUD slot 5's card is the game's own "Special Purpose" slot: the akimbo
+        // versions and the Golden Colts.
+        assert!(cards[4].ends_with("Special Purpose"), "the HUD slot 5 card: {cards:?}");
     }
 
     /// The loadout screen's digits are the cards' own, and the clear row does not eat one.
@@ -1618,9 +1696,10 @@ mod tests {
         // The loadout's card for the HUD slot 4 holds it: the card is the HUD slot's.
         assert!(lines.contains(&"TSBUY slot 4 40 1 Rifles · Shotguns".to_owned()), "the HUD slot 4 card: {lines:?}");
 
-        // The akimbo weapons: the rail's key 6, the HUD slot 5.
-        m.dom_key_on(page::CATEGORY, Rail::Special.key(), &r, &mut FixedRng(vec![], 0));
-        assert_eq!(m.modern_slot, 6, "the rail's key");
+        // The akimbo weapons: the HUD slot 5. The loadout's card 5 opens that slot's
+        // contents — it is not a rail entry any more.
+        m.dom_key_on(page::MAIN, 5, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.modern_slot, Rail::Special.key(), "the slot-5 list's own key");
         assert_eq!(Rail::Special.hud_slot(), 5, "the HUD slot");
         let items = browse_items(Rail::Special.key(), &r);
         let colts = items.iter().position(|i| i.name == "Golden Colts").expect("the Golden Colts");
@@ -1629,7 +1708,7 @@ mod tests {
         let lines = m.state_lines(&r);
         let entries = dump_entries(&lines);
         let colts = entries.iter().find(|(_, _, _, _, _, _, name)| name == "Golden Colts").expect("the Golden Colts");
-        assert_eq!(colts.4, 5, "the HUD slot 5, not the rail's key 6: {colts:?}");
+        assert_eq!(colts.4, 5, "the HUD slot 5, not the list's key: {colts:?}");
     }
 
     /// The grenades: the M61 Grenade is a weapon of its own kind, and the game puts it in
@@ -2057,8 +2136,9 @@ mod tests {
         assert_eq!(ITEM_KEVLAR, 16, "the kevlar's id");
         assert_eq!(ITEM_STEALTH, 32, "the stealth shoes' id");
         let mut m = modern(&r);
-        // Buy the Akimbo Mini-Uzi: it is the weapon with the kevlar's number.
-        m.dom_key_on(page::CATEGORY, Rail::Special.key(), &r, &mut FixedRng(vec![], 0));
+        // Buy the Akimbo Mini-Uzi: it is the weapon with the kevlar's number. It lives in
+        // the HUD slot 5, which the loadout's card 5 opens.
+        m.dom_key_on(page::MAIN, 5, &r, &mut FixedRng(vec![], 0));
         let items = browse_items(Rail::Special.key(), &r);
         let mini_uzi = items.iter().position(|i| i.id == 16).expect("the Akimbo Mini-Uzi");
         m.dom_key_on(page::WEAPONS, mini_uzi as i32 + 1, &r, &mut FixedRng(vec![], 0));
@@ -2071,7 +2151,7 @@ mod tests {
         let lines = m.state_lines(&r);
         assert!(!lines.iter().any(|l| l.starts_with("TSBUY owned")), "the accessory's items are not owned: {lines:?}");
         // And the gun's own row still is.
-        m.dom_key_on(page::CATEGORY, Rail::Special.key(), &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::MAIN, 5, &r, &mut FixedRng(vec![], 0));
         let lines = m.state_lines(&r);
         assert!(lines.contains(&format!("TSBUY owned {} 1", mini_uzi + 1)), "the gun is owned: {lines:?}");
     }
@@ -2257,6 +2337,68 @@ mod tests {
         m.dom_key_on(page::OPTIONS, 10, &r, &mut FixedRng(vec![], 0));
         let lines = m.state_lines(&r);
         assert!(!lines.iter().any(|l| l.starts_with("TSBUY sum")), "the browse screen has no summary: {lines:?}");
+    }
+
+    /// The akimbo version is a choice on the gun, not a section of its own.
+    ///
+    /// A player who wants the akimbo Berettas is looking at the Berettas, so the akimbo
+    /// version is offered on the gun's attachments screen. It is the game's own weapon —
+    /// the weapon table's pair: the twin has its own price and its own HUD slot (the 5) —
+    /// so picking the row makes the purchase that weapon.
+    ///
+    /// The row carries the twin's own price — the akimbo Five-seveN is $1,250, and so is
+    /// the Five-seveN — and it is flagged `swap`, because it swaps the gun in the purchase
+    /// rather than adding to it: it is not one of the purchase's lines.
+    #[test]
+    fn the_akimbo_version_is_a_choice_on_the_gun() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+        // The pistols, and the Five-seveN in them.
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        let items = browse_items(2, &r);
+        let five = items.iter().position(|i| i.name == "Five-seveN").expect("the Five-seveN") + 1;
+        m.dom_key_on(page::WEAPONS, five as i32, &r, &mut FixedRng(vec![], 0));
+
+        // The attachments screen offers the akimbo version.
+        let lines = m.state_lines(&r);
+        let rows = dump_rows(&lines);
+        let akimbo = rows.iter().find(|(key, ..)| *key == 5).expect("the akimbo row");
+        assert_eq!(akimbo.1, 1250, "the twin's own price: {rows:?}");
+        assert_eq!(akimbo.5, "#Buy_Akimbo", "the game's own title for it: {rows:?}");
+        assert!(akimbo.2.contains("swap"), "and it swaps the gun, it does not add to it: {rows:?}");
+        // And the gun's own row is the gun the player picked.
+        let gun = rows.iter().find(|(key, ..)| *key == 0).expect("the gun row");
+        assert_eq!(gun.5, "Five-seveN", "the gun: {rows:?}");
+        assert_eq!(gun.1, 1250, "at its price: {rows:?}");
+
+        // Picking the row makes the purchase the twin.
+        m.dom_key_on(page::OPTIONS, 5, &r, &mut FixedRng(vec![], 0));
+        let lines = m.state_lines(&r);
+        let rows = dump_rows(&lines);
+        let gun = rows.iter().find(|(key, ..)| *key == 0).expect("the gun row");
+        assert_eq!(gun.5, "Akimbo Five-seveN", "the gun is the twin now: {rows:?}");
+        assert_eq!(gun.1, 1250, "at the twin's price: {rows:?}");
+        let akimbo = rows.iter().find(|(key, ..)| *key == 5).expect("the akimbo row");
+        assert!(akimbo.2.contains("on"), "and the row is on: {rows:?}");
+
+        // And the purchase buys the twin: the HUD slot 5's weapon.
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        let lines = m.state_lines(&r);
+        let entries = dump_entries(&lines);
+        let twin = entries.iter().find(|(_, _, _, _, _, _, name)| name == "Akimbo Five-seveN").expect("the twin");
+        assert_eq!(twin.4, 5, "the HUD slot 5: {twin:?}");
+        assert_eq!(twin.1, 1250, "and the twin's price: {twin:?}");
+
+        // A gun with no twin has no such row: the Desert Eagle is one of a kind.
+        let mut m = modern(&r);
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        let items = browse_items(2, &r);
+        let eagle = items.iter().position(|i| i.name == "Desert Eagle").expect("the Desert Eagle") + 1;
+        m.dom_key_on(page::WEAPONS, eagle as i32, &r, &mut FixedRng(vec![], 0));
+        let lines = m.state_lines(&r);
+        let rows = dump_rows(&lines);
+        assert!(!rows.iter().any(|(key, ..)| *key == 5), "no akimbo row: {rows:?}");
     }
 
     /// The remove key the entry record named removes that entry: the loadout screen's cards

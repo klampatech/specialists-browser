@@ -520,6 +520,10 @@ pub struct RowFlags {
     pub x: bool,
     /// The row is a header: it takes no key.
     pub sep: bool,
+    /// The row is a choice of VERSION, not a purchase line: picking it swaps the gun in
+    /// the purchase for another of its versions, so it is not one of the purchase's lines
+    /// and it is not added to it.
+    pub swap: bool,
 }
 
 impl RowFlags {
@@ -537,6 +541,9 @@ impl RowFlags {
         }
         if self.sep {
             v.push("sep");
+        }
+        if self.swap {
+            v.push("swap");
         }
         if v.is_empty() { "0".to_owned() } else { v.join("+") }
     }
@@ -746,7 +753,7 @@ fn weapons_rows(b: &BuyMenu, r: &Rules) -> Vec<Row> {
             key,
             label: w.name.clone(),
             price: w.cost,
-            flags: RowFlags { on: id == b.pending_weapon, dim, x: !ok, sep: false },
+            flags: RowFlags { on: id == b.pending_weapon, dim, x: !ok, sep: false, swap: false },
             color: if ok { RowColor::Hud } else { RowColor::Bad },
             text: Text::Keyed,
             id,
@@ -796,7 +803,7 @@ fn category_rows(b: &BuyMenu, r: &Rules) -> Vec<Row> {
             label: (*name).into(),
             price: 0,
             // The chosen category is in the state record (`cat`), not in a flag.
-            flags: RowFlags { on: false, dim, x: false, sep: false },
+            flags: RowFlags { on: false, dim, x: false, sep: false, swap: false },
             color: RowColor::Hud,
             text: Text::Keyed,
             id: 0,
@@ -1039,6 +1046,11 @@ pub struct BuyMenu {
     pub category: i32,
     pub pending_att: u32,
     pub pending_weapon: i32,
+    /// Port addition: the pending purchase is for the weapon's akimbo twin, not the weapon
+    /// itself. The player picks it on the attachments screen, the way the game's own
+    /// "buy it again" rule makes a gun akimbo — it is a choice about this gun, not a
+    /// separate weapon in a separate section.
+    pub pending_akimbo: bool,
     pub current: Config,
     pub last: Config,
     pub saved: [Config; SAVED_CONFIGS],
@@ -1081,6 +1093,7 @@ impl Default for BuyMenu {
             category: 0,
             pending_att: 0,
             pending_weapon: -1,
+            pending_akimbo: false,
             current: Config::default(),
             last: Config::default(),
             saved: Default::default(),
@@ -1122,6 +1135,7 @@ impl BuyMenu {
         self.category = 0;
         self.pending_weapon = -1;
         self.pending_att = 0;
+        self.pending_akimbo = false;
     }
 
     /// The flow the menu runs.
