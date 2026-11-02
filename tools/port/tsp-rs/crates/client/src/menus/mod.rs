@@ -336,9 +336,10 @@ extern "C" fn cmd_buy_hide() {
     print_buy_state();
 }
 
-/// `ts_buy_key <n> [<page>]`: run the key `n` (1..=11) on the menu's current page, or on the
-/// given page. This is the DOM menu's only write path, and it works whether or not the canvas
-/// menu is hidden: it is the same [`BuyMenu::handle_key`] the canvas menu runs.
+/// `ts_buy_key <n> [<page>]`: run the key `n` (1..=11, and 0 in the modern flow, which is the
+/// design's back badge) on the menu's current page, or on the given page. This is the DOM
+/// menu's only write path, and it works whether or not the canvas menu is hidden: it is the
+/// same [`BuyMenu::handle_key`] the canvas menu runs.
 ///
 /// The page is the one the clicked row belongs to: the menu draws the columns of the page it is
 /// on, and a row of a parent column's key acts on that column's page, as the mouse's hit test
@@ -347,12 +348,17 @@ extern "C" fn cmd_buy_key() {
     let e = engine();
     // The classic flow's keys are the game's own, 1..11. The modern flow's remove keys run
     // past them (the loadout's entries are removed by their own keys), so the guard is wider
-    // there — and only there: the classic flow's console behaviour is unchanged.
-    let max = if with(|m| m.buy.mode == buy::Mode::Modern) { buy_modern::REMOVE_KEY_BASE + buy::ENTRIES as i32 - 1 } else { 11 };
+    // there — and only there: the classic flow's console behaviour is unchanged. The modern
+    // flow also takes key 0, which is the design's back badge ("0 Back to loadout").
+    let (lo, max) = if with(|m| m.buy.mode == buy::Mode::Modern) {
+        (buy_modern::BACK_KEY_DESIGN, buy_modern::REMOVE_KEY_BASE + buy::ENTRIES as i32 - 1)
+    } else {
+        (1, 11)
+    };
     let n = match e.cmd_argv(1).to_string_lossy().trim().parse::<i32>() {
-        Ok(n) if (1..=max).contains(&n) => n,
+        Ok(n) if (lo..=max).contains(&n) => n,
         _ => {
-            e.print(&format!("usage: ts_buy_key <1-{max}> [<page>]\n"));
+            e.print(&format!("usage: ts_buy_key <{lo}-{max}> [<page>]\n"));
             return;
         }
     };

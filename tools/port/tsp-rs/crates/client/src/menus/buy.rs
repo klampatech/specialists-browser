@@ -1656,7 +1656,7 @@ impl BuyMenu {
         // The modern flow is a flow of its own: the screen decides what a key means, and the
         // classic's pages do not answer in it.
         if self.mode == Mode::Modern {
-            return super::buy_modern::key(self, pg, key, false, r, rng);
+            return super::buy_modern::key(self, pg, key, r, rng);
         }
         if !(1..=r.menu.max_key).contains(&key) {
             return out;
@@ -1816,8 +1816,7 @@ impl BuyMenu {
     pub fn dom_key(&mut self, key: i32, r: &Rules, rng: &mut dyn Rng) -> Vec<Action> {
         if self.mode == Mode::Modern {
             let pg = self.page;
-            // A bare key: the panel's own actions (the back key) send no page.
-            return super::buy_modern::key(self, pg, key, true, r, rng);
+            return super::buy_modern::key(self, pg, key, r, rng);
         }
         let pg = self.page;
         self.handle_key(pg, key, r, rng)
@@ -1836,8 +1835,9 @@ impl BuyMenu {
     /// row belongs to (the canvas's mouse picks the column the click was in).
     pub fn dom_key_on(&mut self, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> Vec<Action> {
         if self.mode == Mode::Modern {
-            // A key with its page: the panel sends the row's page with the row's key.
-            return super::buy_modern::key(self, pg, key, false, r, rng);
+            // The panel sends the row's page with the row's key; the back key answers on
+            // every page of the screen, so it needs no page of its own.
+            return super::buy_modern::key(self, pg, key, r, rng);
         }
         self.handle_key(pg, key, r, rng)
     }

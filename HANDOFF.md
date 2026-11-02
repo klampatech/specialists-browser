@@ -64,6 +64,31 @@ so nothing changes for anybody until the browser asks for it. The
 frontend's half (sending `ts_buy_mode modern`, and the entry record's
 shape) is still open — see § NEXT TASK.
 
+**And then the LIVE GAME showed two rough edges in it (2026-11-01, the
+same branch), and the port's half of both is now fixed.**
+
+1. **The tenth weapon of a slot's list was unreachable.** The port
+   numbered the browse rows 1..N, so the tenth row was key 10 — and
+   key 10 is the game's own "back" key, so it went back instead. The
+   modern flow's rows are now keyed **1–9 and then 11, 12, …** (the
+   game's own rule for a weapon list: the classic flow's list numbers
+   its tenth weapon 11, the `a` key), and the keycap the panel draws is
+   the row's *place* in the list — 1–9, then A, B, … — so the tenth row
+   still wears the design's "A". The shortfall and owned marks carry
+   the row's own key too. The classic flow's numbering is untouched.
+2. **"Back" answers to key 0 as well as key 10.** The design's back
+   button is badged "0" ("0 Back to loadout", "0 Back to Pistols"), so
+   the port takes key 0 on the modern screens (the weapon list, the
+   accessory's items, the attachments and the rail), and key 10 still
+   does. The remove page is the one exception: its keys start at ten
+   and they remove the entry they name.
+3. **The clear row now says "Clear"** — the design's word — instead of
+   the game's "Reset Config". The port owns the labels the panel
+   draws: the browser resolves a title key through the game's own
+   titles and passes a plain label through unchanged, so the port
+   prints the word the design asks for. The classic flow's own reset
+   row keeps the game's title, because the canvas menu must not change.
+
 ## The admin console is specified (PR #104, 2026-10-31)
 
 Kyle supplied a mock of a single-admin web console for the fleet
@@ -1604,8 +1629,8 @@ TSBUY end
 **The pixel diff still passes unchanged** (`menus/buy_pixels.rs`) — the
 classic menu's drawing did not move, and that test is the proof.
 
-**Three things the FRONTEND has to do (they are on the frontend's side
-of the fence, in the `webxash` submodule):**
+**Two things the FRONTEND still has to do (they are on the frontend's
+side of the fence, in the `webxash` submodule):**
 
 1. **Send `ts_buy_mode modern` at session start.** As of this writing
    `applyBuyMenuMode()` only sends `ts_buy_hide`, so the port stays in
@@ -1619,10 +1644,15 @@ of the fence, in the `webxash` submodule):**
    the port does not print it, so the removal key is 0 and that one
    click does nothing. The browse screen's owned row removes the weapon
    today, so nothing is unreachable — but the card's click is inert.
-3. **The typed "0" on a slot with ten weapons or more picks the tenth
-   weapon** instead of going back, because the port's key alphabet is
-   1–9, then "0", then "A" (the frontend's own fixture agrees). The
-   design's §6 proposes "A" for the tenth and "0" for back.
+
+**And one that was on that list is DONE on the port's side** (it was the
+third): the typed "0" on a slot with ten weapons or more picked the tenth
+weapon instead of going back. The modern flow's list rows are keyed 1–9
+and then 11, 12, …, so the tenth weapon is key 11 and key 10 is the back
+key again — and key 0 goes back as well, which is the design's badge. The
+keycap the panel draws is the row's place in the list (1–9, then A, B,
+…), so the panel's own badge lookup finds the tenth row by "A" and sends
+the port's key 11.
 
 ## The client caps the engine's tick rate (PR #87, 2026-10-29)
 

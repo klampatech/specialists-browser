@@ -15,7 +15,7 @@ port**, which is what made a real dedicated server possible. The
 decompile + pump path is now the **single-player fallback**, not the
 production path.
 **Last updated:** 2026-11-01 (the modern buy flow: the port's second flow, by the
-classic weapon slot)
+classic weapon slot — and its key rules and its own labels)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 
@@ -519,6 +519,24 @@ exactly as it does today until the browser asks for the modern one.
 - **A key is refused for another screen's page.** The classic's rule is
   "a key may only be pressed on a column the canvas is showing"; the modern
   flow's is the same, tightened by the screen.
+- **A list's keys skip the tenth.** The rows are keyed **1–9 and then 11,
+  12, …**, because key 10 is the game's own back key and stays reserved:
+  the tenth weapon of a long list is key 11 and the eleventh is key 12.
+  That is the game's own rule for a weapon list — the classic flow's list
+  numbers its tenth weapon 11, the `a` key — so the modern flow follows it
+  instead of inventing one. The keycap the panel draws is the row's
+  *place* in the list (1–9, then A, B, …), so the tenth row still wears the
+  design's "A".
+- **"Back" answers to key 10 and to key 0.** Key 10 is the rule players know
+  from the game's own menu, and key 0 is the design's back badge ("0 Back
+  to loadout", "0 Back to Pistols"). The remove page is the one exception:
+  its keys start at ten and they remove the entry they name.
+- **The port owns the labels.** The modern loadout screen's clear row says
+  **"Clear"** — the design's word — and not the game's title, because the
+  browser must not rename a port row: it resolves a title key through the
+  game's own titles and passes a plain label through unchanged. The classic
+  flow's own reset row keeps the game's title, because the canvas menu must
+  not change.
 
 **The port's own rules still hold.** A loaded `tsbuylist.tsa` can hold any
 numbers (the C code wrapped its arithmetic), so nothing is sanitised: the

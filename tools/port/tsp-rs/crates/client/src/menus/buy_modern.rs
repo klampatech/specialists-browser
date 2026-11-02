@@ -30,6 +30,19 @@
 //!   the page their key acts on, so a click never has to guess.
 //!
 //! The rules are the port's: the browser computes nothing and forms no loadout.
+//!
+//! ## The keys
+//!
+//! - A list's rows are keyed **1–9 and then 11, 12, …**. Key 10 is the game's own escape
+//!   key and stays reserved for "back", so the tenth row is key 11 and the eleventh is key
+//!   12. The keycap the panel draws is the row's *place* in the list (1–9, then A, B, …),
+//!   so the tenth row still wears the design's "A".
+//! - **"Back" answers to key 10 and to key 0.** Key 10 is the rule players know from the
+//!   game's own menu, and key 0 is the design's back badge ("0 Back to loadout", "0 Back to
+//!   Pistols").
+//!
+//! The classic flow keeps its own numbering and its own "10 = back" rule: the canvas menu
+//! must not change.
 
 use super::buy::{
     Action, BuyMenu, ENTRIES, ITEM_KEVLAR, ITEM_STEALTH, Rng, RowFlags, Rules, SAVED_CONFIGS, Screen, attachment_price, cost, entry_slots,
@@ -55,6 +68,65 @@ pub const ACCESSORY_SLOT: i32 = 6;
 /// keys and the screen's keys cannot be confused — the port prints the key and the port
 /// reads it back, and the browser never derives one.
 pub const REMOVE_KEY_BASE: i32 = 10;
+
+/// The game's own back key: ten.
+///
+/// TS's buy menu has always used key 10 as "back", and the modern flow keeps that rule —
+/// it is the one players know, and the classic flow's rule is the classic flow's own.
+pub const BACK_KEY: i32 = 10;
+
+/// The design's back key: zero.
+///
+/// The redesigned panel badges its back button "0" ("0 Back to loadout", "0 Back to
+/// Pistols"), so key 0 goes back as well. It costs nothing, and key 10 still does.
+pub const BACK_KEY_DESIGN: i32 = 0;
+
+/// Is this key the screen's back?
+///
+/// Both the game's own key (ten) and the design's badge (zero) go back. The remove page
+/// is the one page where neither does: its keys start at ten (see [`REMOVE_KEY_BASE`]),
+/// and they remove the entry they name.
+fn is_back(key: i32) -> bool {
+    key == BACK_KEY || key == BACK_KEY_DESIGN
+}
+
+/// The key a list's row takes.
+///
+/// The rows are keyed 1–9 and then 11, 12, …: key 10 is the game's own back key and
+/// stays reserved, so the tenth row is key 11 and the eleventh is key 12.
+///
+/// That is the game's own rule for a weapon list: the classic flow's list numbers its
+/// tenth weapon 11, the "a" key, and the modern flow follows it instead of inventing one.
+/// The classic flow is not touched.
+fn browse_key(index: usize) -> i32 {
+    if index < 9 { index as i32 + 1 } else { index as i32 + 2 }
+}
+
+/// The row of a list a key names.
+///
+/// The inverse of [`browse_key`]: key 11 is the tenth row, key 12 the eleventh, and key
+/// 10 is no row at all (it is the back key).
+fn list_index(key: i32) -> Option<usize> {
+    match key {
+        1..=9 => Some((key - 1) as usize),
+        k if k >= 11 => Some((k - 2) as usize),
+        _ => None,
+    }
+}
+
+/// The keycap the panel draws for a list's row.
+///
+/// The design's browse list is keyed 1–9 and then A (the tenth row), and the letters carry
+/// on after it. The badge is the row's *place* in the list and not its key: the tenth row
+/// wears the design's "A" and is keyed 11, because key 10 is the game's back key.
+fn browse_badge(index: usize) -> String {
+    match index {
+        0..=8 => (index + 1).to_string(),
+        9..=34 => char::from(b'A' + (index - 9) as u8).to_string(),
+        // Past the alphabet the key is the badge, so the row is still identifiable.
+        _ => browse_key(index).to_string(),
+    }
+}
 
 /// The slot labels.
 ///
@@ -322,6 +394,12 @@ pub fn modern_rows(b: &BuyMenu, r: &Rules) -> Vec<ModernRow> {
 ///
 /// The accessory and the actions answer on the loadout screen's page. "Clear" is the game's
 /// own reset row (the MAIN page's key 4), and the panel draws the design's keycap for it.
+///
+/// The clear row's label is the design's own word, "Clear", and not the game's title:
+/// the port owns the labels the panel draws, and the browser must not rename a port row.
+/// The browser resolves a title key through the game's own titles and passes a plain label
+/// through unchanged, so the port prints the word the design asks for. The classic flow's
+/// own reset row keeps the game's title — the canvas menu must not change.
 fn loadout_rows() -> Vec<ModernRow> {
     vec![
         ModernRow {
@@ -340,19 +418,15 @@ fn loadout_rows() -> Vec<ModernRow> {
             number: "R".to_owned(),
             label: "#Buy_Random".to_owned(),
         },
-        ModernRow {
-            key: 4,
-            price: 0,
-            flags: RowFlags::default(),
-            page: page::MAIN,
-            number: "X".to_owned(),
-            label: "#Buy_ResetConfig".to_owned(),
-        },
+        ModernRow { key: 4, price: 0, flags: RowFlags::default(), page: page::MAIN, number: "X".to_owned(), label: "Clear".to_owned() },
     ]
 }
 
 /// The browse screen's own rows: the slot's weapons, with their prices, the owned mark and
 /// the unaffordable mark.
+///
+/// The rows are keyed 1–9 and then 11, 12, … (see [`browse_key`]), so that key 10 stays
+/// the back key and the tenth weapon of a long list is still reachable.
 fn browse_rows(b: &BuyMenu, r: &Rules) -> Vec<ModernRow> {
     let items = browse_items(b.modern_slot, r);
     let page = if b.modern_slot == ACCESSORY_SLOT { page::ITEMS } else { page::WEAPONS };
@@ -360,7 +434,7 @@ fn browse_rows(b: &BuyMenu, r: &Rules) -> Vec<ModernRow> {
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let key = i as i32 + 1;
+            let key = browse_key(i);
             // An owned row is not a purchase: selecting it takes the weapon off the loadout,
             // and that costs nothing. So it is never out of reach.
             let ok = owned(b, item.id, item.item) || affordable(b, r, item.price, item.slots);
@@ -369,7 +443,7 @@ fn browse_rows(b: &BuyMenu, r: &Rules) -> Vec<ModernRow> {
                 price: item.price,
                 flags: RowFlags { on: b.modern_focus == item.id, x: !ok, ..Default::default() },
                 page,
-                number: key_prefix(key).trim_end().to_owned(),
+                number: browse_badge(i),
                 label: item.name.clone(),
             }
         })
@@ -593,20 +667,20 @@ pub fn state_lines(b: &BuyMenu, r: &Rules) -> Vec<String> {
     // mean other things (the attachments' keys, on the attachments screen).
     if b.screen == Screen::Browse {
         // The shortfalls: the rows that cannot be afforded, and how much more they need.
-        for (key, item) in browse_items(b.modern_slot, r).iter().enumerate() {
+        for (index, item) in browse_items(b.modern_slot, r).iter().enumerate() {
             if owned(b, item.id, item.item) {
                 // Taking a weapon off costs nothing, so an owned row is never short.
                 continue;
             }
             let short = shortfall(b, r, item.price);
             if short > 0 {
-                out.push(format!("TSBUY short {} {}", key + 1, short));
+                out.push(format!("TSBUY short {} {}", browse_key(index), short));
             }
         }
         // The owned rows: the weapons already in the loadout.
-        for (key, item) in browse_items(b.modern_slot, r).iter().enumerate() {
+        for (index, item) in browse_items(b.modern_slot, r).iter().enumerate() {
             if owned(b, item.id, item.item) {
-                out.push(format!("TSBUY owned {} 1", key + 1));
+                out.push(format!("TSBUY owned {} 1", browse_key(index)));
             }
         }
     }
@@ -630,16 +704,29 @@ pub fn state_lines(b: &BuyMenu, r: &Rules) -> Vec<String> {
 
 /// The modern flow's key handling.
 ///
-/// `bare` says the key was typed rather than sent with the page of a row: the panel sends a
-/// bare key for the actions that are not rows (the back action), and a key with its page for
-/// everything that is. That is the only thing that separates the "go back" key from the tenth
-/// weapon of a long list.
-pub fn key(b: &mut BuyMenu, pg: i32, key: i32, bare: bool, r: &Rules, rng: &mut dyn Rng) -> Vec<Action> {
+/// The screen decides what a key means, so the page the key acts on is the screen's own.
+/// The back key is the same on every screen (key 10, the game's own, and key 0, the
+/// design's badge), and no row of the modern flow carries either of them — the list's
+/// tenth row is key 11 — so a row's key and a back key can never be confused.
+pub fn key(b: &mut BuyMenu, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> Vec<Action> {
     let mut out = Vec::new();
-    // The remove page's keys run past the key alphabet: the loadout's entries are removed
-    // by their own keys, and there can be more entries than the alphabet has keys.
-    let max = if pg == page::REMOVE { REMOVE_KEY_BASE + ENTRIES as i32 - 1 } else { r.menu.max_key };
-    if !(1..=max).contains(&key) {
+    // The keys the screen accepts.
+    //
+    // The list pages take their own rows' keys, which run past the game's key alphabet: the
+    // rows are keyed 1–9 and then 11, 12, …, because key 10 is the game's back key and
+    // stays reserved. The remove page takes its own band, for the same reason.
+    let max = match pg {
+        page::REMOVE => REMOVE_KEY_BASE + ENTRIES as i32 - 1,
+        page::WEAPONS | page::ITEMS => browse_max_key(b, r),
+        _ => r.menu.max_key,
+    };
+    // The back keys — the game's own ten and the design's zero — are taken wherever the
+    // screen's back is, and they are never one of the rows' keys.
+    //
+    // The remove page is the one exception: its keys start at ten (they remove the entry
+    // they name), so ten is not a back key there.
+    let back = is_back(key) && pg != page::REMOVE;
+    if !back && !(1..=max).contains(&key) {
         return out;
     }
     match pg {
@@ -651,7 +738,8 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, bare: bool, r: &Rules, rng: &mut 
             4 => clear(b, r, &mut out),
             6 => open_accessory(b, r),
             7 => random(b, r, rng, &mut out),
-            10 => {
+            // Back: the game's own key and the design's badge both close the menu.
+            k if is_back(k) => {
                 b.close();
                 out.push(Action::Close);
             }
@@ -661,12 +749,13 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, bare: bool, r: &Rules, rng: &mut 
         page::CATEGORY => match key {
             1..=SLOT_COUNT => open_slot(b, key, r),
             ACCESSORY_SLOT => open_accessory(b, r),
-            10 => back_to_loadout(b),
+            k if is_back(k) => back_to_loadout(b),
             _ => {}
         },
         // The weapon list.
         page::WEAPONS => {
-            if key == 10 && bare {
+            // Back. No row of the list carries the back key: the tenth row is key 11.
+            if is_back(key) {
                 back_to_loadout(b);
                 return out;
             }
@@ -690,8 +779,8 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, bare: bool, r: &Rules, rng: &mut 
         }
         // The attachments.
         page::OPTIONS => {
-            if key == 10 {
-                // Back to the slot's list.
+            // Back to the slot's list.
+            if is_back(key) {
                 b.pending_weapon = -1;
                 b.pending_att = 0;
                 b.screen = Screen::Browse;
@@ -703,6 +792,9 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, bare: bool, r: &Rules, rng: &mut 
                 return out;
             }
             // The attachments toggle, so a second press takes one off again.
+            if !(1..=4).contains(&key) {
+                return out;
+            }
             let bit = 1u32 << (key - 1);
             let w = tables().weapon(b.pending_weapon.max(0) as u8);
             if attachment_allowed(w, bit) {
@@ -711,7 +803,7 @@ pub fn key(b: &mut BuyMenu, pg: i32, key: i32, bare: bool, r: &Rules, rng: &mut 
         }
         // The accessory's items.
         page::ITEMS => {
-            if key == 10 {
+            if is_back(key) {
                 back_to_loadout(b);
                 return out;
             }
@@ -756,8 +848,21 @@ fn open_slot(b: &mut BuyMenu, slot: i32, r: &Rules) {
 ///
 /// The list is the row's list, so a key always names the row the panel drew: a restricted
 /// item is not on the list, and the keys after it move up.
+///
+/// The keys are the list's own (see [`browse_key`]): key 11 is the tenth row and key 12 the
+/// eleventh, because key 10 is the game's back key.
 fn item_at(b: &BuyMenu, key: i32, r: &Rules) -> Option<BrowseItem> {
-    browse_items(b.modern_slot, r).get(key as usize - 1).cloned()
+    let index = list_index(key)?;
+    browse_items(b.modern_slot, r).get(index).cloned()
+}
+
+/// The highest key a list's rows use.
+///
+/// The list's rows are keyed 1–9 and then 11, 12, …, so the last row's key is not the
+/// number of rows.
+fn browse_max_key(b: &BuyMenu, r: &Rules) -> i32 {
+    let count = browse_items(b.modern_slot, r).len();
+    if count == 0 { 0 } else { browse_key(count - 1) }
 }
 
 /// Browse the player accessory (the ITEMS page).
@@ -1084,6 +1189,198 @@ mod tests {
         // The M61 grenade needs a teamplay mode, so it is not listed without one.
         let solo = Rules { gamemode: 0, ..rules() };
         assert_eq!(slot_weapons(1, &solo).len(), 3, "no M61 without a teamplay mode");
+    }
+
+    /// The tenth weapon of a long list is reachable by its key.
+    ///
+    /// The list's rows are keyed 1–9 and then 11, 12, …, because key 10 is the game's own
+    /// back key and stays reserved. That is the game's own rule for a weapon list — the
+    /// classic flow's list numbers its tenth weapon 11, the "a" key — so the modern flow
+    /// follows it instead of inventing one.
+    #[test]
+    fn the_tenth_weapon_of_a_long_list_is_reachable_by_its_key() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+        // The rifles and the shotguns: eleven of them.
+        m.dom_key_on(page::CATEGORY, 4, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse);
+        let items = browse_items(4, &r);
+        assert_eq!(items.len(), 11, "the rifles and the shotguns: {items:?}");
+        assert_eq!(items[9].name, "Sawed-off", "the tenth: {items:?}");
+        assert_eq!(items[10].name, "USAS-12", "the eleventh: {items:?}");
+
+        // The rows' keys skip the tenth: the ninth is key 9, the tenth is key 11 and the
+        // eleventh is key 12.
+        let lines = m.state_lines(&r);
+        let guns: Vec<_> = dump_rows(&lines).iter().filter(|(_, _, f, ..)| f != "dim").cloned().collect();
+        assert_eq!(guns.len(), 11, "the list's rows: {guns:?}");
+        assert_eq!(guns[8].0, 9, "the ninth is key 9: {guns:?}");
+        assert_eq!(guns[9].0, 11, "the tenth is key 11: {guns:?}");
+        assert_eq!(guns[10].0, 12, "the eleventh is key 12: {guns:?}");
+        // And the keycap is the row's place in the list, so the tenth still wears the
+        // design's "A" and the letters carry on after it.
+        assert_eq!(guns[8].4, "9", "the ninth's keycap: {guns:?}");
+        assert_eq!(guns[9].4, "A", "the tenth's keycap is the design's: {guns:?}");
+        assert_eq!(guns[10].4, "B", "and the eleventh's: {guns:?}");
+
+        // The key reaches the weapon: key 11 is the Sawed-off and key 12 the USAS-12.
+        m.dom_key_on(page::WEAPONS, 11, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Attach, "the attachments screen");
+        assert_eq!(m.pending_weapon, items[9].id, "the Sawed-off");
+        m.dom_key_on(page::OPTIONS, BACK_KEY, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse, "back to the list");
+        m.dom_key_on(page::WEAPONS, 12, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.pending_weapon, items[10].id, "the USAS-12");
+    }
+
+    /// The marks the port prints for a row carry the row's own key: the tenth row's
+    /// shortfall and its owned mark are the eleventh's, not the tenth's.
+    #[test]
+    fn the_shortfalls_and_the_owned_marks_carry_the_rows_own_keys() {
+        ts30_gameplay::tables::make_default();
+        // $1,000: everything above it is short, and the keys are the list's own.
+        let r = Rules { cash: 1000, ..rules() };
+        let mut m = modern(&r);
+        m.dom_key_on(page::CATEGORY, 4, &r, &mut FixedRng(vec![], 0));
+        let lines = m.state_lines(&r);
+        // The Sawed-off ($1,900) is the tenth row, so it is key 11 and needs $900 more.
+        assert!(lines.contains(&"TSBUY short 11 900".to_owned()), "the shortfalls: {lines:?}");
+        // The USAS-12 ($5,100) is the eleventh row, so it is key 12 and needs $4,100 more.
+        assert!(lines.contains(&"TSBUY short 12 4100".to_owned()), "the shortfalls: {lines:?}");
+        // And no row is short under a key of its own place in the list.
+        assert!(!lines.contains(&"TSBUY short 10 900".to_owned()), "key 10 is the back key: {lines:?}");
+
+        // Buying the tenth row marks the row with key 11 as owned.
+        let r = rules();
+        let mut m = modern(&r);
+        m.dom_key_on(page::CATEGORY, 4, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 11, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse, "back on the list");
+        let lines = m.state_lines(&r);
+        assert!(lines.contains(&"TSBUY owned 11 1".to_owned()), "the owned mark: {lines:?}");
+    }
+
+    /// Key 10 is the game's own back key, and it still goes back on the modern screens.
+    #[test]
+    fn key_ten_still_goes_back_on_the_modern_screens() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+
+        // The weapon list: back to the loadout.
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse);
+        m.dom_key_on(page::WEAPONS, BACK_KEY, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Loadout, "the weapon list's back");
+        assert_eq!(m.page, page::MAIN);
+
+        // The attachments: back to the slot's list.
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Attach);
+        m.dom_key_on(page::OPTIONS, BACK_KEY, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse, "the attachments' back");
+        assert_eq!(m.pending_weapon, -1, "and the gun is off the hook");
+
+        // The accessory's items: back to the loadout.
+        m.dom_key_on(page::CATEGORY, ACCESSORY_SLOT, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse);
+        m.dom_key_on(page::ITEMS, BACK_KEY, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Loadout, "the accessory's back");
+
+        // The rail: back to the loadout.
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::CATEGORY, BACK_KEY, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Loadout, "the rail's back");
+
+        // The loadout screen: back is close.
+        let actions = m.dom_key_on(page::MAIN, BACK_KEY, &r, &mut FixedRng(vec![], 0));
+        assert!(actions.contains(&Action::Close), "the loadout screen's back closes the menu: {actions:?}");
+        assert!(!m.active, "and the menu is closed");
+
+        // The panel's own back button sends a bare key, with no page of its own.
+        let mut m = modern(&r);
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key(BACK_KEY, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Loadout, "a bare key ten goes back too");
+    }
+
+    /// Key 0 is the design's back badge ("0 Back to loadout", "0 Back to Pistols"), and it
+    /// goes back on the modern screens.
+    #[test]
+    fn key_zero_goes_back_on_the_modern_screens() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = modern(&r);
+
+        // The weapon list: back to the loadout.
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse);
+        m.dom_key_on(page::WEAPONS, BACK_KEY_DESIGN, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Loadout, "the weapon list's back");
+        assert_eq!(m.page, page::MAIN);
+
+        // The attachments: back to the slot's list.
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Attach);
+        m.dom_key_on(page::OPTIONS, BACK_KEY_DESIGN, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse, "the attachments' back");
+        assert_eq!(m.pending_weapon, -1, "and the gun is off the hook");
+
+        // The accessory's items: back to the loadout.
+        m.dom_key_on(page::CATEGORY, ACCESSORY_SLOT, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Browse);
+        m.dom_key_on(page::ITEMS, BACK_KEY_DESIGN, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Loadout, "the accessory's back");
+
+        // The rail: back to the loadout.
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key_on(page::CATEGORY, BACK_KEY_DESIGN, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Loadout, "the rail's back");
+
+        // The loadout screen: back is close.
+        let actions = m.dom_key_on(page::MAIN, BACK_KEY_DESIGN, &r, &mut FixedRng(vec![], 0));
+        assert!(actions.contains(&Action::Close), "the loadout screen's back closes the menu: {actions:?}");
+        assert!(!m.active, "and the menu is closed");
+
+        // And a bare key zero goes back as well.
+        let mut m = modern(&r);
+        m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
+        m.dom_key(BACK_KEY_DESIGN, &r, &mut FixedRng(vec![], 0));
+        assert_eq!(m.screen, Screen::Loadout, "a bare key zero goes back too");
+    }
+
+    /// The modern loadout screen's clear row says "Clear" — the design's own word — and the
+    /// classic flow's reset row keeps the game's title.
+    ///
+    /// The port owns the labels the panel draws: the browser resolves a title key through
+    /// the game's own titles and passes a plain label through unchanged, so the port prints
+    /// the word the design asks for. The classic canvas menu keeps the game's own title,
+    /// because the canvas menu must not change.
+    #[test]
+    fn the_modern_clear_row_says_clear_and_the_classic_keeps_its_title() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+
+        // The modern flow.
+        let m = modern(&r);
+        let lines = m.state_lines(&r);
+        let rows = dump_rows(&lines);
+        let clear = rows.iter().find(|(_, _, f, _, n, _)| f != "dim" && n == "X").expect("the clear row");
+        assert_eq!(clear.5, "Clear", "the design's word: {rows:?}");
+        assert!(!lines.iter().any(|l| l.contains("#Buy_ResetConfig")), "the modern flow prints no title key: {lines:?}");
+
+        // The classic flow.
+        let mut c = BuyMenu { random_first: false, ..BuyMenu::default() };
+        c.open(&r, &mut FixedRng(vec![], 0));
+        let lines = c.state_lines(&r);
+        assert!(
+            lines.contains(&"TSBUY row 4 0 0 0 4 #Buy_ResetConfig".to_owned()),
+            "the classic's own reset row keeps the game's title: {lines:?}"
+        );
     }
 
     /// A purchase in the modern flow applies the config: the four loadout commands go to the
