@@ -365,6 +365,46 @@ pub mod page {
     pub const TEAM: i32 = 8;
 }
 
+/// Which flow the menu runs.
+///
+/// The classic flow is the game's own canvas menu, exactly as it always was. The modern flow
+/// is the loadout flow the browser's redesigned panel drives ([`super::buy_modern`]): the same
+/// prices, the same budget, the same saved loadouts, organised by the classic weapon slot.
+///
+/// The classic is the default: the modern flow is asked for (`ts_buy_mode modern`), never
+/// assumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// The game's own menu: the canvas draws it and the engine's keys drive it.
+    #[default]
+    Classic,
+    /// The modern loadout flow: the browser's panel draws it and sends its keys.
+    Modern,
+}
+
+/// The modern flow's screen: one at a time, as the design says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Screen {
+    /// The loadout: the slot cards, the tabs, the budget and the actions.
+    #[default]
+    Loadout,
+    /// A slot's weapons.
+    Browse,
+    /// A gun's attachments.
+    Attach,
+}
+
+impl Screen {
+    /// The screen's name, as the state record reports it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Screen::Loadout => "loadout",
+            Screen::Browse => "browse",
+            Screen::Attach => "attach",
+        }
+    }
+}
+
 /// Category table (`+0x2d6c`, 12 rows × 5 categories, set in `Init` 10036200). The handguns
 /// are the ruleset's ([`MenuRules::handguns`]).
 pub fn table(m: &MenuRules) -> [[i32; 5]; 12] {
@@ -1007,6 +1047,22 @@ pub struct BuyMenu {
     pub ammo_spend: i32,
     /// `+0x2f10`: random loadout on the first open.
     pub random_first: bool,
+    /// Port addition: which flow the menu runs. The classic is the game's own canvas menu and
+    /// stays the default; the modern flow ([`super::buy_modern`]) is the browser's redesigned
+    /// panel's flow, and it is asked for (`ts_buy_mode modern`).
+    pub mode: Mode,
+    /// Port addition: the modern flow's screen (the loadout, a slot's weapons, a gun's
+    /// attachments).
+    pub screen: Screen,
+    /// Port addition: the modern flow's slot being browsed (1..5, and 6 for the player
+    /// accessory), 0 on the loadout screen.
+    pub modern_slot: i32,
+    /// Port addition: the modern flow's focused weapon: the row the browser marks as the
+    /// selected one.
+    pub modern_focus: i32,
+    /// Port addition: the modern flow's active loadout tab: the config save slot the working
+    /// copy is saved into.
+    pub tab: usize,
 }
 
 impl Default for BuyMenu {
@@ -1024,6 +1080,11 @@ impl Default for BuyMenu {
             new_config: true,
             ammo_spend: 0,
             random_first: true,
+            mode: Mode::Classic,
+            screen: Screen::Loadout,
+            modern_slot: 0,
+            modern_focus: 0,
+            tab: 0,
         }
     }
 }
@@ -1056,6 +1117,23 @@ impl BuyMenu {
         self.pending_att = 0;
     }
 
+    /// The flow the menu runs.
+    ///
+    /// The classic flow is the default, so the canvas menu behaves exactly as it does today
+    /// until the browser asks for the modern one (`ts_buy_mode modern`). Switching resets the
+    /// modern flow's own state (the screen, the slot, the focused weapon): the two flows share
+    /// the config, the saved loadouts and the rules, and nothing else.
+    pub fn set_mode(&mut self, mode: Mode) {
+        self.mode = mode;
+        self.screen = Screen::Loadout;
+        self.modern_slot = 0;
+        self.modern_focus = 0;
+        self.pending_weapon = -1;
+        self.pending_att = 0;
+        self.page = page::MAIN;
+        self.category = 0;
+    }
+
     /// `Close` (10036720).
     pub fn close(&mut self) {
         self.pending_weapon = -1;
@@ -1064,11 +1142,19 @@ impl BuyMenu {
         self.category = 0;
         self.pending_att = 0;
         self.ammo_spend = 0;
+        // The modern flow's own state: the next open starts on the loadout screen.
+        self.screen = Screen::Loadout;
+        self.modern_slot = 0;
+        self.modern_focus = 0;
     }
 
     /// `Open` (10036670), minus the demo check and cursor centring (caller).
     pub fn open(&mut self, r: &Rules, rng: &mut dyn Rng) {
         if self.active {
+            return;
+        }
+        if self.mode == Mode::Modern {
+            self.open_modern(r, rng);
             return;
         }
         self.current = self.last.clone();
@@ -1080,6 +1166,41 @@ impl BuyMenu {
             self.random_first = false;
             let p = rng.float(0.5, 1.0);
             self.random_config(p, r, rng);
+        }
+        self.recompute_ammo(r);
+    }
+
+    /// The modern flow's open: the active tab is the loadout.
+    ///
+    /// The classic opens on the last config that was used (and rolls a random loadout the
+    /// first time it is opened in a session). The modern flow opens on the active tab's saved
+    /// config instead — the tabs ARE the loadouts — and on the last config when that tab is
+    /// empty.
+    ///
+    /// The random first loadout is the classic's own rule and it is kept, but it is the
+    /// working copy only: it is saved into the active tab, and it is applied with the next
+    /// purchase. Opening a menu must not change what the player is carrying.
+    fn open_modern(&mut self, r: &Rules, rng: &mut dyn Rng) {
+        self.current = self.saved[self.tab].clone();
+        if self.current.total < 1 {
+            // The tab is empty: what is live is the last config that was applied.
+            self.current = self.last.clone();
+        }
+        self.ammo_spend = 0;
+        self.active = true;
+        self.page = page::MAIN;
+        self.screen = Screen::Loadout;
+        self.modern_slot = 0;
+        self.modern_focus = 0;
+        self.pending_weapon = -1;
+        self.pending_att = 0;
+        self.new_config = false;
+        if self.random_first {
+            self.random_first = false;
+            let p = rng.float(0.5, 1.0);
+            self.random_config(p, r, rng);
+            // The tab and the panel cannot disagree: the tab holds the working copy.
+            self.saved[self.tab] = self.current.clone();
         }
         self.recompute_ammo(r);
     }
@@ -1318,7 +1439,31 @@ impl BuyMenu {
 
     /// `SubmitConfig` (10039400): `rst_cfg`, then the `tkw`, `tki` and `tka` lists.
     pub fn submit(&mut self, actions: &mut Vec<Action>, r: &Rules) -> bool {
-        if self.current.total < 1 {
+        self.submit_config(actions, r, true, true)
+    }
+
+    /// The modern flow's apply: the same submit, but quietly.
+    ///
+    /// The classic flow's "Use New Config" row is what the two messages belong to: in the
+    /// modern flow an empty config is a choice (the player cleared the loadout, or switched to
+    /// an empty tab), not a mistake, and a config that is applied on every purchase needs no
+    /// "Using new config" notice either.
+    pub fn submit_quiet(&mut self, actions: &mut Vec<Action>, r: &Rules) -> bool {
+        self.submit_config(actions, r, false, false)
+    }
+
+    /// `SubmitConfig` (10039400). `announce_empty` says whether an empty config is worth a
+    /// message (the classic flow) or not (the modern flow), and `announce_applied` says
+    /// whether the applied config is announced (the classic flow does; the modern flow
+    /// applies on every purchase and says nothing).
+    fn submit_config(
+        &mut self,
+        actions: &mut Vec<Action>,
+        r: &Rules,
+        announce_empty: bool,
+        announce_applied: bool,
+    ) -> bool {
+        if announce_empty && self.current.total < 1 {
             actions.push(Action::Message("#Buy_ConfigEmpty".into(), RED));
         }
         if r.cash < self.current.total {
@@ -1380,8 +1525,10 @@ impl BuyMenu {
         actions.push(Action::ServerCmd(tkw));
         actions.push(Action::ServerCmd(tki));
         actions.push(Action::ServerCmd(tka));
-        let msg = if self.new_config { "#Buy_UsingNewConfig" } else { "#Buy_UsingLastConfig" };
-        actions.push(Action::Message(msg.into(), [0; 3]));
+        if announce_applied {
+            let msg = if self.new_config { "#Buy_UsingNewConfig" } else { "#Buy_UsingLastConfig" };
+            actions.push(Action::Message(msg.into(), [0; 3]));
+        }
         self.new_config = false;
         self.last = self.current.clone();
         true
@@ -1511,13 +1658,20 @@ impl BuyMenu {
     /// `HandleKey(page, key)` (10038840). Keys 1..11 (10 = "0"/back, 11 = the `a` key).
     pub fn handle_key(&mut self, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> Vec<Action> {
         let mut out = Vec::new();
+        // The modern flow is a flow of its own: the screen decides what a key means, and the
+        // classic's pages do not answer in it.
+        if self.mode == Mode::Modern {
+            return super::buy_modern::key(self, pg, key, false, r, rng);
+        }
         if !(1..=r.menu.max_key).contains(&key) {
             return out;
         }
         match pg {
             page::MAIN => match key {
                 1 => {
-                    if self.submit(&mut out, r) {
+                    // The submit has side effects, so it cannot be a match guard.
+                    let submitted = self.submit(&mut out, r);
+                    if submitted {
                         self.close();
                         out.push(Action::Close);
                     }
@@ -1658,12 +1812,18 @@ impl BuyMenu {
     /// Does the canvas draw the menu? A hidden menu is not drawn, but its state machine keeps
     /// running: the browser's DOM menu drives it and reads its state.
     pub fn draws(&self) -> bool {
-        self.active && !self.hidden
+        // The modern flow has no canvas at all: the browser's panel draws it.
+        self.active && !self.hidden && self.mode == Mode::Classic
     }
 
     /// The DOM menu's write path: the key runs on the current page, hidden or not. It is the
     /// same [`BuyMenu::handle_key`] the canvas menu runs, so the two cannot disagree.
     pub fn dom_key(&mut self, key: i32, r: &Rules, rng: &mut dyn Rng) -> Vec<Action> {
+        if self.mode == Mode::Modern {
+            let pg = self.page;
+            // A bare key: the panel's own actions (the back key) send no page.
+            return super::buy_modern::key(self, pg, key, true, r, rng);
+        }
         let pg = self.page;
         self.handle_key(pg, key, r, rng)
     }
@@ -1671,19 +1831,27 @@ impl BuyMenu {
     /// Whether the menu draws the given page's column now. The DOM menu may only press a key
     /// on a column the canvas is showing, like the mouse can only hit a drawn column.
     pub fn page_is_drawn(&self, pg: i32) -> bool {
+        if self.mode == Mode::Modern {
+            return super::buy_modern::page_is_drawn(self, pg);
+        }
         columns(self.page).iter().any(|c| c.page() == pg)
     }
 
     /// A key on a named page: the DOM menu's click path, which acts on the page the clicked
     /// row belongs to (the canvas's mouse picks the column the click was in).
     pub fn dom_key_on(&mut self, pg: i32, key: i32, r: &Rules, rng: &mut dyn Rng) -> Vec<Action> {
+        if self.mode == Mode::Modern {
+            // A key with its page: the panel sends the row's page with the row's key.
+            return super::buy_modern::key(self, pg, key, false, r, rng);
+        }
         self.handle_key(pg, key, r, rng)
     }
 
     /// The engine's own key path (the digit keys and the mouse). It is inert while the menu is
     /// hidden, so the browser's DOM menu owns the input. `None` when the key was not taken.
     pub fn engine_key(&mut self, key: i32, r: &Rules, rng: &mut dyn Rng) -> Option<Vec<Action>> {
-        if self.hidden || !(1..=r.menu.max_key).contains(&key) {
+        // The modern flow is the browser's panel's: the engine's own keys do not drive it.
+        if self.hidden || self.mode == Mode::Modern || !(1..=r.menu.max_key).contains(&key) {
             return None;
         }
         Some(self.dom_key(key, r, rng))
@@ -1704,6 +1872,9 @@ impl BuyMenu {
     /// line, `TSBUY end` closing the set. The labels are the `#Buy_…` title keys the canvas
     /// menu draws too: the port does not localise them, the engine's titles do.
     pub fn state_lines(&self, r: &Rules) -> Vec<String> {
+        if self.mode == Mode::Modern {
+            return super::buy_modern::state_lines(self, r);
+        }
         let mut out = Vec::new();
         out.push(format!(
             "TSBUY state open={} hidden={} page={} budget={} total={} slots={} ammo_spend={} new={} cat={} pending={} att={}",

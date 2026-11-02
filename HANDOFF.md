@@ -53,6 +53,17 @@ client caps the tick rate the engine is offered, the character picker and
 the pre-join identity modal are LIVE in production, and the game server
 image is `ts-server:0.27`.
 
+**The newest work (2026-11-01, branch `feat/buy-menu-modern-flow`): the
+buy menu grew a SECOND flow.** The classic canvas menu is untouched (its
+pixel diff still passes) and the port's `menus/buy_modern.rs` grew the
+**modern loadout flow** — a loadout screen, a per-slot browse screen and
+an attachments screen, organised by the classic weapon slot
+(`WeaponInfo.hud[0]`), with **apply on purchase**. It is selected by the
+new `ts_buy_mode <classic|modern>` command and **defaults to `classic`**,
+so nothing changes for anybody until the browser asks for it. The
+frontend's half (sending `ts_buy_mode modern`, and the entry record's
+shape) is still open — see § NEXT TASK.
+
 ## The admin console is specified (PR #104, 2026-10-31)
 
 Kyle supplied a mock of a single-admin web console for the fleet
@@ -1524,6 +1535,94 @@ frame cap — the production bundle carries `TSBUY`/`ts_buy_key`/
 `ts_buy_hide`/`ts_buy_state` alongside `nocap`/`sustainableFps`, verified
 from the served chunk. The default is still `classic`, so the DOM menu
 does not appear until a player flips the switch.
+
+## The buy menu grows a MODERN flow (2026-11-01, branch `feat/buy-menu-modern-flow`)
+
+**The classic canvas menu is untouched.** The buy menu above (PR #88) is
+a **view** over the port's menu: the port prints its state, the browser
+draws it. What it could not do was the redesigned panel Kyle's mockup
+draws (`docs/design-mocks/buy-menu-redesign.html`): a **loadout screen
+with a card per weapon kind**, a **per-slot browse screen** and an
+**attachments screen**.
+
+**The port grew a SECOND flow for it** (`crates/client/src/menus/
+buy_modern.rs`), selected by a new command beside the other three:
+
+```
+ts_buy_mode <classic|modern>
+```
+
+**It defaults to `classic`**, so nothing changes for anybody until the
+browser asks for the modern one. `ts_buy_hide` is untouched: it is still
+the canvas menu's hidden flag, and it does NOT select the flow.
+
+**The slot is `WeaponInfo.hud[0]`** — the HUD grid column, 1-based. It is
+not a new table: the data was already there. Slot 1 is the melee, the
+grenades and the swords, 2 the pistols, 3 the SMGs, 4 the rifles and the
+shotguns (**the M60E3 is slot 4** — the mockup's screen 4 has it wrong),
+5 the akimbo weapons and the Golden Colts. Slot 6 is the **player
+accessory**, the game's own ITEMS page, not a weapon slot.
+
+**What is different from the classic flow:**
+
+- **Apply on purchase.** A purchase is submitted the moment it is made
+  (`rst_cfg`, `tkw`, `tki`, `tka` — the same four commands the classic
+  flow's "Use New Config" sends), so the pending-config step does not
+  exist here. The classic flow keeps it.
+- **The tabs are the config save slots** (`tsbuylist.tsa`'s nine). The
+  port prints all nine; the panel shows three and reaches the rest. An
+  edit is saved into the active tab, and switching tabs loads that tab's
+  saved config and **applies** it.
+- **An owned row is removed by selecting it**, and its price is refunded
+  (the design's §5/§7 rule). It is therefore never marked unaffordable
+  and carries no shortfall.
+- **The loadout screen reports the slot usage both ways**: how many of
+  the five slots are in use (`slots_in_use`) and how much of the 81-slot
+  pool they take (`slots`, and each slot record's count).
+
+**The rules are still the port's.** The browser computes nothing: it
+never forms a loadout, never sends `tkw`/`tki`/`tka` itself, and never
+decides whether a purchase is allowed. The affordability test is the
+port's own `add()` test — money **and** slots — and the shortfall is the
+port's number (`TSBUY short`), never the browser's subtraction.
+
+**The protocol** (the classic records are byte-identical; the modern flow
+adds `mode`/`screen`/`slot`/`tab` to the state line, and the `slot`,
+`tab`, `short`, `owned` and `sum` records):
+
+```
+TSBUY state ... mode=modern screen=browse slot=2 tab=0 slots_in_use=1 slot_limit=81
+TSBUY slot 2 10 1 Pistols
+TSBUY tab 0 Loadout A 1
+TSBUY row 1 850 0 2 1 Glock-18
+TSBUY short 2 550
+TSBUY owned 1 1
+TSBUY sum 850 29150
+TSBUY end
+```
+
+**The pixel diff still passes unchanged** (`menus/buy_pixels.rs`) — the
+classic menu's drawing did not move, and that test is the proof.
+
+**Three things the FRONTEND has to do (they are on the frontend's side
+of the fence, in the `webxash` submodule):**
+
+1. **Send `ts_buy_mode modern` at session start.** As of this writing
+   `applyBuyMenuMode()` only sends `ts_buy_hide`, so the port stays in
+   the classic flow and the modern screen never appears.
+2. **The loadout card's "click a weapon to remove it" needs a removal
+   key in the entry record.** The port prints the classic entry shape
+   (`entry <index> <cost> <slots> <name>`, which the frontend's parser
+   accepts and places by counting). The frontend's in-flight parser
+   wants a richer modern entry record
+   (`entry <index> <cost> <slots> <attachments> <slot> <remove_key> <name>`);
+   the port does not print it, so the removal key is 0 and that one
+   click does nothing. The browse screen's owned row removes the weapon
+   today, so nothing is unreachable — but the card's click is inert.
+3. **The typed "0" on a slot with ten weapons or more picks the tenth
+   weapon** instead of going back, because the port's key alphabet is
+   1–9, then "0", then "A" (the frontend's own fixture agrees). The
+   design's §6 proposes "A" for the tenth and "0" for back.
 
 ## The client caps the engine's tick rate (PR #87, 2026-10-29)
 
@@ -3079,6 +3178,44 @@ the parts that are known traps.
 
 # § NEXT TASK
 
+> ## THE BUY MENU'S MODERN FLOW: THE FRONTEND'S HALF (2026-11-01)
+>
+> **The port's half of the modern buy flow is DONE** (branch
+> `feat/buy-menu-modern-flow`, the port's `crates/client/src/menus/
+> buy_modern.rs` and the `ts_buy_mode <classic|modern>` command beside
+> `ts_buy_hide`/`ts_buy_key`/`ts_buy_state`). The classic canvas menu
+> is untouched and its pixel diff passes unchanged. The design is in
+> SPEC.md § "The modern buy flow", and the protocol is in the section
+> above.
+>
+> **What is left is the frontend's half, in the `webxash` submodule:**
+>
+> 1. **Send `ts_buy_mode modern` at session start.** `applyBuyMenuMode()`
+>    sends `ts_buy_hide` and nothing else, so the port stays in the
+>    classic flow. Without this the modern screen never appears and the
+>    whole phase is invisible.
+> 2. **Decide the entry record's shape** with the port. The port prints
+>    the classic shape (`entry <index> <cost> <slots> <name>`), which
+>    the frontend's parser places by counting. The frontend's in-flight
+>    parser wants the richer modern shape
+>    (`… <attachments> <slot> <remove_key> <name>`), which is what the
+>    loadout card's "click a weapon to remove it" needs. Either the
+>    port grows that record (and the frontend keeps its parser) or the
+>    frontend drops the click.
+> 3. **The typed "0" conflict.** The port's key alphabet is 1–9, then
+>    "0", then "A"; the design's §6 proposes "A" for the tenth weapon
+>    and "0" for back. On slot 4 (eleven weapons) a typed "0" picks the
+>    tenth weapon. Pick one alphabet and say so here.
+>
+> **Then: rebuild the client WASM** (the port's commands are compiled
+> into it — a client build without `ts_buy_mode` answers "Unknown
+> command" and the frontend must fall back to the classic menu), and
+> **the tier-3 playtest** on a real browser, which is not optional for a
+> phase exit.
+>
+> **Do not touch the `webxash` submodule pointer in the port's PR.** The
+> frontend is landing on its own branch.
+>
 > ## THE AUTOBAN THAT KICKS EVERYONE (2026-10-29)
 >
 > **The engine's IP filters are unusable behind the bridge.** Every

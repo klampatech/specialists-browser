@@ -14,7 +14,8 @@ match. **D.7 webXash engine-port path** → then the **server-DLL WASM
 port**, which is what made a real dedicated server possible. The
 decompile + pump path is now the **single-player fallback**, not the
 production path.
-**Last updated:** 2026-10-29 (client frame pacing: the engine's tick source is capped)
+**Last updated:** 2026-11-01 (the modern buy flow: the port's second flow, by the
+classic weapon slot)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 
@@ -418,6 +419,114 @@ investigation), `docs/CLIENT-PERF-RESEARCH.md` (the earlier GPU
 research), `tools/perf/` (the harnesses) and `tools/perf/results/` (the
 raw JSON behind every number quoted, so the reports can be checked rather
 than taken on trust).
+
+## The modern buy flow — the port's second flow (2026-11-01)
+
+**The problem.** The buy menu the browser shows is a **view** over the
+port's own menu: the port prints its state and the browser draws it. That
+works, but the game's own menu is organised by **five categories** ("Handguns",
+"SMGs", "Rifles", "Shotguns", "Special Purpose"), and "Special Purpose"
+mixes the melee weapons and the grenades with the M60E3. A player cannot
+look at a loadout and see "a pistol, an SMG, a rifle and something else" —
+and a slot card per weapon kind is what the redesign (Kyle's mockup,
+`docs/design-mocks/buy-menu-redesign.html`) draws.
+
+**The decision.** The classic canvas menu is **untouched** and still
+selectable. The port grows a **second flow** on the same menu — the
+**modern flow** — and the browser's redesigned panel drives that one. The
+classic flow keeps its own pages, its own canvas and its own pending-config
+step; the modern flow is an addition, not a rewrite. The pixel diff
+(`menus/buy_pixels.rs`) is the acceptance test for that, and it passes
+unchanged.
+
+**The slot is the HUD grid column.** A weapon's classic slot is
+`WeaponInfo.hud[0]` — the HUD grid column, 1-based — and it is **not a new
+table**: the data is already in the weapon table, so the rail is a read and
+not a migration.
+
+| slot | holds |
+| --- | --- |
+| 1 | the kung-fu (the empty id), the M61 grenade, the Combat Knife, the Katana, the Seal Knife |
+| 2 | every pistol |
+| 3 | every SMG |
+| 4 | every rifle and shotgun, plus the Barrett M82A1 and the **M60E3** |
+| 5 | the akimbo weapons, and the Golden Colts |
+
+Slot 6 is the **player accessory** — the game's own ITEMS page (the
+kevlar and the stealth shoes), not a weapon slot. The mockup's screen 4
+puts the M60E3 under slot 5; **that is wrong** — the M60E3 is slot 4, and
+the mockup's own §8 data says so.
+
+**The locked decisions (Kyle, 2026-11-01):**
+
+1. **The classic canvas menu is untouched** and still selectable.
+2. **Apply on purchase.** In the modern flow a purchase is applied the
+   moment it is made — `rst_cfg`, `tkw`, `tki`, `tka` — so the pending
+   config and its "Use New Config" row do not exist in that flow. The
+   classic flow keeps them.
+3. **The loadout screen reports the slot usage both ways**: how many of the
+   five slots are in use (`slots_in_use`) and how much of the 81-slot pool
+   they take (`slots`, and each slot record's own count).
+4. **The loadout tabs are the config save slots** — `tsbuylist.tsa`'s nine
+   of them. The panel shows three and reaches the rest behind "More"; the
+   port prints all nine. An edit is saved into the active tab.
+5. **After a gun is added the flow returns to the same slot's weapon list.**
+6. **"Clear" asks for confirmation** — a frontend concern; the port only has
+   to make Clear and Random reachable as keys.
+
+**The rules stay the port's.** The browser computes nothing: it never
+forms a loadout, it never sends `tkw`/`tki`/`tka` itself, and it never
+decides whether a purchase is allowed. The prices are the weapon table's,
+the budget is `combat.toml`'s `budget`, the slot pool is
+`combat.toml`'s `slots.total`, the attachment prices are the table's, and
+the affordability test is the port's own `add()` test — money **and** slots.
+
+**The protocol.** The port prints the classic records unchanged and adds
+five record kinds for the modern flow:
+
+```
+TSBUY state ... mode=modern screen=loadout slot=0 tab=0 slots_in_use=0 slot_limit=81
+TSBUY slot 1 10 2 Melee · Grenades · Swords     # slot number, slots used in it, weapons in it, label
+TSBUY tab 0 Loadout A 1                          # tab index, label, 1 = the active tab
+TSBUY row 3 2900 0 2 3 Katana                    # key, price, flags, page, number, label
+TSBUY short 3 950                                # the row with key 3 needs $950 more
+TSBUY owned 1 1                                  # the row with key 1 is already in the loadout
+TSBUY sum 2550 27450                             # the pending purchase: its total and what is left after it
+TSBUY end
+```
+
+`mode` is `modern` in the modern flow and absent in the classic one;
+`screen` is `loadout`, `browse` or `attach`; `slot` is the classic weapon
+slot being browsed (1..5, and 6 for the accessory) and 0 on the loadout
+screen; `tab` is the active config save slot. A row's `page` is the page
+its key acts on, and the rail's and the tabs' rows are `dim` because they
+answer on their own page — the same rule the classic menu's parent columns
+follow.
+
+**The flow is selected by a command**, `ts_buy_mode <classic|modern>`,
+beside the three the browser already had (`ts_buy_hide`, `ts_buy_key`,
+`ts_buy_state`). It **defaults to `classic`**, so the canvas menu behaves
+exactly as it does today until the browser asks for the modern one.
+
+**What the modern flow does that the classic does not:**
+
+- **An owned row is removed by selecting it**, and its price is refunded —
+  the design's rule (§5, §7). An owned row is therefore never marked
+  unaffordable and carries no shortfall: taking a weapon off costs nothing.
+- **A tab switch loads that tab's saved config and applies it** — the
+  modern flow has no pending config, so the loadout that is shown is the
+  loadout that is live.
+- **A key is refused for another screen's page.** The classic's rule is
+  "a key may only be pressed on a column the canvas is showing"; the modern
+  flow's is the same, tightened by the screen.
+
+**The port's own rules still hold.** A loaded `tsbuylist.tsa` can hold any
+numbers (the C code wrapped its arithmetic), so nothing is sanitised: the
+port mirrors that with `wrapping_*` and never turns a loaded config into a
+panic or a loop. The server's own loadout check
+(`crates/server/src/weapons/commands.rs`) sees exactly what it always saw —
+the modern flow sends the same four commands — so it still accepts a legal
+loadout and still refuses an illegal one.
 
 ## Phase 1 D-step progress (Option D + webXash)
 

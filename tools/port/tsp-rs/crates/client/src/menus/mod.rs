@@ -10,6 +10,7 @@
 //! and routes clicks here (TS: VGUI's input, or `IN_MouseEvent` → `CTSBuyMenu::MouseEvent`).
 
 pub mod buy;
+mod buy_modern;
 #[cfg(test)]
 mod buy_pixels;
 #[cfg(test)]
@@ -136,6 +137,7 @@ pub fn init() {
     engine().add_command(c"ts_buy_hide", cmd_buy_hide);
     engine().add_command(c"ts_buy_key", cmd_buy_key);
     engine().add_command(c"ts_buy_state", cmd_buy_state);
+    engine().add_command(c"ts_buy_mode", cmd_buy_mode);
 }
 
 /// ---- the menu commands (port addition, issue #352) ----------------------------------------------
@@ -367,6 +369,29 @@ extern "C" fn cmd_buy_key() {
 /// `ts_buy_state`: print the menu's state, for the DOM menu's initial sync. The port prints the
 /// state on every change too, so the frontend never polls.
 extern "C" fn cmd_buy_state() {
+    print_buy_state();
+}
+
+/// `ts_buy_mode <classic|modern>`: which flow the menu runs.
+///
+/// The classic flow is the game's own canvas menu, and it is the default: the port behaves
+/// exactly as it always has until the browser asks for the modern one. The modern flow is the
+/// loadout flow the redesigned panel drives — the same prices, the same budget, the same saved
+/// loadouts, organised by the classic weapon slot.
+///
+/// The modern flow draws no canvas at all, so this is also the switch that takes the canvas
+/// menu's screen away; `ts_buy_hide` stays what it was.
+extern "C" fn cmd_buy_mode() {
+    let e = engine();
+    let mode = match e.cmd_argv(1).to_string_lossy().trim() {
+        "classic" => buy::Mode::Classic,
+        "modern" => buy::Mode::Modern,
+        _ => {
+            e.print("usage: ts_buy_mode <classic|modern>\n");
+            return;
+        }
+    };
+    with(|m| m.buy.set_mode(mode));
     print_buy_state();
 }
 
@@ -1016,8 +1041,9 @@ pub fn mouse_buttons(state: i32, old: i32, x: i32, y: i32) {
 }
 
 fn click(x: i32, y: i32) {
-    // A hidden menu does not take the mouse either: the browser's DOM menu owns it.
-    if !buy_open() || with(|m| m.buy.hidden) {
+    // A hidden menu does not take the mouse either: the browser's DOM menu owns it. The
+    // modern flow has no canvas at all, so the mouse belongs to the browser's panel.
+    if !buy_open() || with(|m| m.buy.hidden || m.buy.mode == buy::Mode::Modern) {
         return;
     }
     let r = rules();

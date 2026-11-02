@@ -399,6 +399,39 @@ mod tests {
         assert_eq!(sv.armament_ammo[6], 3, "three buys of the 7.62 ammo");
     }
 
+    /// The modern buy flow applies a purchase as the same four commands the classic flow
+    /// uses — `rst_cfg`, then the weapons, the items and the ammo — so the server's check
+    /// sees exactly what it always saw. A legal loadout is applied whole, a cleared loadout
+    /// is an empty one, and an illegal loadout is still refused.
+    #[test]
+    fn the_modern_flows_applied_loadout_is_accepted_and_an_illegal_one_is_not() {
+        let mut sv = state();
+        // A purchase: the Glock-18 ($850, 10 slots), no items, one buy of the 9 mm ($50).
+        assert_eq!(loadout_command(&mut sv, "rst_cfg", &args("rst_cfg")), None);
+        assert_eq!(loadout_command(&mut sv, "tkw", &args("tkw 1_0")), None);
+        assert_eq!(loadout_command(&mut sv, "tki", &args("tki")), None);
+        assert_eq!(loadout_command(&mut sv, "tka", &args("tka 1_1")), None);
+        assert_eq!(sv.pending.cost, 850 + 50);
+        assert_eq!(sv.pending.slots, 10);
+        assert_eq!(sv.armament, vec![ArmamentEntry { id: 1, attachments: 0, item: false }]);
+        assert_eq!(sv.armament_ammo[1], 1);
+
+        // A cleared loadout: the same four commands, with nothing in them.
+        assert_eq!(loadout_command(&mut sv, "rst_cfg", &args("rst_cfg")), None);
+        assert_eq!(loadout_command(&mut sv, "tkw", &args("tkw")), None);
+        assert_eq!(loadout_command(&mut sv, "tki", &args("tki")), None);
+        assert_eq!(loadout_command(&mut sv, "tka", &args("tka")), None);
+        assert!(sv.armament.is_empty());
+        assert_eq!(sv.pending, PendingLoadout::default());
+
+        // And the rules still bind: the M60E3 is $8,000 and 70 slots, and two of them do
+        // not fit in the 81-slot pool.
+        let mut sv = state();
+        assert_eq!(loadout_command(&mut sv, "rst_cfg", &args("rst_cfg")), None);
+        assert_eq!(loadout_command(&mut sv, "tkw", &args("tkw 32_0")), None);
+        assert_eq!(loadout_command(&mut sv, "tkw", &args("tkw 32_0")), Some(Refused::Slots));
+    }
+
     /// `rst_cfg` starts a fresh loadout: the entries, the ammo and the pending totals.
     #[test]
     fn rst_cfg_starts_a_fresh_loadout() {
