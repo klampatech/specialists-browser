@@ -109,7 +109,46 @@ the 81-pool? **Q6** — does the game restrict weapons by map or mode?
 
 ---
 
-## 5. The decisions that are Kyle's
+## 5. The decisions (Kyle, 2026-11-01)
+
+All six answered. They are decisions, not open questions now.
+
+1. **The redesign replaces the MODERN buy menu, in place.** It is the DOM panel that already
+   lives behind the Classic / Modern switch in the ESC options overlay — same place, same
+   toggle, and the **classic canvas menu is untouched and still selectable**.
+2. **Apply-on-purchase: approved.** The port applies a purchase itself; the pending-config
+   step goes away in the modern flow.
+3. **The slot counter shows both:** `3 of 5 · 41/81 slots` — the five weapon slots in use and
+   the 81-slot pool they consume.
+4. **The loadout tabs are the config save slots.** The port has nine; three are visible and
+   the rest are one click away.
+5. **After adding a gun, return to the same slot's weapon list** — so a second pistol is one
+   click away.
+6. **"Clear" asks for confirmation.** Random does not.
+
+### A correction to the mockup, from the game's own data
+
+**The M60E3 is in slot 4, not slot 5.** The weapon table's HUD grid column *is* the classic
+weapon slot, and it puts the M60E3 in the same column as the rifles and shotguns. The
+mockup's own question ("Is M60E3 definitely slot 5?") is answered by the data: **no** — it is
+slot 4, with the Barrett and the M16. The game's slot 5 holds the akimbo weapons.
+
+This is good news for the implementation: **the rail needs no new table.** The port already
+has the slot number for every weapon (`WeaponInfo.hud[0]`), so the five-slot rail is a read,
+not a data migration.
+
+| Classic slot | The HUD column holds |
+| --- | --- |
+| 1 | Kung-fu, M61 Grenade, Combat Knife, Katana, Seal Knife |
+| 2 | every pistol (Glock-18 … Contender G2) |
+| 3 | every SMG (Mini-Uzi … UMP) |
+| 4 | every rifle and shotgun, plus the Barrett M82A1 and the M60E3 |
+| 5 | the akimbo weapons |
+
+## 6. The decisions that were open, and are now made
+
+The six decisions are in §5. What follows is the reasoning that led to them, kept so the next
+reader does not re-derive it.
 
 1. **Where does the redesign live?**
    - **(a) The port, replacing the classic menu's pages.** One menu, no fork: the classic
@@ -142,7 +181,7 @@ the 81-pool? **Q6** — does the game restrict weapons by map or mode?
 
 ---
 
-## 6. What can start before the answers come back
+## 7. What can start before the answers come back
 
 - **The frontend audit** is done (§1, §2). Nothing else about the frontend is blocked.
 - **The mockup's data section is verified** (§1) — no data work is needed; the port's tables
@@ -150,7 +189,7 @@ the 81-pool? **Q6** — does the game restrict weapons by map or mode?
 - **D3, D4, D8 are frontend-only** and unblocked, but they are only worth building once the
   screen structure of §2 is settled by Q1.
 
-## 7. Out of scope
+## 8. Out of scope
 
 - The rules themselves (the budget, the 81 slots, the prices).
 - The TEAM page (page 8 — unreachable in the port, and it stays unreachable).
@@ -158,7 +197,7 @@ the 81-pool? **Q6** — does the game restrict weapons by map or mode?
   layout).
 - The classic canvas menu's drawing, unless Q1 lands on (a).
 
-## 8. Verification
+## 9. Verification
 
 - **Port (Rust):** the existing `buy.rs` suite keeps passing unchanged; new tests for the slot
   mapping, the apply-on-purchase rule, and the row's shortfall.
