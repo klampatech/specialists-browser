@@ -89,6 +89,51 @@ same branch), and the port's half of both is now fixed.**
    prints the word the design asks for. The classic flow's own reset
    row keeps the game's title, because the canvas menu must not change.
 
+**And then the playtest (2026-11-02, the same branch): the buy menu's
+rail became the weapon CATEGORIES, and the key space had to be split in
+two.**
+
+1. **The rail is the categories.** The browse screen's left rail lists
+   the seven weapon categories — melee, pistols, SMGs, rifles, shotguns,
+   special/akimbo and the player accessory — keyed **1–7** by the port.
+   The rifles and the shotguns are two entries now, split by the game's
+   own kind (`GetWeaponType`: the Sawed-Off is a shotgun to the game,
+   the Barrett a rifle), and the HUD slot the rail splits (slot 4) is
+   carded "Rifles · Shotguns".
+2. **The browse rail's keys and the loadout cards' HUD slots are two
+   different numberings.** The rail's key 5 is the shotguns; the HUD
+   slot 5 is the akimbo weapons. So the browser never reads a digit as
+   one or the other: it sends the digit to the port's **current page**
+   and the port decides what it means. The breadcrumb stopped claiming
+   a "Slot N" for the same reason — the number would have been a lie.
+3. **The modern flow has its own key space on the loadout screen:** the
+   player accessory is **6**, Random is **7** and Clear is **8**. Clear
+   used to answer on key 4 — the classic flow's inherited reset key —
+   and four is the card that opens the rifles, so a player pressing the
+   card-4 digit wiped the loadout instead. The classic flow's rows and
+   keys are untouched. The HUD slot the rail splits opens the **rifles**
+   on its digit; the shotguns are one rail click away, on the screen that
+   digit opens.
+4. **The focused row does not survive** the trip through the attachments
+   screen, nor a purchase: a row that stays selected reads as "this one
+   is still on your list", which is exactly what it is not, any more.
+5. **The panel's voice (frontend):** the owned weapon's name is the
+   loudest thing on its row and a slot's weapons read as one
+   comma-separated line, with the attachment chips and the price keeping
+   their facts but dropping to a supporting voice. The loadout tabs
+   became a dropdown (the "More" tab was a dead end for eight of the
+   nine), the card's head is the way into that slot's list, the keycaps
+   trail their labels instead of stacking above them, and **the panel
+   scales with the viewport** instead of floating small in the middle of
+   it. The harness gained a "scaled" frame so the scaling can be seen
+   without a game.
+
+**Verified in a real game on the dev server** (2026-11-02): the client
+WASM rebuilt from this port, deployed, and byte-identical to the served
+copy; the panel drawn from the port's own rows and entries in a live
+client, with Clear on key eight. The port's suite is at **477 tests**,
+clippy is clean, and the frontend's typecheck and build are clean.
+
 ## The redesigned buy menu runs in a real game on the dev server (2026-11-01)
 
 **The buy menu is playable.** The dev server, a local TS server with bots, and
@@ -154,6 +199,12 @@ table in `docs/design-mocks/buy-menu-redesign.html`):
   (**Clear**, which asks before it empties the loadout). The port prints the
   literal `Clear`; the classic canvas row keeps the game's own
   `#Buy_ResetConfig` title, because the canvas menu must not change.
+- **the loadout screen's key space is its own**: the five cards wear the
+  HUD slots' digits (**1–5**), the player accessory is **6**, Random is
+  **7** and Clear is **8**. The browse screen's rail is a different
+  numbering — the categories, keyed **1–7** — so a digit is only ever sent
+  to the port's current page and the port says what it means. The classic
+  flow keeps the game's own keys (its reset row is still key 4).
 
 ## The admin console is specified (PR #104, 2026-10-31)
 
