@@ -127,6 +127,13 @@ two.**
    scales with the viewport** instead of floating small in the middle of
    it. The harness gained a "scaled" frame so the scaling can be seen
    without a game.
+6. **The HUD slot 1 card says "Melee weapons"** (it said "Melee ·
+   Grenades · Swords"): the grenades are map power-ups, not something a
+   player buys, so the card advertised something that is not for sale.
+   The port owns that label, so the client WASM was rebuilt for it. The
+   loadout screen's "Press a slot number to browse it…" paragraph is
+   gone as well — the panel shows it and does not need to explain
+   itself.
 
 **Verified in a real game on the dev server** (2026-11-02): the client
 WASM rebuilt from this port, deployed, and byte-identical to the served
