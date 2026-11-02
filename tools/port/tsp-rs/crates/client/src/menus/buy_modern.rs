@@ -32,8 +32,8 @@
 //! The rules are the port's: the browser computes nothing and forms no loadout.
 
 use super::buy::{
-    Action, BuyMenu, ENTRIES, ITEM_KEVLAR, ITEM_STEALTH, RowFlags, Rules, Rng, SAVED_CONFIGS, Screen, attachment_price, cost,
-    entry_slots, key_prefix, page, restricted, slots_for,
+    Action, BuyMenu, ENTRIES, ITEM_KEVLAR, ITEM_STEALTH, Rng, RowFlags, Rules, SAVED_CONFIGS, Screen, attachment_price, cost, entry_slots,
+    key_prefix, page, restricted, slots_for,
 };
 use shared::weapons::{WeaponInfo, tables};
 
@@ -115,10 +115,8 @@ pub fn page_is_drawn(b: &BuyMenu, pg: i32) -> bool {
 /// A restricted weapon is not listed (the classic menu hides those too), and neither is id 0 —
 /// the kung-fu is the empty id, and an entry with it is an empty entry.
 pub fn slot_weapons(slot: i32, r: &Rules) -> Vec<&'static WeaponInfo> {
-    let mut out: Vec<&WeaponInfo> = tables()
-        .weapons()
-        .filter(|w| w.hud[0] as i32 == slot && w.id != 0 && !restricted(w.id as i32, false, r))
-        .collect();
+    let mut out: Vec<&WeaponInfo> =
+        tables().weapons().filter(|w| w.hud[0] as i32 == slot && w.id != 0 && !restricted(w.id as i32, false, r)).collect();
     out.sort_by_key(|w| (w.hud[1], w.id));
     out
 }
@@ -235,7 +233,7 @@ pub fn purchase_summary(b: &BuyMenu, r: &Rules) -> Option<(i32, i32)> {
     let id = b.pending_weapon;
     if id <= 0 {
         return None;
- }
+    }
     let total = purchase_price(b, id, b.pending_att, false);
     // A copy of the menu, so the purchase can be run on it without touching the real one.
     let mut probe = b.clone();
@@ -468,9 +466,7 @@ fn slot_usage(b: &BuyMenu, r: &Rules, slot: i32) -> (i32, i32) {
 
 /// The tab records: the tab's index, its label and whether it is the active one.
 pub fn tab_records(b: &BuyMenu) -> Vec<String> {
-    (0..SAVED_CONFIGS)
-        .map(|i| format!("TSBUY tab {i} {} {}", tab_label(i), (i == b.tab) as i32))
-        .collect()
+    (0..SAVED_CONFIGS).map(|i| format!("TSBUY tab {i} {} {}", tab_label(i), (i == b.tab) as i32)).collect()
 }
 
 /// One entry of the modern flow's loadout: what a loadout card shows.
@@ -538,9 +534,9 @@ pub fn screen_title(b: &BuyMenu) -> String {
     match b.screen {
         Screen::Loadout => "BUY MENU".to_owned(),
         Screen::Browse => slot_label(b.modern_slot).to_uppercase(),
-        Screen::Attach => tables()
-            .weapon(b.pending_weapon.max(0) as u8)
-            .map_or_else(|| "ATTACHMENTS".to_owned(), |w| w.name.to_uppercase()),
+        Screen::Attach => {
+            tables().weapon(b.pending_weapon.max(0) as u8).map_or_else(|| "ATTACHMENTS".to_owned(), |w| w.name.to_uppercase())
+        }
     }
 }
 
@@ -579,15 +575,7 @@ pub fn state_lines(b: &BuyMenu, r: &Rules) -> Vec<String> {
     out.extend(slot_records(b, r));
     out.extend(tab_records(b));
     for row in &modern_rows(b, r) {
-        out.push(format!(
-            "TSBUY row {} {} {} {} {} {}",
-            row.key,
-            row.price,
-            row.flags.dump(),
-            row.page,
-            row.number,
-            row.label
-        ));
+        out.push(format!("TSBUY row {} {} {} {} {} {}", row.key, row.price, row.flags.dump(), row.page, row.number, row.label));
     }
     // The pending purchase's summary, on the attachments screen: what the gun and its
     // attachments together cost, and what would be left of the budget after it.
@@ -1053,17 +1041,39 @@ mod tests {
         assert_eq!(names(1), ["M61 Grenade", "Katana", "Combat Knife", "Seal Knife"]);
         assert_eq!(
             names(2),
-            ["Glock-18", "SOCOM-MK23", "Desert Eagle", "Five-seveN", "Glock-20C", "Ruger-MK1", "Raging Bull", "Contender G2", "Beretta 92F"]
+            [
+                "Glock-18",
+                "SOCOM-MK23",
+                "Desert Eagle",
+                "Five-seveN",
+                "Glock-20C",
+                "Ruger-MK1",
+                "Raging Bull",
+                "Contender G2",
+                "Beretta 92F"
+            ]
         );
         assert_eq!(names(3), ["Mini-Uzi", "MP5SD", "MP5K", "Skorpion", "MP7-PDW", "UMP"]);
         assert_eq!(
             names(4),
             [
-                "Benelli M3", "M4A1", "AK47", "STEYR-AUG", "Barrett M82A1", "SPAS-12", "Mossberg 500", "M16A4", "M60E3", "Sawed-off",
+                "Benelli M3",
+                "M4A1",
+                "AK47",
+                "STEYR-AUG",
+                "Barrett M82A1",
+                "SPAS-12",
+                "Mossberg 500",
+                "M16A4",
+                "M60E3",
+                "Sawed-off",
                 "USAS-12"
             ]
         );
-        assert_eq!(names(5), ["Akimbo Berettas", "Akimbo MK23", "Akimbo Mini-Uzi", "Golden Colts", "Akimbo Five-seveN", "Akimbo Skorpions"]);
+        assert_eq!(
+            names(5),
+            ["Akimbo Berettas", "Akimbo MK23", "Akimbo Mini-Uzi", "Golden Colts", "Akimbo Five-seveN", "Akimbo Skorpions"]
+        );
         // The M60E3 is slot 4, not slot 5, and the Golden Colts are slot 5.
         assert!(names(4).contains(&"M60E3".to_owned()));
         assert!(!names(5).contains(&"M60E3".to_owned()));
@@ -1088,10 +1098,13 @@ mod tests {
         m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
         assert_eq!(m.pending_weapon, 1, "the Glock-18");
         let actions = m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
-        let cmds: Vec<&str> = actions.iter().filter_map(|a| match a {
-            Action::ServerCmd(c) => Some(c.as_str()),
-            _ => None,
-        }).collect();
+        let cmds: Vec<&str> = actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::ServerCmd(c) => Some(c.as_str()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(cmds[0], "rst_cfg", "the config is reset first: {cmds:?}");
         assert!(cmds[1].starts_with("tkw "), "the weapons: {cmds:?}");
         assert!(cmds[1].contains("1_0"), "the Glock-18: {cmds:?}");
@@ -1220,10 +1233,13 @@ mod tests {
         let actions = m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
         assert!(!m.current.entries.iter().any(|e| e.id == 1), "the Glock-18 is off the loadout");
         assert_eq!(m.current.total, 0, "and its cost is refunded");
-        let cmds: Vec<&str> = actions.iter().filter_map(|a| match a {
-            Action::ServerCmd(c) => Some(c.as_str()),
-            _ => None,
-        }).collect();
+        let cmds: Vec<&str> = actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::ServerCmd(c) => Some(c.as_str()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(cmds[0], "rst_cfg", "the loadout is applied: {cmds:?}");
         assert!(!cmds[1].contains("1_0"), "and the Glock-18 is not in it: {cmds:?}");
         // The flow stays where it was: the slot's list.
@@ -1418,11 +1434,8 @@ mod tests {
         // listed in a teamplay mode), so find it rather than counting. The "Add to loadout"
         // row's key depends on how many attachment rows the weapon has, so read it too.
         m.dom_key_on(page::CATEGORY, 1, &r, &mut FixedRng(vec![], 0));
-        let knife_key = browse_items(1, &r)
-            .iter()
-            .position(|i| i.name == "Combat Knife")
-            .expect("the knife is in slot 1's list") as i32
-            + 1;
+        let knife_key =
+            browse_items(1, &r).iter().position(|i| i.name == "Combat Knife").expect("the knife is in slot 1's list") as i32 + 1;
         m.dom_key_on(page::WEAPONS, knife_key, &r, &mut FixedRng(vec![], 0));
         let add_key = m
             .state_lines(&r)
@@ -1506,10 +1519,13 @@ mod tests {
         // The Katana's weapon id is 34 (id 13 is a different weapon), and it is still in it.
         assert!(m.current.entries.iter().any(|e| e.id == 34), "the Katana is still in it");
         assert_eq!(m.current.total, 2900, "and the Glock's cost is refunded");
-        let cmds: Vec<&str> = actions.iter().filter_map(|a| match a {
-            Action::ServerCmd(c) => Some(c.as_str()),
-            _ => None,
-        }).collect();
+        let cmds: Vec<&str> = actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::ServerCmd(c) => Some(c.as_str()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(cmds[0], "rst_cfg", "the loadout that is left is applied: {cmds:?}");
         assert!(!cmds[1].contains("1_0"), "and the Glock-18 is not in it: {cmds:?}");
         assert!(cmds[1].contains("34_0"), "the Katana is: {cmds:?}");
@@ -1534,10 +1550,7 @@ mod tests {
         m.handle_key(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
         m.handle_key(page::OPTIONS, 1, &r, &mut FixedRng(vec![], 0));
         let lines = m.state_lines(&r);
-        assert!(
-            lines.contains(&"TSBUY entry 0 850 10 Glock-18".to_owned()),
-            "the classic's entry record is four fields: {lines:?}"
-        );
+        assert!(lines.contains(&"TSBUY entry 0 850 10 Glock-18".to_owned()), "the classic's entry record is four fields: {lines:?}");
     }
     #[test]
     fn dbg_entries() {
@@ -1555,6 +1568,8 @@ mod tests {
         println!("pending={}", m.pending_weapon);
         m.dom_key_on(page::OPTIONS, 6, &r, &mut FixedRng(vec![], 0));
         println!("after katana: {:?}", m.current.entries.iter().map(|e| (e.id, e.cost)).collect::<Vec<_>>());
-        for l in m.state_lines(&r) { println!("{l}"); }
+        for l in m.state_lines(&r) {
+            println!("{l}");
+        }
     }
 }

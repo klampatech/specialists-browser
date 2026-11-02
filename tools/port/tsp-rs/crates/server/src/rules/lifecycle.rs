@@ -45,14 +45,7 @@ pub fn client_connect(e: *mut edict_t, name: &CStr, addr: &CStr) -> bool {
     // timeouts and the map cycle, and never a player. The bots announce
     // themselves ("connected with skill"), which is why only they ever
     // showed up.
-    engine().alert(
-        ALERT_TYPE::at_console,
-        &format!(
-            "[ts] {} connected (address {})\n",
-            name.to_string_lossy(),
-            addr.to_string_lossy()
-        ),
-    );
+    engine().alert(ALERT_TYPE::at_console, &format!("[ts] {} connected (address {})\n", name.to_string_lossy(), addr.to_string_lossy()));
     true
 }
 
@@ -74,11 +67,7 @@ pub fn client_disconnect(e: *mut edict_t) {
     let is_bot = crate::world::with::<Player, bool>(e, |p| p.is_bot == 1).unwrap_or(false);
     eng.alert(
         ALERT_TYPE::at_console,
-        &format!(
-            "[ts] {}{} disconnected\n",
-            if is_bot { "bot " } else { "" },
-            String::from_utf8_lossy(&who)
-        ),
+        &format!("[ts] {}{} disconnected\n", if is_bot { "bot " } else { "" }, String::from_utf8_lossy(&who)),
     );
     if !game_over {
         let name = netname(e);

@@ -1457,13 +1457,7 @@ impl BuyMenu {
     /// message (the classic flow) or not (the modern flow), and `announce_applied` says
     /// whether the applied config is announced (the classic flow does; the modern flow
     /// applies on every purchase and says nothing).
-    fn submit_config(
-        &mut self,
-        actions: &mut Vec<Action>,
-        r: &Rules,
-        announce_empty: bool,
-        announce_applied: bool,
-    ) -> bool {
+    fn submit_config(&mut self, actions: &mut Vec<Action>, r: &Rules, announce_empty: bool, announce_applied: bool) -> bool {
         if announce_empty && self.current.total < 1 {
             actions.push(Action::Message("#Buy_ConfigEmpty".into(), RED));
         }

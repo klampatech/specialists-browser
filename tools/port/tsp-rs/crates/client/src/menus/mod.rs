@@ -348,11 +348,7 @@ extern "C" fn cmd_buy_key() {
     // The classic flow's keys are the game's own, 1..11. The modern flow's remove keys run
     // past them (the loadout's entries are removed by their own keys), so the guard is wider
     // there — and only there: the classic flow's console behaviour is unchanged.
-    let max = if with(|m| m.buy.mode == buy::Mode::Modern) {
-        buy_modern::REMOVE_KEY_BASE + buy::ENTRIES as i32 - 1
-    } else {
-        11
-    };
+    let max = if with(|m| m.buy.mode == buy::Mode::Modern) { buy_modern::REMOVE_KEY_BASE + buy::ENTRIES as i32 - 1 } else { 11 };
     let n = match e.cmd_argv(1).to_string_lossy().trim().parse::<i32>() {
         Ok(n) if (1..=max).contains(&n) => n,
         _ => {
@@ -1464,11 +1460,7 @@ mod tests {
         for line in lines {
             print_state_line(&line);
         }
-        assert!(
-            told_state().iter().any(|l| l.contains("open=0")),
-            "the DOM menu is told the menu is closed: {:?}",
-            told_state()
-        );
+        assert!(told_state().iter().any(|l| l.contains("open=0")), "the DOM menu is told the menu is closed: {:?}", told_state());
     }
 
     /// `FUN_10036480`: a missing `tsbuylist.tsa` is created empty, an existing one is read, and

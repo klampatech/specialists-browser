@@ -507,7 +507,6 @@ extern "C" fn cmd_status() {
     }
 }
 
-
 /// `ts_dev_forcejoin [<player#>]`: print each player's observer state, then drag them out of
 /// observer and respawn them. With no argument it walks every slot.
 ///
