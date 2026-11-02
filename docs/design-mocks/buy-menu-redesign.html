@@ -1,0 +1,189 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>The Specialists buy menu redesign</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600&display=swap">
+<style>
+:root{color-scheme:dark;--bg:#0f0d0a;--tx:#f2e9d8;--mu:#b3a68e;--ac:#f2b84b;--bd:#33291d}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.6 Inter,system-ui,sans-serif}
+.doc{max-width:1040px;margin:0 auto;padding:40px 20px 80px}
+.doc h1{font:700 40px "Barlow Condensed",sans-serif;letter-spacing:.08em;color:var(--ac);margin:4px 0 12px}
+.doc h2{font:700 26px "Barlow Condensed",sans-serif;letter-spacing:.08em;color:var(--ac);margin:44px 0 8px;border-top:1px solid var(--bd);padding-top:24px}
+.doc h3{margin:0 0 4px;font-size:18px}
+.doc-kicker{margin:0;color:var(--mu);text-transform:uppercase;letter-spacing:.12em;font-size:13px}
+.doc-lead{font-size:18px;color:var(--tx)}
+.doc p,.doc li{max-width:78ch}.doc li{margin:4px 0}
+.doc-note{color:var(--mu);font-size:14px}
+.doc-fig{margin:28px 0}.doc-fig p{color:var(--mu);margin:0 0 12px}
+.doc-scroll{overflow-x:auto;border:1px solid var(--bd);border-radius:12px}
+.doc table{border-collapse:collapse;width:100%;font-size:14px;display:block;overflow-x:auto}
+.doc th,.doc td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--bd);vertical-align:top}
+.doc th{color:var(--mu);font-weight:600}
+.doc-scroll .r{margin:0}
+
+body{margin:0}*{box-sizing:border-box}
+.r{width:960px;height:620px;padding:28px;background:#14110d;color:#f2e9d8;font-family:Inter,sans-serif;display:flex;flex-direction:column;gap:18px}
+.h{font-family:"Barlow Condensed",sans-serif;font-weight:700;letter-spacing:.12em;font-size:30px;color:#f2b84b;margin:0}
+.m{color:#b3a68e;font-size:13px}.row{display:flex;gap:12px}.c{display:flex;flex-direction:column;gap:8px}
+.bar{height:6px;background:#2a241b;border-radius:3px;width:260px}.bar i{display:block;height:6px;border-radius:3px;background:#f2b84b}
+.card{background:#1f1a13;border:1px solid #33291d;border-radius:10px;padding:10px 14px;display:flex;align-items:center;gap:12px;min-height:56px}
+.k{display:inline-flex;align-items:center;justify-content:center;min-width:28px;height:28px;border-radius:6px;background:#33291d;color:#f2b84b;font:600 13px Inter,sans-serif;border:0;padding:0 8px}
+.b{display:flex;align-items:center;gap:12px;width:100%;min-height:44px;padding:0 14px;background:#1f1a13;border:1px solid #33291d;border-radius:8px;color:#f2e9d8;font:500 15px Inter,sans-serif;text-align:left;cursor:pointer}
+.b .p{margin-left:auto;color:#b3a68e;font-weight:400}
+.on{border-color:#f2b84b}.dash{border-style:dashed}
+.chip{font-size:12px;padding:3px 10px;border-radius:12px;background:#33291d;color:#f2e9d8}
+.go{min-height:48px;padding:0 28px;background:#f2b84b;color:#14110d;border:0;border-radius:8px;font:600 16px Inter,sans-serif;cursor:pointer}
+.ghost{min-height:44px;padding:0 20px;background:transparent;color:#f2e9d8;border:1px solid #4a3d2b;border-radius:8px;font:500 14px Inter,sans-serif;cursor:pointer}
+.t{font-size:12px;letter-spacing:.1em;color:#b3a68e;text-transform:uppercase;margin:0}
+.tab{min-height:44px;padding:0 18px;border-radius:8px;border:1px solid #33291d;background:transparent;color:#b3a68e;font:500 14px Inter,sans-serif;cursor:pointer}
+.tab.a{background:#f2b84b;color:#14110d;border-color:#f2b84b}
+.s{font-weight:600}.n{color:#b3a68e;font-size:12px;width:48px}
+/* The rail's first row lines up with the main column's first row: "Also" sits on the
+   same line as the tabs, and the accessory button starts level with the first card. */
+.also{display:flex;align-items:center;min-height:44px}
+/* The destructive action wears red: the Clear confirmation is the one button that
+   throws the player's loadout away, so it does not look like the button that starts
+   the game. */
+.go--danger{background:#e5484d;color:#14110d}
+
+</style></head><body><main class="doc">
+<header class="doc-head"><p class="doc-kicker">Design handoff</p><h1>The Specialists buy menu redesign</h1><p class="doc-lead">A redesign of the in-game buy menu for the Half-Life 1 mod The Specialists. This page holds the mockups and everything an implementing agent needs to know about the game and the intended behavior. The mockups are static. The commands that drive the menu are being mapped separately by the project owner.</p>
+<div class="doc-note"><b>Updated 2026-11-02, after the playtest.</b> The frames below follow what the playtest changed: the browse screen’s rail is the weapon <b>categories</b> (six of them, and the akimbo weapons are not among them — a player who wants the akimbo Berettas is looking at the Berettas, so the akimbo version is offered on the gun, on its attachments screen), the HUD slot 5 card says <b>Special Purpose</b> (the game’s own name for that slot: the akimbo versions and the Golden Colts), the cards no longer carry a “+ Add” button (the card’s own number opens its list), and the panels no longer explain themselves in their footers. The akimbo version is <b>the gun bought twice</b> — the game’s own rule, and the server’s spawn gives the player the gun <b>and</b> the pair: the gun in its own card, the pair in the card 5. So the akimbo Five-seveN costs $2,500, not $1,250, and the loadout shows both: the Five-seveN in the pistols card, the Akimbo Five-seveN in Special Purpose. The key table is the port’s key space: the rail’s keys and the HUD slots are two numberings, and the loadout screen has the accessory on 6, Random on 7 and Clear on 8. The panels no longer explain themselves: the three lines of footer text are gone, and <b>nothing is highlighted by default</b> when a category opens — a list that opens with a row lit reads as “this one is chosen”, and picking a weapon takes the player to another screen anyway.</div></header>
+
+<h2>1. Game context</h2>
+<p><b>Confirmed by the project owner:</b></p>
+<ul><li>The game is a Half-Life 1 mod. Weapons live in numbered slots, as in vanilla Half-Life, and the player has <b>5 slots</b>.</li>
+<li>Slots are fixed by weapon type. Slot 1 is melee, grenades, swords and unarmed. Slot 2 is pistols. Slot 3 is SMGs. Slot 4 is rifles and shotguns. Slot 5 is the special-purpose slot: the akimbo versions of the pistols and SMGs, and the Golden Colts. (The owner was fairly but not fully sure about slot 5; the game’s own weapon table has since answered it.)</li>
+<li>A slot can hold more than one weapon as long as the budget allows.</li>
+<li>The menu is number-driven (0–9, plus “A” for a tenth row). Clicking a row also works, and B closes the panel.</li>
+<li>The budget is a fixed amount ($30,000 in the examples) spent on a loadout. It is not a per-round economy.</li>
+<li>Attachments (Silencer, Lasersight, Flashlight) are bought for a gun. In the current game the attachments are bought <i>before</i> the gun.</li></ul>
+<p><b>Unverified, treat as assumptions:</b> the M60E3 goes in slot 5 (the game’s own weapon kinds put it in the rifles, so the mockups follow the game). The meaning of the header’s “Slots” value (it read 61 in the current UI) is unknown, so the mockups show “slots in use out of 5” instead.</p>
+
+<h2>2. Problems with the current menu</h2>
+<ul><li>Previous menu levels stay visible, dimmed, beneath the current one. Numbers repeat down the list (several rows labelled 1, 2, 3…), which is confusing.</li>
+<li>Buying a gun is a multi-step trip (category, weapon, Options, Buy), and then the player must pick “Use New Config” to actually use it. Players often skip that and don’t fight with what they bought.</li>
+<li>Attachments must be purchased before the gun, which is backwards from how players think.</li>
+<li>Categories (Handguns, SMGs, Rifles, Shotguns, Special Purpose, Player Accessory) don’t match the in-game slots. Knives sit under Special Purpose but belong in slot 1.</li>
+<li>Config management (Empty, Reset, Save, Load, Use New) is exposed as separate menu actions.</li></ul>
+
+<h2>3. Design principles</h2>
+<ol><li><b>The current loadout is always live.</b> Whatever the player has bought is what they spawn with. There is no “use config” step.</li>
+<li><b>One level on screen at a time.</b> No stacked or repeated menus. Always show where the player is (breadcrumb) and the budget.</li>
+<li><b>Organize by slot, not category.</b> Number keys match the in-game slot numbers.</li>
+<li><b>Stage, then commit.</b> Attachments are chosen with the gun and committed in one action. The command order (attachments first, gun second) is hidden from the player.</li>
+<li><b>Loadouts are tabs, saved automatically.</b> There is no Save or Load step.</li>
+<li><b>Never hide an option, explain it.</b> Unaffordable items stay visible and say why.</li></ol>
+
+<h2>4. Screens and flow</h2>
+<ol><li>The player presses B. The panel opens on <b>Loadout</b> (screen 1) showing the active loadout.</li>
+<li>They press a slot number (or click “+ Add”). The <b>Browse</b> screen (2) opens for that slot. The rail lets them jump to another slot.</li>
+<li>They pick a weapon. The <b>Attachments</b> screen (3) opens. They toggle attachments, then press Enter to add the gun plus its attachments, which returns them to the Browse screen or Loadout (implementer’s choice, but returning to the same slot’s list suits buying a second pistol).</li>
+<li>They press Enter on the Loadout screen, or close with B. The current loadout is used on the next spawn. Closing never discards anything.</li></ol>
+<section class="doc-fig"><h3>1. Loadout screen (opens here)</h3><p>The default view. Shows the active loadout as five slot cards. Pressing a slot number opens that slot’s weapon list. Enter deploys. B closes without losing anything.</p><div class="doc-scroll"><div class="r">
+<div class="row" style="justify-content:space-between;align-items:center"><div><h1 class="h">BUY MENU</h1><div class="m">Slots match the in-game weapon slots</div></div><div class="c" style="align-items:flex-end;gap:6px"><div class="m"><b style="color:#f2e9d8;font-size:18px">$23,400</b> left of $30,000 &nbsp;·&nbsp; 2 of 5 slots in use</div><div class="bar"><i style="width:22%"></i></div></div></div>
+<div class="row" style="flex:1;min-height:0"><div class="c" style="flex:1"><div class="row" style="align-items:center;gap:8px"><button class="tab a">Loadout A</button><button class="tab">Loadout B</button><button class="tab">Loadout C</button></div>
+<div class="card" style="flex-direction:column;align-items:stretch;gap:6px;padding:8px 10px"><div class="row" style="align-items:center"><span class="k">1</span><span class="t">Melee weapons</span></div><button class="b" style="min-height:36px;border-color:transparent;background:#262016"><span class="s">Combat Knife</span><span class="p">$100</span></button><button class="b" style="min-height:36px;border-color:transparent;background:#262016"><span class="s">Katana</span><span class="p">$2,900</span></button></div><div class="card" style="flex-direction:column;align-items:stretch;gap:6px;padding:8px 10px"><div class="row" style="align-items:center"><span class="k">2</span><span class="t">Pistols</span></div><button class="b" style="min-height:36px;border-color:transparent;background:#262016"><span class="s">Glock-18</span><span class="row" style="gap:6px"><span class="chip">Silencer</span><span class="chip">Lasersight</span></span><span class="p">$2,550</span></button><button class="b" style="min-height:36px;border-color:transparent;background:#262016"><span class="s">Desert Eagle</span><span class="p">$1,050</span></button></div><div class="card" style="flex-direction:column;align-items:stretch;gap:6px;padding:8px 10px"><div class="row" style="align-items:center"><span class="k">3</span><span class="t">SMGs</span></div></div><div class="card" style="flex-direction:column;align-items:stretch;gap:6px;padding:8px 10px"><div class="row" style="align-items:center"><span class="k">4</span><span class="t">Rifles · Shotguns</span></div></div><div class="card" style="flex-direction:column;align-items:stretch;gap:6px;padding:8px 10px"><div class="row" style="align-items:center"><span class="k">5</span><span class="t">Special Purpose</span></div></div></div>
+<div class="c" style="width:250px"><p class="t also">Also</p><button class="b"><span class="k">6</span>Player Accessory</button>
+<div class="row"><button class="ghost" style="flex:1"><span class="k" style="margin-right:8px">R</span>Random</button><button class="ghost" style="flex:1"><span class="k" style="margin-right:8px">X</span>Clear</button></div>
+</div></div>
+<div class="row" style="align-items:center;justify-content:space-between"><div class="row"><button class="ghost">B &nbsp;Close</button><button class="go">Enter &nbsp;Use Loadout A</button></div></div>
+</div>
+</div></section><section class="doc-fig"><h3>2. Browse a category</h3><p>The category rail on the left replaces the stacked category menus, so switching category needs no “Go Back”. Weapons are in two columns, keyed 1–9 then A. The right column keeps the loadout visible while buying.</p><div class="doc-scroll"><div class="r">
+<div class="row" style="justify-content:space-between;align-items:center"><div><h1 class="h">PISTOLS</h1><div class="m">Loadout A · Buy</div></div><div class="c" style="align-items:flex-end;gap:6px"><div class="m"><b style="color:#f2e9d8;font-size:18px">$25,950</b> left of $30,000 &nbsp;·&nbsp; 2 of 5 slots in use</div><div class="bar"><i style="width:13.5%"></i></div></div></div>
+<div class="row" style="flex:1;min-height:0"><div class="c" style="width:210px"><p class="t">Categories</p><button class="tab" style="text-align:left"><b style="margin-right:10px">1</b>Melee weapons</button><button class="tab a" style="text-align:left"><b style="margin-right:10px">2</b>Pistols</button><button class="tab" style="text-align:left"><b style="margin-right:10px">3</b>SMGs</button><button class="tab" style="text-align:left"><b style="margin-right:10px">4</b>Rifles</button><button class="tab" style="text-align:left"><b style="margin-right:10px">5</b>Shotguns</button><button class="tab" style="text-align:left"><b style="margin-right:10px">6</b>Player Accessory</button></div>
+<div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:8px;align-content:start"><button class="b"><span class="k">1</span>Glock-18<span class="p">$850</span></button><button class="b"><span class="k">2</span>SOCOM-MK23<span class="p">$700</span></button><button class="b"><span class="k">6</span>Glock-20C<span class="p">$1,300</span></button><button class="b"><span class="k">3</span>Desert Eagle<span class="p">$1,050 · Owned</span></button><button class="b"><span class="k">7</span>Ruger-MK1<span class="p">$1,500</span></button><button class="b"><span class="k">4</span>Five-seveN<span class="p">$1,250</span></button><button class="b"><span class="k">8</span>Raging Bull<span class="p">$2,100</span></button><button class="b"><span class="k">5</span>Beretta 92F<span class="p">$900</span></button><button class="b"><span class="k">9</span>Contender G2<span class="p">$1,500</span></button></div>
+<div class="c" style="width:230px"><p class="t">Loadout A</p><div class="card"><span class="n">1</span><span class="s">Combat Knife, Katana</span></div><div class="card on"><span class="n">2</span><span class="s">Desert Eagle</span></div><div class="card dash"><span class="n"></span><span class="m">Adding a pistol</span></div><div class="card dash"><span class="n">3</span><span class="m">Empty</span></div><div class="card dash"><span class="n">4</span><span class="m">Empty</span></div><div class="card dash"><span class="n">5</span><span class="m">Empty</span></div></div></div>
+<div class="row" style="align-items:center;justify-content:space-between"><button class="ghost"><span class="k" style="margin-right:8px">0</span>Back to loadout</button></div>
+</div>
+</div></section><section class="doc-fig"><h3>3. Pick attachments, then add</h3><p>Selecting a weapon opens this screen. Attachments toggle on number keys and nothing is bought until “Add to loadout”. The summary shows the total and the money left after adding.</p><div class="doc-scroll"><div class="r">
+<div class="row" style="justify-content:space-between;align-items:center"><div><h1 class="h">FIVE-SEVEN</h1><div class="m">Loadout A · Buy · Attachments</div></div><div class="c" style="align-items:flex-end;gap:6px"><div class="m"><b style="color:#f2e9d8;font-size:18px">$25,950</b> left of $30,000 &nbsp;·&nbsp; 2 of 5 slots in use</div><div class="bar"><i style="width:13.5%"></i></div></div></div>
+<div class="row" style="flex:1;min-height:0">
+<div class="c" style="flex:1"><div class="card on"><div class="c" style="gap:2px"><span class="s" style="font-size:16px">Five-seveN</span><span class="m">Added to Pistols (rail slot 2)</span></div><span style="margin-left:auto;font-size:18px">$1,250</span></div>
+<p class="t" style="margin-top:6px">Attachments (optional)</p>
+<button class="b on"><span class="k">1</span>Silencer<span class="p">$900 · Selected</span></button>
+<button class="b on"><span class="k">2</span>Lasersight<span class="p">$800 · Selected</span></button>
+<button class="b"><span class="k">3</span>Flashlight<span class="p">$500</span></button><button class="b"><span class="k">5</span>Akimbo<span class="p">$1,250</span></button>
+<span class="m">Press a number again to unselect. Nothing is bought until you add the gun.</span></div>
+<div class="c" style="width:300px"><p class="t">Summary</p>
+<div class="card" style="flex-direction:column;align-items:stretch;gap:6px"><div class="row" style="justify-content:space-between"><span>Five-seveN</span><span class="m">$1,250</span></div><div class="row" style="justify-content:space-between"><span>Silencer</span><span class="m">$900</span></div><div class="row" style="justify-content:space-between"><span>Lasersight</span><span class="m">$800</span></div><div class="row" style="justify-content:space-between;border-top:1px solid #33291d;padding-top:8px"><b>Total</b><b>$2,950</b></div></div>
+<span class="m">After adding: $23,000 left</span></div>
+</div>
+<div class="row" style="align-items:center;justify-content:space-between"><div class="row"><button class="ghost"><span class="k" style="margin-right:8px">0</span>Back to Pistols</button><button class="go">Enter &nbsp;Add to loadout · $2,950</button></div></div>
+</div>
+</div></section><section class="doc-fig"><h3>4. Row states</h3><p>Focused, owned and can’t-afford rows, the toast shown when a player presses an unaffordable row, and the amber low-budget bar.</p><div class="doc-scroll"><div class="r">
+<div class="row" style="justify-content:space-between;align-items:center"><div><h1 class="h">BUY MENU</h1><div class="m">Row states with a low budget</div></div><div class="c" style="align-items:flex-end;gap:6px"><div class="m"><b style="color:#ffb35a;font-size:18px">$1,950</b> left of $30,000 &nbsp;·&nbsp; 5 of 5 slots in use</div><div class="bar"><i style="width:93.5%;background:#ffb35a"></i></div></div></div>
+<div class="row" style="flex:1;min-height:0"><div class="c" style="flex:1"><p class="t">Slot 1 · Melee</p>
+<button class="b" style="border-color:#f2b84b;background:#2a2216"><span class="k">1</span>Combat Knife<span class="p">$100</span></button><button class="b" style="background:#262016"><span class="k">2</span>Seal Knife<span class="p">$100 · Owned</span></button><button class="b" style="border-color:#5a2a22"><span class="k" style="opacity:.55">3</span><s style="color:#ff8a73">Katana</s><span class="p"><s style="color:#ff8a73">$2,900</s> &nbsp;<span style="color:#ff8a73">Need $950 more</span></span></button>
+<p class="t" style="margin-top:10px">Slot 5 · Special Purpose</p><button class="b" style="border-color:#5a2a22"><span class="k" style="opacity:.55">1</span><s style="color:#ff8a73">Golden Colts</s><span class="p"><s style="color:#ff8a73">$2,600</s> &nbsp;<span style="color:#ff8a73">Need $650 more</span></span></button></div>
+<div class="c" style="width:340px"><p class="t">State guide</p>
+<div class="card" style="border-color:#f2b84b;background:#2a2216"><div class="c" style="gap:2px"><span class="s">Focused</span><span class="m">Gold outline and lighter fill. Enter or its number picks it.</span></div></div>
+<div class="card" style="background:#262016"><div class="c" style="gap:2px"><span class="s">Owned</span><span class="m">Tag after the price. Choosing it removes it.</span></div></div>
+<div class="card" style="border-color:#5a2a22"><div class="c" style="gap:2px"><span class="s" style="color:#ff8a73">Can't afford</span><span class="m">Red, struck through, plus the amount missing so color is never the only cue.</span></div></div>
+<div class="card" style="border-color:#5a2a22;background:#2a1713"><div class="c" style="gap:2px"><span class="s">Toast on press</span><span class="m" style="color:#ff8a73">Not enough money. Katana needs $950 more.</span></div></div>
+<span class="m">The budget bar turns amber under about 10% left.</span></div></div>
+<div class="row" style="align-items:center;justify-content:space-between"><span class="m">Unaffordable rows stay visible and stay focusable. Pressing one explains why.</span><button class="ghost"><span class="k" style="margin-right:8px">0</span>Back to loadout</button></div>
+</div>
+</div></section>
+<h2>5. Row states</h2>
+<table><tr><th>State</th><th>Appearance</th><th>Behavior</th></tr>
+<tr><td>Default</td><td>Dark card, thin border, number keycap, name left, price right</td><td>Number key or click selects</td></tr>
+<tr><td>Focused</td><td>Gold border, lighter fill</td><td>Enter selects. Arrow keys move focus if supported</td></tr>
+<tr><td>Owned</td><td>Subtle fill, “· Owned” after the price</td><td>Selecting removes it and refunds its cost</td></tr>
+<tr><td>Can’t afford</td><td>Red struck-through name and price, “Need $X more”, dimmed keycap</td><td>Stays focusable. Selecting shows a toast and buys nothing</td></tr>
+<tr><td>Selected attachment</td><td>Gold border, “· Selected”</td><td>Press the number again to unselect. Nothing is bought until “Add to loadout”</td></tr>
+<tr><td>Empty slot</td><td>Dashed card, “Empty”</td><td>The slot number opens its list</td></tr>
+<tr><td>Low budget</td><td>Budget bar and “left” figure turn amber under about 10% remaining</td><td>Informational only</td></tr></table>
+
+<section class="doc-fig"><h3>The destructive action</h3><p>Clear empties the loadout and refunds it, so it asks first. The confirm button is <b>red</b>: it is the one button in the panel that throws the player's loadout away, so it does not look like the button that starts the game. The confirm and cancel buttons stay anchored at the footer's right, and the key cap keeps its gap from the label.</p><div class="doc-scroll"><div class="r" style="height:130px;justify-content:flex-end">
+<div class="row" style="align-items:center;justify-content:space-between"><span style="color:#f2e9d8;font-size:14px">Clear this loadout? Everything in it is refunded.</span><div class="row"><button class="ghost">Cancel</button><button class="go go--danger">Enter &nbsp;Clear</button></div></div>
+</div></div></section>
+<h2>6. Key bindings (proposed)</h2>
+<table><tr><th>Key</th><th>Loadout</th><th>Browse</th><th>Attachments</th></tr>
+<tr><td>1–5</td><td>Open that HUD slot’s list: 1 melee weapons, 2 pistols, 3 SMGs, 4 rifles, 5 special purpose</td><td>Pick weapon 1–5, or switch the rail’s category</td><td>Toggle attachment 1–4; the akimbo version on 5</td></tr>
+<tr><td>6</td><td>Player Accessory</td><td>Pick weapon 6, or switch to the accessory</td><td>Add to loadout</td></tr>
+<tr><td>7</td><td>Random</td><td>Pick weapon 7</td><td>—</td></tr>
+<tr><td>8</td><td>Clear</td><td>Pick weapon 8</td><td>—</td></tr>
+<tr><td>9, A</td><td>—</td><td>Pick weapon 9, 10th</td><td>—</td></tr>
+<tr><td>0</td><td>—</td><td>Back to loadout</td><td>Back to the weapon list</td></tr>
+<tr><td>Enter</td><td>Deploy</td><td>Confirm focused row</td><td>Add to loadout</td></tr>
+<tr><td>B</td><td>Close (loadout kept)</td><td>Close</td><td>Close</td></tr>
+<tr><td>R / X</td><td>Random / Clear active loadout</td><td>—</td><td>—</td></tr></table>
+<p class="doc-note">Number keys on the Browse screen select weapons, and on the Loadout screen they open slots. Because the meaning changes per screen, the screen title and breadcrumb must always be visible. The rail’s keys and the HUD slots are two numberings: the rail’s 4 is the rifles alone, while the HUD slot 4 holds the rifles and the shotguns. These bindings are proposals and can be remapped to whatever the command layer supports.</p>
+
+<h2>7. Behavior rules</h2>
+<ul><li><b>Implicit loadout:</b> purchases go straight into the active loadout (A, B or C). Switching tabs switches which loadout is live. Edits save automatically.</li>
+<li><b>Multiple weapons per slot:</b> allowed while the budget lasts. Buying a second pistol adds it and does not replace the first.</li>
+<li><b>Adding a gun with attachments:</b> compute the total (gun plus selected attachments). If it exceeds the money left, disable “Add” and show the missing amount. On success, issue the attachment purchases first and the gun second, then update the budget.</li>
+<li><b>Removing:</b> selecting an owned weapon removes it and refunds its price. Removing a gun also removes its attachments (confirm whether the game refunds them).</li>
+<li><b>Clear:</b> empties the active loadout and refunds everything. <b>Random:</b> fills the active loadout within budget.</li>
+<li><b>Budget header:</b> money left, a bar for the share spent, and slots in use out of 5.</li>
+<li><b>The akimbo version:</b> it is the gun bought twice — the game’s own rule, and the server turns the second copy into the pair. So the row on the gun’s attachments screen costs the gun’s price again (the akimbo Five-seveN is $2,500, not $1,250), and the loadout shows <b>both</b>: the gun in its own card, the pair in the card 5. The two cards’ prices add up to what the player paid.</li></ul>
+
+<h2>8. Data seen so far (from screenshots)</h2>
+<table><tr><th>Slot / category</th><th>Items and prices</th></tr>
+<tr><td>Pistols (Handguns)</td><td>Glock-18 $850 · SOCOM-MK23 $700 · Desert Eagle $1,050 · Five-seveN $1,250 · Beretta 92F $900 · Glock-20C $1,300 · Ruger-MK1 $1,500 · Raging Bull $2,100 · Contender G2 $1,500</td></tr>
+<tr><td>Melee (listed under Special Purpose in the current menu)</td><td>Combat Knife $100 · Katana $2,900 · Seal Knife $100. The list may be longer than the screenshot showed.</td></tr>
+<tr><td>Special Purpose (slot 5)</td><td>Golden Colts $2,600. The akimbo pairs live here too — each pair next to the gun it belongs to: the gun in its own card, the pair here</td></tr>
+<tr><td>Attachments</td><td>Silencer $900 · Lasersight $800 · Flashlight $500</td></tr>
+<tr><td>SMGs, Rifles, Shotguns, Player Accessory</td><td>Not captured. The mockups don’t show them</td></tr></table>
+<p class="doc-note">The loadouts in the mockups (Combat Knife, Katana, Glock-18 with attachments, Desert Eagle) are invented examples, so totals will not match the owner’s screenshots.</p>
+
+<h2>9. Visual tokens</h2>
+<table><tr><th>Token</th><th>Value</th></tr>
+<tr><td>Background / card / border</td><td>#14110d / #1f1a13 / #33291d</td></tr>
+<tr><td>Text / muted text</td><td>#f2e9d8 / #b3a68e</td></tr>
+<tr><td>Accent (gold)</td><td>#f2b84b</td></tr>
+<tr><td>Can’t afford / low budget</td><td>#ff8a73 / #ffb35a</td></tr>
+<tr><td>Fonts</td><td>Barlow Condensed (headings, letter-spaced), Inter (UI), with system fallbacks</td></tr>
+<tr><td>Targets</td><td>Rows at least 44px tall. Text meets 4.5:1 against its background. Color is never the only signal</td></tr></table>
+<p class="doc-note">The look follows the existing gold-on-dark theme of the current menu. If the game’s UI toolkit can’t render these fonts, keep the layout and swap the fonts.</p>
+
+<h2>10. Open questions</h2>
+<ul><li>What does the header’s “Slots” number (61 in the current UI) actually count? The mockups show slots in use out of 5.</li>
+<li>Is M60E3 definitely slot 5, and what else is in slot 5?</li>
+<li>Do any limits exist beyond money (per-slot or weapon-count caps, map or mode restrictions)? If so, add a “not allowed” state distinct from “can’t afford”.</li>
+<li>Does removing a gun refund its attachments?</li>
+<li>Where should the player land after adding a gun: the same slot’s list or the Loadout screen?</li>
+<li>Are keyboard arrow keys supported by the menu system, or only number keys and the mouse?</li></ul>
+
+<h2>11. Scope</h2>
+<p>Not designed: the SMG, rifle, shotgun and accessory lists (they reuse the Browse layout), the Random confirmation, a first-time hint for new players, and any in-world HUD changes (the weapon bar at the top of the screen is untouched).</p>
+</main></body></html>
