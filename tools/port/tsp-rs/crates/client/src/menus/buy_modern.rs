@@ -788,11 +788,11 @@ fn slot_usage(b: &BuyMenu, r: &Rules, slot: i32) -> (i32, i32) {
         if e.akimbo {
             let Some(twin) = akimbo_twin(e.id) else { continue };
             if w.hud[0] as i32 == slot {
-                slots = slots.wrapping_add(w.slots as i32);
+                slots = slots.wrapping_add(w.slots);
                 count += 1;
             }
             if twin.hud[0] as i32 == slot {
-                slots = slots.wrapping_add(twin.slots as i32);
+                slots = slots.wrapping_add(twin.slots);
                 count += 1;
             }
             continue;
@@ -863,7 +863,7 @@ pub fn modern_entries(b: &BuyMenu, r: &Rules) -> Vec<ModernEntry> {
                         // The gun with its attachments: the price the player paid for the
                         // first copy.
                         cost: cost(e.id, e.att, false, false),
-                        slots: w.slots as i32,
+                        slots: w.slots,
                         attachments: attachment_labels(e.att),
                         slot,
                         remove_key,
@@ -877,7 +877,7 @@ pub fn modern_entries(b: &BuyMenu, r: &Rules) -> Vec<ModernEntry> {
                         // pair takes the gun's attachments. The two prices add up to the
                         // entry's cost -- the gun twice, the attachments once.
                         cost: twin.cost,
-                        slots: twin.slots as i32,
+                        slots: twin.slots,
                         // The pair inherits the gun's attachments: the game's own rule
                         // (the second copy is sent bare, and the pair takes the gun's).
                         attachments: attachment_labels(e.att),
