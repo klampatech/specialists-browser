@@ -94,8 +94,10 @@ rail became the weapon CATEGORIES, and the key space had to be split in
 two.**
 
 1. **The rail is the categories.** The browse screen's left rail lists
-   the seven weapon categories — melee, pistols, SMGs, rifles, shotguns,
-   special/akimbo and the player accessory — keyed **1–7** by the port.
+   the six weapon categories — melee, pistols, SMGs, rifles, shotguns
+   and the player accessory — keyed **1–6** by the port. (It listed
+   seven, with special/akimbo among them, until the playtest moved the
+   akimbo onto the guns themselves: see point 7.)
    The rifles and the shotguns are two entries now, split by the game's
    own kind (`GetWeaponType`: the Sawed-Off is a shotgun to the game,
    the Barrett a rifle), and the HUD slot the rail splits (slot 4) is
@@ -134,12 +136,29 @@ two.**
    loadout screen's "Press a slot number to browse it…" paragraph is
    gone as well — the panel shows it and does not need to explain
    itself.
+7. **The akimbo weapons are not a category any more.** A player who
+   wants the akimbo Berettas is looking at the **Berettas**, so the
+   akimbo version is offered on the gun itself: the attachments screen
+   of every gun that has a twin carries an **Akimbo** row (key 5), and
+   picking it makes the pending purchase the twin — the game's own
+   weapon, at its own price, in the HUD slot 5. The rail is **six**
+   entries now (melee, pistols, SMGs, rifles, shotguns, the player
+   accessory) and the rail's "Special" entry is gone; the HUD slot 5's
+   own contents (the akimbo versions and the Golden Colts) are still
+   reachable, from the loadout's **card 5**, which is the game's
+   "Special Purpose" slot. The row is flagged **`swap`** by the port:
+   it swaps the gun in the purchase rather than adding to it, so it is
+   not one of the purchase's lines and the summary still adds up. The
+   attachments screen's footer no longer explains the game's buying
+   order either.
 
 **Verified in a real game on the dev server** (2026-11-02): the client
 WASM rebuilt from this port, deployed, and byte-identical to the served
 copy; the panel drawn from the port's own rows and entries in a live
-client, with Clear on key eight. The port's suite is at **477 tests**,
-clippy is clean, and the frontend's typecheck and build are clean.
+client, with Clear on key eight, and the Five-seveN's attachments
+screen offering the akimbo version. The port's suite is at **478
+tests**, clippy is clean, and the frontend's typecheck and build are
+clean.
 
 ## The redesigned buy menu runs in a real game on the dev server (2026-11-01)
 
