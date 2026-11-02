@@ -12,8 +12,13 @@
 //! * Cancelling (disconnect, `cl_plugins_cancel`, a withdrawn offer) stops the download between
 //!   reads; the staging file is removed whatever happens.
 
-use super::flow::{CERT_SUFFIX, Fetched, MANIFEST_SUFFIX, SIGNATURE_SUFFIX, Transport};
-use plugin_pkg::{Candidate, Package, Platform, PublicKey, Sha256, Store, Verdict, Verification};
+use super::flow::{Fetched, Transport};
+// The download flow's own names are only used by the real (feature-gated) implementation.
+#[cfg(feature = "tspkg")]
+use super::flow::{CERT_SUFFIX, MANIFEST_SUFFIX, SIGNATURE_SUFFIX};
+use plugin_pkg::{Platform, PublicKey, Sha256, Store, Verification};
+#[cfg(feature = "tspkg")]
+use plugin_pkg::{Candidate, Package, Verdict};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
@@ -245,6 +250,7 @@ pub fn install(_j: &InstallJob, _p: &Progress) -> Result<Verification, String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[cfg(feature = "tspkg")]
     use crate::plugins::offers::flow::Transport;
     use std::collections::BTreeMap;
     // `Write` for the test server's `write_all` on its TcpStream, `Path`
@@ -333,8 +339,6 @@ pub(crate) mod tests {
     #[cfg(feature = "tspkg")]
     #[test]
     fn fetch_and_install() {
-        use std::io::Write as _;
-        use std::net::TcpListener;
         let (pkg, manifest, key) = package();
         let sig = plugin_pkg::sign_manifest(&key, &manifest).to_vec();
         let mut files = BTreeMap::new();

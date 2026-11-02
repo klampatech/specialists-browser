@@ -1122,30 +1122,26 @@ impl Gun {
         let items = self.status[self.current as usize].items as i32;
         let id = self.current as i32;
         match self.status[self.current as usize].state {
-            0 => {
-                if self.reserve[ammo] > 0 && self.status[self.current as usize].clip < info.clip {
-                    self.unzoom(host);
-                    if host.view_model_hidden() {
-                        host.set_view_model(Some(self.current));
-                    }
-                    self.cur().state = 1;
-                    host.event(Event::Reload, EventArgs { f1: 8.0, i1: id, i2: items, ..Default::default() });
-                    self.next_attack = 0.3;
-                    self.idle = 0.3;
-                    self.next_primary = 0.3;
-                    self.next_secondary = 0.3;
+            0 if self.reserve[ammo] > 0 && self.status[self.current as usize].clip < info.clip => {
+                self.unzoom(host);
+                if host.view_model_hidden() {
+                    host.set_view_model(Some(self.current));
                 }
+                self.cur().state = 1;
+                host.event(Event::Reload, EventArgs { f1: 8.0, i1: id, i2: items, ..Default::default() });
+                self.next_attack = 0.3;
+                self.idle = 0.3;
+                self.next_primary = 0.3;
+                self.next_secondary = 0.3;
             }
-            1 => {
-                if self.idle <= 0.0 {
-                    if self.reserve[ammo] < 1 || info.clip <= self.status[self.current as usize].clip {
-                        self.cur().state = 2;
-                    } else {
-                        self.reserve[ammo] -= 1;
-                        self.cur().clip += 1;
-                        host.event(Event::Reload, EventArgs { f1: 9.0, i1: id, i2: items, ..Default::default() });
-                        self.idle = info.reload;
-                    }
+            1 if self.idle <= 0.0 => {
+                if self.reserve[ammo] < 1 || info.clip <= self.status[self.current as usize].clip {
+                    self.cur().state = 2;
+                } else {
+                    self.reserve[ammo] -= 1;
+                    self.cur().clip += 1;
+                    host.event(Event::Reload, EventArgs { f1: 9.0, i1: id, i2: items, ..Default::default() });
+                    self.idle = info.reload;
                 }
             }
             2 => {

@@ -153,7 +153,6 @@ pub fn init() {
 /// switch) so they cannot silently change behaviour in a normal desktop game. Unlike
 /// `ts_dev_key` they do **not** need `sv_cheats`, which is server-controlled and read-only on the
 /// client.
-
 /// `ts_menu_open [id]`: show a menu the way `ShowVGUIMenu` does. Default 2, the team menu.
 extern "C" fn cmd_menu_open() {
     if !crate::input::dev_script_input_enabled() {
