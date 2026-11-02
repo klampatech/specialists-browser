@@ -89,6 +89,72 @@ same branch), and the port's half of both is now fixed.**
    prints the word the design asks for. The classic flow's own reset
    row keeps the game's title, because the canvas menu must not change.
 
+## The redesigned buy menu runs in a real game on the dev server (2026-11-01)
+
+**The buy menu is playable.** The dev server, a local TS server with bots, and
+the port's rebuilt client WASM — all four pieces are needed. The dev server
+alone serves the assets; it is not a game.
+
+**The URL:** `https://100.95.111.112:5174/` — PLAY, pick a name and a
+character, and you are in. The buy menu opens with **b** (the engine's own
+bind: TS's `config.cfg` binds `"b"` to `"buy"`) or when you die, the way the
+game always did it. **Escape twice** opens the options overlay, where
+**Buy menu: CLASSIC / MODERN** picks the flow; the choice is persisted and
+survives a reload (pinia-plugin-persistedstate writes the picked paths under
+the store's id — `xash` — with the paths nested inside it, so it is
+`{"tsConfig":{"buyMenu":"modern"}}` and not a key per path).
+
+**The stack**, in this order:
+
+1. **the dev server** — `cd webxash && bun run dev` (the vite config already
+   sets `host: 0.0.0.0`, `port: 5174`, and HTTPS when the local certs
+   exist). A headless browser needs `--ignore-certificate-errors` and
+   `--use-gl=swiftshader`.
+2. **the local TS server** — `tools/port/tsp-rs/scripts/start-ts-server.sh`
+   (UDP 27015, bots, the game's own maps). The dev server's `/api/servers`
+   lists it.
+3. **the UDP bridge** — `node tools/port/tsp-rs/scripts/ts-udp-bridge.js
+   --listen 27017 --targets default=127.0.0.1:27015@100.95.111.112:27015`.
+   The browser talks WebSocket to the bridge and the bridge talks UDP to the
+   server. The `internal@public` form is what makes the tailnet address
+   reachable from the browser's origin.
+4. **the port's client WASM** — `FWGS_DIR=/tmp/xash3d-fwgs
+   tools/port/tsp-rs/scripts/build-wasm.sh`, then
+   `tools/port/tsp-rs/scripts/deploy-wasm-to-webxash.sh`, which copies it to
+   `webxash/public/cl_dlls/`. **The dev server serves the wasm from that
+   directory**, so a port change is not in the browser until the wasm is
+   rebuilt AND deployed. After the deploy the port's `dist/` and the served
+   copy are byte-identical.
+
+**The harness** — `https://100.95.111.112:5174/dev-buy.html` — draws the panel
+from the port's records with no engine, so the design can be iterated on
+without launching a game. It has every screen and scenario, and
+`?screen=browse&state=poor` picks one.
+
+**A dev-only bug that hid all of this**: the asset loader built its
+cache-busting URL with `new URL(url)`, which throws on a *relative* URL — and
+`VITE_ASSET_BASE` is unset in development, so the asset base IS relative. The
+throw happened while the candidate list was being built, before the fetch was
+attempted, so the dev server's game data never loaded and the page sat at
+"Fetching game data" at 0%. Production was never affected: the deploy sets an
+absolute asset base. Fixed by resolving against the document.
+
+**The buy menu's own rules** (the design's mockup is the authority — the key
+table in `docs/design-mocks/buy-menu-redesign.html`):
+
+- a browse list's rows are keyed **1–9 and then 11, 12, …**, because key 10
+  is the game's own back key and stays reserved — and the keycap the panel
+  draws is the row's *place* in the list, so the tenth row wears the design's
+  **"A"** and the eleventh **"B"**. (The classic flow's own list already
+  numbered its tenth weapon 11 — the modern flow follows the game's rule
+  rather than inventing one.)
+- **back answers to 0 and to 10** on the modern screens (0 is the design's
+  badge, 10 is the game's own key).
+- the loadout's actions are **R** (Random, no confirmation) and **X**
+  (**Clear**, which asks before it empties the loadout). The port prints the
+  literal `Clear`; the classic canvas row keeps the game's own
+  `#Buy_ResetConfig` title, because the canvas menu must not change.
+
 ## The admin console is specified (PR #104, 2026-10-31)
 
 Kyle supplied a mock of a single-admin web console for the fleet
