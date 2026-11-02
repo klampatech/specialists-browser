@@ -1680,6 +1680,13 @@ mod tests {
         let mut m = modern(&r);
         m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
         assert_eq!(m.modern_focus, 0, "the list opens with nothing focused");
+        // And the rows say so: no row carries the "on" flag, so the panel draws no row
+        // lit. The flag is the protocol's word for "this one is chosen".
+        let rows = dump_rows(&m.state_lines(&r));
+        assert!(
+            !rows.iter().any(|(_, _, flags, ..)| flags.contains("on")),
+            "no row is lit when the list opens: {rows:?}"
+        );
 
         // The gun is focused on the attachments screen.
         m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
