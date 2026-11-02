@@ -208,8 +208,10 @@ two.**
    in a live client. The Clear confirmation's confirm button is red (the
    one button that throws the loadout away), the confirm and cancel
    buttons stay anchored at the footer's right, the primary buttons have a
-   gap before their key cap, and "Deploy with Loadout A" is "Fight with
-   Loadout #A".
+   gap before their key cap, and "Deploy with Loadout A" is "Use
+   Loadout A". The "Saves automatically" line is gone from the slot picker —
+   the loadouts save themselves, and the panel saying so is the panel
+   explaining itself again.
 
 **Verified in a real game on the dev server** (2026-11-02): the client
 WASM rebuilt from this port, deployed, and byte-identical to the served
