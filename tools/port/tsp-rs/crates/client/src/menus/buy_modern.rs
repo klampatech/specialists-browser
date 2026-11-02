@@ -252,10 +252,15 @@ impl Rail {
 /// The cards are the player's gear — the five HUD slots and the accessory — and they are
 /// not the rail: the rail is the browse aid and it has seven entries. So the HUD slot 4
 /// card keeps the "Rifles · Shotguns" label, because that card holds both, and the HUD
-/// slot 1 card keeps its own, because that card holds the melee weapons and the grenade.
+/// slot 1 card says "Melee weapons", because that is what the card holds.
+///
+/// **Not "Grenades":** the grenades are map power-ups, not something a player buys, so
+/// the card must not advertise them. (The port's own rule still follows the game on
+/// selling one in teamplay — the classic menu's own rule — so the melee list can name
+/// the M61 there. The card is the player's gear; it says what the player carries.)
 pub fn card_label(slot: i32) -> &'static str {
     match slot {
-        1 => "Melee · Grenades · Swords",
+        1 => "Melee weapons",
         2 => "Pistols",
         3 => "SMGs",
         4 => "Rifles · Shotguns",
@@ -1311,7 +1316,7 @@ mod tests {
             "TSBUY state open=1 hidden=0 page=0 budget=30000 total=0 slots=0 ammo_spend=0 new=0 cat=0 pending=-1 att=0 mode=modern screen=loadout slot=0 tab=0 slots_in_use=0 slot_limit=81"
         );
         assert_eq!(lines[1], "TSBUY page 0 BUY MENU");
-        assert_eq!(lines[2], "TSBUY slot 1 0 0 Melee · Grenades · Swords");
+        assert_eq!(lines[2], "TSBUY slot 1 0 0 Melee weapons");
         assert_eq!(lines[3], "TSBUY slot 2 0 0 Pistols");
         assert_eq!(lines[4], "TSBUY slot 3 0 0 SMGs");
         assert_eq!(lines[5], "TSBUY slot 4 0 0 Rifles · Shotguns");
@@ -1456,7 +1461,7 @@ mod tests {
         // The loadout screen's cards are still the five HUD slots and the accessory.
         let cards: Vec<&str> = lines.iter().filter_map(|l| l.strip_prefix("TSBUY slot ")).collect();
         assert_eq!(cards.len(), 6, "the five HUD slots and the accessory: {cards:?}");
-        assert!(cards[0].ends_with("Melee · Grenades · Swords"), "the HUD slot 1 card: {cards:?}");
+        assert!(cards[0].ends_with("Melee weapons"), "the HUD slot 1 card: {cards:?}");
         assert!(cards[3].ends_with("Rifles · Shotguns"), "the HUD slot 4 card: {cards:?}");
     }
 
@@ -2092,7 +2097,7 @@ mod tests {
         assert!(lines[0].contains("slots_in_use=1"), "one slot is in use: {}", lines[0]);
         assert!(lines[0].contains("slots=10"), "ten of the pool: {}", lines[0]);
         assert!(lines.contains(&"TSBUY slot 2 10 1 Pistols".to_owned()), "the slot record: {lines:?}");
-        assert!(lines.contains(&"TSBUY slot 1 0 0 Melee · Grenades · Swords".to_owned()), "the rest: {lines:?}");
+        assert!(lines.contains(&"TSBUY slot 1 0 0 Melee weapons".to_owned()), "the rest: {lines:?}");
     }
 
     /// The accessory's list numbers only the items it lists: a restricted item is not on the
