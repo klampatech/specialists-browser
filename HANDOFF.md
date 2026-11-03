@@ -70,6 +70,42 @@ engine loads at boot, so the list and the running game cannot drift
 apart — and the labels are recorded next to the list with where each
 non-obvious one comes from. `TSHowToPlay.vue` is renamed `TSFaq.vue`.
 
+**On the same branch, two more things came out of it (2026-11-02).**
+
+1. **THE RULE UNDER THE WORDMARK ENDS IN A BULLET, NOT A RECTANGLE.**
+   The white cap was meant to be a bullet in flight and only read as one
+   if you already knew. It is now a cartridge — a flat base with the rim,
+   a cylindrical case, a nose that leads — in **its own SVG**, because the
+   line's SVG is stretched (`preserveAspectRatio="none"`) and would have
+   squashed it. The site's own brand mark is a pair of slender cartridges,
+   but at 31×14 that silhouette reads as a sliver, so the rule uses a
+   chunkier shape that reads as a bullet at that size.
+2. **THE ENGINE'S NOTIFY WINDOW NO LONGER PAINTS OVER THE GAME.** The
+   top-left corner was covered in console output — the port's `TSBUY`
+   buy-menu records and the engine's boot chatter — drawn as
+   transparent overlaid text by the engine's `Con_DrawNotify`
+   (`engine/client/console.c`). The notify window is a debug-console
+   feature and the console is **not reachable in the browser build** (the
+   backquote and tilde binds are cleared), so `+con_notifytime 0` on the
+   command line retires it: every line is expired the moment it is
+   printed, and the engine runs the command line in `Host_ChangeGame`,
+   **before the first frame**, so even the boot chatter never reaches the
+   screen. **The `TSBUY` records still reach the browser** — the DOM buy
+   menu reads them off stdout — they just stop being drawn over the game.
+   The cvar goes in `xash-loader.ts`'s `_buildLaunchArgs`, the one funnel
+   every launch path goes through, and **before** the caller's launch
+   options (a cvar value that follows a `+<cmd> <arg>` can be swallowed by
+   that command's argument). Note that `GAME_SETTINGS.*.launchArgs` is
+   **never read at runtime** — it is only a type source — so a cvar added
+   there does nothing at all.
+
+**The project skill was trimmed the same day** (it had grown past
+`skill_manage`'s 100k limit, so it could no longer be patched). The
+deleted paths — the Babylon.js prototype, CheerpX, the browser BSP→glTF
+toolchain — moved to `references/historical-pitfalls.md` and
+`references/babylon-era-mvp.md`, keeping the reasons they were rejected
+without keeping them in the index.
+
 **The newest work (2026-11-01, branch `feat/buy-menu-modern-flow`): the
 buy menu grew a SECOND flow.** The classic canvas menu is untouched (its
 pixel diff still passes) and the port's `menus/buy_modern.rs` grew the
