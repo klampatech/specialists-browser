@@ -9,18 +9,32 @@
   <tr>
     <td align="center" valign="top" width="50%">
       <b>bulletballet.dev</b><br>
-      <img src="docs/screenshots/landing.png" alt="The landing page: the BULLETBALLET wordmark over a falling code-rain backdrop, a Play button, and a live server browser listing the running instance" width="100%">
+      <img src="docs/screenshots/landing.png" alt="The landing page: the BULLETBALLET wordmark over the dial, the cartridge bullet on the dashed rule, a Play button, and a live server row with the map, the bot count, the slot count and the tick rate" width="100%">
     </td>
     <td align="center" valign="top" width="50%">
       <b>In game</b><br>
-      <img src="docs/screenshots/spectator.png" alt="The game running in the browser: a bot in the chase camera holding a lit Beretta, and The Specialists' own amber HUD — the weapon and its ammo, the config menu, the chat and the kill feed" width="100%">
+      <img src="docs/screenshots/spectator.png" alt="The game running in the browser: the chase camera behind a bot, The Specialists' own amber HUD with the weapon slots, the kill feed on the right, and the buy menu open on the left" width="100%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <b>The FAQ tab</b><br>
+      <img src="docs/screenshots/faq.png" alt="The FAQ tab: the game's own bind table turned into a controls list — movement, weapons, buy and use, and interface — under the cartridge bullet on the rule" width="100%">
+    </td>
+    <td align="center" valign="top" width="50%">
+      <b>Two buy menus</b><br>
+      The <b>classic</b> flow is the client's own canvas menu — top-left of
+      the in-game shot above. The <b>modern</b> flow is a new DOM panel over
+      the live game: <a href="#the-buy-menu">below</a>.
     </td>
   </tr>
 </table>
 
 > **Status: production.** Live at <https://bulletballet.dev>, with real
-> players in a real dedicated server. The first run downloads a 493 MB game
-> archive; after that it is cached in the browser.
+> players in a real dedicated server. The first run downloads a 493 MiB game
+> archive; after that it is cached in the browser. The page's third tab is a
+> **FAQ built from the game's own bind table**, so the controls it lists are
+> the game's, not a hand-written approximation.
 >
 > See [Production](#production) for the topology and
 > [What is proven](#what-is-proven) for exactly what has been verified.
@@ -158,18 +172,26 @@ So there is no command map any more. What the front end still does:
   because the browser exits pointer lock on Escape on its own, which
   would make the first press look like the second.
 
-Four entries are cleared in the engine's own bind table at boot
-(`xash-loader.ts`): **`b`** (the buy/config menu), **the backquote and
-`~`** (the console), and **Escape** — the last one as a second line of
-defence behind the DOM interception. The buy menu is still the client's
-own menu: it opens when the client is an observer (on join, and after a
-death) and is navigated with the weapon-slot keys. Pressing **B** does
-nothing.
+Two entries are cleared in the engine's own bind table at boot
+(`xash-loader.ts`): **the backquote and `~`** (the console) and **Escape**
+— the last one as a second line of defence behind the DOM interception.
+
+**`b` is not cleared any more.** It used to be, and "pressing **B** does
+nothing" was true here. The game's own `config.cfg` binds `"b"` to
+`"buy"`, so the loader now leaves that line alone and re-binds `b` to
+`buy` on the frame after the engine starts (and again at +2s), in case
+the config's line is ever disturbed. The buy menu is the client's own
+canvas menu: it opens when the client is an observer — on join and after
+every death — and is navigated with the weapon-slot keys. **B** opens it,
+**0** closes it, **B** opens it again.
 
 Two things are still out of reach, and neither is a bug in the front end:
-**typing into the console** (the console is disabled outright), and a
-**bare `reload`**, which aborts the WASM heap — see
-[`docs/UPSTREAM-ISSUES.md`](./docs/UPSTREAM-ISSUES.md).
+**typing into the console** (its binding is cleared and nothing opens
+it), and a **bare `reload`**, which aborts the WASM heap — see
+[`docs/UPSTREAM-ISSUES.md`](./docs/UPSTREAM-ISSUES.md). The engine's
+*notify* window — the leftover boot chatter it draws over the top-left of
+the game — is retired with `+con_notifytime 0`, a cvar the engine reads,
+not a patch.
 
 ### 4. `ts_gate` — the anti-script gate
 
@@ -195,6 +217,64 @@ is the bridge, and `HUD_Frame` re-arms the gate exactly as before.
 
 ---
 
+## The front end
+
+`webxash/` is a Vue app that owns the page around the game canvas and
+almost nothing inside it. Three tabs sit over the landing page — the
+**server list**, the **leaderboard** and the **FAQ** — and an options
+overlay lives behind **Esc**, which never reaches the engine. The FAQ is
+built from the game's own bind table, so the controls it lists are the
+game's rather than a hand-written approximation of them.
+
+Two rules shaped it. **The engine keeps the keyboard**: the front end
+translates nothing, and its job is to stay out of the way (§3). **The DOM
+never sits on top of the game** unless it is asked for — the Vue HUD is
+hidden by default so it cannot occlude the real one.
+
+### The buy menu
+
+The game has always had a buy menu and it is still there: the **classic**
+flow is the client's own canvas menu, drawn by the port and navigated
+with the weapon-slot keys. It opens the moment you arrive as an observer
+and after every death, and **B** brings it back.
+
+The **modern** flow is a new DOM panel over the live game — a loadout
+screen, a per-slot browse screen and an attachments screen, with the
+money as the hero and the price of every line in the summary. The player
+picks the flow in the options overlay (**Esc** twice → *Buy menu: Classic
+/ Modern*), and the choice is remembered.
+
+The port owns the flow, not the browser: the panel draws what the port's
+own state line says, and the only thing it sends back is a key.
+
+<table>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <b>The loadout</b><br>
+      <img src="docs/screenshots/buy-menu-modern-loadout.png" alt="The modern buy menu's loadout screen: the player's money as the hero, the slot and item counts, the nine loadout slots, and the five weapon slots with what is in them" width="100%">
+    </td>
+    <td align="center" valign="top" width="50%">
+      <b>The browse screen</b><br>
+      <img src="docs/screenshots/buy-menu-modern-browse.png" alt="The browse screen: the weapon categories down the left, the priced weapon list in the middle with its key numbers, and the loadout on the right" width="100%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <b>The attachments</b><br>
+      <img src="docs/screenshots/buy-menu-modern-attachments.png" alt="The attachments screen: the chosen gun with its optional attachments, and the summary carrying the price of the gun and every attachment and what is left after" width="100%">
+    </td>
+    <td align="center" valign="top" width="50%">
+      <b>Nothing is bought until you add the gun.</b><br>
+      The attachments are optional and are keyed <b>1</b>–<b>5</b>; press a
+      number again to unselect. The summary is the port's arithmetic, not
+      the browser's: it carries the price of the gun and every attachment,
+      and says what is left after.
+    </td>
+  </tr>
+</table>
+
+---
+
 ## Production
 
 ```
@@ -208,7 +288,7 @@ Caddy (Let's Encrypt, cert valid to 2027-01-21)
                                               │
                                               └─ UDP → 127.0.0.1:27015 → ts-0
 
-assets.bulletballet.dev  →  Cloudflare R2 (ts-assets), 493 MB in 8×64 MiB parts
+assets.bulletballet.dev  →  Cloudflare R2 (ts-assets), 493 MiB in 8×64 MiB parts
 ```
 
 The game UDP port is published straight out of Docker and deliberately does
@@ -218,14 +298,14 @@ The game UDP port is published straight out of Docker and deliberately does
 
 | Container | Role |
 |---|---|
-| `ts-0` | the dedicated server — 32 slots, tickrate 100, map `ts_casa` |
+| `ts-0` | the dedicated server — 32 slots, tickrate 100, a 21-map cycle |
 | `bridge` | WebSocket↔UDP, allowlisted, refuses unknown targets with 403 |
 | `registry` | the fleet's source of truth — A2S, tickrate, bot count, health |
 | `orchestrator` | the decision maker — restart unhealthy, scale out, scale in |
 
 ### Asset delivery
 
-The game archive is 493 MB, which is larger than a browser will hold in
+The game archive is 493 MiB, which is larger than a browser will hold in
 memory as one blob and larger than is sensible to serve uncompressed. It is
 split into eight 64 MiB parts plus a manifest, uploaded to Cloudflare R2,
 and served through the Cloudflare edge with immutable caching.
@@ -340,14 +420,13 @@ the maps are what differ.
 Verified from a real browser against production, not from a test harness:
 
 ```
-raw A2S:  players=5  max=32  bots=4     ← four bots and a player
-registry: ts-0 · ts_casa · tick=100 · humans=1 · bots=3
+registry: ts-0 · ts_rundown · tick=100 · humans=0 · bots=16 · slots=32
 engine console: BUILD 4221 SERVER (0 CRC) → FS_AddGameHierarchy( ts )
 ```
 
 - **Two browsers in the server at once**, each with its own server-side
   client slot, with the bot roster scaling down as they arrived.
-- **A player joining from a cold browser**, downloading 493 MB, booting
+- **A player joining from a cold browser**, downloading 493 MiB, booting
   the engine, and appearing on the server's player count.
 - **The server dying under a live player**, and the client saying so
   ("The game server is restarting") and reconnecting on its own.
@@ -368,7 +447,7 @@ player is told when the server goes away.
 
 ### Known limitations
 
-- **The first run downloads 493 MB.** ~30–40s on a 100 Mbps link, ~90s on
+- **The first run downloads 493 MiB.** ~30–40s on a 100 Mbps link, ~90s on
   50 Mbps, ~6 minutes on a slow mobile connection. Cached after that.
 - **Browser floor.** The engine needs cross-origin isolation for
   `SharedArrayBuffer`: Chrome and Edge are fine, Firefox 119+, Safari 18+.
@@ -392,6 +471,7 @@ player is told when the server goes away.
 | `tools/port/tsp-rs/crates/ts30/`, `ts21/` | TS 3.0 / 2.1 rulesets |
 | `tools/port/tsp-rs/scripts/` | Build, deploy, server, bridge, and probe scripts |
 | `tools/deploy/` | Container images, Caddy config, instance runner, e2e tests, and `config/` — `server.cfg` and the map cycle |
+| `tools/decompile/` | The parked AI-decompile output — the single-player fallback |
 | `tools/assets/` | Archive splitter and R2 uploader |
 | `services/registry/` | The fleet registry |
 | `services/orchestrator/` | The fleet orchestrator |
@@ -399,7 +479,6 @@ player is told when the server goes away.
 | `docs/` | Production topology, control plane, asset delivery, upstream issues, historical scopes |
 | `SPEC.md` | Living design spec |
 | `HANDOFF.md` | Current state and the next task |
-| `progress/` | Decompilation logs from the original porting effort |
 
 The vendored port is pinned by `PINNED-VERSION`. It is a copy, not a
 submodule, so the build stays reproducible offline.
@@ -419,10 +498,11 @@ tools/port/tsp-rs/scripts/start-bridge.sh
 cd webxash && bun install && bun run dev
 ```
 
-Then open the Vite URL with the connect address:
+Then open the Vite URL and press **Play** — pick a name and a character,
+and you are in:
 
 ```
-https://<host>:5174/?launchOptions=-game+ts+%2Bconnect+<host>%3A27015+%2Bmaxplayers+8
+https://100.95.111.112:5174/
 ```
 
 Append `&debug=1` for session-level logging, `&debug=trace` to also trace
@@ -433,14 +513,12 @@ cannot occlude the real one).
 match where it is actually served, or the entry module 404s and the page
 renders blank with an empty console.
 
-> **One thing that does not work yet:** a browser client cannot complete a
-> connection to a *local* game server. GoldSrc refuses a loopback
-> `+connect`, and a browser on this host cannot reach the
-> docker-published UDP port. The transport itself is proven — the real
-> handshake runs through the bridge — so it is a topology problem, not a
-> broken bridge. Until it is fixed, gameplay changes are verified against
-> production rather than against a local server. It is tracked as **E5**
-> in [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md).
+> **The local loop works now.** A browser client reaches a local game
+> server: the bridge advertises a public address and resolves it to an
+> internal UDP target (`--targets default=127.0.0.1:27015@<public>:27015`),
+> so the browser never emits UDP itself. That closes **E5** in
+> [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md) — gameplay changes are
+> verified against a local server instead of against production.
 
 ---
 
@@ -524,7 +602,7 @@ button was broken, and every run passed.
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | PR, push to main | Typecheck, build, 81 unit tests, builds all three service images |
+| `ci.yml` | PR, push to main | Frontend typecheck and build, 610 unit tests, the port's Rust suite, and the three service images |
 | `pr-required.yml` | push to main | Fails a commit that did not come from a pull request |
 | `deploy.yml` | push to main | Ships to production, then verifies it in a real browser |
 
@@ -538,20 +616,19 @@ request.
 npm test          # the regression suite
 ```
 
-81 tests, and **every one corresponds to a bug that reached production**.
-That is the design rule: a test earns its place by locking in a failure
-we actually had. The A2S bot count's byte offset, the bridge's
-allowlist, the empty-map-versus-unknown distinction in the human count,
-scale-out slot selection, and the pull-request gate's own false
+**610 tests.** The design rule is that a test earns its place by locking
+in a failure we actually had. The A2S bot count's byte offset, the
+bridge's allowlist, the empty-map-versus-unknown distinction in the human
+count, scale-out slot selection, and the pull-request gate's own false
 negative are all covered.
 
-> **One limitation, stated plainly.** GitHub's branch protection and
-> rulesets need a paid plan for a private repository, and this one is
-> private and free — the API answers 403. The `pr-required` workflow is
-> the substitute: it **detects** a direct push and **blocks the deploy**,
-> but it cannot **prevent** the push, because the commit is already on
-> main by the time it runs. GitHub Pro (~$4/month) enables the real
-> thing. Details in [`docs/CI-CD.md`](./docs/CI-CD.md).
+> **Protection, stated plainly.** The repo is **public** and `main` is
+> covered by an **active ruleset**: one approving review is required,
+> deletions and force-pushes are refused, and the required status checks
+> have to pass. The `pr-required` workflow is the second line of defence
+> — it **detects** a direct push and **blocks the deploy**, because the
+> workflow cannot prevent the push that already happened. Details in
+> [`docs/CI-CD.md`](./docs/CI-CD.md).
 
 ---
 
@@ -563,12 +640,16 @@ and [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md). The short version:
 - **Matchmaking** — the policy is decided (the fullest server that is not
   full); the implementation is not. The browser currently sorts the
   opposite way.
-- **The local dev loop** — a browser client cannot connect to a local game
-  server yet, and that is what makes gameplay work safe to iterate on.
-- **Loading performance** — the 493 MB archive is inflated on the main
+- **The modern buy menu is done** — the port's half and the browser's
+  half both landed: the options overlay picks the flow, the panel draws
+  the port's own state, and the loadout is re-submitted when it changes,
+  so it survives a death. The classic canvas menu stays the default, so
+  nothing changes for a player who never picks the modern one. The
+  screenshots above are the live panel.
+- **Loading performance** — the 493 MiB archive is inflated on the main
   thread; the inflate wants to be in a worker.
-- **Menus** — the buy menu, pre-game setup and client-side knobs, as DOM
-  overlays over live engine state.
+- **More instances** — the box is CPU-bound at four or five 32-slot
+  instances. A second host is the only way to offer more.
 - **The rebrand is done** — tokens, favicon, landing page, boot screen,
   options overlay and the server's own A2S name (`bulletballet TS`) all
   carry the BulletBallet identity. What is left is the game's *own* art,
@@ -582,6 +663,13 @@ and [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md). The short version:
 via an x86 emulator in WASM. Shipping a Rust port instead removed the
 emulator, the dual-mode build, and a whole class of "is it the port or is
 it CheerpX?" ambiguity.
+
+**The AI-decompile path.** This project started by decompiling TS's
+client and server to source with an AI pipeline. The upstream project
+turned out to have published a Rust reimplementation of the game logic,
+which is what ships. The decompiled output is still in the tree as the
+single-player fallback, but the grind's logs are gone — there is no point
+keeping a diary of a road not taken.
 
 **Matchmaking by skill.** Explicitly out of scope — not ELO-based.
 
