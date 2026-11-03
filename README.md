@@ -359,16 +359,16 @@ work: `ts-0` (the dedicated server), `bridge` (WebSocket↔UDP, allowlisted),
 `registry` (the fleet's source of truth) and `orchestrator` (the decision
 maker — restart unhealthy, scale out, scale in).
 
-The full topology, the control plane's policies and the capacity numbers
-are in [`docs/PRODUCTION-INFRA.md`](./docs/PRODUCTION-INFRA.md).
+The control plane's policies and the capacity numbers live in the
+deployment itself — `.github/workflows/deploy.yml` and `services/` — and
+the registry's own view of the fleet is at `/api/servers`.
 
 <details>
 <summary>Asset delivery, map rotation and capacity</summary>
 
 **Asset delivery.** The 493 MiB game archive is split into eight 64 MiB
 parts and served through the Cloudflare edge, so the first player to fetch
-a part warms it for everyone after. The layout traps that cost a real
-outage are in [`docs/ASSET-DELIVERY.md`](./docs/ASSET-DELIVERY.md).
+a part warms it for everyone after.
 
 **Map rotation.** The server cycles through **The Specialists 3.0's own map
 cycle** — the one that shipped in the mod's Linux server tarball, twenty-one
@@ -399,7 +399,6 @@ The bots are cheap; the maps are what differ.
 | The current state and the next task | [`HANDOFF.md`](./HANDOFF.md) |
 | The design and why it is that way | [`SPEC.md`](./SPEC.md) |
 | Working on this repo with an agent | [`AGENTS.md`](./AGENTS.md) |
-| Production topology and the control plane | [`docs/PRODUCTION-INFRA.md`](./docs/PRODUCTION-INFRA.md), [`docs/CONTROL-PLANE.md`](./docs/CONTROL-PLANE.md) |
 | The CI gate and the deploy | [`docs/CI-CD.md`](./docs/CI-CD.md) — including the two traps that have already broken a build |
 | The front end and mod work list | [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md) |
 | A symptom with one upstream cause | [`docs/UPSTREAM-ISSUES.md`](./docs/UPSTREAM-ISSUES.md) — read this before starting work |
@@ -419,7 +418,7 @@ The bots are cheap; the maps are what differ.
 | `services/registry/` | The fleet registry |
 | `services/orchestrator/` | The fleet orchestrator |
 | `services/a2s/` | The original A2S service the registry grew out of |
-| `docs/` | Production topology, control plane, asset delivery, upstream issues, historical scopes |
+| `docs/` | The three docs a new agent needs: the CI gate, the front-end work list, and the upstream issues |
 
 The vendored port is pinned by `PINNED-VERSION`. It is a copy, not a
 submodule, so the build stays reproducible offline.

@@ -1,1 +1,0 @@
-Review complete — output above. No file changes needed; the review is a self-contained verdict on the provided decompiled TS, and the AGENTS.md `HANDOFF.md` update for this single-function review can be deferred to the worker that picks up the suggested rewrite.

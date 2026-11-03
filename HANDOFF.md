@@ -16,6 +16,13 @@
 
 # § CURRENT STATE
 
+> **The supporting docs are local-only now.** The admin console's specs
+> and runbook, the production topology, the design scopes and the
+> research notes are **gitignored** — they are not in this repository
+> (see `.gitignore`), and they are on the working machine. The three docs
+> a new agent needs are still tracked: `docs/CI-CD.md`,
+> `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
+
 **As of:** 2026-11-03, branch `docs/readme-human-pass` — **THE README IS FOR
 HUMANS NOW.** Kyle read it and said the thing worth fixing: *"it's tough to
 read. No human is going to read most of that."* It was doing two jobs at

@@ -110,3 +110,59 @@ progress/grind.pid
 # whether it got a first-person view or the TS main menu, and a file
 # named first-person.png holding the menu is a lie.
 docs/screenshots/after-spawn.png
+
+# ─────────────────────────────────────────────────────────────
+# AI-generated working docs — kept on this machine, OUT of the repo.
+#
+# Two reasons, and they are the same reason:
+#
+#   1. CLUTTER. These are 24 files and ~640 KB of agent-written markdown
+#      plus a megabyte of design mocks. Nobody reads them — not a human
+#      visitor, not a fresh agent (README, AGENTS, HANDOFF and SPEC are
+#      what a new agent reads, and they are all still tracked).
+#
+#   2. EXPOSURE. The admin console's specs describe the console's
+#      endpoints, its auth and lockout rules, and the production host's
+#      file paths and ownership. That is reverse-engineering material for
+#      a console that can ban players and drive RCON. Same for the
+#      production topology's access and hardening sections.
+#
+# They stay on disk: gitignored, not deleted. `git rm --cached` took
+# them out of the repo; the working copies are still here.
+#
+# NOTE: gitignoring does NOT un-publish. The content is still in this
+# repository's git HISTORY, and the repository is public. Anything that
+# must actually disappear needs a history rewrite.
+# ─────────────────────────────────────────────────────────────
+docs/ADMIN-CONSOLE.md
+docs/ADMIN-CONSOLE-RUNBOOK.md
+docs/ADMIN-CONSOLE-SPEC-DRAFT.md
+docs/ADMIN-CONSOLE-UI.md
+docs/admin-console-mock.html
+docs/screenshots/admin-console-*.png
+docs/ASSET-DELIVERY.md
+docs/BUY-MENU-UI.md
+docs/BUY-MENU-UI-v2.md
+docs/cheats/
+docs/CLIENT-PERF-RESEARCH.md
+docs/CONTROL-PLANE.md
+docs/cs16optimizationguide.md
+docs/design-assets/
+docs/design-mocks/
+docs/FULLSCREEN-PERFORMANCE.md
+docs/GITHUB-APP.md
+docs/option-c-scope.md
+docs/option-d-scope.md
+docs/option-d-scope-d5-ready.md
+docs/phase-1-scope.md
+docs/PRODUCTION-INFRA.md
+docs/REBRAND-PLAN.md
+
+# The decompile grind's intermediate artifacts — ~19.5 MB across 1,889
+# files of disassembly dumps, per-function chunks and cross-vendor
+# notes. The port that ships is the upstream Rust one; this was the road
+# not taken. The decompiled SOURCE stays tracked (tools/decompile/output)
+# because the README names it as the single-player fallback.
+tools/decompile/analysis/
+tools/decompile/chunks/
+tools/decompile/cross-vendor/
