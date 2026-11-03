@@ -365,24 +365,10 @@ are in [`docs/PRODUCTION-INFRA.md`](./docs/PRODUCTION-INFRA.md).
 <details>
 <summary>Asset delivery, map rotation and capacity</summary>
 
-**Asset delivery.** The game archive is 493 MiB, which is larger than a
-browser will hold in memory as one blob and larger than is sensible to
-serve uncompressed. It is split into eight 64 MiB parts plus a manifest,
-uploaded to Cloudflare R2, and served through the Cloudflare edge with
-immutable caching. The edge is the point: the first player to fetch a part
-warms it for everyone after. A cold fetch measures ~41 MiB/s from a fast
-link; a warm one is served from the edge.
-
-Two traps live here, both documented in
-[`docs/ASSET-DELIVERY.md`](./docs/ASSET-DELIVERY.md):
-
-- **The storage key layout must mirror the dev-served layout exactly.**
-  On localhost the two lookups are independent and one of them succeeds,
-  so the mismatch does not show up until it hits a real bucket — as a
-  total 404 of the delivery path.
-- **`vary: Origin` means a cached pre-policy response keeps missing its
-  CORS header** until that per-origin variant is purged. A policy in the
-  wrong shape is accepted, renders plausibly, and does nothing.
+**Asset delivery.** The 493 MiB game archive is split into eight 64 MiB
+parts and served through the Cloudflare edge, so the first player to fetch
+a part warms it for everyone after. The layout traps that cost a real
+outage are in [`docs/ASSET-DELIVERY.md`](./docs/ASSET-DELIVERY.md).
 
 **Map rotation.** The server cycles through **The Specialists 3.0's own map
 cycle** — the one that shipped in the mod's Linux server tarball, twenty-one
