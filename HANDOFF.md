@@ -16,14 +16,41 @@
 
 # § CURRENT STATE
 
-**As of:** 2026-11-03, branch `docs/readme-refresh` — **THE REPO SAYS WHAT
-THE PROJECT IS.** The About section called this a "single-player browser
-implementation of Half-Life 1 with The Specialists mod (Xash3D-WASM engine
-+ CheerpX x86 emulation for mod DLLs)". It is a **multiplayer** client on
-a **Rust port**, and the repo is **public**. The description, the homepage
-(`https://bulletballet.dev`) and ten topics now say so — on the parent and
-on `webXash`, whose About was the upstream fork's and pointed at the
-upstream's demo.
+**As of:** 2026-11-03, branch `docs/readme-human-pass` — **THE README IS FOR
+HUMANS NOW.** Kyle read it and said the thing worth fixing: *"it's tough to
+read. No human is going to read most of that."* It was doing two jobs at
+once — a product page and an engineering handbook — and the handbook was
+winning: 687 lines, 3,613 words, almost none of it for the person who
+opens the repo from a link.
+
+It is now **1,390 words a reader actually sees**, with the other **2,223
+behind nine collapsed `<details>` sections** — the side module, the bridge,
+the keyboard path, the anti-script gate, the map rotation, the capacity
+numbers, the repo layout, the test suite. Nothing is deleted; every deep
+section is one click away under its own heading. The
+`## The four things that make it work` heading is still **UNCHANGED**, so
+the FAQ tab's link resolves, and the section it lands on now has the
+depth folded away rather than in the way.
+
+**THE FAQ SCREENSHOT WAS LYING.** `docs/screenshots/faq.png` showed the
+landing hero with the FAQ content below the fold — the caption described
+a picture the reader could not see. Re-captured with the controls table
+in frame. The landing page scrolls in a **container** (`.ts-landing`), not
+the window, so the capture has to scroll that element — `window.scrollTo`
+does nothing.
+
+**#123's EDIT WON.** Kyle merged PR #123 (his own README edit, removing
+the asset-delivery detail) while the rewrite branch was open, so the two
+collided on the same region. His intent wins: the detail stays out of
+the README, with a one-line pointer to `docs/ASSET-DELIVERY.md`.
+
+**THE ABOUT SECTION SAYS WHAT THE PROJECT IS.** It used to call this a
+"single-player browser implementation of Half-Life 1 with The Specialists
+mod (Xash3D-WASM engine + CheerpX x86 emulation for mod DLLs)". It is a
+**multiplayer** client on a **Rust port**, and the repo is **public**. The
+description, the homepage (`https://bulletballet.dev`) and ten topics now
+say so — on the parent and on `webXash`, whose About was the upstream
+fork's and pointed at the upstream's demo.
 
 **THE README IS REFRESHED.** New screenshots (the landing page with the
 dial and the bullet on the rule, the FAQ tab, and the game with the buy
