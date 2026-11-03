@@ -844,6 +844,63 @@ does not require rebuilding the engine with threads. It does require the
 engine's renderer to be able to target an `OffscreenCanvas`, which the
 current Emscripten build does not.
 
+### 4.8 TODO: sweep the switches the first sweep never touched
+
+**This is a TODO, not a result. Nothing in this section has been measured
+yet, and nothing here may be quoted as a finding.**
+
+§4.2 swept six switches and found nothing — but it swept the switches the
+*GoldSrc folklore* points at. A source review of the engine's actual cvar
+list (2026-11-03) turned up a set that no GoldSrc guide mentions, plus a
+few that matter more in a browser than they do on a desktop.
+
+**Where the checklist came from.** The CS 1.6 tuning guide in
+`docs/cs16optimizationguide.md` was read against *this* engine's cvar
+list rather than taken on faith. Most of its advice is a no-op here:
+`gl_picmip`, `gl_texturemode`, `gl_max_size` (the engine's own
+description of it is "compatibility cvar, does nothing"), `gl_playermip`,
+`gl_affinemodels`, `gl_wateramp`, `gl_waterwarp`, `gl_lightholes`,
+`gl_spriteblend`, `gl_monolights`, `gl_dither`, `cl_weather`,
+`cl_shadows`, `cl_minmodels`, `max_shells`, `max_smokepuffs`,
+`cl_corpsestay` and `cl_deadbodyfilter` are absent or inert — the
+renderer was rewritten and those cvars went with it. The ones that
+survived were already at the value the guide asks for (`gl_fog` is
+registered `0` by the TS port; `r_shadows` is `0`; `gl_clear` is `0`), or
+are already known to be harmful (`gl_vsync 0`: −5.4 rAF/s, +11 ms).
+`gl_round_down` is `FCVAR_READ_ONLY` and cannot be moved at all.
+
+**What that leaves — the switches worth sweeping:**
+
+| cvar | default | what it does | why it might matter |
+|---|---|---|---|
+| `r_scene_scale` | `1.0` | renders the 3D scene at a fraction of the window resolution; **the HUD is unaffected** | The resolution lever, in the one shape that does not blur the HUD. §3.1 says the lever itself is worth nothing on a strong GPU — but it says nothing about a weak one. |
+| `gl_msaa` | `1` | multisample anti-aliasing on the scene render target | The modern equivalent of `-nomsaa`. Fill cost. |
+| `gl_texture_anisotropy` | `8` | anisotropic texture filtering | 8x is a lot of taps per texture fetch, on every surface. |
+| `r_decals` / `mp_decals` | `4096` / `300` | the decal budget | Decals accumulate, and TS is effect-heavy. |
+| `violence_hblood` / `violence_ablood` / `violence_hgibs` / `violence_agibs` | `1` | blood and gibs | The port reads all four at runtime (`engine().cvar_float`), so `config.cfg` genuinely drives them. |
+| `r_lighting_extended` | `1` | lighting from world and bmodels | A lighting pass per frame. |
+
+**Method — the one §3.4 used, because it is the one that produced
+trustworthy numbers.** Interleaved A/B/A; a 25–30 second warm-up before
+any window is read; every reading repeated, because the run-to-run spread
+is ±5 rAF/s and a single window measures the warm-up rather than the
+thing being measured. Both of those traps are recorded in §5 and both
+have already bitten this work once.
+
+**Two conditions, and the second is the point.** On the test machine's
+real GPU, §3.1 already showed the engine sitting at the display's refresh
+ceiling, so these will probably come back neutral again — and *that is
+worth recording*, because it closes the question for good. The case worth
+measuring is the machine that is NOT at the ceiling: a low-end laptop, or
+a deliberately constrained one. The guide this checklist came from exists
+for exactly that audience, and every weak machine measured so far has
+been strong enough to hide the effect.
+
+**What it would settle.** Whether the resolution lever has a shape that
+does not cost the HUD, and whether an effect budget is worth exposing for
+low-end clients. If the answer is still "nothing", §4.2's conclusion
+extends to the whole cvar space and only the §6 list is left.
+
 ---
 
 ## 5. Caveats
@@ -925,12 +982,13 @@ current Emscripten build does not.
 | # | Change | Effort | Expected effect |
 |---|---|---|---|
 | 1 | Raise (or remove) the default render-resolution cap; make it measured per device | Medium | On a real GPU the cap buys zero frames — at 1080p *and* at 4K — and costs sharpness. This is the change that most directly answers "why is my game soft?" |
-| 2 | Re-measure `hud_scale 1.0` on its own | Low | The only engine switch with a positive signal at 4K (+1.66 rAF/s, −8.6 ms lag); needs a focused run to confirm |
-| 3 | Try `desynchronized: true` on the canvas context | Low | One line, unused plumbing. **But expect little** — input latency is already at or below one frame, so the compositor's delay is all that is left to win |
-| 4 | Switch the client WASM to `-O3` (and A/B `-msimd128`) | Low | **Neutral, not a win** — measured over four runs in both orders; the winner followed the position, not the build. Defensible as the right default; not a performance fix |
-| 5 | Drive the TS pump from the engine's frame instead of `setInterval` | Medium | Game logic stops drifting behind the render under load |
-| 6 | Clean up the dead demo-mode HUD/polling code | Low | Not a per-frame cost today (the HUD is off by default), but it is a trap for whoever re-enables it |
-| 7 | Move the engine onto a worker (WASM threads, or `OffscreenCanvas`) | High | The largest ceiling; changes the input path |
+| 2 | Sweep the switches the first sweep never touched (§4.8) | Low | Settles the weak-device case, where the resolution lever is the one that matters: `r_scene_scale` (the lever that does not blur the HUD), MSAA, anisotropy, and a TS effect budget (`r_decals`, `violence_*`). Expect "nothing" again on a strong GPU — that is a result worth having |
+| 3 | Re-measure `hud_scale 1.0` on its own | Low | The only engine switch with a positive signal at 4K (+1.66 rAF/s, −8.6 ms lag); needs a focused run to confirm |
+| 4 | Try `desynchronized: true` on the canvas context | Low | One line, unused plumbing. **But expect little** — input latency is already at or below one frame, so the compositor's delay is all that is left to win |
+| 5 | Switch the client WASM to `-O3` (and A/B `-msimd128`) | Low | **Neutral, not a win** — measured over four runs in both orders; the winner followed the position, not the build. Defensible as the right default; not a performance fix |
+| 6 | Drive the TS pump from the engine's frame instead of `setInterval` | Medium | Game logic stops drifting behind the render under load |
+| 7 | Clean up the dead demo-mode HUD/polling code | Low | Not a per-frame cost today (the HUD is off by default), but it is a trap for whoever re-enables it |
+| 8 | Move the engine onto a worker (WASM threads, or `OffscreenCanvas`) | High | The largest ceiling; changes the input path |
 
 **What is explicitly NOT on this list**, because it was measured and did not
 work:
