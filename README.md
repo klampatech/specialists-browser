@@ -22,11 +22,10 @@
       <img src="docs/screenshots/faq.png" alt="The FAQ tab: the game's own bind table turned into a controls list — movement, weapons, buy and use, and interface — under the cartridge bullet on the rule" width="100%">
     </td>
     <td align="center" valign="top" width="50%">
-      <b>The buy menu</b><br>
-      The port's own canvas menu, top-left of the in-game shot above. It opens
-      the moment you arrive as an observer and after every death, and
-      <b>B</b> brings it back. <b>Esc</b> is the front end's overlay — the
-      engine never sees it.
+      <b>Two buy menus</b><br>
+      The <b>classic</b> flow is the client's own canvas menu — top-left of
+      the in-game shot above. The <b>modern</b> flow is a new DOM panel over
+      the live game: <a href="#the-buy-menu">below</a>.
     </td>
   </tr>
 </table>
@@ -231,6 +230,48 @@ Two rules shaped it. **The engine keeps the keyboard**: the front end
 translates nothing, and its job is to stay out of the way (§3). **The DOM
 never sits on top of the game** unless it is asked for — the Vue HUD is
 hidden by default so it cannot occlude the real one.
+
+### The buy menu
+
+The game has always had a buy menu and it is still there: the **classic**
+flow is the client's own canvas menu, drawn by the port and navigated
+with the weapon-slot keys. It opens the moment you arrive as an observer
+and after every death, and **B** brings it back.
+
+The **modern** flow is a new DOM panel over the live game — a loadout
+screen, a per-slot browse screen and an attachments screen, with the
+money as the hero and the price of every line in the summary. The player
+picks the flow in the options overlay (**Esc** twice → *Buy menu: Classic
+/ Modern*), and the choice is remembered.
+
+The port owns the flow, not the browser: the panel draws what the port's
+own state line says, and the only thing it sends back is a key.
+
+<table>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <b>The loadout</b><br>
+      <img src="docs/screenshots/buy-menu-modern-loadout.png" alt="The modern buy menu's loadout screen: the player's money as the hero, the slot and item counts, the nine loadout slots, and the five weapon slots with what is in them" width="100%">
+    </td>
+    <td align="center" valign="top" width="50%">
+      <b>The browse screen</b><br>
+      <img src="docs/screenshots/buy-menu-modern-browse.png" alt="The browse screen: the weapon categories down the left, the priced weapon list in the middle with its key numbers, and the loadout on the right" width="100%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" valign="top" width="50%">
+      <b>The attachments</b><br>
+      <img src="docs/screenshots/buy-menu-modern-attachments.png" alt="The attachments screen: the chosen gun with its optional attachments, and the summary carrying the price of the gun and every attachment and what is left after" width="100%">
+    </td>
+    <td align="center" valign="top" width="50%">
+      <b>Nothing is bought until you add the gun.</b><br>
+      The attachments are optional and are keyed <b>1</b>–<b>5</b>; press a
+      number again to unselect. The summary is the port's arithmetic, not
+      the browser's: it carries the price of the gun and every attachment,
+      and says what is left after.
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -599,11 +640,12 @@ and [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md). The short version:
 - **Matchmaking** — the policy is decided (the fullest server that is not
   full); the implementation is not. The browser currently sorts the
   opposite way.
-- **The modern buy menu** — the port's half is built: a loadout screen, a
-  per-slot browse screen and an attachments screen, selected by
-  `ts_buy_mode modern` and defaulting to `classic`, so nothing changes
-  for anybody until the browser asks for it. The front end's half — asking
-  for it, and the entry record's shape — is still open.
+- **The modern buy menu is done** — the port's half and the browser's
+  half both landed: the options overlay picks the flow, the panel draws
+  the port's own state, and the loadout is re-submitted when it changes,
+  so it survives a death. The classic canvas menu stays the default, so
+  nothing changes for a player who never picks the modern one. The
+  screenshots above are the live panel.
 - **Loading performance** — the 493 MiB archive is inflated on the main
   thread; the inflate wants to be in a worker.
 - **More instances** — the box is CPU-bound at four or five 32-slot

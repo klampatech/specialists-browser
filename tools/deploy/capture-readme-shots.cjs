@@ -221,6 +221,81 @@ async function waitForHumanOnServer(page, timeoutMs, baseline) {
   await page.screenshot({ path: path.join(OUT, 'spectator.png') });
   console.log('  spectator.png');
 
+  // ---- the modern buy menu ----
+  //
+  // The modern flow is the DOM panel over the game, and the player
+  // picks it in the options overlay (Esc twice: the first Escape
+  // releases the pointer lock, the second opens the overlay). The
+  // panel appears with the port's own menu, which the observer opens
+  // by itself — so no key is needed to make it appear.
+  //
+  // This runs BEFORE the spawn: the buy menu is observer-only, so a
+  // player who has spawned cannot open it at all.
+  const openOptions = async () => {
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(1200);
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(2000);
+  };
+  // The overlay is a three-state machine: the first Escape releases the
+  // pointer lock, the second opens the overlay, the third closes it.
+  // Leaving it open puts it on top of the buy menu in the screenshot.
+  const closeOptions = async () => {
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(1500);
+  };
+  const clickOption = async (label) => {
+    await page.evaluate((l) => {
+      const b = [...document.querySelectorAll('button')].find(
+        (x) => x.textContent.trim().toLowerCase() === l
+      );
+      b?.click();
+    }, label);
+    await page.waitForTimeout(2500);
+    await closeOptions();
+  };
+
+  await openOptions();
+  await clickOption('modern');
+  await page.waitForSelector('[data-buy-menu]', { timeout: 30_000 }).catch(() => {});
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: path.join(OUT, 'buy-menu-modern-loadout.png') });
+  console.log('  buy-menu-modern-loadout.png');
+
+  // the per-slot browse screen: the second weapon slot's card
+  await page.evaluate(() => {
+    const p = document.querySelector('[data-buy-menu]');
+    p?.querySelectorAll('.bm__card-head')[1]?.click();
+  });
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: path.join(OUT, 'buy-menu-modern-browse.png') });
+  console.log('  buy-menu-modern-browse.png');
+
+  // the attachments screen: pick a gun in the browse screen, then
+  // select its attachments so the summary shows them
+  await page.evaluate(() => {
+    const p = document.querySelector('[data-buy-menu]');
+    const rows = [...(p?.querySelectorAll('.bm__row') || [])];
+    (rows.find((r) => /Desert Eagle/i.test(r.innerText)) || rows[2])?.click();
+  });
+  await page.waitForTimeout(1500);
+  for (const name of ['Silencer', 'Lasersight']) {
+    await page.evaluate((n) => {
+      const p = document.querySelector('[data-buy-menu]');
+      [...(p?.querySelectorAll('.bm__row') || [])]
+        .find((r) => new RegExp(n, 'i').test(r.innerText))
+        ?.click();
+    }, name);
+    await page.waitForTimeout(900);
+  }
+  await page.screenshot({ path: path.join(OUT, 'buy-menu-modern-attachments.png') });
+  console.log('  buy-menu-modern-attachments.png');
+
+  // back to the game's own menu, so the rest of the capture is the
+  // default flow a player actually gets
+  await openOptions();
+  await clickOption('classic');
+
   const canvas = await page.$('#canvas');
   const { createHash } = require('node:crypto');
   const shot = async () => {

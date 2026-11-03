@@ -60,6 +60,26 @@ screenshots, which reads as a successful run. It now plays PLAY → modal
 shoot the rig), and captures the FAQ tab too. Verified end to end
 against the rig.
 
+**AND THE MODERN BUY MENU IS LIVE — THE README SHOWS IT.** Kyle
+pointed out that the README's screenshot was the *classic* canvas menu.
+The modern flow is a DOM panel over the live game, and it is reachable:
+**Esc** twice → *Buy menu: Modern*. It has a **loadout screen**, a
+**per-slot browse screen** and an **attachments screen**, with the money
+as the hero and the **port's** arithmetic in the summary ("After adding:
+$20,510 left"). The three screens are in the README now, and
+`capture-readme-shots.cjs` takes them: Esc twice, click *Modern*, and
+the panel appears with the port's own menu (the observer opens it by
+itself), then the slot card, then a gun, then its attachments. **The
+THIRD Escape closes the options overlay** — leave it open and it sits on
+top of the panel in every single screenshot.
+
+**THE MODERN FLOW IS DONE ON BOTH HALVES, so § NEXT TASK's buy-menu
+items are stale.** The frontend sends `ts_buy_mode modern` at session
+start, the modern entry record carries the weapon's classic slot, the
+deploy re-submits the loadout when it changes, and the flow survives a
+map change. The classic canvas menu is still the default, so nothing
+changes for a player who never picks the modern one.
+
 **As of:** 2026-10-31, branch `fix/admin-fleet-list` — **the admin
 console's FLEET LIST now comes from the ORCHESTRATOR**: it was
 enumerating a PORT RANGE and publishing every port it probed, so on
