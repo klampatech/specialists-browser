@@ -2,83 +2,68 @@
 
 > **The Specialists** — a Half-Life 1 mod — running in a browser tab, played
 > against a real dedicated server. No Steam client, no native binary.
->
-> The repo is `specialists-browser`; the product is **BulletBallet**.
+
+**Play it → <https://bulletballet.dev>**
+
+The first visit downloads the 493 MiB game archive — about 30 seconds on a
+100 Mbps line, and cached in the browser after that. Nothing to install, no
+account, no Steam. It needs a current browser: Chrome, Edge, Firefox 119+ or
+Safari 18+.
 
 <table>
   <tr>
     <td align="center" valign="top" width="50%">
-      <b>bulletballet.dev</b><br>
       <img src="docs/screenshots/landing.png" alt="The landing page: the BULLETBALLET wordmark over the dial, the cartridge bullet on the dashed rule, a Play button, and a live server row with the map, the bot count, the slot count and the tick rate" width="100%">
+      <br><sub>The landing page — the server list, the leaderboard, and an FAQ built from the game's own bind table.</sub>
     </td>
     <td align="center" valign="top" width="50%">
-      <b>In game</b><br>
       <img src="docs/screenshots/spectator.png" alt="The game running in the browser: the chase camera behind a bot, The Specialists' own amber HUD with the weapon slots, the kill feed on the right, and the buy menu open on the left" width="100%">
+      <br><sub>In game — the mod's own HUD and kill feed, with the buy menu open.</sub>
     </td>
   </tr>
   <tr>
     <td align="center" valign="top" width="50%">
-      <b>The FAQ tab</b><br>
-      <img src="docs/screenshots/faq.png" alt="The FAQ tab: the game's own bind table turned into a controls list — movement, weapons, buy and use, and interface — under the cartridge bullet on the rule" width="100%">
+      <img src="docs/screenshots/faq.png" alt="The FAQ tab: the game's own bind table turned into a controls list — movement, weapons, buy and use, and interface — each control with its key cap" width="100%">
+      <br><sub>The FAQ tab — the controls are the game's own, read out of its bind table.</sub>
     </td>
     <td align="center" valign="top" width="50%">
-      <b>Two buy menus</b><br>
-      The <b>classic</b> flow is the client's own canvas menu — top-left of
-      the in-game shot above. The <b>modern</b> flow is a new DOM panel over
-      the live game: <a href="#the-buy-menu">below</a>.
+      <img src="docs/screenshots/buy-menu-modern-loadout.png" alt="The modern buy menu's loadout screen: the player's money as the hero, the slot and item counts, the nine loadout slots, and the five weapon slots with what is in them" width="100%">
+      <br><sub>The buy menu — the money is the hero, and every price comes from the server's rules.</sub>
     </td>
   </tr>
 </table>
 
-> **Status: production.** Live at <https://bulletballet.dev>, with real
-> players in a real dedicated server. The first run downloads a 493 MiB game
-> archive; after that it is cached in the browser. The page's third tab is a
-> **FAQ built from the game's own bind table**, so the controls it lists are
-> the game's, not a hand-written approximation.
->
-> See [Production](#production) for the topology and
-> [What is proven](#what-is-proven) for exactly what has been verified.
+## What it actually is
 
----
+Most "play this game in the browser" projects reimplement the game in
+JavaScript. This one does not. The rules you play are the original rules,
+running as real code:
 
-## Where to start
-
-- **New to the project?** Read [`HANDOFF.md`](./HANDOFF.md) — current state,
-  roadmap, and the next task.
-- **Designing or modifying the approach?** Read [`SPEC.md`](./SPEC.md).
-- **An AI agent working on this repo?** Read [`AGENTS.md`](./AGENTS.md).
-- **Chasing a blocked feature?** Read
-  [`docs/UPSTREAM-ISSUES.md`](./docs/UPSTREAM-ISSUES.md) before starting
-  work — several symptoms share one upstream root cause.
-- **Deploying or operating it?** Read
-  [`docs/PRODUCTION-INFRA.md`](./docs/PRODUCTION-INFRA.md) and
-  [`docs/CONTROL-PLANE.md`](./docs/CONTROL-PLANE.md).
-- **Changing the CI or the deploy?** Read
-  [`docs/CI-CD.md`](./docs/CI-CD.md) — including the two traps that have
-  already broken a build.
-- **Looking for the open work?** Read
-  [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md) — the front end and mod
-  work list, grouped into batches, with the reasoning and the order.
-
----
+- **The mod's own Rust port**, compiled to WebAssembly and loaded by the
+  stock Xash3D engine as a side module.
+- **The real dedicated server**, built from that same port and running in
+  Docker — 32 slots, 100 Hz, The Specialists' own 21-map cycle.
+- **A WebSocket↔UDP bridge**, because a browser cannot emit UDP and the
+  engine's network stack speaks it natively.
+- **The engine's own key handling**, used as it is. The page translates no
+  keys at all.
 
 ## The four things that make it work
 
 None of them is obvious, and each one cost a debugging round.
 
-1. **A Rust port of the TS game logic** compiles to a WebAssembly *side
-   module* that the stock Xash3D engine loads, so the game rules are real
-   code, not a JavaScript reimplementation.
+1. **A Rust port of the game's logic**, compiled to a WebAssembly side
+   module the stock engine loads — so the rules are real code, not a
+   JavaScript reimplementation.
 2. **A WebSocket↔UDP bridge**, because a browser cannot emit UDP and the
-   engine's network stack speaks it natively.
-3. **The engine's own key path**, used as it is. The engine does receive
-   DOM keys and runs its own bind table — that was measured, not assumed.
-   The front end's job is to stay out of the way, and to keep Escape away
-   from the engine entirely.
-4. **A gate fix in the port**, because TS deliberately refuses to run nine
-   button commands unless a physical keypress opened them.
+   engine speaks it natively.
+3. **The engine's own key path**, used as it is — measured, not assumed.
+   The front end's job is to stay out of the way.
+4. **A gate fix in the port**, because the mod deliberately refuses to run
+   nine button commands unless a physical keypress opened them.
 
-### 1. The Rust port as a WASM side module
+<details>
+<summary><b>1. The Rust port as a WASM side module</b></summary>
 
 `tools/port/tsp-rs/` is a vendored copy of `the-specialistsmod-rs` (pinned
 in `PINNED-VERSION`), a Rust reimplementation of The Specialists' gameplay.
@@ -102,7 +87,10 @@ tools/port/tsp-rs/scripts/deploy-wasm-to-webxash.sh   # → webxash/public/cl_dl
 Always deploy with the script. Hand-copying the artifact is how you end up
 debugging a build that was never served.
 
-### 2. The WebSocket↔UDP bridge
+</details>
+
+<details>
+<summary><b>2. The WebSocket↔UDP bridge</b></summary>
 
 `tools/port/tsp-rs/scripts/ts-udp-bridge.js`. The engine's `net_ws.c` calls
 POSIX `sendto`/`recvfrom`; Emscripten's socket emulation falls back to `-1`
@@ -134,7 +122,10 @@ the bridge *where* to send a packet; only the floor says whether it is
 refused **before** the handshake, with a plain 403, because a connection
 that opens and then closes reads to the client as "connected".
 
-### 3. The keyboard path
+</details>
+
+<details>
+<summary><b>3. The keyboard path</b></summary>
 
 The engine's keyboard works. With the TS client's own `ts_dev_keylog 1`, in
 a real Chromium against a live server:
@@ -145,16 +136,16 @@ a real Chromium against a live server:
 ```
 
 The engine's `keydown` listener fires, reaches `HUD_Key_Event`, and runs
-its own bind table — `ts/config.cfg` already binds movement, weapon
-slots, chat, third person, reload and use.
+its own bind table — `ts/config.cfg` already binds movement, weapon slots,
+chat, third person, reload and use.
 
-The long-held belief that the engine never sees a key was **wrong**, and
-it cost a bug: the front end *also* translated every DOM key into an
-engine command, so every key ran twice. That is the whole of "typing
-triggers hot keys AND types at the same time" — Y opened the chat twice,
-and the real keystroke typed a `y` into a chat that was already open —
-and of third person looking broken, because X ran `thirdperson` twice, on
-then straight back off.
+The long-held belief that the engine never sees a key was **wrong**, and it
+cost a bug: the front end *also* translated every DOM key into an engine
+command, so every key ran twice. That is the whole of "typing triggers hot
+keys AND types at the same time" — Y opened the chat twice, and the real
+keystroke typed a `y` into a chat that was already open — and of third
+person looking broken, because X ran `thirdperson` twice, on then straight
+back off.
 
 So there is no command map any more. What the front end still does:
 
@@ -193,7 +184,10 @@ it), and a **bare `reload`**, which aborts the WASM heap — see
 the game — is retired with `+con_notifytime 0`, a cvar the engine reads,
 not a patch.
 
-### 4. `ts_gate` — the anti-script gate
+</details>
+
+<details>
+<summary><b>4. <code>ts_gate</code> — the anti-script gate</b></summary>
 
 TS makes nine button commands reachable only after a real keypress:
 
@@ -215,277 +209,47 @@ a real keypress gives it. The bridge calls it immediately before any gated
 command it sends. It is **not** a blanket bypass: bounded duration, caller
 is the bridge, and `HUD_Frame` re-arms the gate exactly as before.
 
----
+</details>
 
-## The front end
+## The buy menu
 
-`webxash/` is a Vue app that owns the page around the game canvas and
-almost nothing inside it. Three tabs sit over the landing page — the
-**server list**, the **leaderboard** and the **FAQ** — and an options
-overlay lives behind **Esc**, which never reaches the engine. The FAQ is
-built from the game's own bind table, so the controls it lists are the
-game's rather than a hand-written approximation of them.
+The game has always had a buy menu and it is still there. The **classic**
+flow is the client's own canvas menu — top-left of the in-game shot above.
+It opens the moment you arrive as an observer and after every death, and
+**B** brings it back.
 
-Two rules shaped it. **The engine keeps the keyboard**: the front end
-translates nothing, and its job is to stay out of the way (§3). **The DOM
-never sits on top of the game** unless it is asked for — the Vue HUD is
-hidden by default so it cannot occlude the real one.
+The **modern** flow is a new DOM panel over the live game: a loadout
+screen, a per-slot browse screen and an attachments screen, with the money
+as the hero and the price of every line in the summary. You pick the flow
+in the options overlay (**Esc** twice → *Buy menu: Classic / Modern*), and
+the choice is remembered.
 
-### The buy menu
+The server owns the flow, not the browser. The panel draws what the port's
+own state line says, and the only thing it sends back is a key — so the
+prices are the ruleset's, at runtime, and never a table copied into
+JavaScript.
 
-The game has always had a buy menu and it is still there: the **classic**
-flow is the client's own canvas menu, drawn by the port and navigated
-with the weapon-slot keys. It opens the moment you arrive as an observer
-and after every death, and **B** brings it back.
-
-The **modern** flow is a new DOM panel over the live game — a loadout
-screen, a per-slot browse screen and an attachments screen, with the
-money as the hero and the price of every line in the summary. The player
-picks the flow in the options overlay (**Esc** twice → *Buy menu: Classic
-/ Modern*), and the choice is remembered.
-
-The port owns the flow, not the browser: the panel draws what the port's
-own state line says, and the only thing it sends back is a key.
+<details>
+<summary>The browse screen and the attachments screen</summary>
 
 <table>
   <tr>
     <td align="center" valign="top" width="50%">
-      <b>The loadout</b><br>
-      <img src="docs/screenshots/buy-menu-modern-loadout.png" alt="The modern buy menu's loadout screen: the player's money as the hero, the slot and item counts, the nine loadout slots, and the five weapon slots with what is in them" width="100%">
-    </td>
-    <td align="center" valign="top" width="50%">
-      <b>The browse screen</b><br>
       <img src="docs/screenshots/buy-menu-modern-browse.png" alt="The browse screen: the weapon categories down the left, the priced weapon list in the middle with its key numbers, and the loadout on the right" width="100%">
+      <br><sub>The browse screen — categories, prices, and the keys that pick them.</sub>
     </td>
-  </tr>
-  <tr>
     <td align="center" valign="top" width="50%">
-      <b>The attachments</b><br>
       <img src="docs/screenshots/buy-menu-modern-attachments.png" alt="The attachments screen: the chosen gun with its optional attachments, and the summary carrying the price of the gun and every attachment and what is left after" width="100%">
-    </td>
-    <td align="center" valign="top" width="50%">
-      <b>Nothing is bought until you add the gun.</b><br>
-      The attachments are optional and are keyed <b>1</b>–<b>5</b>; press a
-      number again to unselect. The summary is the port's arithmetic, not
-      the browser's: it carries the price of the gun and every attachment,
-      and says what is left after.
+      <br><sub>The attachments screen — optional, and nothing is bought until you add the gun.</sub>
     </td>
   </tr>
 </table>
 
----
+</details>
 
-## Production
+## Run it yourself
 
-```
-browser
-  │  https://bulletballet.dev/
-  ▼
-Caddy (Let's Encrypt, cert valid to 2027-01-21)
-  ├── /              → /srv/web          app bundle, 56 MB
-  ├── /api/servers   → 127.0.0.1:8081    registry container
-  └── /bridge        → 127.0.0.1:27017   bridge container (WebSocket)
-                                              │
-                                              └─ UDP → 127.0.0.1:27015 → ts-0
-
-assets.bulletballet.dev  →  Cloudflare R2 (ts-assets), 493 MiB in 8×64 MiB parts
-```
-
-The game UDP port is published straight out of Docker and deliberately does
-**not** go through Caddy — it is raw UDP, not HTTP.
-
-### The four containers
-
-| Container | Role |
-|---|---|
-| `ts-0` | the dedicated server — 32 slots, tickrate 100, a 21-map cycle |
-| `bridge` | WebSocket↔UDP, allowlisted, refuses unknown targets with 403 |
-| `registry` | the fleet's source of truth — A2S, tickrate, bot count, health |
-| `orchestrator` | the decision maker — restart unhealthy, scale out, scale in |
-
-### Asset delivery
-
-The game archive is 493 MiB, which is larger than a browser will hold in
-memory as one blob and larger than is sensible to serve uncompressed. It is
-split into eight 64 MiB parts plus a manifest, uploaded to Cloudflare R2,
-and served through the Cloudflare edge with immutable caching.
-
-The edge is the point: the first player to fetch a part warms it for
-everyone after. A cold fetch measures ~41 MiB/s from a fast link; a warm
-one is served from the edge.
-
-Two traps live here, both documented in
-[`docs/ASSET-DELIVERY.md`](./docs/ASSET-DELIVERY.md):
-
-- **The storage key layout must mirror the dev-served layout exactly.**
-  On localhost the two lookups are independent and one of them succeeds,
-  so the mismatch does not show up until it hits a real bucket — as a
-  total 404 of the delivery path.
-- **`vary: Origin` means a cached pre-policy response keeps missing its
-  CORS header** until that per-origin variant is purged. A policy in the
-  wrong shape is accepted, renders plausibly, and does nothing.
-
-### The control plane
-
-The **registry observes** and the **orchestrator decides**. They are
-separate services on purpose: a registry bug cannot take the fleet down,
-and two services measuring the same thing is how they end up disagreeing.
-
-Three policies, all of them settled rather than accidental:
-
-- **Degradation is sustained, with hysteresis and a cooldown.** A tickrate
-  dip of one or two frames happens on a map change, a bot respawn, a GC
-  pause. Degrade below 85%, recover only above 95%, sustained 30s, and a
-  180s cooldown before touching the same instance again.
-- **An instance is down only after three consecutive failed probes.** One
-  missed UDP probe must not restart a healthy server with players on it.
-- **Bots yield to humans.** The bot roster is `16 − humans`, scaled by the
-  registry and applied with `ts_bot_quota`. A lone player has something to
-  fight; a full server has nobody in the way. Sixteen bots on a 32-slot
-  server is filler, not a fill: the humans still have room.
-
-### Map rotation
-
-The server cycles through **The Specialists 3.0's own map cycle** — the
-one that shipped in the mod's Linux server tarball, twenty-one maps, in
-the mod's own order — plus the two classics TS 3.0 dropped from its
-default file while still shipping them:
-
-```
-ts_hammertime  ts_antrodome  ts_kissmeyerbasic  ts_central  ts_wyndham
-ts_henny2      ts_rundown     ts_neobaroque       ts_casa     ts_lobbyduel
-ts_supertimor  ts_faculty     ts_trident          ts_panzibar ts_gpc
-ts_awaken      ts_heresy      ts_lobby            ts_metro    ts_frigid
-ts_theatre     ts_dietrich     ts_bikini
-```
-
-- **`ts_dietrich`** — "Dietrich's penthouse hideout from *Face/Off*", the
-  Castor Troy penthouse; one of the headline film-accurate recreations.
-- **`ts_bikini`** — the seaside villa, still in the tsmod.net rotation.
-
-Both were in TS 2.0's cycle and 3.0 kept the maps but dropped them from
-the default file, so a historically faithful cycle has to name them
-explicitly. `ts_lobby` — "the first and probably most popular map of the
-game", the Matrix lobby — is in there too, as the mod's own cycle has it.
-
-`ts_dojo` — the Matrix dojo recreation, and one of the best maps ever
-designed for the HL engine — **was** in that list, and was taken out on
-2026-10-24: it is hard on the eyes and laggy to play. A rotation is a
-serving decision, not a monument.
-
-The stock cycle's last entry, `ctb_deadheat`, is left out: it is a
-Capture-The-Bomb map with no deathmatch spawns, so a player who landed on
-it in FFA would have nowhere to spawn and would sit in spectator until
-the round moved on.
-
-Two things make the rotation work, and both were broken before:
-
-- **The cycle file is ours.** The asset tree ships the stock Half-Life
-  one — `undertow`, `snark_pit`, `boot_camp`, … — and not one of those
-  maps exists in a TS install. The port skips every entry it cannot
-  resolve and ends up with an **empty cycle**, which is not an error: the
-  server just keeps one map forever, silently. `entrypoint.sh` copies
-  `tools/deploy/config/mapcycle.txt` into the game directory so there is
-  exactly one cycle in the tree, and it is the right one.
-- **`mp_timelimit` is the timer that ends the match, in MINUTES.**
-  `roundtime` is the TS *round* timer and is inert in FFA deathmatch, so
-  setting it and waiting changes nothing at all. `mp_timelimit 3` gives a
-  three-minute match, ten seconds of intermission, and then the next map.
-
-### Capacity
-
-"Eight instances of 32 slots on this box" is **a plan, not a promise**.
-
-| Bound | Number |
-|---|---|
-| RAM-bound | ~9 instances (365.5 MB measured each) |
-| CPU-bound | ~4–5 (2 vCores, shared with Caddy and three Node services) |
-
-The bounds disagree and **CPU is the one that binds**. The RAM figure is
-an upper bound even on its own terms: 365.5 MB was measured with four bots
-and no players, and the roster is now **sixteen** — so the per-instance
-figure is stale in the direction that matters. The number that would move
-it is a real 32-player instance, which is the metric we do not have yet.
-
-What the sixteen-bot roster does NOT cost is tickrate: measured on every
-map of the rotation with the server pinned to **two cores** (the
-production box has two vCores, shared with Caddy and three Node
-services), the server held **100 Hz** on all of them. The bots are cheap;
-the maps are what differ.
-
----
-
-## What is proven
-
-Verified from a real browser against production, not from a test harness:
-
-```
-registry: ts-0 · ts_rundown · tick=100 · humans=0 · bots=16 · slots=32
-engine console: BUILD 4221 SERVER (0 CRC) → FS_AddGameHierarchy( ts )
-```
-
-- **Two browsers in the server at once**, each with its own server-side
-  client slot, with the bot roster scaling down as they arrived.
-- **A player joining from a cold browser**, downloading 493 MiB, booting
-  the engine, and appearing on the server's player count.
-- **The server dying under a live player**, and the client saying so
-  ("The game server is restarting") and reconnecting on its own.
-- **The server being restarted by the orchestrator** (~80s from dead to
-  healthy) without touching a healthy instance.
-
-Run it yourself:
-
-```bash
-node tools/deploy/two-player-e2e.cjs https://bulletballet.dev/ 2
-node tools/deploy/play-button-e2e.cjs https://bulletballet.dev/
-node tools/deploy/disconnect-ux-test.cjs https://bulletballet.dev/
-```
-
-The first checks that two browsers are in the server *at the same time*,
-the second that the **Play** button reaches it, and the third that a
-player is told when the server goes away.
-
-### Known limitations
-
-- **The first run downloads 493 MiB.** ~30–40s on a 100 Mbps link, ~90s on
-  50 Mbps, ~6 minutes on a slow mobile connection. Cached after that.
-- **Browser floor.** The engine needs cross-origin isolation for
-  `SharedArrayBuffer`: Chrome and Edge are fine, Firefox 119+, Safari 18+.
-- **The player count lags by up to two minutes** after someone leaves — the
-  server holds the slot until its own timeout fires.
-- **The console is disabled**, on purpose: its binding is cleared at boot
-  and nothing in the front end opens it. Typing into it is therefore not
-  possible, not merely awkward.
-- **A bare `reload` aborts the WASM heap.** The front end uses the held
-  `+reload` / `-reload` pair and never hits it; the engine defect is
-  still there.
-
----
-
-## Repo layout
-
-| Path | What it is |
-|---|---|
-| `webxash/` | Vue frontend + the WASM engine (git submodule, branch `main`) |
-| `tools/port/tsp-rs/` | Vendored Rust port of TS gameplay |
-| `tools/port/tsp-rs/crates/ts30/`, `ts21/` | TS 3.0 / 2.1 rulesets |
-| `tools/port/tsp-rs/scripts/` | Build, deploy, server, bridge, and probe scripts |
-| `tools/deploy/` | Container images, Caddy config, instance runner, e2e tests, and `config/` — `server.cfg` and the map cycle |
-| `tools/decompile/` | The parked AI-decompile output — the single-player fallback |
-| `tools/assets/` | Archive splitter and R2 uploader |
-| `services/registry/` | The fleet registry |
-| `services/orchestrator/` | The fleet orchestrator |
-| `services/a2s/` | The original A2S service the registry grew out of |
-| `docs/` | Production topology, control plane, asset delivery, upstream issues, historical scopes |
-| `SPEC.md` | Living design spec |
-| `HANDOFF.md` | Current state and the next task |
-
-The vendored port is pinned by `PINNED-VERSION`. It is a copy, not a
-submodule, so the build stays reproducible offline.
-
----
-
-## Development setup
+Three processes, in three terminals:
 
 ```bash
 # 1. Dedicated server (UDP 27015), data root /tmp/tsds
@@ -509,26 +273,18 @@ Append `&debug=1` for session-level logging, `&debug=trace` to also trace
 every packet, `&hud=vue` to show the Vue HUD (hidden by default so it
 cannot occlude the real one).
 
-**The app is served from `/`, not `/webXash/`.** The Vite `base` has to
-match where it is actually served, or the entry module 404s and the page
-renders blank with an empty console.
+> **The local loop works.** A browser client reaches a local game server:
+> the bridge advertises a public address and resolves it to an internal
+> UDP target (`--targets default=127.0.0.1:27015@<public>:27015`), so the
+> browser never emits UDP itself. Gameplay changes are therefore verified
+> against a local server instead of against production.
 
-> **The local loop works now.** A browser client reaches a local game
-> server: the bridge advertises a public address and resolves it to an
-> internal UDP target (`--targets default=127.0.0.1:27015@<public>:27015`),
-> so the browser never emits UDP itself. That closes **E5** in
-> [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md) — gameplay changes are
-> verified against a local server instead of against production.
-
----
-
-## Server configuration
+<details>
+<summary>Server configuration — the two values that bite</summary>
 
 Stock TS is **free-for-all deathmatch**. The shipped `server.cfg` does not
 set `mp_teamplay` (default `0`). The four visible "teams" are character
 *model* groups from `mp_teammodels`, not sides.
-
-Two values that will bite if set wrong:
 
 - **`ts_gameplay`** selects the ruleset. `30` is TS 3.0 (default, ignores
   map prefix); `21` is TS 2.1 (map-aware). The client WASM is built
@@ -554,9 +310,138 @@ echo "ts_status" >> /tmp/tsds/engine.console
 named FIFO** — a FIFO blocks on open until a peer arrives, so a dead
 reader hangs the next start forever while the script still exits 0.
 
----
+</details>
 
-## Testing
+## What works today
+
+Verified from a real browser against production, not from a test harness:
+
+- **Two browsers in the server at once**, each with its own server-side
+  client slot, with the bot roster scaling down as they arrived.
+- **A player joining from a cold browser**, downloading 493 MiB, booting
+  the engine, and appearing on the server's player count.
+- **The server dying under a live player**, and the client saying so
+  ("The game server is restarting") and reconnecting on its own.
+- **The server being restarted by the orchestrator** (~80s from dead to
+  healthy) without touching a healthy instance.
+
+And the limits worth knowing before you play:
+
+- **The first run downloads 493 MiB.** ~30–40s on a 100 Mbps link, ~90s on
+  50 Mbps, ~6 minutes on a slow mobile connection. Cached after that.
+- **The player count lags by up to two minutes** after someone leaves — the
+  server holds the slot until its own timeout fires.
+- **The console is disabled**, on purpose: its binding is cleared at boot
+  and nothing in the front end opens it.
+- **A bare `reload` aborts the WASM heap.** The front end uses the held
+  `+reload` / `-reload` pair and never hits it; the engine defect is
+  still there.
+
+## The server behind it
+
+```
+browser
+  │  https://bulletballet.dev/
+  ▼
+Caddy (Let's Encrypt, cert valid to 2027-01-21)
+  ├── /              → /srv/web          app bundle, 56 MB
+  ├── /api/servers   → 127.0.0.1:8081    registry container
+  └── /bridge        → 127.0.0.1:27017   bridge container (WebSocket)
+                                              │
+                                              └─ UDP → 127.0.0.1:27015 → ts-0
+
+assets.bulletballet.dev  →  Cloudflare R2 (ts-assets), 493 MiB in 8×64 MiB parts
+```
+
+The game UDP port is published straight out of Docker and deliberately does
+**not** go through Caddy — it is raw UDP, not HTTP. Four containers do the
+work: `ts-0` (the dedicated server), `bridge` (WebSocket↔UDP, allowlisted),
+`registry` (the fleet's source of truth) and `orchestrator` (the decision
+maker — restart unhealthy, scale out, scale in).
+
+The full topology, the control plane's policies and the capacity numbers
+are in [`docs/PRODUCTION-INFRA.md`](./docs/PRODUCTION-INFRA.md).
+
+<details>
+<summary>Asset delivery, map rotation and capacity</summary>
+
+**Asset delivery.** The game archive is 493 MiB, which is larger than a
+browser will hold in memory as one blob and larger than is sensible to
+serve uncompressed. It is split into eight 64 MiB parts plus a manifest,
+uploaded to Cloudflare R2, and served through the Cloudflare edge with
+immutable caching. The edge is the point: the first player to fetch a part
+warms it for everyone after. A cold fetch measures ~41 MiB/s from a fast
+link; a warm one is served from the edge.
+
+Two traps live here, both documented in
+[`docs/ASSET-DELIVERY.md`](./docs/ASSET-DELIVERY.md):
+
+- **The storage key layout must mirror the dev-served layout exactly.**
+  On localhost the two lookups are independent and one of them succeeds,
+  so the mismatch does not show up until it hits a real bucket — as a
+  total 404 of the delivery path.
+- **`vary: Origin` means a cached pre-policy response keeps missing its
+  CORS header** until that per-origin variant is purged. A policy in the
+  wrong shape is accepted, renders plausibly, and does nothing.
+
+**Map rotation.** The server cycles through **The Specialists 3.0's own map
+cycle** — the one that shipped in the mod's Linux server tarball, twenty-one
+maps, in the mod's own order — plus the two classics TS 3.0 dropped from
+its default file while still shipping them (`ts_dietrich`, `ts_bikini`).
+Two things make it work, and both were broken before: the cycle file has to
+be ours (the asset tree ships the stock Half-Life one, and the port skips
+every entry it cannot resolve and ends up with an *empty* cycle, which is
+not an error — the server just keeps one map forever, silently), and
+`mp_timelimit` is the timer that ends the match, in **minutes** —
+`roundtime` is the TS *round* timer and is inert in FFA deathmatch.
+
+**Capacity.** "Eight instances of 32 slots on this box" is **a plan, not a
+promise**. RAM allows ~9 instances; CPU allows ~4–5, and **CPU is the one
+that binds** — two vCores shared with Caddy and three Node services. The
+bot roster is sixteen, so the RAM figure (365.5 MB, measured with four
+bots) is stale in the direction that matters. What the sixteen-bot roster
+does *not* cost is tickrate: measured on every map of the rotation with
+the server pinned to two cores, the server held **100 Hz** on all of them.
+The bots are cheap; the maps are what differ.
+
+</details>
+
+## For contributors
+
+| Looking for | Read |
+|---|---|
+| The current state and the next task | [`HANDOFF.md`](./HANDOFF.md) |
+| The design and why it is that way | [`SPEC.md`](./SPEC.md) |
+| Working on this repo with an agent | [`AGENTS.md`](./AGENTS.md) |
+| Production topology and the control plane | [`docs/PRODUCTION-INFRA.md`](./docs/PRODUCTION-INFRA.md), [`docs/CONTROL-PLANE.md`](./docs/CONTROL-PLANE.md) |
+| The CI gate and the deploy | [`docs/CI-CD.md`](./docs/CI-CD.md) — including the two traps that have already broken a build |
+| The front end and mod work list | [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md) |
+| A symptom with one upstream cause | [`docs/UPSTREAM-ISSUES.md`](./docs/UPSTREAM-ISSUES.md) — read this before starting work |
+
+<details>
+<summary>Repo layout</summary>
+
+| Path | What it is |
+|---|---|
+| `webxash/` | Vue frontend + the WASM engine (git submodule, branch `main`) |
+| `tools/port/tsp-rs/` | Vendored Rust port of TS gameplay |
+| `tools/port/tsp-rs/crates/ts30/`, `ts21/` | TS 3.0 / 2.1 rulesets |
+| `tools/port/tsp-rs/scripts/` | Build, deploy, server, bridge, and probe scripts |
+| `tools/deploy/` | Container images, Caddy config, instance runner, e2e tests, and `config/` — `server.cfg` and the map cycle |
+| `tools/decompile/` | The parked AI-decompile output — the single-player fallback |
+| `tools/assets/` | Archive splitter and R2 uploader |
+| `services/registry/` | The fleet registry |
+| `services/orchestrator/` | The fleet orchestrator |
+| `services/a2s/` | The original A2S service the registry grew out of |
+| `docs/` | Production topology, control plane, asset delivery, upstream issues, historical scopes |
+
+The vendored port is pinned by `PINNED-VERSION`. It is a copy, not a
+submodule, so the build stays reproducible offline.
+
+</details>
+
+<details>
+<summary>Testing, CI and deployment</summary>
 
 ```bash
 # Browser → server smoke test
@@ -564,6 +449,9 @@ tools/port/tsp-rs/scripts/smoke-browser-to-server.js
 
 # Frontend only
 tools/port/tsp-rs/scripts/smoke-webxash.js
+
+# The regression suite
+npm test
 ```
 
 Probes live in `tools/port/tsp-rs/scripts/probes/`. Archived investigation
@@ -596,10 +484,6 @@ e2e test here originally matched `/join/i` — a server row's *Join* button —
 so the suite was exercising the path that already worked while the *Play*
 button was broken, and every run passed.
 
----
-
-## CI and deployment
-
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `ci.yml` | PR, push to main | Frontend typecheck and build, 610 unit tests, the port's Rust suite, and the three service images |
@@ -612,40 +496,27 @@ clicks **Play** in a real browser to confirm a player actually arrived.
 The deploy is refused for any commit that did not come through a pull
 request.
 
-```bash
-npm test          # the regression suite
-```
-
-**610 tests.** The design rule is that a test earns its place by locking
-in a failure we actually had. The A2S bot count's byte offset, the
-bridge's allowlist, the empty-map-versus-unknown distinction in the human
-count, scale-out slot selection, and the pull-request gate's own false
-negative are all covered.
+**610 tests.** The design rule is that a test earns its place by locking in
+a failure we actually had. The A2S bot count's byte offset, the bridge's
+allowlist, the empty-map-versus-unknown distinction in the human count,
+scale-out slot selection, and the pull-request gate's own false negative
+are all covered.
 
 > **Protection, stated plainly.** The repo is **public** and `main` is
 > covered by an **active ruleset**: one approving review is required,
 > deletions and force-pushes are refused, and the required status checks
-> have to pass. The `pr-required` workflow is the second line of defence
-> — it **detects** a direct push and **blocks the deploy**, because the
+> have to pass. The `pr-required` workflow is the second line of defence —
+> it **detects** a direct push and **blocks the deploy**, because the
 > workflow cannot prevent the push that already happened. Details in
 > [`docs/CI-CD.md`](./docs/CI-CD.md).
 
----
+</details>
 
 ## What is next
-
-The open work is tracked in [`HANDOFF.md`](./HANDOFF.md) (`§ NEXT TASK`)
-and [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md). The short version:
 
 - **Matchmaking** — the policy is decided (the fullest server that is not
   full); the implementation is not. The browser currently sorts the
   opposite way.
-- **The modern buy menu is done** — the port's half and the browser's
-  half both landed: the options overlay picks the flow, the panel draws
-  the port's own state, and the loadout is re-submitted when it changes,
-  so it survives a death. The classic canvas menu stays the default, so
-  nothing changes for a player who never picks the modern one. The
-  screenshots above are the live panel.
 - **Loading performance** — the 493 MiB archive is inflated on the main
   thread; the inflate wants to be in a worker.
 - **More instances** — the box is CPU-bound at four or five 32-slot
@@ -655,16 +526,17 @@ and [`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md). The short version:
   carry the BulletBallet identity. What is left is the game's *own* art,
   which stays the mod's.
 
----
+The full list is in [`HANDOFF.md`](./HANDOFF.md) (`§ NEXT TASK`) and
+[`docs/FE-MOD-PLAN.md`](./docs/FE-MOD-PLAN.md).
 
-## Deliberately not done
+## What we chose not to do
 
-**CheerpX.** The original plan ran TS's closed-source x86 DLLs unmodified
-via an x86 emulator in WASM. Shipping a Rust port instead removed the
-emulator, the dual-mode build, and a whole class of "is it the port or is
-it CheerpX?" ambiguity.
+**An x86 emulator.** The original plan ran the mod's closed-source DLLs
+unmodified through an x86 emulator in WASM. Shipping a Rust port instead
+removed the emulator, the dual-mode build, and a whole class of "is it the
+port or the emulator?" ambiguity.
 
-**The AI-decompile path.** This project started by decompiling TS's
+**Our own decompilation.** This project started by decompiling the mod's
 client and server to source with an AI pipeline. The upstream project
 turned out to have published a Rust reimplementation of the game logic,
 which is what ships. The decompiled output is still in the tree as the
@@ -673,15 +545,15 @@ keeping a diary of a road not taken.
 
 **Matchmaking by skill.** Explicitly out of scope — not ELO-based.
 
----
-
 ## License
 
-Repo content is MIT. The engine and mod content are **not** covered by
-this license: users source those separately and are bound by Valve's HL1
-SDK terms and The Specialists mod's distribution terms.
+Repo content is MIT. The engine and mod content are **not** covered by this
+license: users source those separately and are bound by Valve's HL1 SDK
+terms and The Specialists mod's distribution terms.
 
 The game archive is served from a public R2 bucket on Cloudflare. That is
 a deliberate call — the browser needs the content, and the server image
 stays clean because the assets live in a read-only volume and are never
 baked into an image.
+
+The repo is `specialists-browser`; the product is **BulletBallet**.
