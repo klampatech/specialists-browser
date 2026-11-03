@@ -6,7 +6,7 @@
 
 **Status:** **PRODUCTION.** The game is live at `https://bulletballet.dev` —
 a browser plays The Specialists against a real dedicated server. See
-`docs/PRODUCTION-INFRA.md` for the topology and the verified evidence.
+the deployment itself for the topology and the verified evidence.
 **Pivot history:** Option B (CheerpX) → abandoned 2026-10-14 after
 cascading linker bugs. Option D (AI decompile) completed D.4 (369+
 methods decompiled). D.5 Babylon attempt → visual baseline didn't
@@ -19,6 +19,13 @@ classic weapon slot — and its key rules and its own labels)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 
+
+> **The supporting docs are local-only now.** The admin console's specs
+> and runbook, the production topology, the design scopes and the
+> research notes are **gitignored** — they are not in this repository
+> (see `.gitignore`), and they are on the working machine. The three docs
+> a new agent needs are still tracked: `docs/CI-CD.md`,
+> `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 ---
 
 ## Production state (2026-10-23)
@@ -83,8 +90,8 @@ Phases 4 and 5 are in `docs/ADMIN-CONSOLE.md` §7 and in `HANDOFF.md`:
 phase 4 added the **mutating actions** (kick, map, broadcast, round
 restart, time limit), and phase 5 built the **deployment mechanism** —
 the image, the deploy entry, the RCON secret as a file, the boot config,
-the CI wiring, the tunnel script and the runbook
-(`docs/ADMIN-CONSOLE-RUNBOOK.md`). **The console is still not deployed**:
+the CI wiring, the tunnel script and the runbook (the runbook is
+local-only — not in this repository). **The console is still not deployed**:
 phase 5 is the mechanism, and the cut-over is done by hand, after review.
 
 **The one design change phase 5 made** is the secret's shape. The
@@ -826,11 +833,10 @@ made it out of date.
 ├── README.md               # Orients new humans/agents to the project.
 ├── webxash/                # The FRONTEND — a git submodule (the Vue client).
 │                           # The pipeline builds and ships THIS, not the repo.
-├── docs/                   # Extended design docs, research notes.
-│   ├── option-d-scope.md   # The AI-decompile design doc (Option D — what shipped).
-│   ├── option-c-scope.md   # The Babylon reimplementation (Option C) — rejected.
-│   ├── phase-1-scope.md    # Phase 1 (Option B CheerpX) — superseded.
-│   └── cheats/             # One-shot reference docs.
+├── docs/                   # The three docs a new agent needs.
+│   ├── CI-CD.md            # The CI gate and the deploy.
+│   ├── FE-MOD-PLAN.md      # The front end and mod work list.
+│   └── UPSTREAM-ISSUES.md  # Symptoms that share one upstream cause.
 ├── tools/                  # Build scripts, deploy tooling, decompile pipeline.
 │   ├── decompile/          # Option D: the AI decompile pipeline.
 │   │   ├── analysis/       # readelf/objdump output for the binary.

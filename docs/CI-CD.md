@@ -187,6 +187,37 @@ the archive is served from R2, not from the web bundle.
 - **the game assets.** Those live in `/srv/ts-data` on the host and are
   mounted read-only. They are never in an image.
 
+### The assets bucket's CORS policy
+
+The browser fetches the game archive from `assets.bulletballet.dev`, and a
+cross-origin fetch cannot read a response without an
+`Access-Control-Allow-Origin` for **its** origin. The policy itself is a
+bucket-level setting in the Cloudflare dashboard, not a file — so this is
+the copy the regression suite checks:
+
+```json
+[
+  {
+    "AllowedOrigins": [
+      "https://bulletballet.dev",
+      "https://ci.bulletballet.dev"
+    ],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["Content-Length", "ETag"]
+  }
+]
+```
+
+With the CI origin missing, the gate fails as *"the server never answered
+the handshake"* when the server was perfectly fine: the archive never
+arrives, so the engine never boots.
+
+> R2 takes the policy in two shapes (a PascalCase array in the dashboard's
+> JSON tab, and a different key style elsewhere), and guessing produces a
+> policy that looks plausible and does nothing. It is a **dashboard**
+> setting: `/accounts/<id>/r2/buckets/ts-assets/cors`.
+
 **How the images get there.** Streamed over SSH:
 
 ```bash

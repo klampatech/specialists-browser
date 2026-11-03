@@ -318,10 +318,15 @@ test('the deploy asks about the secret WITH AUTHORITY', () => {
   // so a plain negative pattern would fail on the FIXED line and pass
   // on the broken one, which is exactly backwards.
   assert.doesNotMatch(deploy, /(?<!sudo )stat -c '%a' "\$RCON_SECRET"/);
-  // The runbook pins the directory's mode, so the two facts cannot
-  // drift apart: 0700 is what makes the unprivileged check a lie.
-  const runbook = readFileSync(join(repoRoot, 'docs/ADMIN-CONSOLE-RUNBOOK.md'), 'utf8');
-  assert.match(runbook, /chmod 0700 \/srv\/ts-admin \/srv\/ts-admin\/auth/);
+  // The directory's mode is pinned on the deploy side too, by the next
+  // test: the deploy creates the state directory 0700 and owned by the
+  // console's uid, so 0700 is what makes the unprivileged check a lie.
+  //
+  // It used to ALSO be pinned here, against the runbook's own line —
+  // so the doc and the script could not drift apart. The runbook is
+  // local-only now (gitignored, see .gitignore), so it cannot be a
+  // tracked source of truth; the deploy script and the image's
+  // Dockerfile are, and they are what the assertions read.
 });
 
 test('the state directory the deploy makes is PRIVATE to the console', () => {

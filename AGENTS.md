@@ -56,8 +56,11 @@ root. It reinforces the protocol in `HANDOFF.md`.
 - **Smoke scripts:** `tools/smokes/`. Tier-1 (unit), tier-2
   (headless), tier-3 (real-browser). Named by what they verify, not
   by PR number.
-- **Reference docs:** `docs/cheats/` — one-off topics, not living
-  state (decompiled header dumps, CheerpX notes, etc.).
+- **Reference docs:** `docs/CI-CD.md`, `docs/FE-MOD-PLAN.md` and
+  `docs/UPSTREAM-ISSUES.md` — the three a fresh agent needs, and the
+  only ones tracked. The rest of `docs/` (the admin console's specs, the
+  production topology, the design scopes, the research notes) is
+  **gitignored**: on the working machine, not in the repository.
 - **Branch names:** `phase-N-step-M-<short-desc>` for planned work,
   `fix/<short-desc>` for bugs, `feat/<short-desc>` for ad-hoc
   features.
