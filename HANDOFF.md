@@ -16,6 +16,50 @@
 
 # § CURRENT STATE
 
+**As of:** 2026-11-03, branch `docs/readme-refresh` — **THE REPO SAYS WHAT
+THE PROJECT IS.** The About section called this a "single-player browser
+implementation of Half-Life 1 with The Specialists mod (Xash3D-WASM engine
++ CheerpX x86 emulation for mod DLLs)". It is a **multiplayer** client on
+a **Rust port**, and the repo is **public**. The description, the homepage
+(`https://bulletballet.dev`) and ten topics now say so — on the parent and
+on `webXash`, whose About was the upstream fork's and pointed at the
+upstream's demo.
+
+**THE README IS REFRESHED.** New screenshots (the landing page with the
+dial and the bullet on the rule, the FAQ tab, and the game with the buy
+menu open), and the claims that had gone stale are corrected: the `b`
+bind is not cleared any more (**B** opens the buy menu), the local dev
+loop works (the bridge resolves the public address it advertises to an
+internal UDP target), there are **610** unit tests, and `main` is covered
+by an active ruleset that requires one approving review. The
+`## The four things that make it work` heading is **UNCHANGED**, so the
+FAQ tab's link to it still resolves.
+
+**THE IN-GAME SHOT WAS TAKEN ON THE DISPOSABLE CI RIG**, not on
+production: `ci.bulletballet.dev` up, eight `addbot`s, the capture, the
+rig down and proven gone. Production's human count never moved.
+
+**`progress/` IS GONE** — 668 gitignored decompile logs and three
+tracked ones. The upstream Rust port shipped instead of our own decompile
+effort; the README now records that under "Deliberately not done", and
+the decompiled output stays in the tree as the single-player fallback.
+
+**THE REPO IS CLEANED.** 28 remote branches → 2 (`main` and the branch
+below), 73 local branches → 2, 6 worktrees → 1. **The PR's state is the
+authority for which branches may go**: `git cherry` and
+`merge-base --is-ancestor` both fail to see a squash merge. One piece of
+unmerged work — a revision of the admin console's UI draft — went to the
+vault (`~/vault/projects/admin-console-ui-rev2-2026-10-30.md`) rather
+than into a branch nobody would look at.
+
+**AND `tools/deploy/capture-readme-shots.cjs` WORKS AGAIN.** It clicked
+a `/join/i` button and waited for the client, so since the pre-join
+identity modal landed it had been failing **silently** — keeping the old
+screenshots, which reads as a successful run. It now plays PLAY → modal
+→ JOIN AS, reads the registry of whatever site it is given (so it can
+shoot the rig), and captures the FAQ tab too. Verified end to end
+against the rig.
+
 **As of:** 2026-10-31, branch `fix/admin-fleet-list` — **the admin
 console's FLEET LIST now comes from the ORCHESTRATOR**: it was
 enumerating a PORT RANGE and publishing every port it probed, so on
