@@ -53,6 +53,23 @@ client caps the tick rate the engine is offered, the character picker and
 the pre-join identity modal are LIVE in production, and the game server
 image is `ts-server:0.27`.
 
+**The newest work (2026-11-02, branch `feat/faq-tab`): the landing page's
+third tab is an FAQ, and it leads with the controls.** It was "How It
+Works" — three cards explaining the architecture (the Rust port, the
+WebSocket↔UDP bridge, the key path) followed by a ten-row control list.
+It is now **FAQ**: the cards are gone, the **controls come first**, and
+the technical explanation moved to the bottom of the panel as a link to
+this repository's README, with a second link to the original **tsmod.net
+FAQ** for the mechanics in depth. The control list was a third of what
+the game binds; it is now **the game's own bind table**, grouped into
+movement / weapons / buy and use / interface, so the stunt key (`Q` or
+`MMB`), the fire mode (`F`), the gun's attachments (`G`), the powerup
+(`Z`), the buy menu (`B`), the drop key (`T`) and the spray (`H`) are all
+in it. Every row is a bind in the game's own `ts/config.cfg`, which the
+engine loads at boot, so the list and the running game cannot drift
+apart — and the labels are recorded next to the list with where each
+non-obvious one comes from. `TSHowToPlay.vue` is renamed `TSFaq.vue`.
+
 **The newest work (2026-11-01, branch `feat/buy-menu-modern-flow`): the
 buy menu grew a SECOND flow.** The classic canvas menu is untouched (its
 pixel diff still passes) and the port's `menus/buy_modern.rs` grew the
