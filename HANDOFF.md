@@ -74,6 +74,28 @@ that never reached ten. It is real now, and a test bug it exposed is
 fixed: `l.starts_with("TSBUY short 1")` also matched the tenth row's
 `"TSBUY short 11"`, so the match is exact now (`"TSBUY short 1 "`).
 
+**AND IT IS PROVEN IN A REAL GAME** (`scripts/prove_golden_colts.py`, a
+fresh browser context with **nothing seeded** — so the panel mounting on
+its own is the proof that the default is `modern`):
+
+```
+the panel mounted on its own: the default is 'modern'
+1Glock-18$850      6Golden Colts$2,600
+2SOCOM-MK23$700    7Glock-20C$1,300
+3Desert Eagle$1,050 8Ruger-MK1$1,500
+4Five-seveN$1,250  9Raging Bull$2,100
+5Beretta 92F$900  AContender G2$1,500
+
+TSBUY entry 2 2600 20  5 12 Golden Colts      <- the port's own record: HUD slot 5
+[ts] evo-colts-1793747836 spawned (#5) with [2, 8, 13, 21, 35]
+                                             <- id 21 IS the Golden Colts
+VERDICT: ARMED WITH THE GOLDEN COLTS
+```
+
+The loadout's card 5 read **"5Akimbo Berettas, Golden Colts"** — bought
+from the pistols, landed in the HUD slot 5, which is the game's own
+answer. Zero page errors.
+
 **As of:** 2026-11-03, branch `docs/readme-human-pass` — **THE README IS FOR
 HUMANS NOW.** Kyle read it and said the thing worth fixing: *"it's tough to
 read. No human is going to read most of that."* It was doing two jobs at
