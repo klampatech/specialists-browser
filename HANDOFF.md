@@ -70,7 +70,7 @@ engine loads at boot, so the list and the running game cannot drift
 apart — and the labels are recorded next to the list with where each
 non-obvious one comes from. `TSHowToPlay.vue` is renamed `TSFaq.vue`.
 
-**On the same branch, two more things came out of it (2026-11-02).**
+**On the same branch, three more things came out of it (2026-11-02).**
 
 1. **THE RULE UNDER THE WORDMARK ENDS IN A BULLET, NOT A RECTANGLE.**
    The white cap was meant to be a bullet in flight and only read as one
@@ -98,6 +98,18 @@ non-obvious one comes from. `TSHowToPlay.vue` is renamed `TSFaq.vue`.
    that command's argument). Note that `GAME_SETTINGS.*.launchArgs` is
    **never read at runtime** — it is only a type source — so a cvar added
    there does nothing at all.
+3. **THE SCROLLBAR NO LONGER MOVES THE CENTRED CONTENT.** The landing
+   page is one scroll container and the panels behind the tabs have
+   different heights — the FAQ is long, the server list is short — so
+   switching tabs made the scrollbar appear or vanish and the centred
+   column hopped about **nine pixels** to the left.
+   `scrollbar-gutter: stable both-edges` on `.ts-landing` reserves the
+   gutter on **both** sides, so the content box stays centred in the
+   viewport instead of centred in a box that is always fifteen pixels
+   narrower than it. Measured at 1280×900: the centred column sits at
+   **x=640 in every tab** with the gutter, and at 640 → **631** across
+   the server-list → FAQ switch with `scrollbar-gutter: auto` — the hop,
+   reproduced and then removed.
 
 **The project skill was trimmed the same day** (it had grown past
 `skill_manage`'s 100k limit, so it could no longer be patched). The
