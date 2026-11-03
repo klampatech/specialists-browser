@@ -31,7 +31,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -784,18 +784,42 @@ setInterval(() => {}, 1 << 30);
  * @returns {string[]}
  */
 function repoFiles() {
-  const out = [];
-  const skip = new Set(['node_modules', '.git', 'webxash', 'dist', 'screenshots']);
-  const walk = (dir) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (skip.has(entry.name)) continue;
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.isFile()) out.push(full);
-    }
-  };
-  walk(repoRoot);
-  return out;
+  // The files that could end up in the repository: the tracked ones, plus
+  // the untracked ones that are NOT gitignored.
+  //
+  // `git ls-files` is the precise enumeration. A hand-rolled directory
+  // walk used to wander into gitignored build output
+  // (`tools/port/tsp-rs/target/`) and into the sibling git worktrees
+  // under `.worktrees/`, and reported a compiled Rust binary and a
+  // worktree's own test file as a leaked password — a false positive on
+  // every local run, which teaches people to ignore the guard.
+  //
+  // `statSync` drops the submodule gitlink: `webxash` is one entry, a
+  // directory, and its contents are a separate repository's.
+  const res = spawnSync(
+    'git',
+    ['ls-files', '--cached', '--others', '--exclude-standard'],
+    { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+  );
+  if (res.status !== 0) {
+    throw new Error(`git ls-files failed in ${repoRoot}: ${res.stderr}`);
+  }
+  const files = res.stdout
+    .split('\n')
+    .filter(Boolean)
+    .map((f) => join(repoRoot, f))
+    .filter((f) => {
+      try {
+        return statSync(f).isFile();
+      } catch {
+        return false;
+      }
+    });
+  if (files.length === 0) {
+    // A scan that found nothing proves nothing.
+    throw new Error('git ls-files returned no files — the scan would be vacuous');
+  }
+  return files;
 }
 
 test('no file in the repository carries an rcon_password with a real value', () => {

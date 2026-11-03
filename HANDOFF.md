@@ -53,6 +53,71 @@ client caps the tick rate the engine is offered, the character picker and
 the pre-join identity modal are LIVE in production, and the game server
 image is `ts-server:0.27`.
 
+**The newest work (2026-11-02, branch `feat/faq-tab`): the landing page's
+third tab is an FAQ, and it leads with the controls.** It was "How It
+Works" — three cards explaining the architecture (the Rust port, the
+WebSocket↔UDP bridge, the key path) followed by a ten-row control list.
+It is now **FAQ**: the cards are gone, the **controls come first**, and
+the technical explanation moved to the bottom of the panel as a link to
+this repository's README, with a second link to the original **tsmod.net
+FAQ** for the mechanics in depth. The control list was a third of what
+the game binds; it is now **the game's own bind table**, grouped into
+movement / weapons / buy and use / interface, so the stunt key (`Q` or
+`MMB`), the fire mode (`F`), the gun's attachments (`G`), the powerup
+(`Z`), the buy menu (`B`), the drop key (`T`) and the spray (`H`) are all
+in it. Every row is a bind in the game's own `ts/config.cfg`, which the
+engine loads at boot, so the list and the running game cannot drift
+apart — and the labels are recorded next to the list with where each
+non-obvious one comes from. `TSHowToPlay.vue` is renamed `TSFaq.vue`.
+
+**On the same branch, three more things came out of it (2026-11-02).**
+
+1. **THE RULE UNDER THE WORDMARK ENDS IN A BULLET, NOT A RECTANGLE.**
+   The white cap was meant to be a bullet in flight and only read as one
+   if you already knew. It is now a cartridge — a flat base with the rim,
+   a cylindrical case, a nose that leads — in **its own SVG**, because the
+   line's SVG is stretched (`preserveAspectRatio="none"`) and would have
+   squashed it. The site's own brand mark is a pair of slender cartridges,
+   but at 31×14 that silhouette reads as a sliver, so the rule uses a
+   chunkier shape that reads as a bullet at that size.
+2. **THE ENGINE'S NOTIFY WINDOW NO LONGER PAINTS OVER THE GAME.** The
+   top-left corner was covered in console output — the port's `TSBUY`
+   buy-menu records and the engine's boot chatter — drawn as
+   transparent overlaid text by the engine's `Con_DrawNotify`
+   (`engine/client/console.c`). The notify window is a debug-console
+   feature and the console is **not reachable in the browser build** (the
+   backquote and tilde binds are cleared), so `+con_notifytime 0` on the
+   command line retires it: every line is expired the moment it is
+   printed, and the engine runs the command line in `Host_ChangeGame`,
+   **before the first frame**, so even the boot chatter never reaches the
+   screen. **The `TSBUY` records still reach the browser** — the DOM buy
+   menu reads them off stdout — they just stop being drawn over the game.
+   The cvar goes in `xash-loader.ts`'s `_buildLaunchArgs`, the one funnel
+   every launch path goes through, and **before** the caller's launch
+   options (a cvar value that follows a `+<cmd> <arg>` can be swallowed by
+   that command's argument). Note that `GAME_SETTINGS.*.launchArgs` is
+   **never read at runtime** — it is only a type source — so a cvar added
+   there does nothing at all.
+3. **THE SCROLLBAR NO LONGER MOVES THE CENTRED CONTENT.** The landing
+   page is one scroll container and the panels behind the tabs have
+   different heights — the FAQ is long, the server list is short — so
+   switching tabs made the scrollbar appear or vanish and the centred
+   column hopped about **nine pixels** to the left.
+   `scrollbar-gutter: stable both-edges` on `.ts-landing` reserves the
+   gutter on **both** sides, so the content box stays centred in the
+   viewport instead of centred in a box that is always fifteen pixels
+   narrower than it. Measured at 1280×900: the centred column sits at
+   **x=640 in every tab** with the gutter, and at 640 → **631** across
+   the server-list → FAQ switch with `scrollbar-gutter: auto` — the hop,
+   reproduced and then removed.
+
+**The project skill was trimmed the same day** (it had grown past
+`skill_manage`'s 100k limit, so it could no longer be patched). The
+deleted paths — the Babylon.js prototype, CheerpX, the browser BSP→glTF
+toolchain — moved to `references/historical-pitfalls.md` and
+`references/babylon-era-mvp.md`, keeping the reasons they were rejected
+without keeping them in the index.
+
 **The newest work (2026-11-01, branch `feat/buy-menu-modern-flow`): the
 buy menu grew a SECOND flow.** The classic canvas menu is untouched (its
 pixel diff still passes) and the port's `menus/buy_modern.rs` grew the

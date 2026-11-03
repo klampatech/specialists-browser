@@ -245,7 +245,7 @@ of these, and losing any of them is a regression:
 | **Server-list states** | `TSServerList.vue` | "Scanning for servers…", "No servers answered." + hint, and an error state **distinct** from empty |
 | **Refresh button** | `TSServerList.vue` | with its spinning and disabled states |
 | **Join per server** | `TSServerList.vue` | the row is a target, not a label |
-| **The real "How It Works" copy** | `TSHowToPlay.vue` | three cards (Rust port → WS↔UDP bridge → input path) **plus the full controls table**. The mock's three steps are much thinner |
+| **The real FAQ copy** | `TSFaq.vue` | the **full controls table** — every common gameplay key, taken from the game's own bind table and grouped by what you are doing — plus links to the original tsmod.net FAQ and to the technical explanation on GitHub. The mock's three steps are much thinner |
 | **Real footer links** | `XashLanding.vue` | tsmod.net, webXash, Xash3D FWGS. The mock's are `href="#"` |
 
 **New in the server row**, from data the registry already returns: the
