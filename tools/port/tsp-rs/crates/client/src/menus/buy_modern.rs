@@ -344,8 +344,9 @@ pub fn slot_weapons(slot: i32, r: &Rules) -> Vec<&'static WeaponInfo> {
 /// menu's own shotguns column lists it too.
 ///
 /// It is only read for the HUD slot 4 split, where it decides between the rifles and the
-/// shotguns. The other rail entries are the HUD slot's own weapons, and the akimbos (the
-/// HUD slot 5) are a HUD slot and not a kind.
+/// shotguns. The other rail entries are their own list — the pistols are the game's own
+/// handguns CATEGORY (see [`category_weapons`]) and the rest are their HUD slot's weapons
+/// whole, and the akimbos (the HUD slot 5) are a HUD slot and not a kind.
 fn rail_kind(w: &WeaponInfo) -> u8 {
     shared::weapons::restriction_type(w.id)
 }
