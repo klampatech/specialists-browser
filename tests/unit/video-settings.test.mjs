@@ -386,9 +386,15 @@ test('the resolution reaches the engine on the command line', () => {
     /renderResolutionArgs\(/,
     'the launch arguments must carry the render resolution'
   );
+  // The guard is that the video arguments are SPREAD INTO the launch
+  // argv, not that the argv is spelled one exact way. Pinning the whole
+  // array literal broke the moment another launch argument was added
+  // (the `+con_notifytime 0` that retires the engine's notify window),
+  // even though the resolution still reached the engine. So: require
+  // `...videoArgs` inside `const launch = [ ... ]`, and nothing more.
   assert.match(
     loader,
-    /const launch = \[\.\.\.baseArgs, \.\.\.videoArgs, \.\.\.args\];/,
+    /const launch = \[[^\]]*\.\.\.videoArgs[^\]]*\];/,
     'the video arguments must be in the launch argv'
   );
 });
