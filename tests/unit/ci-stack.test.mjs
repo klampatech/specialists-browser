@@ -356,17 +356,19 @@ test('the assets bucket\'s CORS policy lists the CI origin', () => {
   // The CI page fetches the game archive from assets.bulletballet.dev,
   // and a cross-origin fetch cannot read a response without an
   // Access-Control-Allow-Origin for ITS origin. The bucket's policy
-  // lives in the Cloudflare dashboard — this is the documented copy, and
-  // it is the only place in the repo that says which origins are
-  // allowed.
+  // lives in the Cloudflare dashboard — docs/CI-CD.md carries the
+  // documented copy, and it is the only place in the repo that says
+  // which origins are allowed.
+  //
+  // It used to be docs/ASSET-DELIVERY.md. That doc is local-only now
+  // (gitignored — see .gitignore), so it cannot be a tracked source of
+  // truth; the copy that IS tracked is the one in the CI/CD doc, and
+  // this is the test that keeps the two in step.
   //
   // With the CI origin missing, the gate fails as "the server never
   // answered the handshake" when the server was perfectly fine: the
   // archive never arrives, so the engine never boots.
-  const assetDelivery = readFileSync(
-    join(ROOT, 'docs', 'ASSET-DELIVERY.md'),
-    'utf8',
-  );
+  const assetDelivery = readFileSync(join(ROOT, 'docs', 'CI-CD.md'), 'utf8');
   const ciHost = shellString(ciStack, 'CI_HOST');
   const asOrigin = new RegExp(
     '"https?://' + ciHost.replace(/\./g, '\\.') + '"',
