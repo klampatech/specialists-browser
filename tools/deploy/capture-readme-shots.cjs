@@ -1,15 +1,32 @@
 /**
- * Capture the README's screenshots against production.
+ * Capture the README's screenshots.
  *
  * Not a test — a capture script. The game renders into a WASM canvas, so
  * the README's hero image has to come from a real browser session
  * against the real site.
+ *
+ * Shoot against the disposable CI rig rather than production when the
+ * frames need a game with bots in it — production is a live server and
+ * a capture session would show up on its leaderboard:
+ *
+ *   ssh bb-prod 'bash /home/ubuntu/ci-stack.sh up'
+ *   node tools/deploy/capture-readme-shots.cjs https://ci.bulletballet.dev/
+ *   ssh bb-prod 'bash /home/ubuntu/ci-stack.sh down'
+ *
+ * The registry the readiness check reads is derived from the URL, so
+ * the rig's own registry is what answers.
  */
 const { loadPlaywright } = require('./lib/browser.cjs');
 const { chromium } = loadPlaywright();
 const path = require('node:path');
 
-const URL = process.argv[2] || 'https://bulletballet.dev/';
+// The site to shoot. Not named `URL`: that shadows the global URL
+// constructor, and `new URL(...)` below then throws "URL is not a
+// constructor".
+const SITE = process.argv[2] || 'https://bulletballet.dev/';
+// The registry that answers for this site: the rig's when the rig is
+// what we are shooting, production's when it is not.
+const REGISTRY = new URL('/api/servers', SITE).href;
 // `__dirname` is tools/deploy, so the repo root is two levels up — not one.
 const OUT = process.argv[3] || path.join(__dirname, '..', '..', 'docs', 'screenshots');
 
@@ -22,7 +39,7 @@ const OUT = process.argv[3] || path.join(__dirname, '..', '..', 'docs', 'screens
  */
 async function countHumans() {
   try {
-    const res = await fetch('https://bulletballet.dev/api/servers');
+    const res = await fetch(REGISTRY);
     const body = await res.json();
     // The registry returns { servers: [...] }, NOT a bare array. Treating
     // it as one throws, the catch swallows it, and the caller reads
@@ -71,10 +88,32 @@ async function waitForHumanOnServer(page, timeoutMs, baseline) {
   const page = await ctx.newPage();
 
   // ---- the landing page / server browser ----
-  await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.goto(SITE, { waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.waitForTimeout(6000);
   await page.screenshot({ path: path.join(OUT, 'landing.png') });
   console.log('  landing.png');
+
+  // ---- the FAQ tab ----
+  //
+  // The third tab is the FAQ, and it is the one piece of the front end
+  // the README shows. It is a DOM panel, so it needs no game.
+  await page.evaluate(() => {
+    const tab = [...document.querySelectorAll('button,[role=tab],a')].find(
+      (x) => x.textContent.trim() === 'FAQ'
+    );
+    tab?.click();
+  });
+  await page.waitForTimeout(2000);
+  await page.screenshot({ path: path.join(OUT, 'faq.png') });
+  console.log('  faq.png');
+  // back to the server list, where the Play button is
+  await page.evaluate(() => {
+    const tab = [...document.querySelectorAll('button,[role=tab],a')].find(
+      (x) => x.textContent.trim() === 'Servers'
+    );
+    tab?.click();
+  });
+  await page.waitForTimeout(1500);
 
   // ---- the human count BEFORE this browser joins ----
   //
@@ -85,9 +124,38 @@ async function waitForHumanOnServer(page, timeoutMs, baseline) {
   console.log(`  humans on the server before we join: ${humansBefore}`);
 
   // ---- in game ----
+  //
+  // The flow is PLAY -> the pre-join identity modal -> the engine boots.
+  // Clicking a Join button on its own opens the modal and stops there:
+  // the client never arrives, the readiness check below times out, and
+  // the script leaves the old screenshots in place looking like a
+  // successful run.
   await page.evaluate(() => {
-    const b = [...document.querySelectorAll('button')].find((x) => /join/i.test(x.textContent || ''));
-    if (b) b.click();
+    const buttons = [...document.querySelectorAll('button')];
+    const play = buttons.find((x) => /play/i.test(x.textContent || ''));
+    const join = buttons.find((x) => /join/i.test(x.textContent || ''));
+    (play || join)?.click();
+  });
+  // the modal: a name, a character, and the button that commits
+  await page.waitForSelector('input.ident__input', { timeout: 20_000 }).catch(() => {});
+  await page.evaluate(() => {
+    const input = document.querySelector('input.ident__input');
+    if (input) {
+      // Vue's v-model listens for the input event, so a plain
+      // `input.value = x` is not enough — the setter has to be the
+      // prototype's, or Vue's own setter is bypassed.
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLInputElement.prototype,
+        'value'
+      ).set;
+      setter.call(input, 'README');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    document.querySelector('.ident__models button')?.click();
+  });
+  await page.waitForTimeout(500);
+  await page.evaluate(() => {
+    document.querySelector('.ident__btn--go')?.click();
   });
   for (let i = 0; i < 25; i++) {
     await page.waitForTimeout(4000);
