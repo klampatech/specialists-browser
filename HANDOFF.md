@@ -29,12 +29,29 @@
 THE POINTER; THE ESCAPE SEQUENCE IS DRIVEN BY SIGNALS, NOT BY THE KEY;
 AND THE RENDER RESOLUTION IS A PIXEL BUDGET.**
 
-**IN FLIGHT (2026-11-04, later):** webXash **#41** is merged (`948b0c3`)
-and specialists-browser **#133** is open with the parent pointer and the
-new tests — **THE SAME ESCAPE BEHAVIOUR IN EVERY BROWSER**: the browser
-matrix, the fullscreen **toggle** in the options, the fullscreen asked
-back when the browser takes it, the `pointerlockerror` guard for Safari,
-and the capability line at startup. See **THE BROWSERS DIFFER** below.
+**AND ON TOP OF THAT (2026-11-04, later): THE SAME ESCAPE BEHAVIOUR IN
+EVERY BROWSER — webXash #41 merged as `948b0c3`, specialists-browser #133
+merged as `9ba5058`, deploy run `41869350633` green (deploy + browser
+verification).** The browser matrix, the fullscreen **toggle** in the
+options, the fullscreen asked back when the browser takes it, the
+`pointerlockerror` guard for Safari, and the capability line at startup.
+See **THE BROWSERS DIFFER** below.
+
+**PROVED ON PRODUCTION**: the shipped bundle is
+`assets/index-D6GdprDB.js` and it carries `keyboardLock`, the
+`[browser] …` capability line, the `pointerlockerror` listener, the
+`opts__switch-btn` toggle and the "asking for the fullscreen back" /
+"fullscreen restored" logs. All three browser proofs pass against
+`https://bulletballet.dev/` itself: the Escape sequence (Chrome headful,
+real X11 key events), the pointer ownership, and the fullscreen toggle
+(`ON` → `OFF`).
+
+**THE ONE THING ONLY A REAL USER CAN SETTLE**: whether **Vivaldi** keeps a
+fullscreen that the page asks for again. Chromium latches the Escape that
+left the fullscreen and drops the one the page asks for (measured), so
+the restore is best-effort and the browser decides. If Vivaldi drops it
+too, then in Vivaldi ESC leaves the fullscreen and the **toggle** is the
+way back — which is exactly what the toggle is for.
 
 Kyle reported two bugs from a real session, both about who owns the mouse:
 the modern buy menu's buttons went dead on the first click ("PRESS ESC TO
