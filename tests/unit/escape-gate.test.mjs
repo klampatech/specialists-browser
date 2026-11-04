@@ -120,6 +120,116 @@ test('the keyboard lock is handed back when the mouse is free', () => {
   );
 });
 
+test('when the browser takes the fullscreen, the page asks for it back', () => {
+  requireSubmodule();
+  const src = stripComments(escapeSource());
+  // Vivaldi 8.2 implements the Keyboard Lock API — the Blink bindings are
+  // in its binary — and STILL leaves the fullscreen on Escape, because
+  // the browser UI's "Escape leaves fullscreen" is not gated by the
+  // page's key lock. Measured on Kyle's MacBook.
+  //
+  // So the page asks for the fullscreen back: the Escape press is still
+  // a live user gesture, and `requestFullscreen()` only works from one.
+  assert.ok(
+    /function restoreFullscreen\(\)[\s\S]{0,600}enterFullscreen\(\)/.test(src),
+    'the escape gate must ask the browser for the fullscreen back'
+  );
+  assert.ok(
+    /onFullscreenChange[\s\S]{0,2600}restoreFullscreen\(\)/.test(src),
+    'the fullscreenchange handler must call it when the browser takes ' +
+      'the fullscreen on its own'
+  );
+  assert.ok(
+    /fullscreenExitRequested/.test(src),
+    'the handler must know the difference between the browser taking the ' +
+      'fullscreen and the PLAYER asking to leave it'
+  );
+});
+
+test('the options overlay has a FULLSCREEN TOGGLE', () => {
+  requireSubmodule();
+  const src = stripComments(readFileSync(CANVAS_VUE, 'utf8'));
+  const overlay = stripComments(
+    readFileSync(join(WEBXASH, 'src', 'components', 'XashOptionsOverlay.vue'), 'utf8')
+  );
+  assert.ok(
+    /role="switch"/.test(overlay),
+    'the options overlay must carry a fullscreen switch — "the full ' +
+      'screen toggle in ESC options" is the way out of the fullscreen'
+  );
+  assert.ok(
+    /noteFullscreenExitRequested/.test(overlay),
+    'the toggle must tell the escape gate that the player asked to ' +
+      'leave, so the fullscreen is not put straight back'
+  );
+  assert.ok(
+    /toggleFullscreen/.test(overlay),
+    'the overlay must have a toggle handler'
+  );
+});
+
+test('a browser that cannot lock the pointer while fullscreen is handled', () => {
+  requireSubmodule();
+  const src = stripComments(escapeSource());
+  // Safari refuses the pointer lock while the page is fullscreen (a
+  // WebKit bug, reported in 2024). A game with the mouse free and no
+  // cursor is unplayable, so the game LEAVES the fullscreen and says so.
+  assert.ok(
+    /addEventListener\(\s*'pointerlockerror'/.test(src),
+    'the escape gate must listen for pointerlockerror — that is how a ' +
+      "browser refusing the pointer lock while fullscreen is noticed"
+  );
+  assert.ok(
+    /onPointerLockError[\s\S]{0,700}exitFullscreen\(\)/.test(src),
+    'the pointerlockerror handler must leave the fullscreen: the mouse ' +
+      'is worth more than the screen'
+  );
+  assert.ok(
+    /onPointerLockError[\s\S]{0,900}showHint\(/.test(src),
+    'and it must tell the player why'
+  );
+});
+
+test('the fullscreen is requested with the standard keyboardLock option', () => {
+  requireSubmodule();
+  const src = stripComments(
+    readFileSync(join(WEBXASH, 'src', 'services', 'fullscreen.ts'), 'utf8')
+  );
+  // `requestFullscreen({keyboardLock: "browser"})` is the WHATWG's own
+  // mechanism for keeping the Escape for the page instead of letting
+  // the browser leave the fullscreen with it.
+  assert.ok(
+    /requestFullscreen\([\s\S]{0,300}keyboardLock/.test(src),
+    'the fullscreen request must ask for the browser keyboard lock mode'
+  );
+  assert.ok(
+    /NotSupportedError/.test(src),
+    'and it must fall back to the plain request when the browser does ' +
+      'not support the option'
+  );
+});
+
+test('the browser capabilities are reported at startup', () => {
+  requireSubmodule();
+  const caps = join(WEBXASH, 'src', 'services', 'browser-capabilities.ts');
+  assert.ok(existsSync(caps), 'the browser capabilities service must exist');
+  const src = stripComments(readFileSync(caps, 'utf8'));
+  assert.ok(
+    /keyboardLock/.test(src) && /pointerLock/.test(src) && /fullscreen/.test(src),
+    'it must report the three APIs the game leans on'
+  );
+  assert.ok(
+    /logBrowserCapabilities/.test(src),
+    'and there must be a one-line summary to log'
+  );
+  const gate = stripComments(escapeSource());
+  assert.ok(
+    /logBrowserCapabilities\(\)/.test(gate),
+    'the escape gate must log it — one line is the first thing to ask ' +
+      'for when a player reports something browser-shaped'
+  );
+});
+
 test('the escape hint is actually shown to the player', () => {
   requireSubmodule();
   const src = stripComments(readFileSync(CANVAS_VUE, 'utf8'));

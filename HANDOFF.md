@@ -29,6 +29,13 @@
 THE POINTER; THE ESCAPE SEQUENCE IS DRIVEN BY SIGNALS, NOT BY THE KEY;
 AND THE RENDER RESOLUTION IS A PIXEL BUDGET.**
 
+**IN FLIGHT (2026-11-04, later):** webXash **#41** is merged (`948b0c3`)
+and specialists-browser **#133** is open with the parent pointer and the
+new tests — **THE SAME ESCAPE BEHAVIOUR IN EVERY BROWSER**: the browser
+matrix, the fullscreen **toggle** in the options, the fullscreen asked
+back when the browser takes it, the `pointerlockerror` guard for Safari,
+and the capability line at startup. See **THE BROWSERS DIFFER** below.
+
 Kyle reported two bugs from a real session, both about who owns the mouse:
 the modern buy menu's buttons went dead on the first click ("PRESS ESC TO
 UNLOCK"), and Escape — which should release the mouse — instead dismissed
@@ -99,6 +106,64 @@ an **"Enter fullscreen"** button: the second Escape leaves the
 fullscreen behind, and putting it back automatically was tried and
 dropped — the browser latches the Escape that left the fullscreen and
 drops the new one again, which is a flicker, not a fix.
+
+**THE BROWSERS DIFFER, AND THE SAME BEHAVIOUR IS BUILT ON TOP OF THE
+DIFFERENCES (2026-11-04).** Kyle, from his MacBook: *"on my MacBook with
+Vivaldi, when I hit ESC while full screen it still exits full screen"*,
+and *"can we check the browser APIs for common browsers to ensure we have
+consistent behavior across common browser choices?"*
+
+Measured and documented (MDN, caniuse, the Chromium blog, and real
+Chrome 151 + Vivaldi 8.2):
+
+| | DOM fullscreen | Keyboard Lock API | Escape in the fullscreen | Pointer lock while fullscreen |
+|---|---|---|---|---|
+| Chrome 68+, Edge 79+, Brave, Opera 55+ | yes | yes | releases the **POINTER LOCK**; the fullscreen stays | yes |
+| Vivaldi 8.2 | yes | yes (52 `KeyboardLock` strings in its binary) | **leaves the fullscreen** | yes |
+| Firefox (through 161) | yes | **no** | **leaves the fullscreen** | yes |
+| Safari (macOS) | yes | **no** | **leaves the fullscreen** | **no** — a WebKit bug |
+| iOS Safari | **no** | no | — | yes, with a mouse |
+
+Three things that changed the design:
+
+1. **THE KEYBOARD LOCK IS NOT THE MECHANISM.** Re-run with the API
+   stubbed out (`prove_escape_sequence.py --no-keyboard-lock`):
+   Chromium STILL leaves the fullscreen alone on the first Escape — it
+   releases the **pointer lock** first, and only a second Escape (with
+   no pointer lock left to release) takes the fullscreen. The lock was
+   in the locked set on the strength of a measurement that was wrong. It
+   is harmless, and it stays, but it is not why it works.
+2. **VIVALDI IMPLEMENTS THE KEYBOARD LOCK API AND IGNORES IT FOR THE
+   FULLSCREEN.** Over SSH into the MacBook:
+   `strings "Vivaldi Framework" | grep -c KeyboardLock` → **52**. The
+   Blink bindings are there; the browser UI's "Escape leaves fullscreen"
+   is a browser-level action and Vivaldi performs it regardless.
+3. **MDN SAYS EXACTLY WHAT TO DO ABOUT IT**: *"Users can choose to exit
+   fullscreen mode by pressing the ESC (or F11) key… Make sure you
+   provide, somewhere in your user interface, appropriate user interface
+   elements that inform the user that this option is available to
+   them."* So the options overlay has a fullscreen **TOGGLE** (`On` /
+   `Off`) — the way out — and the page **asks for the fullscreen back**
+   when the browser takes it on its own (the Escape press is still a
+   live user gesture, and `requestFullscreen()` only works from one).
+   The fullscreen is also requested with the WHATWG's own
+   `keyboardLock: "browser"` mode, the standard way for the page to own
+   the Escape, with a fallback to the plain request.
+
+**THE SAFARI CASE IS A REAL GAME-BREAKER, NOT A COSMETIC ONE:** Safari
+refuses the pointer lock while fullscreen (a WebKit bug, reported in
+2024), and a game with the mouse free and no cursor is unplayable. So
+the game watches `pointerlockerror`: when the lock fails while
+fullscreen, it **LEAVES the fullscreen and says why** — the mouse is
+worth more than the screen, and the toggle is there for the player who
+wants it back.
+
+**THE CAPABILITIES ARE REPORTED AT STARTUP**, one line at `info` level:
+`[browser] fullscreen=yes keyboard-lock=NO pointer-lock=yes | <ua>` — the
+first thing to ask for when a player reports something browser-shaped.
+The check deliberately does NOT probe the promise form of
+`requestPointerLock()`: calling it would TAKE the pointer, and the
+pointer belongs to the game.
 
 **THE LAG WAS NEVER THE FULLSCREEN EXIT.** The engine re-syncs to the
 **viewport** on every resize (SDL resize → `VID_SaveWindowSize` →
