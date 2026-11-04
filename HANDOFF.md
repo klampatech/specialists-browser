@@ -82,14 +82,26 @@ new **"Leave fullscreen" button**. The resize debounce is shortened from
 
 **PROVED IN A REAL BROWSER AGAINST THE LOCAL RIG**, not by reading the
 source: the panel keeps the pointer, a lock taken *under* the panel is
-taken back, the panel's buttons still work, and closing the panel gives
+taken back, a real click on the canvas with the panel up does NOT take
+the lock, the panel's buttons still work, and closing the panel gives
 the pointer back. `prove_pointer_ownership.py` (in the
-`specialists-browser` skill's `scripts/`) is the new proof; the two
-existing pointer-lock proofs still pass, and the frontend typechecks and
-builds. The frontend PR is **webXash #39**, authored by the GitHub App
-and waiting for Kyle's approval; **the parent PR (the submodule pointer
-+ the new unit test) follows it**, because the pointer has to name the
-MERGED submodule commit.
+`specialists-browser` skill's `scripts/`) is the new proof, and **it
+FAILS against the pre-fix code** — that is how a proof earns the right
+to be believed. `prove_leave_fullscreen.py` proves the new button
+actually leaves the fullscreen, because it is now the ONLY way out. The
+two existing pointer-lock proofs still pass (and the #118 proof was
+hardened — it had a latent flake where it assumed the panel was still up
+when it clicked, and the port's buy menu closes when the buy period ends
+and the player spawns), and the frontend typechecks and builds on the
+merged submodule tree.
+
+**webXash #39 IS MERGED** (`00a993a`) — Kyle approved it and the agent
+merged it — and the parent PR is **specialists-browser #129**: the
+submodule pointer (naming the **MERGED** commit, not the branch tip,
+because a squash merge mints a new SHA for the same tree) plus the new
+unit test `tests/unit/pointer-ownership.test.mjs`, which asserts the
+SHAPE of the standing rule in the submodule's source (the parent cannot
+run the submodule's TypeScript).
 
 **As of:** 2026-11-03, branch `feat/buy-menu-modern-default` — **THE MODERN
 BUY MENU IS THE DEFAULT, AND THE GOLDEN COLTS ARE IN THE PISTOLS.**
