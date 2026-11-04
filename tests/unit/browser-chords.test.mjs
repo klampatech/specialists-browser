@@ -38,11 +38,14 @@
  *   - Ctrl+W is swallowed. The reported bug.
  *   - A bare movement key is NOT swallowed. "w" alone is forward; it has
  *     to reach the engine.
- *   - Escape is NOT swallowed, but it IS locked. The game's two-step Escape
- *     (press 1 releases the mouse, press 2 opens the options overlay) is
- *     the page's own, so the key has to REACH the page: locked, the tap
- *     arrives and fullscreen is NOT left; unlocked, the browser consumes
- *     it to leave fullscreen and the page never hears about it.
+ *   - Escape is NOT swallowed, but it IS locked. The lock is what keeps
+ *     the FULLSCREEN alive on the first press: measured in real Chrome
+ *     151, headful, real X11 key events - locked, the browser did not
+ *     leave the fullscreen; unlocked, it ate the Escape and left it. The
+ *     page never sees the keydown either way (a locked key is not
+ *     delivered to the renderer), so the game's two-step Escape is driven
+ *     by the SIGNALS: the pointer lock going away, and the fullscreen
+ *     changing.
  *   - The engine still gets Ctrl+W. The engine's bind table has
  *     `bind "CTRL" "+duck"` and `bind "w" "+forward"`, so Ctrl+W is
  *     duck+forward IN THE GAME. The gate must preventDefault without
@@ -121,20 +124,27 @@ test('a bare movement key is NOT swallowed — it has to reach the engine', () =
   assert.ok(!isBrowserChord('ArrowLeft', CTRL), 'ctrl+arrow is not a browser chord');
 });
 
-test('Escape is locked but NOT gated — the page must own what Escape means', () => {
+test('Escape is locked but NOT gated — the lock keeps the fullscreen', () => {
   requireSubmodule();
-  // Measured: with Escape locked, a tap of Escape reaches the page and
-  // fullscreen is NOT left; without the lock the browser consumes it to
-  // leave fullscreen, and the game's own Escape flow (press 1 releases
-  // the mouse, press 2 opens the options overlay) never runs.
+  // Measured in REAL Chrome 151, headful on a virtual display, with real
+  // X11 key events (2026-11-04):
   //
-  // So Escape IS in the locked set. It is NOT in the gate set: it is not
-  // a browser CHORD (no modifier), and the escape gate owns it — the
-  // chord gate must not swallow it, or the options overlay would never
-  // open.
+  //   - With Escape LOCKED: the browser did NOT leave the fullscreen.
+  //   - Without the lock: the browser ate the Escape and left the
+  //     fullscreen - on the FIRST press, not the second.
+  //
+  // And the page never sees the keydown either way: a locked key is not
+  // delivered to the renderer, and an unlocked Escape that leaves the
+  // fullscreen is consumed by the browser before it gets there. So the
+  // game's two-step Escape is driven by the SIGNALS - the pointer lock
+  // going away, and the fullscreen changing - not by the key.
+  //
+  // Escape is NOT in the gate set: it is not a browser CHORD (no
+  // modifier), and the chord gate must not swallow it, or the options
+  // overlay would never open.
   assert.ok(
     LOCKED_KEY_CODES.includes('Escape'),
-    'Escape must be locked, or the browser eats it and leaves fullscreen',
+    'Escape must be locked, or the browser takes the fullscreen on the first press',
   );
   assert.ok(!GATE_CHORD_CODES.includes('Escape'), 'Escape must NOT be gated');
   assert.ok(!isBrowserChord('Escape', CTRL), 'ctrl+Escape must pass through');
@@ -154,8 +164,9 @@ test('every locked chord is also gated — the lock delivers it, the gate cancel
     'the reserved set must be exactly the chords Chromium reserves'
   );
   // The keyboard lock claims the reserved chords AND Escape. Escape is
-  // the odd one out: the lock delivers it and the ESCAPE gate (a
-  // different module) cancels it, not the chord gate.
+  // the odd one out: it is not a browser CHORD (no modifier), so the
+  // ESCAPE gate (a different module) owns what it means, not the chord
+  // gate. Locking it is what keeps the fullscreen on the first press.
   assert.deepEqual(
     [...LOCKED_KEY_CODES].sort(),
     ['Escape', 'KeyN', 'KeyT', 'KeyW', 'Tab'],

@@ -23,9 +23,10 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
-**As of:** 2026-11-03, branch `fix/pointer-ownership-and-escape-lock` (in
-the `webxash` submodule) — **A DOM MENU OWNS THE POINTER, AND ESCAPE NO
-LONGER LEAVES THE FULLSCREEN.**
+**As of:** 2026-11-04, branch `fix/escape-signals-and-render-budget` (in
+the `webxash` submodule) — **A DOM MENU OWNS THE POINTER; THE ESCAPE
+SEQUENCE IS DRIVEN BY SIGNALS, NOT BY THE KEY; AND THE RENDER
+RESOLUTION IS A PIXEL BUDGET.**
 
 Kyle reported two bugs from a real session, both about who owns the mouse:
 the modern buy menu's buttons went dead on the first click ("PRESS ESC TO
@@ -64,27 +65,66 @@ stops the `click` as well now, so the request never happens in the first
 place. The options overlay counts as a DOM menu too: under the pointer
 lock its buttons and text fields would be dead as well.
 
-**ESCAPE: THE BROWSER WAS EATING IT.** The browser consumes an Escape
-that leaves fullscreen, so the keydown never reached the page and the
-game's own Escape handling — release the pointer, then the options
-overlay — never ran. Leaving fullscreen also resizes the viewport, and
-the engine throws away the forced render resolution on every resize, so
-it renders at the window's NATIVE resolution until the watchdog re-pins
-it: **measured, the frame rate halved across that window.** Chromium's
-keyboard lock now claims **Escape** as well as the reserved chords (this
-project measured it on 2026-10-26: *with Escape locked, a tap reaches
-the page and fullscreen is NOT left*). So a tap of Escape releases the
-pointer and **stays in fullscreen** — no resize, no lag — and the second
-tap opens the options overlay. The way out of fullscreen is the overlay's
-new **"Leave fullscreen" button**. The resize debounce is shortened from
-400 ms to 50 ms as well, for the browsers without the Keyboard Lock API
-(Firefox, Safari), where Escape still leaves the fullscreen.
+**ESCAPE: THE PAGE NEVER HEARS IT (2026-11-04, measured).** The two-step
+Escape (press 1 releases the mouse, press 2 opens the options overlay)
+was a keydown handler, and **in a fullscreen page there is no keydown to
+handle**. Measured in **Google Chrome 151, headful on a virtual display,
+with real X11 key events**:
+
+- an Escape that leaves the fullscreen is consumed by the **BROWSER** —
+  the keydown never reaches the page;
+- a key the **KEYBOARD LOCK** claims is not delivered to the **RENDERER**
+  at all — the page never sees that one either.
+
+So in a fullscreen page the page hears *nothing*, whichever way the
+browser is configured. (The 2026-10-26 note in the project log said
+"with Escape locked, a tap reaches the page" — **that is wrong**, and it
+is what the 2026-11-03 change was built on. It was measured wrong in a
+real browser, not in headless Chromium.) **The flow is now driven by the
+SIGNALS**, not by the key:
+
+| Press | What the browser does | What the page sees | Result |
+|---|---|---|---|
+| ESC #1 | releases the **pointer lock**, leaves the fullscreen alone | `pointerlockchange` | mouse free, **fullscreen kept**, player told |
+| ESC #2 | takes the **fullscreen** | `fullscreenchange` | options overlay opens |
+
+The chord gate hands the keyboard lock back when the pointer is let go
+(the chords no longer need protecting once the mouse is free) — that is
+what lets ESC #2 reach the browser at all, because a locked Escape is
+swallowed by the lock. The escape **hint existed but was never
+rendered**, so the player was told nothing when the mouse was let go; it
+is a toast now, and it is what the proof asserts. The overlay also gains
+an **"Enter fullscreen"** button: the second Escape leaves the
+fullscreen behind, and putting it back automatically was tried and
+dropped — the browser latches the Escape that left the fullscreen and
+drops the new one again, which is a flicker, not a fix.
+
+**THE LAG WAS NEVER THE FULLSCREEN EXIT.** The engine re-syncs to the
+**viewport** on every resize (SDL resize → `VID_SaveWindowSize` →
+`R_SaveVideoMode` rewrites `width`/`height`/`vid_width`/`vid_height`),
+so leaving the fullscreen put it at the window's size, and the watchdog
+then pushed it back **up** to the display-sized target — more pixels than
+the window can show, the browser downscaling every frame. Measured on the
+local rig: the frame rate went **14/s → 9/s and STAYED there** (canvas
+1600x900, window 1100x700). The target is now a **pixel budget**, in the
+policy's own words ("auto spends a pixel budget", and so does every
+preset): the engine must not exceed it, and a window smaller than the
+budget is already inside it. Measured after the change: the frame rate
+across the resize is **flat**, and the canvas tracks the window exactly.
+The resize debounce also went from 400 ms to 50 ms, for the browsers
+without the Keyboard Lock API (Firefox, Safari).
 
 **PROVED IN A REAL BROWSER AGAINST THE LOCAL RIG**, not by reading the
 source: the panel keeps the pointer, a lock taken *under* the panel is
 taken back, a real click on the canvas with the panel up does NOT take
 the lock, the panel's buttons still work, and closing the panel gives
-the pointer back. `prove_pointer_ownership.py` (in the
+the pointer back. **The Escape sequence has its own proof, and it is the
+only kind that can establish it: `prove_escape_sequence.py` runs Google
+Chrome HEADFUL on a virtual display and sends REAL X11 key events** —
+headless Chromium has no fullscreen to lose, so it cannot answer the
+question at all. Against the real game, with the engine booted: the
+keyboard lock is held, ESC #1 leaves the fullscreen alone and tells the
+player the mouse is free, ESC #2 opens the options overlay. `prove_pointer_ownership.py` (in the
 `specialists-browser` skill's `scripts/`) is the new proof, and **it
 FAILS against the pre-fix code** — that is how a proof earns the right
 to be believed. `prove_leave_fullscreen.py` proves the new button
