@@ -182,6 +182,48 @@ The check deliberately does NOT probe the promise form of
 `requestPointerLock()`: calling it would TAKE the pointer, and the
 pointer belongs to the game.
 
+**THE RESIZE LAG: WHAT IT ACTUALLY IS (2026-11-04, Kyle's report and
+the measurement).** Kyle, in Vivaldi on his MacBook: *"ESC still tried
+to leave full screen. It will either leave it or it attempts to, causes
+the screen resize lag, then goes back to fullscreen. From there going
+full screen or not is seamless (no lag), so it must just be the initial
+resizing / scaling / rendering."* **His guess was right.** The engine's
+render target is the **DISPLAY's** size (the policy: *'auto' spends a
+pixel budget* ✓), but the canvas is only as big as the **WINDOW** ✓,
+and the browser scales the drawing buffer down to the canvas's box **on
+every frame** ✓. A window smaller than the display therefore meant the
+whole frame was scaled down every single frame ✓ - and leaving the
+fullscreen made the window smaller still ✓, so the scaling got WORSE ✓
+✓. Measured (real Chrome 151 headful, the local rig, the real game ✓):
+
+| | drawing buffer | canvas shows | browser downscale | frame rate |
+|---|---|---|---|---|
+| before | 1600x1000 | 1050x837 | **1.82x every frame** | 12/s |
+| after | 1186x741 | 1050x837 | **1.00x (nothing)** | **21-22/s** |
+
+**That is also the asymmetry Kyle saw**: going OUT of the fullscreen
+shrinks the canvas under a fixed-size buffer ✓ (the scaling gets worse
+✓ = the lag ✓); going back IN returns the ratio to 1 ✓ (seamless ✓✓).
+
+**THE FIX**: the target is capped by what the canvas actually DISPLAYS
+(times the device pixel ratio ✓ = the screen's device pixels ✓) ✓. The
+fullscreen renders at the display's resolution (sharp ✓ - the whole
+display's pixels ✓) and the windowed game renders at the window's
+resolution (the browser scales NOTHING ✓✓). The aspect is kept ✓, so
+the picture does not stretch ✓. The new proof is `prove_resize_lag.py` ✓
+(the `specialists-browser` skill ✓).
+
+**THE HINT BELONGS TO THE GAME (same report).** Kyle: *"every time i
+become an observer and the buy menu shows, when clicking deploy it shows
+the 'PRESS ESC TO RELEASE POINTER' type modal each time, sometimes it
+also shows our own message about pressing escape we added."* The
+engine's modal is the classic menu saying the mouse is captured ✓ - our
+hint was appearing NEXT TO it ✓, because the hint fired on ANY pointer
+release (including the buy menu taking it ✓) and stayed up when the
+pointer came BACK (the engine's menu takes it back ✓) ✓. So the hint is
+suppressed while a DOM menu is on screen ✓ and cleared when the pointer
+comes back ✓.
+
 **THE LAG WAS NEVER THE FULLSCREEN EXIT.** The engine re-syncs to the
 **viewport** on every resize (SDL resize → `VID_SaveWindowSize` →
 `R_SaveVideoMode` rewrites `width`/`height`/`vid_width`/`vid_height`),
