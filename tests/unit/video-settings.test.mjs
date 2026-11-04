@@ -99,6 +99,7 @@ const {
   renderResolutionArgs,
   renderResolutionCommand,
   renderResolutionNeedsApplying,
+  effectiveRenderResolution,
   resolveRenderResolution,
   setRenderResolutionTarget,
 } = video;
@@ -259,42 +260,77 @@ test('the drift check asks the right question', () => {
   );
 });
 
-test('the render resolution is a PIXEL BUDGET, not a fixed size (2026-11-04)', () => {
+test('the render resolution is CAPPED BY WHAT THE SCREEN SHOWS (2026-11-04)', () => {
   requireSubmodule();
-  // The rule used to be "the engine's size is not exactly the target",
-  // and that is what made the fullscreen exit lag: the engine re-syncs
-  // to the VIEWPORT on every resize, so leaving the fullscreen put it
-  // at the window's size, and the watchdog then pushed it back UP to the
-  // display-sized target. The engine then rendered more pixels than the
-  // window could show, the browser downscales every frame, and the frame
-  // rate stayed down (measured: 14/s -> 9/s, and it stayed there).
+  // MEASURED (real Chrome headful, the local rig): the canvas backing
+  // store was 1600x1000 while the canvas showed 1050x837 — so the
+  // browser was scaling 1.6 million pixels down to 0.88 million, EVERY
+  // FRAME, and the frame rate sat at 12/s. Leaving the fullscreen makes
+  // the window smaller still, so the scaling gets worse: that is the
+  // "screen resize lag" Kyle described.
   //
-  // The target is a budget, in the policy's own words: 'auto' spends a
-  // pixel budget, and so does every preset. A window smaller than the
-  // budget is already inside it.
-  const budget = { width: 1920, height: 1080 }; // 2,073,600 px
+  // The engine re-syncs to the VIEWPORT on every resize (SDL resize ->
+  // `VID_SaveWindowSize` -> `R_SaveVideoMode`), so the engine's size and
+  // the target are two numbers that agree or they do not. The target it
+  // is compared against is the EFFECTIVE one: the policy's resolution
+  // capped by what the canvas displays.
+  const target = { width: 1600, height: 1000 };
   assert.equal(
-    renderResolutionNeedsApplying(budget, { width: 1600, height: 900 }),
+    renderResolutionNeedsApplying(target, { width: 1600, height: 1000 }),
     false,
-    'a window smaller than the budget is already inside it — pushing the ' +
-      'engine back up is what caused the rescale and the lag'
+    'the target itself is left alone'
   );
   assert.equal(
-    renderResolutionNeedsApplying(budget, { width: 2560, height: 1440 }),
+    renderResolutionNeedsApplying(target, { width: 1050, height: 837 }),
     true,
-    'an engine over the budget has to be corrected'
+    'an engine that has drifted away from the target has to be moved ' +
+      'back to it'
   );
   assert.equal(
-    renderResolutionNeedsApplying(budget, { width: 1920, height: 1080 }),
-    false,
-    'the budget itself is left alone'
-  );
-  // A preset SMALLER than the window is still enforced: that is the case
-  // the player chose for performance.
-  assert.equal(
-    renderResolutionNeedsApplying({ width: 640, height: 360 }, { width: 1600, height: 900 }),
+    renderResolutionNeedsApplying(target, { width: 2560, height: 1440 }),
     true,
-    'a small preset is enforced against a bigger window'
+    'and so does one that is over it'
+  );
+});
+
+test('the target is capped by the DISPLAYED size, so the browser scales nothing', () => {
+  requireSubmodule();
+  // The policy's target is the DISPLAY's size. A window is smaller than
+  // the display, so rendering at the policy's target means the browser
+  // scales the whole frame down on every frame. The cap is what the
+  // canvas actually shows (times the device pixel ratio).
+  const display = { width: 1600, height: 1000 };
+  const windowed = { width: 1050, height: 837 };
+
+  const capped = effectiveRenderResolution(display, windowed);
+  assert.ok(capped, 'there must be an effective target');
+  // (a rounding tolerance: the scaled target keeps the aspect, so it can
+  // land a pixel or two over the cap)
+  assert.ok(
+    capped.width * capped.height <= windowed.width * windowed.height * 1.01,
+    'the engine must never render more pixels than the screen shows: ' +
+      'that is the per-frame downscale, and it is the lag'
+  );
+  // The aspect is kept, so the picture does not stretch.
+  const aspectOf = (r) => r.width / r.height;
+  assert.ok(
+    Math.abs(aspectOf(capped) - aspectOf(display)) < 0.02,
+    `the aspect must be kept: ${aspectOf(capped)} vs ${aspectOf(display)}`
+  );
+
+  // In the fullscreen the canvas shows the whole display, so the policy's
+  // target IS the displayed size and nothing is capped.
+  const fullscreen = effectiveRenderResolution(display, display);
+  assert.deepEqual(fullscreen, display, 'the fullscreen is not capped');
+
+  // A display smaller than the target: the cap does not raise it.
+  const small = effectiveRenderResolution(
+    { width: 1920, height: 1080 },
+    { width: 800, height: 600 },
+  );
+  assert.ok(
+    small.width * small.height <= 800 * 600 * 1.01,
+    'a small window still caps the target'
   );
 });
 
