@@ -168,18 +168,47 @@ test('the aspect ratio survives the cap', () => {
   );
 });
 
-test('a HiDPI display is NOT rendered at its device resolution', () => {
+test('a HiDPI display IS rendered at its device resolution (2026-11-04)', () => {
   requireSubmodule();
+  // This reverses an earlier decision, and the reversal is measured:
+  //
   // A Retina MacBook reports screen.width 1512 while the panel has 3024
-  // device pixels across. Rendering at the device resolution costs FOUR
-  // times the fill rate for a game whose art is 320x240, and the
-  // browser upscales the canvas anyway. So the device pixel ratio is
-  // deliberately NOT multiplied into the render target.
+  // device pixels across. The old note said "the browser upscales the
+  // canvas anyway", so the device pixel ratio was NOT multiplied into
+  // the render target.
+  //
+  // It does not upscale: the canvas's DRAWING BUFFER is a device-pixel
+  // surface, and the browser maps it onto the CSS box at the device
+  // pixel ratio. Measured on Kyle's MacBook:
+  //
+  //   [video] render resolution -> 1728x1117 (was 2370x1990)
+  //
+  // 1728x1117 is the CSS resolution and 2370x1990 is the device
+  // resolution - so the policy was asking for HALF the pixels the
+  // canvas actually has, the browser scaled the whole frame on every
+  // frame, and the watchdog fought the engine's own resize on every
+  // resize (an extra render-target reallocation, and the buy menu
+  // re-drawing itself - the "TSBUY row ..." spam).
+  //
+  // So the target is in DEVICE pixels: it agrees with what the engine's
+  // own resize produces, and the browser scales nothing.
   const res = resolveRenderResolution('auto', display(1512, 982, 2));
-  assert.deepEqual(res, { width: 1512, height: 982 });
+  assert.deepEqual(res, { width: 3024, height: 1964 });
   assert.ok(
-    res.width * res.height <= AUTO_MAX_PIXELS,
-    'a HiDPI display must not blow the pixel budget'
+    res.width * res.height <= AUTO_MAX_PIXELS * 4,
+    'the pixel budget scales with the display the same way the ' +
+      'resolution does'
+  );
+});
+
+test('the device pixel ratio does not change the ASPECT', () => {
+  requireSubmodule();
+  const css = resolveRenderResolution('auto', display(2560, 1440, 1));
+  const hidpi = resolveRenderResolution('auto', display(2560, 1440, 2));
+  assert.equal(
+    hidpi.width / hidpi.height,
+    css.width / css.height,
+    'a HiDPI display must not change the shape of the picture'
   );
 });
 
