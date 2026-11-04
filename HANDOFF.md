@@ -23,10 +23,11 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
-**As of:** 2026-11-04, branch `fix/escape-signals-and-render-budget` (in
-the `webxash` submodule) — **A DOM MENU OWNS THE POINTER; THE ESCAPE
-SEQUENCE IS DRIVEN BY SIGNALS, NOT BY THE KEY; AND THE RENDER
-RESOLUTION IS A PIXEL BUDGET.**
+**As of:** 2026-11-04, **LIVE ON PRODUCTION** — webXash #40 merged as
+`e576d96`, specialists-browser #131 merged as `df6ad5e`, deploy run
+`41779869927` green (deploy + browser verification) — **A DOM MENU OWNS
+THE POINTER; THE ESCAPE SEQUENCE IS DRIVEN BY SIGNALS, NOT BY THE KEY;
+AND THE RENDER RESOLUTION IS A PIXEL BUDGET.**
 
 Kyle reported two bugs from a real session, both about who owns the mouse:
 the modern buy menu's buttons went dead on the first click ("PRESS ESC TO
@@ -143,6 +144,23 @@ squash merge mints a new SHA for the same tree) plus the new unit test
 `tests/unit/pointer-ownership.test.mjs`, which asserts the SHAPE of the
 standing rule in the submodule's source (the parent cannot run the
 submodule's TypeScript).
+
+**THE ESCAPE FIX IS LIVE ON PRODUCTION TOO, AND PROVED THERE.** The
+production bundle carries it (`pointerlockchange`, `Leave fullscreen`,
+`Enter fullscreen`, `Mouse released`, the locked set
+`KeyW, KeyT, KeyN, Tab, Escape`, and the pixel-budget comparison
+`width * height > target.width * target.height` are all in the shipped
+`assets/index-CYHvTdXQ.js`), and **all three browser proofs pass against
+`https://bulletballet.dev/` itself**:
+
+- `prove_escape_sequence.py` — **Chrome headful on a virtual display,
+  real X11 key events**, against the real production game: the keyboard
+  lock is held, ESC #1 leaves the fullscreen alone and tells the player
+  the mouse is free, ESC #2 opens the options overlay. **This is the
+  only proof that can answer the Escape question at all** — headless
+  Chromium has no fullscreen to lose.
+- `prove_pointer_ownership.py` — the panel keeps the pointer.
+- `prove_leave_fullscreen.py` — the button leaves the fullscreen.
 
 **AND THE PROOF PASSES ON PRODUCTION, NOT ONLY LOCALLY.** The deploy's
 own browser verification went green (PLAY reaches the server; two
