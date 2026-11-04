@@ -38,11 +38,11 @@
  *   - Ctrl+W is swallowed. The reported bug.
  *   - A bare movement key is NOT swallowed. "w" alone is forward; it has
  *     to reach the engine.
- *   - Escape is NOT swallowed and NOT locked. The game's two-step Escape
- *     (press 1 releases the mouse, press 2 opens the options overlay)
- *     depends on the browser consuming the Escape that leaves fullscreen.
- *     Measured: with Escape locked, the tap instead reaches the page and
- *     fullscreen is NOT left.
+ *   - Escape is NOT swallowed, but it IS locked. The game's two-step Escape
+ *     (press 1 releases the mouse, press 2 opens the options overlay) is
+ *     the page's own, so the key has to REACH the page: locked, the tap
+ *     arrives and fullscreen is NOT left; unlocked, the browser consumes
+ *     it to leave fullscreen and the page never hears about it.
  *   - The engine still gets Ctrl+W. The engine's bind table has
  *     `bind "CTRL" "+duck"` and `bind "w" "+forward"`, so Ctrl+W is
  *     duck+forward IN THE GAME. The gate must preventDefault without
@@ -87,7 +87,13 @@ function stripComments(src) {
 // node 22). If that ever stops working, this fails loudly rather than
 // silently skipping the assertions.
 const chords = await import(join(WEBXASH, 'src', 'services', 'browser-chords.ts'));
-const { isBrowserChord, GATE_CHORD_CODES, RESERVED_CHORD_CODES, ALT_CHORD_CODES } = chords;
+const {
+  isBrowserChord,
+  GATE_CHORD_CODES,
+  RESERVED_CHORD_CODES,
+  LOCKED_KEY_CODES,
+  ALT_CHORD_CODES,
+} = chords;
 
 /** The modifier combinations a browser chord can arrive with. */
 const CTRL = { ctrl: true, meta: false, alt: false };
@@ -115,13 +121,21 @@ test('a bare movement key is NOT swallowed — it has to reach the engine', () =
   assert.ok(!isBrowserChord('ArrowLeft', CTRL), 'ctrl+arrow is not a browser chord');
 });
 
-test('Escape is neither gated nor locked — the game\'s two-step Escape depends on it', () => {
+test('Escape is locked but NOT gated — the page must own what Escape means', () => {
   requireSubmodule();
   // Measured: with Escape locked, a tap of Escape reaches the page and
-  // fullscreen is NOT left. The game's Escape flow (press 1 releases the
-  // mouse, press 2 opens the options overlay) is built on the browser
-  // consuming that tap, so locking Escape would change the game.
-  assert.ok(!RESERVED_CHORD_CODES.includes('Escape'), 'Escape must NOT be locked');
+  // fullscreen is NOT left; without the lock the browser consumes it to
+  // leave fullscreen, and the game's own Escape flow (press 1 releases
+  // the mouse, press 2 opens the options overlay) never runs.
+  //
+  // So Escape IS in the locked set. It is NOT in the gate set: it is not
+  // a browser CHORD (no modifier), and the escape gate owns it — the
+  // chord gate must not swallow it, or the options overlay would never
+  // open.
+  assert.ok(
+    LOCKED_KEY_CODES.includes('Escape'),
+    'Escape must be locked, or the browser eats it and leaves fullscreen',
+  );
   assert.ok(!GATE_CHORD_CODES.includes('Escape'), 'Escape must NOT be gated');
   assert.ok(!isBrowserChord('Escape', CTRL), 'ctrl+Escape must pass through');
   assert.ok(!isBrowserChord('Escape', NONE), 'Escape must pass through');
@@ -137,7 +151,15 @@ test('every locked chord is also gated — the lock delivers it, the gate cancel
   assert.deepEqual(
     [...RESERVED_CHORD_CODES].sort(),
     ['KeyN', 'KeyT', 'KeyW', 'Tab'],
-    'the locked set must be exactly the chords Chromium reserves'
+    'the reserved set must be exactly the chords Chromium reserves'
+  );
+  // The keyboard lock claims the reserved chords AND Escape. Escape is
+  // the odd one out: the lock delivers it and the ESCAPE gate (a
+  // different module) cancels it, not the chord gate.
+  assert.deepEqual(
+    [...LOCKED_KEY_CODES].sort(),
+    ['Escape', 'KeyN', 'KeyT', 'KeyW', 'Tab'],
+    'the keyboard lock claims the reserved chords and Escape',
   );
 });
 
