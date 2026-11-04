@@ -96,6 +96,27 @@ The loadout's card 5 read **"5Akimbo Berettas, Golden Colts"** — bought
 from the pistols, landed in the HUD slot 5, which is the game's own
 answer. Zero page errors.
 
+**SHIPPED 2026-11-03.** `webXash#38` → webXash main `99d217b`, then
+`specialists-browser#126` → parent main `58021ff`, and the parent's
+pointer names `99d217b` — a commit that is ON webXash's main, not one
+only a branch holds. The deploy ran green, browser gate included.
+
+**THE SHIPPED ARTIFACT, VERIFIED FROM PRODUCTION:**
+- `https://bulletballet.dev/cl_dlls/client_emscripten_wasm32.wasm` is
+  sha256 `a8364024…` — byte-for-byte the locally built one.
+- The deployed bundle contains `buyMenu:"modern"`.
+- The Golden Colts' row in the shipped weapon table reads
+  `{ id = 21, key = "gold", name = "Golden Colts", kind = "akimbo_only",
+  hud = [5, 4], slots = 20, cost = 2600 }` — **and that is the DEEP
+  ROOT CAUSE, visible in the artifact**: the TABLE's `kind` is
+  `akimbo_only`, so the pistol HUD slot holds only the nine
+  `kind = "pistol"` weapons. The game disagrees with its own table
+  nowhere else: `restriction_type(21)` explicitly overrides the
+  akimbos to `kind::PISTOL`, and the ruleset's handguns category
+  includes 21. **The HUD SLOT is a display-and-storage slot, not a
+  category** — which is exactly why the rail must browse the
+  RULESET's category and not the slot.
+
 **As of:** 2026-11-03, branch `docs/readme-human-pass` — **THE README IS FOR
 HUMANS NOW.** Kyle read it and said the thing worth fixing: *"it's tough to
 read. No human is going to read most of that."* It was doing two jobs at
