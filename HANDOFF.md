@@ -23,6 +23,74 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-03, branch `fix/pointer-ownership-and-escape-lock` (in
+the `webxash` submodule) — **A DOM MENU OWNS THE POINTER, AND ESCAPE NO
+LONGER LEAVES THE FULLSCREEN.**
+
+Kyle reported two bugs from a real session, both about who owns the mouse:
+the modern buy menu's buttons went dead on the first click ("PRESS ESC TO
+UNLOCK"), and Escape — which should release the mouse — instead dismissed
+the fullscreen and lagged while the rendering caught up.
+
+**THE POINTER LOCK: THE ENGINE TAKES IT FROM A `click` HANDLER.** The
+issue #118 guard stops a canvas-targeted **`mousedown`** — but a **`click`
+is a separate event**: the browser dispatches it from the hit-test
+result, not from the mousedown's propagation. So the press was blocked
+and the click was not, and the engine's own canvas listener
+(`Browser.init` in xash3d-fwgs.js: `canvas.addEventListener("click", …
+canvas.requestPointerLock())`) asked for the lock anyway. That is Kyle's
+report, exactly: the panel was up with the mouse free, **one click
+later** the mouse was gone and the panel said "PRESS ESC TO UNLOCK".
+There are two more ways in: the engine's C `mousedown` handler calls
+`_emscripten_request_pointerlock` (stopped by the existing guard), and
+the engine's `fullscreenchange` handler calls `canvas.requestPointerLock()`
+when the page ENTERS fullscreen (**not stoppable from the frontend at
+all**). **AND THE ENGINE ASKS FOR THE LOCK BY ITSELF, FROM ITS C CODE,
+WHEN THE PORT'S BUY MENU OPENS** — the port's menu opens the moment the
+player becomes an observer, so it happens on every join, with no click
+involved (measured: the classic path takes the lock with no click at
+all). The frontend used to answer that with a **one-shot repair** — the
+panel's Vue watcher released the lock once, when the panel mounted.
+That is a race, and it is measured to be one: the engine's request and
+the frontend's release were **347 ms apart** in the run that passed, and
+the order is not guaranteed. The mouse guard could never help, because
+it stops the press that would *ask* for the lock, not a lock the engine
+asks for on its own. **The rule is now STANDING**: `pointerlockchange`
+gives the lock back whenever a DOM menu is on screen, and closing the
+menu gives it back. Both live in
+`webxash/src/services/pointer-ownership.ts`, so there is **ONE owner for
+the pointer** — the HUD no longer keeps a flag of its own. The guard
+stops the `click` as well now, so the request never happens in the first
+place. The options overlay counts as a DOM menu too: under the pointer
+lock its buttons and text fields would be dead as well.
+
+**ESCAPE: THE BROWSER WAS EATING IT.** The browser consumes an Escape
+that leaves fullscreen, so the keydown never reached the page and the
+game's own Escape handling — release the pointer, then the options
+overlay — never ran. Leaving fullscreen also resizes the viewport, and
+the engine throws away the forced render resolution on every resize, so
+it renders at the window's NATIVE resolution until the watchdog re-pins
+it: **measured, the frame rate halved across that window.** Chromium's
+keyboard lock now claims **Escape** as well as the reserved chords (this
+project measured it on 2026-10-26: *with Escape locked, a tap reaches
+the page and fullscreen is NOT left*). So a tap of Escape releases the
+pointer and **stays in fullscreen** — no resize, no lag — and the second
+tap opens the options overlay. The way out of fullscreen is the overlay's
+new **"Leave fullscreen" button**. The resize debounce is shortened from
+400 ms to 50 ms as well, for the browsers without the Keyboard Lock API
+(Firefox, Safari), where Escape still leaves the fullscreen.
+
+**PROVED IN A REAL BROWSER AGAINST THE LOCAL RIG**, not by reading the
+source: the panel keeps the pointer, a lock taken *under* the panel is
+taken back, the panel's buttons still work, and closing the panel gives
+the pointer back. `prove_pointer_ownership.py` (in the
+`specialists-browser` skill's `scripts/`) is the new proof; the two
+existing pointer-lock proofs still pass, and the frontend typechecks and
+builds. The frontend PR is **webXash #39**, authored by the GitHub App
+and waiting for Kyle's approval; **the parent PR (the submodule pointer
++ the new unit test) follows it**, because the pointer has to name the
+MERGED submodule commit.
+
 **As of:** 2026-11-03, branch `feat/buy-menu-modern-default` — **THE MODERN
 BUY MENU IS THE DEFAULT, AND THE GOLDEN COLTS ARE IN THE PISTOLS.**
 
