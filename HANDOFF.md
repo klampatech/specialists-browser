@@ -95,13 +95,24 @@ when it clicked, and the port's buy menu closes when the buy period ends
 and the player spawns), and the frontend typechecks and builds on the
 merged submodule tree.
 
-**webXash #39 IS MERGED** (`00a993a`) — Kyle approved it and the agent
-merged it — and the parent PR is **specialists-browser #129**: the
-submodule pointer (naming the **MERGED** commit, not the branch tip,
-because a squash merge mints a new SHA for the same tree) plus the new
-unit test `tests/unit/pointer-ownership.test.mjs`, which asserts the
-SHAPE of the standing rule in the submodule's source (the parent cannot
-run the submodule's TypeScript).
+**webXash #39 IS MERGED** (`00a993a`) and **specialists-browser #129 IS
+MERGED** (`6b50239`) — Kyle approved both and the agent merged both — and
+**THE FIX IS LIVE ON PRODUCTION.** The parent PR carried the submodule
+pointer (naming the **MERGED** commit, not the branch tip, because a
+squash merge mints a new SHA for the same tree) plus the new unit test
+`tests/unit/pointer-ownership.test.mjs`, which asserts the SHAPE of the
+standing rule in the submodule's source (the parent cannot run the
+submodule's TypeScript).
+
+**AND THE PROOF PASSES ON PRODUCTION, NOT ONLY LOCALLY.** The deploy's
+own browser verification went green (PLAY reaches the server; two
+browsers connected at once), the production bundle carries the fix
+(`pointerlockchange`, `Leave fullscreen`, `exitPointerLock` are all in
+the shipped `assets/index-*.js`), and both browser proofs pass against
+`https://bulletballet.dev/` itself: the panel keeps the pointer, a lock
+taken under it is taken back, a real canvas click with the panel up does
+NOT take the lock, the panel's buttons work, closing the panel gives the
+pointer back, and the new button actually leaves the fullscreen.
 
 **As of:** 2026-11-03, branch `feat/buy-menu-modern-default` — **THE MODERN
 BUY MENU IS THE DEFAULT, AND THE GOLDEN COLTS ARE IN THE PISTOLS.**
