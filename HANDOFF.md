@@ -23,6 +23,79 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-03, branch `feat/buy-menu-modern-default` — **THE MODERN
+BUY MENU IS THE DEFAULT, AND THE GOLDEN COLTS ARE IN THE PISTOLS.**
+
+Kyle asked for two changes to the buy menu, and both are the same kind of
+change: the thing a player meets first should be the thing that works.
+
+**THE MODERN MENU IS NOW THE DEFAULT.** The store's `tsConfig.buyMenu`
+default is `'modern'`, so a NEW player gets the DOM panel without
+hunting for the ESC toggle. The classic canvas menu is still there and
+still one click away in the ESC options overlay. **A player who already
+chose `classic` keeps it** — the choice is persisted, so this only
+decides what a first-time player sees. The PORT's own default is still
+`classic` (the game starts the classic flow and the browser asks for the
+modern one), so nothing about the port changed.
+
+**THE GOLDEN COLTS ARE IN THE PISTOLS.** They were reachable ONLY from
+the loadout's card 5 — which is the one place a player who wants a golden
+pistol would not think to look.
+
+**THE CAUSE WAS A DIVERGENCE FROM THE GAME'S OWN MENU, AND THE CLASSIC
+MENU ALREADY HAD THEM.** The classic menu's handguns column is the
+RULESET's (`MenuRules::handguns`) and it holds **ten** guns:
+`1, 9, 12, 14, 2, 21, 22, 28, 31, 36` — the 21 is the Golden Colts. TS
+2.1's column holds them too (`1, 9, 12, 14, 8, 21, 22, 28, 31`). The
+modern flow derived the pistols from the **HUD slot 2** instead, and the
+HUD grid column holds only **nine** — so the tenth fell out.
+
+**THE HUD SLOT AND THE CATEGORY ARE TWO DIFFERENT NUMBERINGS, AND FOR
+THE GOLDEN COLTS THEY ARE TWO DIFFERENT ANSWERS.** The game keeps them
+in the HUD slot 5 (that is where they spawn), and the game calls them a
+pistol: `GetWeaponType` (`shared::weapons::restriction_type`) reads id 21
+as `kind::PISTOL`. So the fix is NOT to move them — it is to list the
+**category** in the rail, which is what the rail is: a browse aid over
+the categories. `Rail::Pistols` now reads the classic menu's own handguns
+column (`category_weapons(HANDGUNS_CATEGORY, r)`), so the modern pistols
+list IS the classic menu's handguns list, weapon for weapon, in the
+game's own order — and a ruleset that changes its handguns list changes
+the modern flow too.
+
+**THE GOLDEN COLTS STILL LAND IN THE HUD SLOT 5.** The entry record
+carries the weapon's own `hud[0]`, so buying them from the pistols puts
+them on the loadout's **card 5** — exactly as the classic menu does. The
+card is where the game keeps them; the rail is where the player looks
+for them.
+
+**THE PISTOLS LIST IS NOW TEN LONG, AND THE TENTH ROW IS KEY 11.** The
+modern flow already had the tenth-row key (11, badge "A") for a list
+that never reached ten. It is real now, and a test bug it exposed is
+fixed: `l.starts_with("TSBUY short 1")` also matched the tenth row's
+`"TSBUY short 11"`, so the match is exact now (`"TSBUY short 1 "`).
+
+**AND IT IS PROVEN IN A REAL GAME** (`scripts/prove_golden_colts.py`, a
+fresh browser context with **nothing seeded** — so the panel mounting on
+its own is the proof that the default is `modern`):
+
+```
+the panel mounted on its own: the default is 'modern'
+1Glock-18$850      6Golden Colts$2,600
+2SOCOM-MK23$700    7Glock-20C$1,300
+3Desert Eagle$1,050 8Ruger-MK1$1,500
+4Five-seveN$1,250  9Raging Bull$2,100
+5Beretta 92F$900  AContender G2$1,500
+
+TSBUY entry 2 2600 20  5 12 Golden Colts      <- the port's own record: HUD slot 5
+[ts] evo-colts-1793747836 spawned (#5) with [2, 8, 13, 21, 35]
+                                             <- id 21 IS the Golden Colts
+VERDICT: ARMED WITH THE GOLDEN COLTS
+```
+
+The loadout's card 5 read **"5Akimbo Berettas, Golden Colts"** — bought
+from the pistols, landed in the HUD slot 5, which is the game's own
+answer. Zero page errors.
+
 **As of:** 2026-11-03, branch `docs/readme-human-pass` — **THE README IS FOR
 HUMANS NOW.** Kyle read it and said the thing worth fixing: *"it's tough to
 read. No human is going to read most of that."* It was doing two jobs at
@@ -111,8 +184,8 @@ top of the panel in every single screenshot.
 items are stale.** The frontend sends `ts_buy_mode modern` at session
 start, the modern entry record carries the weapon's classic slot, the
 deploy re-submits the loadout when it changes, and the flow survives a
-map change. The classic canvas menu is still the default, so nothing
-changes for a player who never picks the modern one.
+map change. The classic canvas menu was the default until 2026-11-03;
+it is now the option, and the modern one is what a new player gets.
 
 **As of:** 2026-10-31, branch `fix/admin-fleet-list` — **the admin
 console's FLEET LIST now comes from the ORCHESTRATOR**: it was

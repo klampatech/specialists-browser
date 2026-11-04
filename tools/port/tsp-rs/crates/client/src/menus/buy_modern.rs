@@ -13,12 +13,12 @@
 //! | rail | label | lists |
 //! | --- | --- | --- |
 //! | 1 | Melee weapons | the HUD slot 1 weapons: the Katana, the Combat Knife, the Seal Knife and the M61 Grenade |
-//! | 2 | Pistols | the HUD slot 2 weapons |
+//! | 2 | Pistols | the game's own handguns category: the HUD slot 2 weapons and the Golden Colts |
 //! | 3 | SMGs | the HUD slot 3 weapons |
 //! | 4 | Rifles | the HUD slot 4 weapons the game calls rifles |
 //! | 5 | Shotguns | the HUD slot 4 weapons the game calls shotguns |
-//! | 6 | Special | the HUD slot 5 weapons: the akimbo ones |
-//! | 7 | Player Accessory | the game's ITEMS page: the kevlar and the stealth shoes |
+//! | 6 | Player Accessory | the game's ITEMS page: the kevlar and the stealth shoes |
+//! | — | Special Purpose | the HUD slot 5 weapons: the akimbo ones and the Golden Colts. Not a rail entry — the loadout's card 5 opens it |
 //!
 //! The split is the game's own: the weapon table's [`kind`](shared::weapons::WeaponKind) is
 //! the game's categorisation, read through the game's own correction of it (see
@@ -60,7 +60,7 @@
 
 use super::buy::{
     Action, BuyMenu, ENTRIES, ITEM_KEVLAR, ITEM_STEALTH, Rng, RowFlags, Rules, SAVED_CONFIGS, Screen, attachment_price, cost, entry_slots,
-    key_prefix, page, restricted, slots_for,
+    key_prefix, page, restricted, slots_for, table as category_table,
 };
 use shared::weapons::{WeaponInfo, tables};
 
@@ -168,7 +168,13 @@ pub enum Rail {
     /// The melee weapons: the HUD slot 1 weapons — the Katana, the Combat Knife, the Seal
     /// Knife and the M61 Grenade (where the rules sell it).
     Melee,
-    /// The pistols: the HUD slot 2 weapons.
+    /// The pistols: the game's own handguns category.
+    ///
+    /// **Not the HUD slot 2.** The category and the HUD grid are two numberings and they
+    /// disagree here: the handguns column holds ten weapons and the HUD slot 2 grid holds nine,
+    /// so the tenth — the Golden Colts — lives in the HUD slot 5 while the game calls it a
+    /// pistol. The rail is a browse aid, so it lists the CATEGORY, and the Golden Colts is
+    /// reachable from the pistols.
     Pistols,
     /// The SMGs: the HUD slot 3 weapons.
     Smgs,
@@ -338,8 +344,9 @@ pub fn slot_weapons(slot: i32, r: &Rules) -> Vec<&'static WeaponInfo> {
 /// menu's own shotguns column lists it too.
 ///
 /// It is only read for the HUD slot 4 split, where it decides between the rifles and the
-/// shotguns. The other rail entries are the HUD slot's own weapons, and the akimbos (the
-/// HUD slot 5) are a HUD slot and not a kind.
+/// shotguns. The other rail entries are their own list — the pistols are the game's own
+/// handguns CATEGORY (see [`category_weapons`]) and the rest are their HUD slot's weapons
+/// whole, and the akimbos (the HUD slot 5) are a HUD slot and not a kind.
 fn rail_kind(w: &WeaponInfo) -> u8 {
     shared::weapons::restriction_type(w.id)
 }
@@ -357,13 +364,51 @@ fn is_shotgun(w: &WeaponInfo) -> bool {
     rail_kind(w) == shared::weapons::kind::SHOTGUN
 }
 
-/// The weapons a rail entry lists: the HUD slot's own weapons, in the game's own order.
+/// The classic menu's category column for the handguns.
 ///
-/// The rifles and the shotguns are the one split: they share the HUD slot 4, and the rail
-/// divides them by the game's own kind (see [`rail_kind`]). Every other entry lists its
-/// HUD slot's weapons whole.
+/// The columns are the game's own category table ([`category_table`]), and the handguns are
+/// the first one.
+const HANDGUNS_CATEGORY: usize = 0;
+
+/// The weapons of one of the classic menu's category columns: the game's own list for that
+/// category, in the game's own order.
+///
+/// **This is not the HUD slot.** The category table and the HUD grid are two different
+/// numberings, and for the pistols they disagree: the handguns column holds TEN weapons, and
+/// the tenth — the Golden Colts — lives in the HUD slot 5, because the slot 2 grid only holds
+/// nine. The game's own categorisation agrees: `GetWeaponType` calls the Golden Colts a pistol
+/// ([`shared::weapons::restriction_type`]), and both rulesets list it among the handguns (TS
+/// 3.0's column is `1, 9, 12, 14, 2, 21, 22, 28, 31, 36` and TS 2.1's is `1, 9, 12, 14, 8, 21,
+/// 22, 28, 31`).
+///
+/// The column is the RULESET's ([`MenuRules::handguns`]), so a ruleset that changes the list
+/// changes this too — the same way the classic menu's own column changes.
+fn category_weapons(column: usize, r: &Rules) -> Vec<&'static WeaponInfo> {
+    let mut out = Vec::new();
+    for row in 0..12 {
+        let id = category_table(&r.menu)[row][column];
+        if id == -1 || restricted(id, false, r) {
+            continue;
+        }
+        let Some(w) = tables().weapon(id as u8) else { continue };
+        out.push(w);
+    }
+    out
+}
+
+/// The weapons a rail entry lists: the game's own list for that category, in the game's own
+/// order.
+///
+/// The pistols are the classic menu's own handguns column, because that is the game's own list
+/// of pistols and it holds the Golden Colts — a pistol to the game, and the only way to reach
+/// it before the loadout's card 5. The other entries list their HUD slot's weapons whole,
+/// except the rifles and the shotguns, which share the HUD slot 4 and the rail divides them by
+/// the game's own kind (see [`rail_kind`]).
 pub fn rail_weapons(rail: Rail, r: &Rules) -> Vec<&'static WeaponInfo> {
-    let mut out = slot_weapons(rail.hud_slot(), r);
+    let mut out = match rail {
+        Rail::Pistols => category_weapons(HANDGUNS_CATEGORY, r),
+        _ => slot_weapons(rail.hud_slot(), r),
+    };
     match rail {
         Rail::Rifles => out.retain(|w| is_rifle(w)),
         Rail::Shotguns => out.retain(|w| is_shotgun(w)),
@@ -1485,11 +1530,20 @@ mod tests {
         assert_eq!(lines.last().unwrap(), "TSBUY end");
         let rows = dump_rows(&lines);
         let guns: Vec<_> = rows.iter().filter(|(_, _, f, ..)| f != "dim").collect();
-        assert_eq!(guns.len(), 9, "the nine pistols");
+        assert_eq!(guns.len(), 10, "the ten pistols — the handguns column, Golden Colts and all");
         assert_eq!(guns[0].0, 1, "the first pistol is key 1");
         assert_eq!(guns[0].5, "Glock-18");
         assert_eq!(guns[0].1, 850, "the Glock-18's price");
         assert_eq!(guns[0].3, page::WEAPONS, "the weapon rows answer on the weapons page");
+        // The Golden Colts are a pistol to the game and the handguns column holds them, so the
+        // pistols list carries them — the sixth row, in the column's own order.
+        let colts = guns.iter().find(|g| g.5 == "Golden Colts").expect("the Golden Colts are a pistol");
+        assert_eq!(colts.0, 6, "the Golden Colts are the sixth pistol: {guns:?}");
+        assert_eq!(colts.1, 2600, "their price");
+        assert_eq!(colts.3, page::WEAPONS, "and they answer on the weapons page");
+        // And the tenth row's key is 11, not 10: key 10 is the game's own back key.
+        assert_eq!(guns[9].0, 11, "the tenth row's key is 11: {guns:?}");
+        assert_eq!(guns[9].4, "A", "and its badge is the design's tenth: {guns:?}");
 
         // ---- the attachments screen.
         m.dom_key_on(page::WEAPONS, 1, &r, &mut FixedRng(vec![], 0));
@@ -1609,6 +1663,48 @@ mod tests {
         // The HUD slot 5's card is the game's own "Special Purpose" slot: the akimbo
         // versions and the Golden Colts.
         assert!(cards[4].ends_with("Special Purpose"), "the HUD slot 5 card: {cards:?}");
+    }
+
+    /// The pistols list the Golden Colts, because the game calls them a pistol.
+    ///
+    /// The HUD slot 2 grid holds nine guns and the handguns CATEGORY holds ten: the tenth is
+    /// the Golden Colts, which lives in the HUD slot 5 because that is where the game keeps
+    /// it — but `GetWeaponType` calls it a pistol and both rulesets list it among the
+    /// handguns. So the rail, which is a browse aid over the CATEGORIES, lists it with the
+    /// pistols, and the only way to reach them before this was the loadout's card 5.
+    ///
+    /// The classic menu already had them in its handguns column. The modern flow derived the
+    /// pistols from the HUD slot instead, and dropped them.
+    #[test]
+    fn the_pistols_carry_the_golden_colts() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let names = |rail: Rail| rail_weapons(rail, &r).iter().map(|w| w.name.clone()).collect::<Vec<_>>();
+
+        // The HUD slot and the category are two different lists.
+        let slot2 = slot_weapons(2, &r);
+        assert!(!slot2.iter().any(|w| w.name == "Golden Colts"), "the HUD slot 2 grid holds nine guns");
+        assert_eq!(slot2.len(), 9, "the HUD slot 2 grid");
+
+        // The rail's pistols are the game's own handguns column, and they are TEN.
+        let pistols = names(Rail::Pistols);
+        assert_eq!(pistols.len(), 10, "the handguns column: {pistols:?}");
+        assert!(pistols.contains(&"Golden Colts".to_owned()), "the Golden Colts are a pistol: {pistols:?}");
+        // And the column's own order: the Beretta is the fifth and the Golden Colts the sixth.
+        assert_eq!(pistols[4], "Beretta 92F", "the column's order: {pistols:?}");
+        assert_eq!(pistols[5], "Golden Colts", "the column's order: {pistols:?}");
+
+        // The classic menu's own handguns column agrees with it, weapon for weapon.
+        let classic: Vec<String> = (0..12)
+            .map(|row| category_table(&r.menu)[row][HANDGUNS_CATEGORY])
+            .filter(|id| *id != -1)
+            .filter_map(|id| tables().weapon(id as u8))
+            .map(|w| w.name.clone())
+            .collect();
+        assert_eq!(pistols, classic, "the modern pistols are the classic menu's handguns column");
+
+        // The Golden Colts still live in the HUD slot 5, so the loadout's card 5 holds them.
+        assert!(names(Rail::Special).contains(&"Golden Colts".to_owned()), "and in the HUD slot 5");
     }
 
     /// The loadout screen's digits are the cards' own, and the clear row does not eat one.
@@ -1844,18 +1940,22 @@ mod tests {
         m.dom_key_on(page::CATEGORY, 2, &r, &mut FixedRng(vec![], 0));
         assert_eq!(m.screen, Screen::Browse);
         let items = browse_items(2, &r);
-        assert_eq!(items.len(), 9, "the nine pistols: {items:?}");
+        assert_eq!(items.len(), 10, "the ten pistols: {items:?}");
 
         // The rows' keys are their own places.
         let lines = m.state_lines(&r);
         let guns: Vec<_> = dump_rows(&lines).iter().filter(|(_, _, f, ..)| f != "dim").cloned().collect();
-        assert_eq!(guns.len(), 9, "the list's rows: {guns:?}");
+        assert_eq!(guns.len(), 10, "the list's rows: {guns:?}");
         assert_eq!(guns[8].0, 9, "the ninth is key 9: {guns:?}");
+        assert_eq!(guns[8].4, "9", "the ninth's keycap: {guns:?}");
+        // The pistols are the list that puts a TENTH row in it, so the tenth row is really
+        // there: key 11, and the design's "A" keycap.
+        assert_eq!(guns[9].0, 11, "the tenth is key 11: {guns:?}");
+        assert_eq!(guns[9].4, "A", "and its keycap is the design's tenth: {guns:?}");
 
-        // The tenth row would be key 11 and the eleventh key 12, and the keycap is the
+        // The eleventh row would be key 12, and the keycap is the
         // row's place in the list, so the tenth still wears the design's "A" and the
         // letters carry on after it.
-        assert_eq!(guns[8].4, "9", "the ninth's keycap: {guns:?}");
         assert_eq!(browse_key(9), 11, "the tenth row's key");
         assert_eq!(browse_key(10), 12, "the eleventh row's key");
         assert_eq!(browse_badge(9), "A", "the tenth row's keycap is the design's");
@@ -2279,7 +2379,9 @@ mod tests {
         let rows = dump_rows(&lines);
         let glock = rows.iter().find(|(_, _, _, _, _, label)| label == "Glock-18").expect("the Glock-18");
         assert!(!glock.2.contains('x'), "an owned row is not out of reach: {:?}", glock.2);
-        assert!(!lines.iter().any(|l| l.starts_with("TSBUY short 1")), "and it has no shortfall: {lines:?}");
+        // The record is matched exactly: the pistols are ten long, so "TSBUY short 1" is
+        // also the start of the tenth row's "TSBUY short 11".
+        assert!(!lines.iter().any(|l| l.starts_with("TSBUY short 1 ")), "and it has no shortfall: {lines:?}");
         // A row the player cannot afford still is. $150 is left, so the $700 SOCOM-MK23 is
         // $550 short of being bought.
         let mk23 = rows.iter().find(|(_, _, _, _, _, label)| label == "SOCOM-MK23").expect("the SOCOM-MK23");

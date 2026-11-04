@@ -220,9 +220,9 @@ It opens the moment you arrive as an observer and after every death, and
 
 The **modern** flow is a new DOM panel over the live game: a loadout
 screen, a per-slot browse screen and an attachments screen, with the money
-as the hero and the price of every line in the summary. You pick the flow
-in the options overlay (**Esc** twice → *Buy menu: Classic / Modern*), and
-the choice is remembered.
+as the hero and the price of every line in the summary. It is what a new
+player gets; you pick the flow in the options overlay (**Esc** twice →
+*Buy menu: Classic / Modern*), and the choice is remembered.
 
 The server owns the flow, not the browser. The panel draws what the port's
 own state line says, and the only thing it sends back is a key — so the
