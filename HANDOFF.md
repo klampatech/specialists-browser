@@ -37,21 +37,45 @@ options, the fullscreen asked back when the browser takes it, the
 `pointerlockerror` guard for Safari, and the capability line at startup.
 See **THE BROWSERS DIFFER** below.
 
-**PROVED ON PRODUCTION**: the shipped bundle is
-`assets/index-D6GdprDB.js` and it carries `keyboardLock`, the
-`[browser] …` capability line, the `pointerlockerror` listener, the
-`opts__switch-btn` toggle and the "asking for the fullscreen back" /
-"fullscreen restored" logs. All three browser proofs pass against
-`https://bulletballet.dev/` itself: the Escape sequence (Chrome headful,
-real X11 key events), the pointer ownership, and the fullscreen toggle
-(`ON` → `OFF`).
+**AND ON TOP OF THAT (2026-11-05): THE RENDER TARGET IS IN DEVICE PIXELS
+AND CAPPED BY WHAT THE CANVAS DISPLAYS - webXash #42 merged as `86db82f`,
+specialists-browser #135 merged as `dab9387`, deploy run `42074822412`
+green (deploy + browser verification).** Kyle's own console on his MacBook
+found the last piece of the lag: `[video] render resolution -> 1728x1117
+(was 2370x1990)` - the display's **CSS** resolution against the **device**
+resolution. The policy was asking for half the pixels the canvas has, and
+the canvas is a device-pixel surface, so the browser scaled every frame and
+the watchdog fought the engine's own resize on every resize (the extra
+reallocation is what re-drew the buy menu - the `TSBUY row ...` spam he
+took for a game reload). The target is in **device pixels** now and agrees
+with the engine's own resize: nothing to scale, nothing to correct. Also
+in this merge: **ESC #2 opens the options even when the browser's
+fullscreen exit is cancelled** (the three-Escape bug), and the
+pointer-release hint is suppressed while a DOM menu is up (the duplicate
+"mouse released" next to the engine's own modal).
 
-**THE ONE THING ONLY A REAL USER CAN SETTLE**: whether **Vivaldi** keeps a
-fullscreen that the page asks for again. Chromium latches the Escape that
-left the fullscreen and drops the one the page asks for (measured), so
-the restore is best-effort and the browser decides. If Vivaldi drops it
-too, then in Vivaldi ESC leaves the fullscreen and the **toggle** is the
-way back — which is exactly what the toggle is for.
+**PROVED ON PRODUCTION**: the shipped bundle is
+`assets/index-D-ULEtie.js` and it carries `keyboardLock`, the
+`[browser] …` capability line, the `pointerlockerror` listener, the
+`opts__switch-btn` toggle, the "asking for the fullscreen back" /
+"fullscreen restored" logs, the device-pixel render policy, the
+cancelled-fullscreen-exit path and the hint's menu suppression. All three
+browser proofs pass against `https://bulletballet.dev/` itself: the Escape
+sequence (Chrome headful, real X11 key events, **launching with
+`+connect` so it goes through the production bridge and the production
+server**), the pointer ownership, and the fullscreen toggle (`ON` → `OFF`).
+The fourth proof, `prove_server_connect.py`, is the RIG's: it asserts the
+bridge WebSocket was not refused, that the server logged the connection
+and "entered the game", and that the engine is in the game. Run it before
+believing any "the rig is broken" conclusion.
+
+**VIVALDI, SETTLED (2026-11-05)**: Kyle tested it on his MacBook. In
+Vivaldi the browser *tries* to leave the fullscreen on every Escape, the
+page asks for it back, and **it comes back** - so the restore works, at
+the cost of the macOS Space animation each time. With the cancelled-exit
+path now recognised as ESC #2, **two Escapes open the options in Vivaldi
+too**, over the fullscreen. The macOS Space animation is the part the
+page cannot reach.
 
 Kyle reported two bugs from a real session, both about who owns the mouse:
 the modern buy menu's buttons went dead on the first click ("PRESS ESC TO
