@@ -23,12 +23,19 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
-**As of:** 2026-11-05, LATE — **THERE IS A LIVE REGRESSION ON PRODUCTION
-(webXash #42 / parent #135, both merged): THE RETINA RESOLUTION COLLAPSED TO
-A TINY MODE, AND LEAVING THE FULLSCREEN WEDGES THE ENGINE.** The root cause
-is now MEASURED and the fix is HALF-WRITTEN (the submodule branch
-`fix/render-units-css-pixels`, commit `1a08a4e`). **Read this block
-first.** The 2026-11-04/05 blocks below it (the device-pixel render
+**As of:** 2026-11-05, LATE — **THE FIX IS WRITTEN, PROVED IN A REAL
+BROWSER, AND WAITING FOR KYLE'S APPROVAL.** The live regression (webXash
+#42 / parent #135, both merged) is the **dpr-SQUARED** policy: the
+engine's `vid_setmode` takes **CSS pixels** and multiplies by the device
+pixel ratio **ITSELF**, and the policy multiplied as well — so it asked
+for dpr squared pixels. On Kyle's MacBook that was `3456x2234` asked
+for and `6912x4468` actually rendered: 30.9 Mpx, four times the pixels
+the panel has, and **past the GL maximum texture dimension of 8192**. The
+allocation failed, the engine fell back to a tiny mode (**the TINY
+resolution**) and wedged (the hang, the looping audio, the dead
+reconnect). **THE FIX IS ON THE SUBMODULE BRANCH `fix/render-units-css-
+pixels` (commit `e25a9fb`, pushed) AND IS IN webXash PR #43.** Read this
+block first; the 2026-11-04/05 blocks below it (the device-pixel render
 policy) are **SUPERSEDED AND WRONG** — that policy is the CAUSE of the
 regression, not the cure.
 
@@ -90,62 +97,65 @@ and ship it — the wedge is the emergency, the sharpness is the
 preference.**
 
 **THE FIX, AS IT STANDS.** `webxash/src/services/video-settings.ts` is on
-the submodule branch **`fix/render-units-css-pixels`**, commit **`1a08a4e`**,
-pushed to `origin`. It is a **WORK IN PROGRESS: NOT typechecked, NOT built,
-NOT unit-tested, NOT proven, and NOT merged** — it is 95 insertions and 51
-deletions against `86db82f`. The submodule's `main` is still `86db82f`, and
-the parent's submodule pointer is **unchanged** (still `86db82f`). DONE:
+the submodule branch **`fix/render-units-css-pixels`**, commit **`e25a9fb`**,
+pushed to `origin` and **in webXash PR #43** (authored as
+`app/bulletballet-bot`, awaiting **Kyle's approval**). It is **typechecked,
+built, unit-tested and PROVEN IN A REAL BROWSER**; it is **not merged yet**.
 
-- `resolveRenderResolution()` → **CSS pixels** again (the display's CSS
-  size, capped by `AUTO_MAX_PIXELS`);
-- `currentRenderResolution()` → **CSS pixels** (the backing store ÷ dpr),
-  so the comparison is between two MODES;
-- `displayedRenderResolution()` → the canvas's **CSS box**
-  (`clientWidth x clientHeight`), not device pixels;
-- `devicePixelRatio()` added, clamped to 1..3;
-- the module header rewritten with the measured contract above.
+What the fix does — the five items that were open:
 
-NOT DONE — this is the work:
+1. **`renderResolutionArgs()` — the BOOT path — DONE.** It emits **device**
+   pixels (`mode x dpr`), because `-width`/`-height` are **LITERAL**
+   dimensions, and it bounds the result by the GL limit so a boot argument
+   can never be the allocation that fails.
+2. **`effectiveRenderResolution()` / `fitRenderResolution()` — the cap —
+   DONE.** The mode's shape now follows the **canvas's box** (which is also
+   where the engine's own resize lands, so the watchdog and the engine
+   agree and nothing churns), scaled down **uniformly** when the policy's
+   budget is smaller. The fit is **floored**, so the result is inside the
+   budget by construction.
+3. **`renderResolutionNeedsApplying()` — DONE.** It has a **±1 px**
+   tolerance, because the engine truncates (`cssWidth * dpiScale | 0`) and a
+   strict `!==` compared forever.
+4. **The GL guard — DONE.** `MAX_DEVICE_DIMENSION` (8192, the conservative
+   measured floor) plus `setMaxDeviceDimension()`, and the loader hands the
+   guard the engine's **real** `MAX_TEXTURE_SIZE` off its own WebGL context.
+5. **The unit tests — DONE, REWRITTEN.** `tests/unit/video-settings.test.mjs`
+   now encodes the measured contract: the CSS target carries **no** ratio, the
+   boot arguments carry device pixels, the mode follows the box's shape, the
+   drift check has slack, and the GL guard holds. The suite is **636 passed,
+   0 failed**.
 
-1. **`renderResolutionArgs()` — the BOOT path.** It must emit **device**
-   pixels (`mode x dpr`); it currently emits the CSS mode straight through,
-   so at dpr 2 the first frame is at half the device box.
-2. **`effectiveRenderResolution()` / `fitRenderResolution()` — the cap.** It
-   is still an **area** fit that keeps the **policy's** aspect, so the mode
-   can exceed the canvas's box on one axis (the browser then downscales
-   that axis every frame — the lag). The mode's shape should follow the
-   **canvas's box** (which is also where the engine's own resize lands, so
-   the watchdog and the engine agree and nothing churns), scaled down
-   **uniformly** when the policy's budget is smaller.
-3. **`renderResolutionNeedsApplying()` — strict `!==` on two CSS numbers.**
-   The engine truncates (`cssWidth * dpiScale | 0`), so backing÷dpr can be
-   off by a fraction and the comparison **churns forever**. Needs a ±1 px
-   tolerance, or compare in device pixels.
-4. **The 8192 GL guard.** Nothing asserts that the requested backing store
-   fits the supported maximum texture size. With the CSS policy it cannot
-   (the mode is capped by the box and the budget), but `display` on a very
-   large HiDPI display can (`3456x2234` CSS x 2 = `6912x4468`; a 6K
-   display would exceed 8192).
-5. **The unit tests.** `tests/unit/video-settings.test.mjs` still encodes
-   the #42 premise — *"a HiDPI display IS rendered at its device
-   resolution"* (line 171). They must be rewritten for the measured
-   contract. (They have been rewritten once already, for the device-pixel
-   premise; they will have to be rewritten again.)
+**THE PROOF, AND IT NOW ASSERTS.** `~/.hermes/skills/projects/specialists-
+browser/scripts/prove_retina_regressions.py` — runs Chrome with
+`--force-device-scale-factor=2` over a MacBook-like window, measures the
+policy target, the backing store, the CSS box, the device box, the scale
+ratio, the frame rate, the fullscreen-exit recovery, the engine's liveness,
+the bridge and the reconnect — **and it FAILS if any of it is wrong.** It was
+a reporter; it is a gate now: exit code 0 means every check passed.
+
+**IT FAILS AGAINST THE PRE-FIX CODE** (6 failed checks: the backing store is
+`5012x3128` where the box x dpr is `1890x2074`, the browser's scale is
+**4.00**, the frame rate is 2-3/s) **and PASSES AGAINST THE FIX** (13 of 13:
+the backing store **is** the box x dpr, the browser's scale is **1.00**, the
+watchdog re-applies **nothing**, the engine is still painting after the
+fullscreen exit, no reconnect overlay). That is what earns a proof the right
+to be believed.
+
+**THE POLICY IS A CSS-PIXEL BUDGET, AND THAT IS THE ONE OPEN PRODUCT
+QUESTION.** `AUTO_MAX_PIXELS` (1920x1080) is in **CSS pixels**, so on a 2x
+display the engine renders the panel's native pixels — sharp, and what the
+game looked like before the regression. A **device-pixel** budget would be 4x
+cheaper to fill and softer (the browser upscales the frame). It is **one
+constant** away, and Kyle has said he wants *"a happy medium … like what we
+had before? 1080p or something?"* — which reads both ways. Shipped: the CSS
+budget. Say the word and it flips.
 
 **NOT TOUCHED, DELIBERATELY: the reconnect path.** The dead RECONNECT
 button is currently read as a **symptom** of the wedged engine (the failed
 `13824x8936` allocation), not as its own bug. **Retest it after the sizing
-fix before changing it.**
-
-**THE PROOF:** `~/.hermes/skills/projects/specialists-browser/scripts/
-prove_retina_regressions.py` (306 lines) — runs Chrome with
-`--force-device-scale-factor=2` at a MacBook-like `1728x1117` CSS viewport
-and measures the policy target, the backing store, the CSS box, the device
-box, the scale ratio, the frame rate, the fullscreen-exit recovery, the
-engine's liveness, the bridge and the reconnect. **It reproduced both
-regressions** (`scale 3.997`, ~3 fps, no recovery). **It must pass after
-the fix.** Note the rig itself runs at **dpr 1** and therefore **cannot**
-reproduce this — only this proof can, by forcing the scale factor.
+fix before changing it.** The proof asserts there is no reconnect overlay
+after the fullscreen exit, and there is not.
 
 **SCRATCH PROBES** (not in the repo, `~/.hermes/cache/scratch/`):
 `probe_engine_units.py`, `probe_engine_contract.py` (the `vid_setmode`
@@ -159,8 +169,11 @@ hung ~25 minutes in `npm install playwright@latest` — `deploy.yml` has no
 `workflow_dispatch`, so it only reruns on the next push to `main`).
 
 **THE BRANCHES:** parent `docs/prod-render-cap-fix` (**PR #136 open**, and
-its contents predate these findings); parent `main` = `dab9387`; the
-`webxash` submodule pointer = `86db82f` (webXash #42 — the broken policy).
+it now carries the new pointer, the rewritten tests and this block); parent
+`main` = `dab9387`; the `webxash` submodule pointer on the branch =
+**`e25a9fb`** (the branch head — it **must** be moved to webXash `main`'s
+squash commit before the parent merges, or the parent's `main` names a commit
+that only a PR ref holds). **webXash PR #43 merges FIRST.**
 
 **As of:** 2026-11-04, **LIVE ON PRODUCTION** — webXash #40 merged as
 `e576d96`, specialists-browser #131 merged as `df6ad5e`, deploy run
