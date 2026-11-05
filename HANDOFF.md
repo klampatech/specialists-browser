@@ -182,6 +182,48 @@ The check deliberately does NOT probe the promise form of
 `requestPointerLock()`: calling it would TAKE the pointer, and the
 pointer belongs to the game.
 
+**THE RESIZE LAG: WHAT IT ACTUALLY IS (2026-11-04, Kyle's report and
+the measurement).** Kyle, in Vivaldi on his MacBook: *"ESC still tried
+to leave full screen. It will either leave it or it attempts to, causes
+the screen resize lag, then goes back to fullscreen. From there going
+full screen or not is seamless (no lag), so it must just be the initial
+resizing / scaling / rendering."* **His guess was right.** The engine's
+render target is the **DISPLAY's** size (the policy: *'auto' spends a
+pixel budget* ✓), but the canvas is only as big as the **WINDOW** ✓,
+and the browser scales the drawing buffer down to the canvas's box **on
+every frame** ✓. A window smaller than the display therefore meant the
+whole frame was scaled down every single frame ✓ - and leaving the
+fullscreen made the window smaller still ✓, so the scaling got WORSE ✓
+✓. Measured (real Chrome 151 headful, the local rig, the real game ✓):
+
+| | drawing buffer | canvas shows | browser downscale | frame rate |
+|---|---|---|---|---|
+| before | 1600x1000 | 1050x837 | **1.82x every frame** | 12/s |
+| after | 1186x741 | 1050x837 | **1.00x (nothing)** | **21-22/s** |
+
+**That is also the asymmetry Kyle saw**: going OUT of the fullscreen
+shrinks the canvas under a fixed-size buffer ✓ (the scaling gets worse
+✓ = the lag ✓); going back IN returns the ratio to 1 ✓ (seamless ✓✓).
+
+**THE FIX**: the target is capped by what the canvas actually DISPLAYS
+(times the device pixel ratio ✓ = the screen's device pixels ✓) ✓. The
+fullscreen renders at the display's resolution (sharp ✓ - the whole
+display's pixels ✓) and the windowed game renders at the window's
+resolution (the browser scales NOTHING ✓✓). The aspect is kept ✓, so
+the picture does not stretch ✓. The new proof is `prove_resize_lag.py` ✓
+(the `specialists-browser` skill ✓).
+
+**THE HINT BELONGS TO THE GAME (same report).** Kyle: *"every time i
+become an observer and the buy menu shows, when clicking deploy it shows
+the 'PRESS ESC TO RELEASE POINTER' type modal each time, sometimes it
+also shows our own message about pressing escape we added."* The
+engine's modal is the classic menu saying the mouse is captured ✓ - our
+hint was appearing NEXT TO it ✓, because the hint fired on ANY pointer
+release (including the buy menu taking it ✓) and stayed up when the
+pointer came BACK (the engine's menu takes it back ✓) ✓. So the hint is
+suppressed while a DOM menu is on screen ✓ and cleared when the pointer
+comes back ✓.
+
 **THE LAG WAS NEVER THE FULLSCREEN EXIT.** The engine re-syncs to the
 **viewport** on every resize (SDL resize → `VID_SaveWindowSize` →
 `R_SaveVideoMode` rewrites `width`/`height`/`vid_width`/`vid_height`),
@@ -196,6 +238,57 @@ budget is already inside it. Measured after the change: the frame rate
 across the resize is **flat**, and the canvas tracks the window exactly.
 The resize debounce also went from 400 ms to 50 ms, for the browsers
 without the Keyboard Lock API (Firefox, Safari).
+
+**THE RIG NEEDS A `+connect`, OR THE ENGINE SITS ON "CONNECTING TO SERVER"
+(2026-11-05).** Kyle hit this on the dev rig and was kicked to the
+Half-Life menu. The cause was a hand-written `launchOptions=` URL **without
+`+connect`**: the engine boots the TS gamemode with no server to reach, so
+it shows "CONNECTING TO SERVER" and falls back to the main menu. It looks
+exactly like a broken rig and it cost a test cycle.
+
+- **The supported path is the landing page → PLAY** (or JOIN on the server
+  row). `launchOptionsFor()` builds
+  `-game ts +connect <publicAddress>:<port> +maxplayers N` and adds
+  `+bridge <host:port>` because the page is https. PLAY is also the gesture
+  the fullscreen request needs.
+- **A raw launch-options URL must carry both** `+connect` and `+bridge`
+  (`<host>:5174` — the Vite dev server proxies `/bridge` to the bridge's
+  plain `ws://` port; an https page cannot open `wss://host:27017`).
+- The bridge keys its allowlist on the **public** address
+  (`100.95.111.112:27015`), not the internal `127.0.0.1:27015` that
+  `/api/servers` also advertises. Asking for the internal address gets a
+  **403** from the bridge.
+- Known inconsistency: `/api/servers` advertises the **27015** instance
+  ("TS Local List") but the bridge's default target forwards to **27098**
+  ("TS Stable Probe"). Both are live TS servers on the same map with bots;
+  the player count on the landing page therefore does not include you.
+
+**THE PROOFS NEVER REACHED A SERVER — UNTIL NOW (2026-11-05).** The
+Escape/fullscreen proofs launched with no `+connect`, so they exercised the
+engine's LOCAL menu and never the bridge, the server, or the observer's buy
+menu — which is exactly where the duplicate "mouse released" message lived.
+That is why they kept passing while the rig was unreachable. The Escape
+proof now launches **with** a server and all seven checks still pass in the
+connected observer state. New proof: **`prove_server_connect.py`** — it
+asserts the bridge WebSocket was not refused, that the server logged the
+connection and "entered the game", and that the engine is in the game. Run
+it before believing any "the rig is broken" conclusion.
+
+**THE RENDER TARGET WAS IN THE WRONG UNITS (2026-11-05).** Kyle's own
+console on his MacBook (Vivaldi, macOS) said it:
+`[video] render resolution -> 1728x1117 (was 2370x1990)`. **1728x1117 is
+the display's CSS resolution; 2370x1990 is the DEVICE resolution (x2).** The
+policy was asking the engine for half the pixels the canvas actually has,
+and the canvas's drawing buffer is a device-pixel surface — so the browser
+scaled the whole frame on EVERY frame. The old note said the device pixel
+ratio was "deliberately not multiplied into the render target" because "the
+browser upscales the canvas anyway": it does not upscale, and the engine's
+own resize ALREADY lands on the device pixels, so a CSS-pixel policy fought
+the engine's own resize on every resize (an extra render-target
+reallocation, and the buy menu re-drawing itself — the `TSBUY row ...` spam
+Kyle saw, which he took for a game reload). The policy is in **device
+pixels** now and agrees with the engine's own resize, so there is nothing
+to scale and nothing to correct.
 
 **PROVED IN A REAL BROWSER AGAINST THE LOCAL RIG**, not by reading the
 source: the panel keeps the pointer, a lock taken *under* the panel is

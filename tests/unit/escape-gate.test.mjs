@@ -230,6 +230,109 @@ test('the browser capabilities are reported at startup', () => {
   );
 });
 
+test('a browser that cannot lock the pointer while fullscreen is handled', () => {
+  requireSubmodule();
+  const src = stripComments(escapeSource());
+  // Safari refuses the pointer lock while the page is fullscreen (a
+  // WebKit bug, reported in 2024). A game with the mouse free and no
+  // cursor is unplayable, so the game LEAVES the fullscreen and says so.
+  assert.ok(
+    /addEventListener\(\s*'pointerlockerror'/.test(src),
+    'the escape gate must listen for pointerlockerror — that is how a ' +
+      "browser refusing the pointer lock while fullscreen is noticed"
+  );
+  assert.ok(
+    /onPointerLockError[\s\S]{0,700}exitFullscreen\(\)/.test(src),
+    'the pointerlockerror handler must leave the fullscreen: the mouse ' +
+      'is worth more than the screen'
+  );
+  assert.ok(
+    /onPointerLockError[\s\S]{0,900}showHint\(/.test(src),
+    'and it must tell the player why'
+  );
+});
+
+test('the fullscreen is requested with the standard keyboardLock option', () => {
+  requireSubmodule();
+  const src = stripComments(
+    readFileSync(join(WEBXASH, 'src', 'services', 'fullscreen.ts'), 'utf8')
+  );
+  // `requestFullscreen({keyboardLock: "browser"})` is the WHATWG's own
+  // mechanism for keeping the Escape for the page instead of letting
+  // the browser leave the fullscreen with it.
+  assert.ok(
+    /requestFullscreen\([\s\S]{0,300}keyboardLock/.test(src),
+    'the fullscreen request must ask for the browser keyboard lock mode'
+  );
+  assert.ok(
+    /NotSupportedError/.test(src),
+    'and it must fall back to the plain request when the browser does ' +
+      'not support the option'
+  );
+});
+
+test('the browser capabilities are reported at startup', () => {
+  requireSubmodule();
+  const caps = join(WEBXASH, 'src', 'services', 'browser-capabilities.ts');
+  assert.ok(existsSync(caps), 'the browser capabilities service must exist');
+  const src = stripComments(readFileSync(caps, 'utf8'));
+  assert.ok(
+    /keyboardLock/.test(src) && /pointerLock/.test(src) && /fullscreen/.test(src),
+    'it must report the three APIs the game leans on'
+  );
+  assert.ok(
+    /logBrowserCapabilities/.test(src),
+    'and there must be a one-line summary to log'
+  );
+  const gate = stripComments(escapeSource());
+  assert.ok(
+    /logBrowserCapabilities\(\)/.test(gate),
+    'the escape gate must log it — one line is the first thing to ask ' +
+      'for when a player reports something browser-shaped'
+  );
+});
+
+test('the escape hint belongs to the GAME, not to a menu', () => {
+  requireSubmodule();
+  const src = stripComments(escapeSource());
+  // Kyle reported the engine's own "PRESS ESC TO RELEASE POINTER" modal
+  // and our "Mouse released - press Esc again for options" hint on
+  // screen AT THE SAME TIME, every time he became an observer.
+  //
+  // Two causes:
+  //
+  //  1. The hint fired on ANY pointer release - including the buy menu
+  //     taking the pointer, which is the MENU's doing and not the
+  //     Escape sequence's. So it must not fire while a DOM menu is up.
+  //  2. The hint stayed up when the pointer came BACK (the engine's
+  //     menu takes it back), so it sat there next to the engine's modal
+  //     contradicting it. So the re-acquire must clear it.
+  assert.ok(
+    /isDomMenuOnScreen\(\)[\s\S]{0,400}showHint/.test(src),
+    'the pointer-release hint must be suppressed while a DOM menu is up'
+  );
+  assert.ok(
+    /document\.pointerLockElement[\s\S]{0,600}hint\.value = null/.test(src),
+    "the hint must be cleared when the pointer comes back - otherwise it "
+      + "contradicts the engine's own \"PRESS ESC TO RELEASE POINTER\""
+  );
+});
+
+test('the SECOND Escape opens the options even when the fullscreen exit is cancelled', () => {
+  requireSubmodule();
+  const src = stripComments(escapeSource());
+  // Vivaldi, measured on Kyle's MacBook (2026-11-04): the browser tries
+  // to leave the fullscreen, the page asks for it back, and the
+  // fullscreen STAYS. So the press that is "ESC #2" everywhere else
+  // (the options) has to be recognised on that path too - otherwise it
+  // does nothing visible and the player needs a THIRD Escape.
+  assert.ok(
+    /stage\.value === 'released'[\s\S]{0,700}openOverlay\(\)/.test(src),
+    'the second Escape must open the options when the fullscreen exit ' +
+      'was cancelled'
+  );
+});
+
 test('the escape hint is actually shown to the player', () => {
   requireSubmodule();
   const src = stripComments(readFileSync(CANVAS_VUE, 'utf8'));
