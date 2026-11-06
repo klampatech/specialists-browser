@@ -32,13 +32,16 @@ browser* ✅; the CI run 42245717657: 4/4 ✅). The deployed WASM's SHA-256 is
 
 **On production the client joins, buys the Glock-18 in the modern menu, the
 panel shows it (the port's state: `total=850`, `tab=0`) and the player spawns
-and plays.** Two things production cannot do, and why: it runs **without
-`developer`**, so the server logs no `spawned (#N) with [ids]` line (the kill
-line is the fallback evidence that the client was alive ✓), and **the map
-change cannot be forced** — the port's server has no rcon and the prod
-instances run `docker run -d` with no attachable stdin. So the map-change
-half stands on the rig's proof (same artifact bytes, same server code) and
-production proves the artifact's identity plus the live purchase and spawn.
+and plays.** The production proof passed (2026-11-06, 15:59: *VERDICT: PASS
+— the purchase and the panel only*; the client's death in the server's log
+is the evidence that it was alive). Two things production cannot do, and
+why: it runs **without `developer`**, so the server logs no `spawned (#N)
+with [ids]` line (the kill line is the fallback evidence that the client
+was alive ✓), and **the map change cannot be forced** — the port's server has
+no rcon and the prod instances run `docker run -d` with no attachable stdin.
+So the map-change half stands on the rig's proof (same artifact bytes, same
+server code) and production proves the artifact's identity plus the live
+purchase and spawn.
 
 **THE SESSION CASE (a page reload) IS STILL OPEN** — that is the next task,
 and the quick byte-restore is NOT clean (see § NEXT TASK).
