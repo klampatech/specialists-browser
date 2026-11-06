@@ -427,9 +427,26 @@ fn read_buylist(path: &str) -> ([buy::Config; buy::SAVED_CONFIGS], String) {
 fn reinit_buy_menu(menu: &mut buy::BuyMenu, saved: [buy::Config; buy::SAVED_CONFIGS]) {
     let hidden = menu.hidden;
     let mode = menu.mode;
+    // The player's loadout SURVIVES the map change. The native game forgets it — `Init`
+    // zeroes the current and the last config, and the player buys again — but here the
+    // loadout is the player's own: the working copy, the last config and the ACTIVE TAB
+    // are put back, the way the flow and the hidden flag are. The tab matters as much as
+    // the copy: the panel shows the active tab's loadout, so a tab that resets to A shows
+    // A's (empty) loadout, not the player's.
+    let tab = menu.tab;
+    let current = menu.current.clone();
+    let last = menu.last.clone();
+    let kept = current.total > 0;
     *menu = buy::BuyMenu::new(saved);
     menu.hidden = hidden;
     menu.mode = mode;
+    menu.tab = tab;
+    menu.current = current;
+    menu.last = last;
+    if kept {
+        // The random first loadout would roll a random one over the loadout that was kept.
+        menu.random_first = false;
+    }
 }
 
 /// `HUD_VidInit`'s part here: `CHudTSWeapons::VidInit` (`0x1004cb50`) re-runs the buy menu's
@@ -458,6 +475,9 @@ pub fn vid_init(_first: bool) {
         s.team_number = 0;
     });
     crate::voice::stop_squelch_mode();
+    // The loadout is NOT sent here: at the level load the client is still connecting, so the
+    // server has no player to give the commands to and drops them. The re-arm waits for the
+    // HUD reset, which is the moment the server's player exists (see `rearm_loadout`).
     // The map change resets the menu (a new `BuyMenu`), so the DOM menu has to hear that too:
     // it renders what the port last printed.
     print_buy_state();
@@ -714,8 +734,40 @@ pub fn on_message(m: Msg, buf: &[u8]) {
                 });
             }
         }
+        // The server makes a new player out of us after a map change: the old one is gone and
+        // the new one holds nothing (the HUD reset clears the armament). The HUD reset is the
+        // moment the server's player exists, so the loadout goes to it again here.
+        Msg::ResetHUD => rearm_loadout(),
         _ => {}
     }
+}
+
+/// The loadout is sent to the server again, without the cash check and without a word: the money
+/// was spent when the loadout was bought, and the server checks the budget itself.
+///
+/// The level load is too early for this: the client is still connecting then, so the server has
+/// no player to give the commands to and drops them. The HUD reset is the moment the server's
+/// player exists — and it comes before the spawn that buys the armament.
+fn rearm_loadout() {
+    let actions = rearm_actions();
+    if actions.is_empty() {
+        return;
+    }
+    for a in &actions {
+        if let Action::ServerCmd(c) = a {
+            engine().print(&format!("[ts] loadout re-armed: {c}\n"));
+        }
+    }
+    run_actions(actions);
+}
+
+/// The commands that re-arm the loadout, empty when there is nothing to re-arm.
+fn rearm_actions() -> Vec<Action> {
+    let mut actions = Vec::new();
+    with(|m| {
+        m.buy.resubmit(&mut actions);
+    });
+    actions
 }
 
 // ---- VGUI menu queue -------------------------------------------------------------------------
@@ -1480,6 +1532,78 @@ mod tests {
 
         assert_eq!(menu.mode, buy::Mode::Modern, "the flow survives the map change");
         assert!(menu.hidden, "and so does the hidden flag");
+    }
+
+    /// The player's loadout survives a map change.
+    ///
+    /// The native game's `Init` forgets it — the working copy, the last config and the
+    /// active tab all go back to their defaults — so the panel comes back empty and the
+    /// player buys again. Here the loadout is the player's own and it is kept. The ACTIVE
+    /// TAB matters as much as the copy: the panel shows the active tab's loadout, so a tab
+    /// that resets to A shows A's loadout, not the player's.
+    #[test]
+    fn the_loadout_survives_a_map_change() {
+        ts30_gameplay::tables::make_default();
+        let mut menu = buy::BuyMenu::new(Default::default());
+        menu.set_mode(buy::Mode::Modern);
+        menu.tab = 3;
+        let mut loadout = buy::Config::default();
+        loadout.entries[0] = buy::Entry { id: 13, cost: 700, ..Default::default() };
+        loadout.total = 700;
+        loadout.slots = 1;
+        menu.current = loadout.clone();
+        menu.last = loadout;
+
+        // What a map change does: the menu is thrown away and built again.
+        reinit_buy_menu(&mut menu, Default::default());
+
+        assert_eq!(menu.current.total, 700, "the loadout survives the map change");
+        assert_eq!(menu.current.entries[0].id, 13, "and so does its weapon");
+        assert_eq!(menu.last.total, 700, "and the last config");
+        assert_eq!(menu.tab, 3, "and the active tab: the panel shows that tab's loadout");
+        assert!(!menu.random_first, "no random loadout rolls over the one that was kept");
+    }
+
+    /// With no loadout of the player's to keep, the native random first loadout still
+    /// stands: there is nothing to protect it from.
+    #[test]
+    fn an_empty_loadout_still_rolls_a_random_one() {
+        ts30_gameplay::tables::make_default();
+        let mut menu = buy::BuyMenu::new(Default::default());
+        reinit_buy_menu(&mut menu, Default::default());
+        assert!(menu.random_first, "the random first loadout is still armed");
+    }
+
+    /// The loadout goes to the server again when the HUD resets.
+    ///
+    /// A map change makes the server forget the player: the new one holds nothing, so the spawn
+    /// would buy nothing and the player comes back empty-handed. The HUD reset is the moment
+    /// the server's player exists — the level load is too early (the client is still
+    /// connecting, so the server drops the commands) — so that is where the re-arm happens.
+    #[test]
+    fn the_hud_reset_re_arms_the_loadout() {
+        ts30_gameplay::tables::make_default();
+        with(|m| {
+            m.buy = buy::BuyMenu::default();
+            m.buy.current.entries[0] = buy::Entry { id: 13, cost: 700, ..Default::default() };
+            m.buy.current.total = 700;
+            m.buy.current.slots = 1;
+        });
+        let cmds: Vec<String> = rearm_actions()
+            .iter()
+            .filter_map(|a| match a {
+                Action::ServerCmd(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(cmds.iter().any(|c| c == "rst_cfg"), "the re-arm starts from a fresh config: {cmds:?}");
+        assert!(cmds.iter().any(|c| c.starts_with("tkw ")), "and sends the loadout: {cmds:?}");
+
+        // With nothing of the player's to re-arm, nothing is sent.
+        with(|m| {
+            m.buy = buy::BuyMenu::default();
+        });
+        assert!(rearm_actions().is_empty(), "an empty loadout is not re-armed");
     }
 
     /// The DOM menu renders what the port last printed, so a close that does not print leaves
