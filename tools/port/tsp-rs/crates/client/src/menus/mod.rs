@@ -427,9 +427,26 @@ fn read_buylist(path: &str) -> ([buy::Config; buy::SAVED_CONFIGS], String) {
 fn reinit_buy_menu(menu: &mut buy::BuyMenu, saved: [buy::Config; buy::SAVED_CONFIGS]) {
     let hidden = menu.hidden;
     let mode = menu.mode;
+    // The player's loadout SURVIVES the map change. The native game forgets it — `Init`
+    // zeroes the current and the last config, and the player buys again — but here the
+    // loadout is the player's own: the working copy, the last config and the ACTIVE TAB
+    // are put back, the way the flow and the hidden flag are. The tab matters as much as
+    // the copy: the panel shows the active tab's loadout, so a tab that resets to A shows
+    // A's (empty) loadout, not the player's.
+    let tab = menu.tab;
+    let current = menu.current.clone();
+    let last = menu.last.clone();
+    let kept = current.total > 0;
     *menu = buy::BuyMenu::new(saved);
     menu.hidden = hidden;
     menu.mode = mode;
+    menu.tab = tab;
+    menu.current = current;
+    menu.last = last;
+    if kept {
+        // The random first loadout would roll a random one over the loadout that was kept.
+        menu.random_first = false;
+    }
 }
 
 /// `HUD_VidInit`'s part here: `CHudTSWeapons::VidInit` (`0x1004cb50`) re-runs the buy menu's
@@ -458,6 +475,14 @@ pub fn vid_init(_first: bool) {
         s.team_number = 0;
     });
     crate::voice::stop_squelch_mode();
+    // The server forgets the player on a map change: they reconnect, and the new player
+    // holds nothing (the HUD reset clears the armament). The loadout is sent again, so the
+    // spawn buys what the client sent and the player comes back armed.
+    let mut actions = Vec::new();
+    with(|m| {
+        m.buy.resubmit(&mut actions);
+    });
+    run_actions(actions);
     // The map change resets the menu (a new `BuyMenu`), so the DOM menu has to hear that too:
     // it renders what the port last printed.
     print_buy_state();
@@ -1480,6 +1505,46 @@ mod tests {
 
         assert_eq!(menu.mode, buy::Mode::Modern, "the flow survives the map change");
         assert!(menu.hidden, "and so does the hidden flag");
+    }
+
+    /// The player's loadout survives a map change.
+    ///
+    /// The native game's `Init` forgets it — the working copy, the last config and the
+    /// active tab all go back to their defaults — so the panel comes back empty and the
+    /// player buys again. Here the loadout is the player's own and it is kept. The ACTIVE
+    /// TAB matters as much as the copy: the panel shows the active tab's loadout, so a tab
+    /// that resets to A shows A's loadout, not the player's.
+    #[test]
+    fn the_loadout_survives_a_map_change() {
+        ts30_gameplay::tables::make_default();
+        let mut menu = buy::BuyMenu::new(Default::default());
+        menu.set_mode(buy::Mode::Modern);
+        menu.tab = 3;
+        let mut loadout = buy::Config::default();
+        loadout.entries[0] = buy::Entry { id: 13, cost: 700, ..Default::default() };
+        loadout.total = 700;
+        loadout.slots = 1;
+        menu.current = loadout.clone();
+        menu.last = loadout;
+
+        // What a map change does: the menu is thrown away and built again.
+        reinit_buy_menu(&mut menu, Default::default());
+
+        assert_eq!(menu.current.total, 700, "the loadout survives the map change");
+        assert_eq!(menu.current.entries[0].id, 13, "and so does its weapon");
+        assert_eq!(menu.last.total, 700, "and the last config");
+        assert_eq!(menu.tab, 3, "and the active tab: the panel shows that tab's loadout");
+        assert!(!menu.random_first, "no random loadout rolls over the one that was kept");
+    }
+
+    /// With no loadout of the player's to keep, the native random first loadout still
+    /// stands: there is nothing to protect it from.
+    #[test]
+    fn an_empty_loadout_still_rolls_a_random_one() {
+        ts30_gameplay::tables::make_default();
+        let mut menu = buy::BuyMenu::new(Default::default());
+        reinit_buy_menu(&mut menu, Default::default());
+        assert!(menu.random_first, "the random first loadout is still armed");
     }
 
     /// The DOM menu renders what the port last printed, so a close that does not print leaves

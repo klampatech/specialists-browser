@@ -1481,6 +1481,37 @@ impl BuyMenu {
         if SLOTS < self.current.slots {
             return false;
         }
+        // Which config was applied is read BEFORE the send: the send clears the "new
+        // config" flag.
+        let msg = if self.new_config { "#Buy_UsingNewConfig" } else { "#Buy_UsingLastConfig" };
+        self.send_config(actions);
+        if announce_applied {
+            actions.push(Action::Message(msg.into(), [0; 3]));
+        }
+        true
+    }
+
+    /// The re-arm: the loadout the player already bought, sent to the server again.
+    ///
+    /// The native game's `SubmitConfig` checks the player's cash, because it is the player
+    /// choosing what to buy. A re-arm is not a purchase: the money was spent when the
+    /// loadout was bought, and the server checks the budget itself (it refuses what does
+    /// not fit). So this skips the cash check and says nothing — a "you cannot afford this"
+    /// message in the middle of a map change would be a lie.
+    pub fn resubmit(&mut self, actions: &mut Vec<Action>) -> bool {
+        if self.current.total < 1 {
+            return false;
+        }
+        if SLOTS < self.current.slots {
+            return false;
+        }
+        self.send_config(actions);
+        true
+    }
+
+    /// The config as the server wants it: the entries sorted, then `rst_cfg`, `tkw`, `tki`
+    /// and `tka`. The send also records the config as the last one applied.
+    fn send_config(&mut self, actions: &mut Vec<Action>) {
         // Sort (bubble, pairs 0..15): ascending price, melee/grenades (no ammo type) first.
         let ammo_of = |id: i32| tables().weapon(id as u8).map_or(0, |w| w.ammo);
         // TS loops until a pass swaps nothing. Its order isn't transitive once items mix with
@@ -1533,13 +1564,8 @@ impl BuyMenu {
         actions.push(Action::ServerCmd(tkw));
         actions.push(Action::ServerCmd(tki));
         actions.push(Action::ServerCmd(tka));
-        if announce_applied {
-            let msg = if self.new_config { "#Buy_UsingNewConfig" } else { "#Buy_UsingLastConfig" };
-            actions.push(Action::Message(msg.into(), [0; 3]));
-        }
         self.new_config = false;
         self.last = self.current.clone();
-        true
     }
 
     /// Display name of an entry (remove page, messages).
@@ -2175,6 +2201,45 @@ mod tests {
         assert_eq!(a[3], Action::ServerCmd("tka 2_15 6_3 ".into()));
         assert_eq!(a[4], Action::Message("#Buy_UsingNewConfig".into(), [0; 3]));
         assert_eq!(m.last, m.current);
+    }
+
+    /// The re-arm: the loadout the player already bought is sent to the server again.
+    ///
+    /// The cash check belongs to a purchase — the money was spent when the loadout was
+    /// bought — and a "you cannot afford this" in the middle of a map change would be a
+    /// lie. So the re-arm skips it and says nothing at all.
+    #[test]
+    fn the_re_arm_sends_the_loadout_again() {
+        ts30_gameplay::tables::make_default();
+        let r = rules();
+        let mut m = BuyMenu::default();
+        m.reset_config(&r);
+        m.add(13, 8, false, false, &r);
+        m.add(25, 0, true, false, &r);
+        m.add(9, 1, true, false, &r); // akimbo MK23 with silencer
+        // A purchase is refused when the money is not there, and says so.
+        let mut a = Vec::new();
+        assert!(!m.submit_quiet(&mut a, &Rules { cash: 10, ..rules() }), "a purchase needs the money");
+        assert!(a.iter().any(|x| matches!(x, Action::Message(_, _))), "and says so");
+        // The re-arm sends the same config, and says nothing.
+        let mut a = Vec::new();
+        assert!(m.resubmit(&mut a), "the re-arm does not need the cash");
+        assert_eq!(a[0], Action::ServerCmd("rst_cfg".into()));
+        assert_eq!(a[1], Action::ServerCmd("tkw 25_5 9_1 9_0 13_8 ".into()));
+        assert_eq!(a[2], Action::ServerCmd("tki 16 ".into()));
+        assert_eq!(a[3], Action::ServerCmd("tka 2_15 6_3 ".into()));
+        assert_eq!(a.len(), 4, "the re-arm is quiet: no 'using new config' message");
+        assert_eq!(m.last, m.current, "and the config is the last one applied");
+    }
+
+    /// An empty loadout is not re-armed: there is nothing to send.
+    #[test]
+    fn the_re_arm_of_nothing_sends_nothing() {
+        ts30_gameplay::tables::make_default();
+        let mut m = BuyMenu::default();
+        let mut a = Vec::new();
+        assert!(!m.resubmit(&mut a));
+        assert!(a.is_empty());
     }
 
     #[test]
