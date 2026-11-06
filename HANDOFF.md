@@ -23,6 +23,29 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-06 — **THE PLAYER'S LOADOUT SURVIVES A MAP CHANGE, AND IT
+IS LIVE.** webXash **#44** → `a009a254`; the parent **#138** → `b7a18a1`; the
+deploy green (run 42245716979: *Deploy to production* ✅, *Verify in a real
+browser* ✅; the CI run 42245717657: 4/4 ✅). The deployed WASM's SHA-256 is
+**byte-identical** to the one the rig proof passed
+(`5b837e7370b98d19703be9e0270846b6da750439399ab1f2b1111dbcace9ea4e`).
+
+**On production the client joins, buys the Glock-18 in the modern menu, the
+panel shows it (the port's state: `total=850`, `tab=0`) and the player spawns
+and plays.** The production proof passed (2026-11-06, 15:59: *VERDICT: PASS
+— the purchase and the panel only*; the client's death in the server's log
+is the evidence that it was alive). Two things production cannot do, and
+why: it runs **without `developer`**, so the server logs no `spawned (#N)
+with [ids]` line (the kill line is the fallback evidence that the client
+was alive ✓), and **the map change cannot be forced** — the port's server has
+no rcon and the prod instances run `docker run -d` with no attachable stdin.
+So the map-change half stands on the rig's proof (same artifact bytes, same
+server code) and production proves the artifact's identity plus the live
+purchase and spawn.
+
+**THE SESSION CASE (a page reload) IS STILL OPEN** — that is the next task,
+and the quick byte-restore is NOT clean (see § NEXT TASK).
+
 **As of:** 2026-11-05, LATER — **THE PLAYER'S LOADOUT NOW SURVIVES A MAP
 CHANGE (the port's change is written, tested and proved; the PRs are
 open).** The buy menu's loadout reset to the default on **every map
@@ -4370,13 +4393,17 @@ the parts that are known traps.
 >
 > **The order (the project's, and it is not negotiable):**
 >
-> 1. **webXash PR #44** (the rebuilt WASM) → **squash-merge** → repoint
->    the parent submodule at the **squashed** SHA (not the branch tip) →
->    the parent PR (the port's Rust source + the pointer + this file) →
->    green gates → **Kyle's approving review** → merge → deploy.
+> 1. ~~**webXash PR #44** (the rebuilt WASM) → squash-merge → repoint
+>    the parent submodule at the **squashed** SHA → the parent PR → green
+>    gates → Kyle's approving review → merge → deploy.~~ **DONE
+>    (2026-11-06): webXash #44 → `a009a254`, the parent #138 → `b7a18a1`,
+>    the deploy green.**
 > 2. **Never merge without Kyle's approval** (an approving review from
 >    `klampatech` with an **empty body**). `EVO_MERGE_OK=1` only unlocks
 >    the merge; it is not the approval.
+>
+> **WHAT IS LEFT IS THE SESSION CASE** — the loadout after a page reload.
+> The map-change half is done and live.
 >
 > **THE SESSION HALF IS NOT DONE — AND THE QUICK FIX IS NOT CLEAN.** Kyle
 > asked whether "persist the buy list's bytes and write them back" is a
