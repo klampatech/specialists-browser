@@ -43,13 +43,25 @@ loadout, not the player's.
 puts the working copy, the last config and the active tab back, the way
 the flow and the hidden flag are; the random first loadout is disarmed
 when a loadout was kept, so the next open does not roll a random one over
-it. And the loadout is **sent to the server again** after the re-init,
-because **a map change drops the player** — they reconnect, the new
-player holds nothing (the HUD reset clears the armament) and the spawn
-buys what the client sent. That send is not a purchase: the money was
-spent when the loadout was bought and the server checks the budget
-itself, so it skips the cash check and says nothing (a "you cannot afford
-this" in the middle of a map change would be a lie).
+it. And the loadout is **sent to the server again**, because **a map
+change drops the player** — they reconnect, the new player holds nothing
+(the HUD reset clears the armament) and the spawn buys what the client
+sent. That send is not a purchase: the money was spent when the loadout
+was bought and the server checks the budget itself, so it skips the cash
+check and says nothing (a "you cannot afford this" in the middle of a
+map change would be a lie).
+
+**THE RE-ARM WAITS FOR THE HUD RESET, NOT THE LEVEL LOAD** — that was
+the second half of the bug, and the real game caught it. The first cut
+sent the loadout from `vid_init`; the proof showed the player coming back
+from the map change **empty-handed** (the server's spawn line: `with
+[]`) while the panel showed the loadout. At the level load the client is
+still connecting, so **the server has no player to give the commands to
+and drops them**. The HUD reset is the moment the server's player exists
+— and it comes before the spawn that buys the armament. So the re-arm
+happens there (`menus::on_message`, `Msg::ResetHUD`), and the port prints
+what it sends (`[ts] loadout re-armed: tkw 1_0 ...`), which is what the
+proof reads.
 
 **THE PROOF:** `scripts/prove_loadout_survives_map_change.py` — a real
 browser, a real server, and a **real map change** forced from the
@@ -60,9 +72,24 @@ there) and the server's spawn line (the player must be armed again). The
 server's log is the authority: the panel can be right while the inventory
 is empty.
 
+**THE PROOF PASSES** (2026-11-05, 20:56): the loadout's cost 850 before
+and 850 after the map change, the active tab unchanged, the panel still
+showing the Glock-18, and the server's spawn lines `with [1]` (the Glock
+is weapon id 1) **both times** — the first spawn and the one after the
+map change. The port's own trace shows the re-arm: `rst_cfg`, `tkw 1_0`,
+`tka 1_7`.
+
+**TWO RIG TRAPS, both worth remembering** (the proof failed on them
+before it passed): the **bots fill every slot** — `ts_bot_quota 16` with
+`maxplayers 12` means the human connects and is refused (the quota is
+set in `server.cfg`, not at runtime: it only decides whether NEW bots
+spawn); and the **UDP bridge's stdout** must not be a dead pipe (it
+wedges on a full pipe and silently stops forwarding — the bridge now
+logs to `/tmp/tsds/bridge.log`).
+
 **THE DELIVERY IS TWO PRs** (the change is in the port, so it reaches the
 browser through the client WASM): **webXash #44** (the rebuilt artifact:
-1,721,429 bytes; the previous one was 1,721,170 — the delta is this
+1,721,675 bytes; the previous one was 1,721,170 — the delta is this
 change and nothing else, the port's source had no other commit since the
 last build) and then **the parent** (the port's Rust source + the
 pointer at webXash `main`'s squash). Kyle approved the plan; the PRs
@@ -4314,14 +4341,17 @@ the parts that are known traps.
 >
 > **THE MAP-CHANGE HALF IS WRITTEN, TESTED AND PROVED.** The port's Rust
 > change (`crates/client/src/menus/mod.rs`, `buy.rs`) and the rebuilt
-> client WASM. The port's tests: 490 in the client crate, four of them
+> client WASM. The port's tests: 491 in the client crate, five of them
 > new (`the_loadout_survives_a_map_change`,
 > `an_empty_loadout_still_rolls_a_random_one`,
+> `the_hud_reset_re_arms_the_loadout`,
 > `the_re_arm_sends_the_loadout_again`,
 > `the_re_arm_of_nothing_sends_nothing`), and the workspace suite green.
 > The proof: `scripts/prove_loadout_survives_map_change.py` — a real
 > browser, a real server, a REAL map change forced from the server's
-> console.
+> console. **It passes** (2026-11-05, 20:56): the loadout's cost 850
+> before and after, the tab unchanged, and the server's spawn lines
+> `with [1]` both times — the player comes back ARMED.
 >
 > **The order (the project's, and it is not negotiable):**
 >
