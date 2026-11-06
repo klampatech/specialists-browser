@@ -23,21 +23,35 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
-**As of:** 2026-11-05, LATE — **THE FIX IS WRITTEN, PROVED IN A REAL
-BROWSER, AND WAITING FOR KYLE'S APPROVAL.** The live regression (webXash
-#42 / parent #135, both merged) is the **dpr-SQUARED** policy: the
-engine's `vid_setmode` takes **CSS pixels** and multiplies by the device
-pixel ratio **ITSELF**, and the policy multiplied as well — so it asked
-for dpr squared pixels. On Kyle's MacBook that was `3456x2234` asked
-for and `6912x4468` actually rendered: 30.9 Mpx, four times the pixels
-the panel has, and **past the GL maximum texture dimension of 8192**. The
-allocation failed, the engine fell back to a tiny mode (**the TINY
-resolution**) and wedged (the hang, the looping audio, the dead
-reconnect). **THE FIX IS ON THE SUBMODULE BRANCH `fix/render-units-css-
-pixels` (commit `e25a9fb`, pushed) AND IS IN webXash PR #43.** Read this
-block first; the 2026-11-04/05 blocks below it (the device-pixel render
-policy) are **SUPERSEDED AND WRONG** — that policy is the CAUSE of the
-regression, not the cure.
+**As of:** 2026-11-06 — **THE RETINA REGRESSION IS FIXED, SHIPPED AND
+PROVED ON PRODUCTION.** The live regression (webXash #42 / parent #135,
+both merged) was the **dpr-SQUARED** policy: the engine's `vid_setmode`
+takes **CSS pixels** and multiplies by the device pixel ratio **ITSELF**,
+and the policy multiplied as well — so it asked for dpr squared pixels.
+On Kyle's MacBook that was `3456x2234` asked for and `6912x4468` actually
+rendered: 30.9 Mpx, four times the pixels the panel has, and **past the GL
+maximum texture dimension of 8192**. The allocation failed, the engine
+fell back to a tiny mode (**the TINY resolution**) and wedged (the hang,
+the looping audio, the dead reconnect).
+
+**THE FIX IS LIVE:** webXash **#43** merged as `f7baa26`, specialists-browser
+**#136** merged as `8b924f8` (the parent's pointer names webXash `main`'s
+squash commit), deploy run **`42144068256` green** (deploy + browser
+verification), and **Kyle tested production and confirmed the fix**. The
+served bundle is `assets/index-DNMmIOrQ.js` and it carries the GL guard.
+
+The proof passes **13 of 13 against the DEPLOYED bundle** at dpr 2 on the
+disposable CI rig (`ci.bulletballet.dev`, which serves the same `/srv/web`
+bundle): the backing store IS the CSS box times the ratio, the browser
+scales **nothing** (1.00), the mode is not the tiny fallback, the engine
+is still painting after the fullscreen exit, no reconnect overlay, and the
+watchdog re-applies **nothing**. Against the pre-fix code the same proof
+**fails six checks** (the browser's scale **4.00**, 2-3/s) — that is what
+earns a proof the right to be believed.
+
+The 2026-11-04/05 blocks below it (the device-pixel render policy) are
+**SUPERSEDED AND WRONG** — that policy was the CAUSE of the regression,
+not the cure.
 
 **THE SYMPTOM** (Kyle, message id `1567980099490283640`, Vivaldi 8.2 on his
 MacBook, which is `1728x1117` CSS at dpr 2 = a `3456x2234` device box):
@@ -96,11 +110,12 @@ word "1080p" implies and is 4x cheaper to fill. **Ask Kyle, or take (a)
 and ship it — the wedge is the emergency, the sharpness is the
 preference.**
 
-**THE FIX, AS IT STANDS.** `webxash/src/services/video-settings.ts` is on
-the submodule branch **`fix/render-units-css-pixels`**, commit **`e25a9fb`**,
-pushed to `origin` and **in webXash PR #43** (authored as
-`app/bulletballet-bot`, awaiting **Kyle's approval**). It is **typechecked,
-built, unit-tested and PROVEN IN A REAL BROWSER**; it is **not merged yet**.
+**THE FIX, AS IT STANDS.** `webxash/src/services/video-settings.ts` is
+**MERGED AND LIVE**: webXash **#43** → `f7baa26` (on webXash's `main`),
+and the parent's pointer names that commit (specialists-browser **#136** →
+`8b924f8`). It is typechecked, built, unit-tested, **PROVEN IN A REAL
+BROWSER** (against the deployed bundle, at dpr 2), and **Kyle confirmed it
+on production**.
 
 What the fix does — the five items that were open:
 
@@ -162,18 +177,17 @@ after the fullscreen exit, and there is not.
 table above), `probe_resize_path.py` (browser-resize units vs `vid_setmode`
 units), `probe_boot_args.py` (the boot-argument units).
 
-**PRODUCTION IS STILL ON THE BROKEN BUILD:** `https://bulletballet.dev/`,
-bundle `assets/index-D-ULEtie.js`, deploy run `42074822412` (deploy green;
-the separate *"Verify in a real browser"* job was **CANCELLED** after it
-hung ~25 minutes in `npm install playwright@latest` — `deploy.yml` has no
-`workflow_dispatch`, so it only reruns on the next push to `main`).
+**PRODUCTION IS ON THE FIXED BUILD:** `https://bulletballet.dev/`, bundle
+`assets/index-DNMmIOrQ.js`, deploy run `42144068256` (deploy AND browser
+verification green). The old broken bundle was `assets/index-D-ULEtie.js`
+from run `42074822412`.
 
-**THE BRANCHES:** parent `docs/prod-render-cap-fix` (**PR #136 open**, and
-it now carries the new pointer, the rewritten tests and this block); parent
-`main` = `dab9387`; the `webxash` submodule pointer on the branch =
-**`e25a9fb`** (the branch head — it **must** be moved to webXash `main`'s
-squash commit before the parent merges, or the parent's `main` names a commit
-that only a PR ref holds). **webXash PR #43 merges FIRST.**
+**THE BRANCHES:** everything is **MERGED**. webXash `main` = `f7baa26`
+(#43), the parent's `main` = `8b924f8` (#136), and the parent's submodule
+pointer names `f7baa26` — a commit that is **on webXash's `main`**, not one
+only a PR ref holds. Deploy run `42144068256` was green. The working
+branches `fix/render-units-css-pixels` and `docs/prod-render-cap-fix` are
+spent and can be deleted.
 
 **As of:** 2026-11-04, **LIVE ON PRODUCTION** — webXash #40 merged as
 `e576d96`, specialists-browser #131 merged as `df6ad5e`, deploy run
