@@ -23,6 +23,59 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-05, LATER — **THE PLAYER'S LOADOUT NOW SURVIVES A MAP
+CHANGE (the port's change is written, tested and proved; the PRs are
+open).** The buy menu's loadout reset to the default on **every map
+change**: the panel came back empty (or showing tab A's empty loadout)
+and the player bought everything again.
+
+**WHY IT RESET.** The port's `vid_init` re-initialises the menu (a map
+change, a connect, a video-mode change) and the game's own `Init`
+(`BuyMenu::new`, `0x10036200`) zeroes **the working copy, the last
+config and the active tab**. The browser's two flags (the flow and the
+hidden flag) were already put back after the 2026-11-02 playtest; the
+player's LOADOUT was not. **The active tab matters as much as the
+copy**: the panel draws the *active tab's* loadout (`open_modern` does
+`current = saved[tab]`), so a tab that reset to A showed A's — empty —
+loadout, not the player's.
+
+**THE FIX** (`crates/client/src/menus/mod.rs` and `buy.rs`): `reinit_buy_menu`
+puts the working copy, the last config and the active tab back, the way
+the flow and the hidden flag are; the random first loadout is disarmed
+when a loadout was kept, so the next open does not roll a random one over
+it. And the loadout is **sent to the server again** after the re-init,
+because **a map change drops the player** — they reconnect, the new
+player holds nothing (the HUD reset clears the armament) and the spawn
+buys what the client sent. That send is not a purchase: the money was
+spent when the loadout was bought and the server checks the budget
+itself, so it skips the cash check and says nothing (a "you cannot afford
+this" in the middle of a map change would be a lie).
+
+**THE PROOF:** `scripts/prove_loadout_survives_map_change.py` — a real
+browser, a real server, and a **real map change** forced from the
+server's console (`changelevel ts_antrodome`; the rig's server answers no
+rcon). It buys a Glock-18, spawns, forces the map change, waits for the
+client to be back, and reads both the panel (the loadout must still be
+there) and the server's spawn line (the player must be armed again). The
+server's log is the authority: the panel can be right while the inventory
+is empty.
+
+**THE DELIVERY IS TWO PRs** (the change is in the port, so it reaches the
+browser through the client WASM): **webXash #44** (the rebuilt artifact:
+1,721,429 bytes; the previous one was 1,721,170 — the delta is this
+change and nothing else, the port's source had no other commit since the
+last build) and then **the parent** (the port's Rust source + the
+pointer at webXash `main`'s squash). Kyle approved the plan; the PRs
+still need his approving review.
+
+**THE SESSION CASE IS NOT FIXED YET.** Between sessions (a reload) the
+loadout is gone: the engine's filesystem is **MEMFS** (the glue does
+`FS.mount(MEMFS, {}, "/")`, nothing mounts IDBFS) and the loader
+rewrites every game file from the archive at boot, so `tsbuylist.tsa` —
+where the port keeps the nine saved tabs — comes back as the shipped
+default. Kyle asked whether the quick fix (persist the file's bytes and
+write them back) is clean; **it is not** — see § NEXT TASK.
+
 **As of:** 2026-11-06 — **THE RETINA REGRESSION IS FIXED, SHIPPED AND
 PROVED ON PRODUCTION.** The live regression (webXash #42 / parent #135,
 both merged) was the **dpr-SQUARED** policy: the engine's `vid_setmode`
@@ -4252,59 +4305,67 @@ the parts that are known traps.
 
 # § NEXT TASK
 
-> ## THE RETINA REGRESSION — FIX THE UNITS AND SHIP (2026-11-05, late)
+> ## THE LOADOUT — SHIP THE MAP-CHANGE HALF, THEN FIX THE SESSION HALF (2026-11-05, later)
 >
-> **This is the ONE task.** The fullscreen-exit wedge and the TINY
-> resolution are LIVE ON PRODUCTION, and both have the same measured root
-> cause: **the policy asked the engine for dpr² pixels** (the engine's
-> `vid_setmode` takes CSS pixels and multiplies by the device pixel ratio
-> itself). The measurements, the contract and the half-written fix are in
-> **§ CURRENT STATE, the 2026-11-05-late block at the very top**. Read it
+> **This is the ONE task.** The player's buy-menu loadout resets to the
+> default on every map change (the report), and it is gone between
+> sessions. § CURRENT STATE's newest block has the whole picture; read it
 > before touching anything.
 >
-> **Half the fix already exists** — `webxash/src/services/video-settings.ts`
-> is on the submodule branch **`fix/render-units-css-pixels`** (commit
-> `1a08a4e`, pushed to `origin`). It is a **WIP**: not typechecked, not
-> built, not unit-tested, not proven, not merged. Do not start over;
-> **finish it**. The submodule's `main` is still `86db82f` and the parent's
-> submodule pointer is unchanged.
+> **THE MAP-CHANGE HALF IS WRITTEN, TESTED AND PROVED.** The port's Rust
+> change (`crates/client/src/menus/mod.rs`, `buy.rs`) and the rebuilt
+> client WASM. The port's tests: 490 in the client crate, four of them
+> new (`the_loadout_survives_a_map_change`,
+> `an_empty_loadout_still_rolls_a_random_one`,
+> `the_re_arm_sends_the_loadout_again`,
+> `the_re_arm_of_nothing_sends_nothing`), and the workspace suite green.
+> The proof: `scripts/prove_loadout_survives_map_change.py` — a real
+> browser, a real server, a REAL map change forced from the server's
+> console.
 >
-> **The order:**
+> **The order (the project's, and it is not negotiable):**
 >
-> 1. **Finish `video-settings.ts`** — the five items listed in § CURRENT
->    STATE (the boot-argument units, the cap's shape, the comparison's
->    tolerance, the 8192 guard, and the tests).
-> 2. **Decide the budget** — (a) CSS-pixel 1920x1080 (native Retina,
->    sharp, 7.7 Mpx) or (b) device-pixel 1920x1080 (soft, 2.1 Mpx). Kyle
->    asked for *"a happy medium (like what we had before? 1080p or
->    something?)"*. Ask him, or take (a) and say so.
-> 3. **Prove it at dpr 2** —
->    `~/.hermes/skills/projects/specialists-browser/scripts/
->    prove_retina_regressions.py`. It must show a scale ratio of ~1.0, a
->    frame rate that recovers after leaving the fullscreen, no RECONNECT
->    modal and a live engine. **The rig runs at dpr 1 and cannot show
->    this** — the proof forces `--force-device-scale-factor=2`.
-> 4. **Do not forget the other proofs** — `prove_escape_sequence.py`,
->    `prove_pointer_ownership.py`, `prove_leave_fullscreen.py` and
->    `prove_server_connect.py` must still pass (they all pass today; the
->    ESC/fullscreen/pointer behaviour is NOT the cause of this regression
->    and must not change).
-> 5. **Typecheck, build, and the parent suite** (`bunx vue-tsc --noEmit`,
->    `bun run build`, the parent's unit tests).
-> 6. **Ship it the established way:** webXash PR → **squash-merge** →
->   repoint the parent submodule at the **squashed** SHA (not the branch
->   tip) → parent PR → green gates → merge → deploy → **prove production**
->   with the same scripts, against `https://bulletballet.dev/` with a real
->   `+connect`.
-> 7. **Then update this file** (§ CURRENT STATE, § NEXT TASK, the skill's
->    `references/pointer-ownership-and-escape.md`) and merge PR #136 or
->    supersede it — **its contents predate these findings and assert the
->    wrong policy.**
+> 1. **webXash PR #44** (the rebuilt WASM) → **squash-merge** → repoint
+>    the parent submodule at the **squashed** SHA (not the branch tip) →
+>    the parent PR (the port's Rust source + the pointer + this file) →
+>    green gates → **Kyle's approving review** → merge → deploy.
+> 2. **Never merge without Kyle's approval** (an approving review from
+>    `klampatech` with an **empty body**). `EVO_MERGE_OK=1` only unlocks
+>    the merge; it is not the approval.
 >
-> **Two things not to do:** do not touch the reconnect path until the
-> sizing fix has been retested (the dead button is a symptom), and do not
-> push to `main` without the PR — the deploy is gated on it.
-
+> **THE SESSION HALF IS NOT DONE — AND THE QUICK FIX IS NOT CLEAN.** Kyle
+> asked whether "persist the buy list's bytes and write them back" is a
+> clean fix. **It is not**, and the reason is worth keeping: that plan
+> makes the frontend responsible for four things it should not own —
+> **a game's file path** (`{game_dir}/tsbuylist.tsa`), **a binary
+> format** (an opaque blob the port's parser owns), **a boot-ordering
+> constraint** (the restore must land after the archive unpack and before
+> the port's first read) and **a version coupling** (a port upgrade that
+> changes the format could parse a stale blob into garbage rather than
+> failing cleanly). It also restores the TABS but not which tab was
+> active — that lives in the port's memory, not in the file.
+>
+> **THE CLEAN WAY: the port owns the format, the browser owns the
+> storage.** The browser ALREADY receives the loadout's contents as
+> structured records (the `TSBUY entry` lines), and it already persists
+> things (the pinia store's `tsConfig.buyMenu`, localStorage key `xash`).
+> So:
+>
+> - **the port** gains a command that SETS the loadout (`ts_buy_restore`,
+>   say) from the entries it already speaks — it owns the format, so it
+>   owns the parse;
+> - **the browser** persists those entries (the store) and hands them
+>   back when the port's menu comes up empty (a fresh session);
+> - **the port** writes them into the working copy and the active tab,
+>   and the existing re-arm sends them to the server.
+>
+> That rides along in the SAME WASM rebuild if it is done before the
+> artifact is built — which is worth weighing, because a second rebuild
+> means a second artifact PR.
+>
+> **The cross-device case (a loadout per account) is NOT this task.** The
+> pre-join identity takes a *name*, names are not unique, and there is no
+> account system. That is an identity decision, not a feature.
 > ## THE BUY MENU'S MODERN FLOW: THE FRONTEND'S HALF (2026-11-01)
 >
 > **The port's half of the modern buy flow is DONE** (branch
