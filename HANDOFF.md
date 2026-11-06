@@ -91,9 +91,24 @@ logs to `/tmp/tsds/bridge.log`).
 browser through the client WASM): **webXash #44** (the rebuilt artifact:
 1,721,675 bytes; the previous one was 1,721,170 — the delta is this
 change and nothing else, the port's source had no other commit since the
-last build) and then **the parent** (the port's Rust source + the
-pointer at webXash `main`'s squash). Kyle approved the plan; the PRs
+last build) and then **the parent** (the port's Rust source + the pointer
+at webXash `main`'s squash). Kyle approved the plan; the PRs
 still need his approving review.
+
+**THE PRODUCTION VERIFICATION, WHEN IT SHIPS** (the proof now takes
+`--url` and `--server-log`, so the same script can drive production):
+the deployed WASM's SHA-256 must equal the built one
+(`5b837e7370b98d19703be9e0270846b6da750439399ab1f2b1111dbcace9ea4e`),
+and the proof runs against `https://bulletballet.dev/` with a copy of
+the prod box's `docker logs` as the server's log. **The map change has
+to be forced from the server's console there** — the port's server has
+no rcon (there is no rcon_password handling in the server crate) and the
+prod instances run `docker run -d` with no stdin, so the console is not
+attachable. If the production map change cannot be forced, the
+production check is the artifact's hash plus a live purchase and spawn
+(the server's spawn line through `docker logs`), and the map-change half
+stands on the rig's proof — the same artifact bytes, the same server
+code.
 
 **THE SESSION CASE IS NOT FIXED YET.** Between sessions (a reload) the
 loadout is gone: the engine's filesystem is **MEMFS** (the glue does
