@@ -23,6 +23,158 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-05, LATE — **THE FIX IS WRITTEN, PROVED IN A REAL
+BROWSER, AND WAITING FOR KYLE'S APPROVAL.** The live regression (webXash
+#42 / parent #135, both merged) is the **dpr-SQUARED** policy: the
+engine's `vid_setmode` takes **CSS pixels** and multiplies by the device
+pixel ratio **ITSELF**, and the policy multiplied as well — so it asked
+for dpr squared pixels. On Kyle's MacBook that was `3456x2234` asked
+for and `6912x4468` actually rendered: 30.9 Mpx, four times the pixels
+the panel has, and **past the GL maximum texture dimension of 8192**. The
+allocation failed, the engine fell back to a tiny mode (**the TINY
+resolution**) and wedged (the hang, the looping audio, the dead
+reconnect). **THE FIX IS ON THE SUBMODULE BRANCH `fix/render-units-css-
+pixels` (commit `e25a9fb`, pushed) AND IS IN webXash PR #43.** Read this
+block first; the 2026-11-04/05 blocks below it (the device-pixel render
+policy) are **SUPERSEDED AND WRONG** — that policy is the CAUSE of the
+regression, not the cure.
+
+**THE SYMPTOM** (Kyle, message id `1567980099490283640`, Vivaldi 8.2 on his
+MacBook, which is `1728x1117` CSS at dpr 2 = a `3456x2234` device box):
+
+- the resolution is **TINY** — *"probably due to the macbooks display
+  resolution being nuts"*;
+- leaving the fullscreen **does not recover**: it hung until the red
+  **RECONNECT** modal appeared, clicking reconnect **did not take him back
+  in**, and the sound **looped** in the background.
+
+**THE ROOT CAUSE: dpr SQUARED.** The engine's `vid_setmode` takes **CSS
+pixels** and multiplies by the device pixel ratio **ITSELF**. Measured (real
+Chrome 151 headful, `--force-device-scale-factor=2`, the local rig, the
+engine's own cvars and the canvas's backing store after each command):
+
+| asked for | engine `vid_width` | canvas backing store |
+|---|---|---|
+| `vid_setmode 1280 720` | 2560 | **2560x1440** |
+| `vid_setmode 640 360` | 1280 | **1280x720** |
+| `vid_setmode 6912 4468` | 13824 | **13824x8936** |
+
+Every one **exactly twice** the number asked for, at dpr 2. At dpr 1 the
+engine's own resize lands on the number asked for, unchanged.
+
+webXash #42 made the policy **multiply by dpr** and then hand the result to
+the engine — so it asked for **dpr²** pixels. On Kyle's MacBook the policy
+asked for `3456x2234` CSS and the engine tried to allocate **`6912x4468`
+device pixels: past the GL maximum texture dimension of 8192**. The
+allocation failed, the engine fell back to a tiny mode (**the TINY
+resolution**) and wedged (**the hang, the looping audio, the dead
+reconnect**). The DPR-2 reproduction measured the backing store at
+**3.997x** the device box, the frame rate at **~3/s**, and **no recovery**
+after leaving the fullscreen.
+
+**THE BOOT PATH IS DIFFERENT, AND THAT IS THE OTHER HALF OF THE BUG.**
+`-width`/`-height` are **LITERAL** dimensions: at dpr 2, boot args
+`1920 1200` produced a **`1920x1200`** backing store, not `3840x2400`. So
+the launch arguments want **device** pixels and the runtime command wants
+**CSS** pixels. They are **not the same number**, and the old code used one
+function for both. (Re-measure this once under the new policy — it was
+measured under the old device-pixel policy.)
+
+**THE ONE PRODUCT DECISION LEFT.** Kyle: *"the resolution is TINY now …
+We might want to just pick a happy medium for this (like what we had
+before? 1080p or something?)"*. Two coherent policies:
+
+- **(a) CSS-pixel budget 1920x1080** (what the pre-#42 code did): on his
+  MacBook the mode is `1728x1117` CSS, the engine renders `3456x2234`
+  device = **native Retina, sharp** — but **7.7 Mpx** of fill per frame.
+- **(b) device-pixel budget 1920x1080**: the mode is `960x620` CSS, the
+  engine renders `1920x1240` device, the browser upscales 1.8x to the
+  panel — **soft**, but **2.1 Mpx** of fill.
+
+(a) is *"what we had before"* and is sharp; (b) is the *"happy medium"* the
+word "1080p" implies and is 4x cheaper to fill. **Ask Kyle, or take (a)
+and ship it — the wedge is the emergency, the sharpness is the
+preference.**
+
+**THE FIX, AS IT STANDS.** `webxash/src/services/video-settings.ts` is on
+the submodule branch **`fix/render-units-css-pixels`**, commit **`e25a9fb`**,
+pushed to `origin` and **in webXash PR #43** (authored as
+`app/bulletballet-bot`, awaiting **Kyle's approval**). It is **typechecked,
+built, unit-tested and PROVEN IN A REAL BROWSER**; it is **not merged yet**.
+
+What the fix does — the five items that were open:
+
+1. **`renderResolutionArgs()` — the BOOT path — DONE.** It emits **device**
+   pixels (`mode x dpr`), because `-width`/`-height` are **LITERAL**
+   dimensions, and it bounds the result by the GL limit so a boot argument
+   can never be the allocation that fails.
+2. **`effectiveRenderResolution()` / `fitRenderResolution()` — the cap —
+   DONE.** The mode's shape now follows the **canvas's box** (which is also
+   where the engine's own resize lands, so the watchdog and the engine
+   agree and nothing churns), scaled down **uniformly** when the policy's
+   budget is smaller. The fit is **floored**, so the result is inside the
+   budget by construction.
+3. **`renderResolutionNeedsApplying()` — DONE.** It has a **±1 px**
+   tolerance, because the engine truncates (`cssWidth * dpiScale | 0`) and a
+   strict `!==` compared forever.
+4. **The GL guard — DONE.** `MAX_DEVICE_DIMENSION` (8192, the conservative
+   measured floor) plus `setMaxDeviceDimension()`, and the loader hands the
+   guard the engine's **real** `MAX_TEXTURE_SIZE` off its own WebGL context.
+5. **The unit tests — DONE, REWRITTEN.** `tests/unit/video-settings.test.mjs`
+   now encodes the measured contract: the CSS target carries **no** ratio, the
+   boot arguments carry device pixels, the mode follows the box's shape, the
+   drift check has slack, and the GL guard holds. The suite is **636 passed,
+   0 failed**.
+
+**THE PROOF, AND IT NOW ASSERTS.** `~/.hermes/skills/projects/specialists-
+browser/scripts/prove_retina_regressions.py` — runs Chrome with
+`--force-device-scale-factor=2` over a MacBook-like window, measures the
+policy target, the backing store, the CSS box, the device box, the scale
+ratio, the frame rate, the fullscreen-exit recovery, the engine's liveness,
+the bridge and the reconnect — **and it FAILS if any of it is wrong.** It was
+a reporter; it is a gate now: exit code 0 means every check passed.
+
+**IT FAILS AGAINST THE PRE-FIX CODE** (6 failed checks: the backing store is
+`5012x3128` where the box x dpr is `1890x2074`, the browser's scale is
+**4.00**, the frame rate is 2-3/s) **and PASSES AGAINST THE FIX** (13 of 13:
+the backing store **is** the box x dpr, the browser's scale is **1.00**, the
+watchdog re-applies **nothing**, the engine is still painting after the
+fullscreen exit, no reconnect overlay). That is what earns a proof the right
+to be believed.
+
+**THE POLICY IS A CSS-PIXEL BUDGET, AND THAT IS THE ONE OPEN PRODUCT
+QUESTION.** `AUTO_MAX_PIXELS` (1920x1080) is in **CSS pixels**, so on a 2x
+display the engine renders the panel's native pixels — sharp, and what the
+game looked like before the regression. A **device-pixel** budget would be 4x
+cheaper to fill and softer (the browser upscales the frame). It is **one
+constant** away, and Kyle has said he wants *"a happy medium … like what we
+had before? 1080p or something?"* — which reads both ways. Shipped: the CSS
+budget. Say the word and it flips.
+
+**NOT TOUCHED, DELIBERATELY: the reconnect path.** The dead RECONNECT
+button is currently read as a **symptom** of the wedged engine (the failed
+`13824x8936` allocation), not as its own bug. **Retest it after the sizing
+fix before changing it.** The proof asserts there is no reconnect overlay
+after the fullscreen exit, and there is not.
+
+**SCRATCH PROBES** (not in the repo, `~/.hermes/cache/scratch/`):
+`probe_engine_units.py`, `probe_engine_contract.py` (the `vid_setmode`
+table above), `probe_resize_path.py` (browser-resize units vs `vid_setmode`
+units), `probe_boot_args.py` (the boot-argument units).
+
+**PRODUCTION IS STILL ON THE BROKEN BUILD:** `https://bulletballet.dev/`,
+bundle `assets/index-D-ULEtie.js`, deploy run `42074822412` (deploy green;
+the separate *"Verify in a real browser"* job was **CANCELLED** after it
+hung ~25 minutes in `npm install playwright@latest` — `deploy.yml` has no
+`workflow_dispatch`, so it only reruns on the next push to `main`).
+
+**THE BRANCHES:** parent `docs/prod-render-cap-fix` (**PR #136 open**, and
+it now carries the new pointer, the rewritten tests and this block); parent
+`main` = `dab9387`; the `webxash` submodule pointer on the branch =
+**`e25a9fb`** (the branch head — it **must** be moved to webXash `main`'s
+squash commit before the parent merges, or the parent's `main` names a commit
+that only a PR ref holds). **webXash PR #43 merges FIRST.**
+
 **As of:** 2026-11-04, **LIVE ON PRODUCTION** — webXash #40 merged as
 `e576d96`, specialists-browser #131 merged as `df6ad5e`, deploy run
 `41779869927` green (deploy + browser verification) — **A DOM MENU OWNS
@@ -37,21 +189,50 @@ options, the fullscreen asked back when the browser takes it, the
 `pointerlockerror` guard for Safari, and the capability line at startup.
 See **THE BROWSERS DIFFER** below.
 
-**PROVED ON PRODUCTION**: the shipped bundle is
-`assets/index-D6GdprDB.js` and it carries `keyboardLock`, the
-`[browser] …` capability line, the `pointerlockerror` listener, the
-`opts__switch-btn` toggle and the "asking for the fullscreen back" /
-"fullscreen restored" logs. All three browser proofs pass against
-`https://bulletballet.dev/` itself: the Escape sequence (Chrome headful,
-real X11 key events), the pointer ownership, and the fullscreen toggle
-(`ON` → `OFF`).
+> ⚠️ **SUPERSEDED (2026-11-05, late) — THE BLOCK BELOW IS THE BUG, NOT THE
+> CURE.** The device-pixel render policy described here is what collapsed
+> the Retina resolution and wedged the engine. Read the block ABOVE it
+> first.
 
-**THE ONE THING ONLY A REAL USER CAN SETTLE**: whether **Vivaldi** keeps a
-fullscreen that the page asks for again. Chromium latches the Escape that
-left the fullscreen and drops the one the page asks for (measured), so
-the restore is best-effort and the browser decides. If Vivaldi drops it
-too, then in Vivaldi ESC leaves the fullscreen and the **toggle** is the
-way back — which is exactly what the toggle is for.
+**AND ON TOP OF THAT (2026-11-05): THE RENDER TARGET IS IN DEVICE PIXELS
+AND CAPPED BY WHAT THE CANVAS DISPLAYS - webXash #42 merged as `86db82f`,
+specialists-browser #135 merged as `dab9387`, deploy run `42074822412`
+green (deploy + browser verification).** Kyle's own console on his MacBook
+found the last piece of the lag: `[video] render resolution -> 1728x1117
+(was 2370x1990)` - the display's **CSS** resolution against the **device**
+resolution. The policy was asking for half the pixels the canvas has, and
+the canvas is a device-pixel surface, so the browser scaled every frame and
+the watchdog fought the engine's own resize on every resize (the extra
+reallocation is what re-drew the buy menu - the `TSBUY row ...` spam he
+took for a game reload). The target is in **device pixels** now and agrees
+with the engine's own resize: nothing to scale, nothing to correct. Also
+in this merge: **ESC #2 opens the options even when the browser's
+fullscreen exit is cancelled** (the three-Escape bug), and the
+pointer-release hint is suppressed while a DOM menu is up (the duplicate
+"mouse released" next to the engine's own modal).
+
+**PROVED ON PRODUCTION**: the shipped bundle is
+`assets/index-D-ULEtie.js` and it carries `keyboardLock`, the
+`[browser] …` capability line, the `pointerlockerror` listener, the
+`opts__switch-btn` toggle, the "asking for the fullscreen back" /
+"fullscreen restored" logs, the device-pixel render policy, the
+cancelled-fullscreen-exit path and the hint's menu suppression. All three
+browser proofs pass against `https://bulletballet.dev/` itself: the Escape
+sequence (Chrome headful, real X11 key events, **launching with
+`+connect` so it goes through the production bridge and the production
+server**), the pointer ownership, and the fullscreen toggle (`ON` → `OFF`).
+The fourth proof, `prove_server_connect.py`, is the RIG's: it asserts the
+bridge WebSocket was not refused, that the server logged the connection
+and "entered the game", and that the engine is in the game. Run it before
+believing any "the rig is broken" conclusion.
+
+**VIVALDI, SETTLED (2026-11-05)**: Kyle tested it on his MacBook. In
+Vivaldi the browser *tries* to leave the fullscreen on every Escape, the
+page asks for it back, and **it comes back** - so the restore works, at
+the cost of the macOS Space animation each time. With the cancelled-exit
+path now recognised as ESC #2, **two Escapes open the options in Vivaldi
+too**, over the fullscreen. The macOS Space animation is the part the
+page cannot reach.
 
 Kyle reported two bugs from a real session, both about who owns the mouse:
 the modern buy menu's buttons went dead on the first click ("PRESS ESC TO
@@ -4056,6 +4237,59 @@ full TS gameplay. All of this is still wanted — it is just wanted on the
 the parts that are known traps.
 
 # § NEXT TASK
+
+> ## THE RETINA REGRESSION — FIX THE UNITS AND SHIP (2026-11-05, late)
+>
+> **This is the ONE task.** The fullscreen-exit wedge and the TINY
+> resolution are LIVE ON PRODUCTION, and both have the same measured root
+> cause: **the policy asked the engine for dpr² pixels** (the engine's
+> `vid_setmode` takes CSS pixels and multiplies by the device pixel ratio
+> itself). The measurements, the contract and the half-written fix are in
+> **§ CURRENT STATE, the 2026-11-05-late block at the very top**. Read it
+> before touching anything.
+>
+> **Half the fix already exists** — `webxash/src/services/video-settings.ts`
+> is on the submodule branch **`fix/render-units-css-pixels`** (commit
+> `1a08a4e`, pushed to `origin`). It is a **WIP**: not typechecked, not
+> built, not unit-tested, not proven, not merged. Do not start over;
+> **finish it**. The submodule's `main` is still `86db82f` and the parent's
+> submodule pointer is unchanged.
+>
+> **The order:**
+>
+> 1. **Finish `video-settings.ts`** — the five items listed in § CURRENT
+>    STATE (the boot-argument units, the cap's shape, the comparison's
+>    tolerance, the 8192 guard, and the tests).
+> 2. **Decide the budget** — (a) CSS-pixel 1920x1080 (native Retina,
+>    sharp, 7.7 Mpx) or (b) device-pixel 1920x1080 (soft, 2.1 Mpx). Kyle
+>    asked for *"a happy medium (like what we had before? 1080p or
+>    something?)"*. Ask him, or take (a) and say so.
+> 3. **Prove it at dpr 2** —
+>    `~/.hermes/skills/projects/specialists-browser/scripts/
+>    prove_retina_regressions.py`. It must show a scale ratio of ~1.0, a
+>    frame rate that recovers after leaving the fullscreen, no RECONNECT
+>    modal and a live engine. **The rig runs at dpr 1 and cannot show
+>    this** — the proof forces `--force-device-scale-factor=2`.
+> 4. **Do not forget the other proofs** — `prove_escape_sequence.py`,
+>    `prove_pointer_ownership.py`, `prove_leave_fullscreen.py` and
+>    `prove_server_connect.py` must still pass (they all pass today; the
+>    ESC/fullscreen/pointer behaviour is NOT the cause of this regression
+>    and must not change).
+> 5. **Typecheck, build, and the parent suite** (`bunx vue-tsc --noEmit`,
+>    `bun run build`, the parent's unit tests).
+> 6. **Ship it the established way:** webXash PR → **squash-merge** →
+>   repoint the parent submodule at the **squashed** SHA (not the branch
+>   tip) → parent PR → green gates → merge → deploy → **prove production**
+>   with the same scripts, against `https://bulletballet.dev/` with a real
+>   `+connect`.
+> 7. **Then update this file** (§ CURRENT STATE, § NEXT TASK, the skill's
+>    `references/pointer-ownership-and-escape.md`) and merge PR #136 or
+>    supersede it — **its contents predate these findings and assert the
+>    wrong policy.**
+>
+> **Two things not to do:** do not touch the reconnect path until the
+> sizing fix has been retested (the dead button is a symptom), and do not
+> push to `main` without the PR — the deploy is gated on it.
 
 > ## THE BUY MENU'S MODERN FLOW: THE FRONTEND'S HALF (2026-11-01)
 >
