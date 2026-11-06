@@ -475,14 +475,9 @@ pub fn vid_init(_first: bool) {
         s.team_number = 0;
     });
     crate::voice::stop_squelch_mode();
-    // The server forgets the player on a map change: they reconnect, and the new player
-    // holds nothing (the HUD reset clears the armament). The loadout is sent again, so the
-    // spawn buys what the client sent and the player comes back armed.
-    let mut actions = Vec::new();
-    with(|m| {
-        m.buy.resubmit(&mut actions);
-    });
-    run_actions(actions);
+    // The loadout is NOT sent here: at the level load the client is still connecting, so the
+    // server has no player to give the commands to and drops them. The re-arm waits for the
+    // HUD reset, which is the moment the server's player exists (see `rearm_loadout`).
     // The map change resets the menu (a new `BuyMenu`), so the DOM menu has to hear that too:
     // it renders what the port last printed.
     print_buy_state();
@@ -739,8 +734,40 @@ pub fn on_message(m: Msg, buf: &[u8]) {
                 });
             }
         }
+        // The server makes a new player out of us after a map change: the old one is gone and
+        // the new one holds nothing (the HUD reset clears the armament). The HUD reset is the
+        // moment the server's player exists, so the loadout goes to it again here.
+        Msg::ResetHUD => rearm_loadout(),
         _ => {}
     }
+}
+
+/// The loadout is sent to the server again, without the cash check and without a word: the money
+/// was spent when the loadout was bought, and the server checks the budget itself.
+///
+/// The level load is too early for this: the client is still connecting then, so the server has
+/// no player to give the commands to and drops them. The HUD reset is the moment the server's
+/// player exists — and it comes before the spawn that buys the armament.
+fn rearm_loadout() {
+    let actions = rearm_actions();
+    if actions.is_empty() {
+        return;
+    }
+    for a in &actions {
+        if let Action::ServerCmd(c) = a {
+            engine().print(&format!("[ts] loadout re-armed: {c}\n"));
+        }
+    }
+    run_actions(actions);
+}
+
+/// The commands that re-arm the loadout, empty when there is nothing to re-arm.
+fn rearm_actions() -> Vec<Action> {
+    let mut actions = Vec::new();
+    with(|m| {
+        m.buy.resubmit(&mut actions);
+    });
+    actions
 }
 
 // ---- VGUI menu queue -------------------------------------------------------------------------
@@ -1545,6 +1572,38 @@ mod tests {
         let mut menu = buy::BuyMenu::new(Default::default());
         reinit_buy_menu(&mut menu, Default::default());
         assert!(menu.random_first, "the random first loadout is still armed");
+    }
+
+    /// The loadout goes to the server again when the HUD resets.
+    ///
+    /// A map change makes the server forget the player: the new one holds nothing, so the spawn
+    /// would buy nothing and the player comes back empty-handed. The HUD reset is the moment
+    /// the server's player exists — the level load is too early (the client is still
+    /// connecting, so the server drops the commands) — so that is where the re-arm happens.
+    #[test]
+    fn the_hud_reset_re_arms_the_loadout() {
+        ts30_gameplay::tables::make_default();
+        with(|m| {
+            m.buy = buy::BuyMenu::default();
+            m.buy.current.entries[0] = buy::Entry { id: 13, cost: 700, ..Default::default() };
+            m.buy.current.total = 700;
+            m.buy.current.slots = 1;
+        });
+        let cmds: Vec<String> = rearm_actions()
+            .iter()
+            .filter_map(|a| match a {
+                Action::ServerCmd(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(cmds.iter().any(|c| c == "rst_cfg"), "the re-arm starts from a fresh config: {cmds:?}");
+        assert!(cmds.iter().any(|c| c.starts_with("tkw ")), "and sends the loadout: {cmds:?}");
+
+        // With nothing of the player's to re-arm, nothing is sent.
+        with(|m| {
+            m.buy = buy::BuyMenu::default();
+        });
+        assert!(rearm_actions().is_empty(), "an empty loadout is not re-armed");
     }
 
     /// The DOM menu renders what the port last printed, so a close that does not print leaves
