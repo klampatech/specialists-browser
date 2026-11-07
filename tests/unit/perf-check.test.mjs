@@ -32,7 +32,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -55,6 +55,7 @@ const {
   isSoftwareRenderer,
   refreshRateLooksThrottled,
   frameBudgetMs,
+  formatMegapixels,
 } = perf;
 
 /** A healthy client: a real GPU, a fast display, a comfortable engine. */
@@ -283,4 +284,88 @@ test('the report is a pure function of the facts', () => {
   assert.deepEqual(a, b);
   // And it does not mutate what it was given.
   assert.equal(facts.panelHz, 120);
+});
+
+test('the render size is only reported when the game is running', () => {
+  // THE LANDING PAGE'S 300×150 PLACEHOLDER.
+  //
+  // Before the engine boots the canvas is a placeholder, and there is
+  // no game and no render size. Reporting it as "the game is drawing
+  // 0.0 megapixels" is wrong, and it reads like something is broken.
+  const notRunning = buildPerfReport(
+    healthy({ engineWorkMs: 0, backingWidth: 300, backingHeight: 150 })
+  );
+  assert.ok(
+    !notRunning.findings.some((f) => f.id === 'render-size'),
+    'no render size before the game is running'
+  );
+
+  // In a map, it is the game's render size, and it says so.
+  const running = buildPerfReport(healthy());
+  const size = running.findings.find((f) => f.id === 'render-size');
+  assert.ok(size, 'the render size is reported once the game is running');
+  assert.match(size.title, /megapixels/);
+  assert.match(size.detail, /3456×2234 device pixels/);
+});
+
+test('a small render size is not rounded to nothing', () => {
+  // 300×150 is 0.045 megapixels. One decimal place calls that "0.0",
+  // which reads like nothing is being drawn.
+  assert.equal(formatMegapixels(300 * 150), '0.045 megapixels');
+  assert.equal(formatMegapixels(3456 * 2234), '7.7 megapixels');
+  assert.equal(formatMegapixels(1920 * 1080), '2.1 megapixels');
+  assert.equal(formatMegapixels(640 * 480), '0.31 megapixels');
+  assert.equal(formatMegapixels(0), '0 pixels');
+  assert.equal(formatMegapixels(-1), '0 pixels');
+});
+
+test('the readout does not claim a refresh rate it has not measured', () => {
+  // The tile says "59 Hz" — the DISPLAY's rate, measured while the page
+  // was idle. The finding used to say "your refresh rate has not been
+  // measured yet" right underneath it, which reads like a
+  // contradiction of the tile it sits under.
+  const report = buildPerfReport(healthy({ displayHz: 0, engineWorkMs: 0 }));
+  const finding = report.findings.find((f) => f.id === 'refresh-unknown');
+  assert.ok(finding, 'the unmeasured game rate is still reported');
+  assert.doesNotMatch(finding.title, /your refresh rate has not been measured/i);
+  assert.match(finding.title, /game has not run yet/i);
+  assert.match(finding.detail, /display's rate is measured/i);
+});
+
+test('the readout is reachable while the game is running', () => {
+  // THE GAP THIS CLOSED.
+  //
+  // The panel lived on the landing page, and the landing page is
+  // DESTROYED when the engine boots — so the frame cost, the budget
+  // and the delivered frame rate were only ever measurable and never
+  // visible. The in-game options overlay is the one place a player can
+  // reach while the game is running.
+  const overlay = readFileSync(
+    join(WEBXASH, 'src', 'components', 'XashOptionsOverlay.vue'),
+    'utf8'
+  );
+  assert.match(overlay, /<TSPerformance\s+embed\s*\/>/, 'the overlay carries the panel');
+  assert.match(overlay, /import TSPerformance from/, 'and imports it');
+
+  // And the panel drops its own heading when it is embedded, because
+  // the overlay's legend carries it.
+  const panel = readFileSync(
+    join(WEBXASH, 'src', 'components', 'TSPerformance.vue'),
+    'utf8'
+  );
+  assert.match(panel, /v-if="!embed"/, 'the heading is dropped when embedded');
+
+  // AND THE READOUT DOES NOT PUSH THE WAY OUT OF A MATCH BELOW THE FOLD.
+  //
+  // The overlay is a narrow scrolling panel, and the Quit button is in
+  // its Session group. The readout is long — the numbers, the findings
+  // and the button — so putting it BEFORE the Session group buries the
+  // one control a player reaches for when they want to leave.
+  const quitAt = overlay.indexOf('opts__btn--danger');
+  const readoutAt = overlay.indexOf('<TSPerformance');
+  assert.ok(quitAt > 0 && readoutAt > 0, 'both the Quit button and the readout are present');
+  assert.ok(
+    quitAt < readoutAt,
+    'the Quit button must come BEFORE the readout in the overlay'
+  );
 });
