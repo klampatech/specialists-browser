@@ -23,6 +23,366 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-07 — **THE CLIENT IS FAST; HALF THE ENGINE'S FRAME WAS
+A `glGetError()` ROUND-TRIP, AND THE PLAYER CAN NOW SEE WHY THEIR GAME
+FEELS SLOW.** Kyle asked whether the client could do more on the PLAYER's
+side — WebGPU, the browser syncing the frame rate to the display, and
+`about:config` settings — and whether the game window is windowed-borderless.
+This block is what came out of answering that with measurements on his
+MacBook Pro rather than on the rig.
+
+**THE DELIVERY IS TWO PRs.** **webXash #46** -> `c17e2ab` (the GL-check
+rate limit, the build gate that refuses to ship an unpatched bundle,
+and the "Your client" readout) and **the parent #140** (the fixture,
+the map sweep, the node scan, the A-B-A, and the tests that keep them
+honest). **THE PARENT'S MERGE IS WHAT SHIPS THE CLIENT TO PRODUCTION**,
+and the live proof follows in a follow-up — the repo's pattern for a
+change that is measured on the rig and then deployed.
+
+**THE ANSWERS TO HIS FOUR QUESTIONS, SHORT.**
+
+1. **WebGPU: NO, AND IT CANNOT BE.** The engine runs `-ref webgl2`
+   (SPEC.md: "WebGL2 (not WebGPU for Phase 1)"). WebGPU belongs to
+   specialists-web (Babylon), not here.
+2. **THE BROWSER DOES SYNC THE FRAME RATE TO THE DISPLAY — and that is
+   the whole ballgame.** `requestAnimationFrame` is vsync-aligned, so the
+   game's frame rate is the display's, capped by what the engine can
+   finish. It is also the thing that silently halves on a laptop.
+3. **`about:config` IS FIREFOX-ONLY.** Chrome has no equivalent
+   (`chrome://settings/performance` → Energy Saver **off**, and
+   `chrome://gpu` to check for SwiftShader); Safari/macOS is governed by
+   Low Power Mode. There is no one setting that fixes all three.
+4. **THE GAME IS BROWSER-FULLSCREEN, NOT OS-WINDOWED-BORDERLESS** — and
+   that is right. `browserFullscreen` (on by default) does
+   `documentElement.requestFullscreen({navigationUI:'hide'})`; the
+   engine's own `fullScreen` argument is always OFF (`-windowed`), which
+   is inert in a browser. It is also near-irrelevant to performance: the
+   engine is not fill-bound (see below).
+
+**THE MEASUREMENTS (Kyle's MacBook Pro, M3 Pro, Liquid Retina XDR
+3456×2234 at dpr 2, macOS 26.2, Chrome 157, on battery, ONE browser
+tab).** Measured with `tools/perf/measure-live-client.cjs`, which drives
+the REAL browser over CDP instead of launching its own Chromium — the
+rig's harness cannot see the display's refresh rate, the power state or
+the real GPU.
+
+- the panel's own rate (CoreGraphics, a native probe): **120.0 Hz**
+- a bare rAF loop with no game: **120.5 Hz**
+- the browser's rate with the game idle: **120.0 Hz**
+- the engine's frame cost, in a map: **2.41 ms** (it read 13–16 ms
+  until the tab contamination below was found)
+- the GPU's backlog (`gl.finish`): **0.00 ms** — the GPU is idle
+- the tick rate in play: **120 Hz**, 0 late ticks
+
+**SO THE ENGINE IS NOT THE CONSTRAINT ON THAT MACHINE.** 2.41 ms of an
+8.33 ms 120 Hz frame is 29% of the budget, and the cost is flat across an
+8.4× range of render resolutions — **the engine is CPU-bound, not
+fill-bound**, so resolution-side levers are worthless and the only lever
+that matters is the browser's refresh rate.
+
+**THE REAL CONSTRAINT WAS FOUND BY THE CPU PROFILER
+(`tools/perf/profile-client.cjs`): the engine calls `glGetError()` ABOUT
+TEN TIMES PER FRAME, and each call is a GPU ROUND-TRIP.** In Chrome,
+`WebGLRenderingContext.getError()` has to flush the command buffer and
+wait for the error state, so it cannot be answered from a queue. The
+glue's implementation is `GLctx.getError() || GL.lastError`, and the
+engine asks for it after every GL batch.
+
+Measured over 3 s of live play: **1230 calls/second**, and the A-B-A
+(`tools/perf/measure-geterror-ab.cjs`, which patches the behaviour in
+place, measures, restores, and measures again so a drift cannot be
+mistaken for an effect):
+
+    A  as shipped        frame  2.41 ms   getError  1230 calls/s
+    B  getError removed  frame  1.15 ms   getError     0 calls/s
+    A  restored          frame  2.44 ms   (drift +0.03 ms)
+
+**So `gl.getError()` was 52% of the engine's frame.** The fix is a third
+glue patch, `webxash/scripts/patch-xash-gl-geterror.cjs`: the glue's own
+error bookkeeping (`GL.lastError`) is kept, and the expensive real check
+is rate-limited to 4 times a second. **Detection is slowed, not
+removed** — a genuine GL error still surfaces within 250 ms — and
+`?gldebug=1` on the page URL restores the original behaviour exactly,
+because a fix that removes the ability to debug what it fixed is a trap.
+
+**TWO TRAPS IN THAT PATCH, BOTH OF WHICH WOULD HAVE SILENTLY DONE
+NOTHING.**
+
+- **VITE'S DEPENDENCY CACHE.** Vite pre-bundles `xash3d-fwgs` into
+  `node_modules/.vite/deps/` and serves THAT, not the file on disk. The
+  first build after patching shipped the **unpatched** glue — the cache
+  was three weeks old — and the build was green. The patch script now
+  drops `node_modules/.vite` when it patches.
+- **THE MINIFIER STRIPS COMMENTS.** The patch's marker is a comment, so
+  it is gone from the bundle; a build-time check cannot look for it. The
+  check looks for `gldebug=1` instead, which is a string literal and
+  survives. `webxash/scripts/check-xash-glue.cjs` runs at the end of the
+  build and **fails the build** if the bundle's glue is not patched —
+  the same lesson as `check-xash-wasm.cjs`, which exists because a
+  silently-broken wasm reached production once.
+
+**THE PLAYER CAN NOW SEE WHY THEIR GAME FEELS SLOW.** A new "Your
+client" tab on the landing page (`TSPerformance.vue`) shows what the game
+measured on THIS machine: the refresh rate the browser is actually
+delivering, the engine's frame cost against the display's budget, the
+GPU it is drawing on, and — only when there is something to change — the
+browser-specific setting that changes it (Chrome's Energy Saver, Firefox's
+`about:config` refresh-rate preference, macOS Low Power Mode). The
+policy is `webxash/src/services/perf-check.ts` (import-free, so the
+parent's unit suite can test it directly) and the gathering is
+`perf-collect.ts`. **The readout refuses to guess**: a number that was
+not measured is reported as "not measured", never as a plausible guess.
+
+**THE SHIPPED PATCH WAS THEN PROVED END-TO-END, IN A REAL BROWSER,
+AGAINST A REAL GAME SERVER.** The A-B-A above proves the mechanism;
+it does not prove that the patch we SHIP rate-limits rather than
+silently keeping the old behaviour. So the patched build was served
+locally (`tools/perf/serve-local-build.cjs`, pointed at the CI stack so
+no test player ever entered the production leaderboard), the MacBook
+played it, and `tools/perf/verify-gl-error.cjs` counted the calls:
+
+    the shipped patch        4.0 calls/second    1.25 ms per frame
+    the same build, ?gldebug=1
+                            1200.0 calls/second  1.81 ms per frame
+
+**Four real checks a second, exactly as designed — and the escape hatch
+puts the old behaviour back on demand.** The mean cost of one real
+check, measured properly this time, is **0.083 ms**; at ten calls a
+frame that is 0.83 ms of every frame.
+
+**THE PACER WAS MEASURING THE WRONG THING.** The frame pacer's
+"display rate" was the interval between its own ticks, which is the
+display's period **PLUS the engine's work** — so a slow engine made the
+reading LOW, and the pacer concluded the display was half as fast as it
+was and capped against a rate the display does not have. The panel's
+rate is now measured **while the page is idle** (`measureIdleDisplayHz`,
+on the landing page and again before the engine boots), and the live
+rate — what the game is actually delivering — is kept separately and
+labelled as such. The readout shows BOTH, because the difference between
+them is the whole story.
+
+**THE MAP, THE VIEWPOINT AND THE WARM-UP — AND A COMPARISON THAT WAS
+CONFOUNDED.** Kyle observed that `ts_lobbyduel` "seems to be the
+heaviest" map and offered it as the level for a perf test. Taking that
+as a question rather than a conclusion is what exposed the biggest
+measurement trap in this project.
+
+**THE TRAP: THE VIEWPOINT.** The server picks the spawn point at
+RANDOM (`crates/server/src/rules/spawnpoint.rs:98` uses
+`eng.random_long`), and the spawn carries its own angles. The engine's
+per-frame cost is dominated by what is VISIBLE — a player facing a
+wall costs almost nothing. **Repeating ONE map on freshly-booted
+servers gave 1.5 ms, then 5.0 ms, then 1.8 ms** — same map, same
+bundle, same machine, same browser. **A 3x spread from the spawn
+alone.**
+
+**THE SECOND TRAP: THE WARM-UP.** The first measurement window is
+always the most expensive — the engine is still settling after the map
+load. Measured: 8.18, then 6.12, then 6.16 ms on the same map and the
+same view. A 25% drop that is the engine warming up, not the map
+changing.
+
+**THE THIRD TRAP: THE SERVER ROTATES ITS MAP EVERY THREE MINUTES**
+(`roundtime 180`, 22 entries in the cycle). A run that does not pin
+the map measures whichever map the rotation reached — and **that was
+the missing piece in the contradictory measurements above**: an earlier
+pair read **2.90 ms** and **13.26 ms** per frame on the same server,
+machine and browser, on two different maps.
+
+**THE FIRST MAP COMPARISON WAS CONFOUNDED, AND IT WAS WRONG.** Six
+maps, one run each, produced a clean-looking table from ~1.5 ms to
+~12.7 ms and the conclusion that the map was worth ~8x, with
+`ts_lobbyduel` the lightest and `ts_casa` the heaviest. **That
+conclusion was not supported**, because the viewpoint, the warm-up and
+the run count were all uncontrolled. The map's own contribution is
+smaller than it looked.
+
+**THE TOOLING NOW CONTROLS ALL THREE:**
+
+- the view is **pinned** with the client's `ts_test_angles <pitch>
+  <yaw>` before measuring;
+- the camera origin, eye and angles are **read and reported** with
+  every result, from the engine's own `ts_test_view` command
+  (`tools/perf/lib/viewpoint.cjs`);
+- the result prints the **settled** frame cost separately from the
+  warm-up one, and `measure-map-cost.sh` takes **two runs per map**;
+- `tools/perf/lib/fleet-map.cjs` reads the map from the registry, and
+  `--map` makes a mismatch a **HARD FAILURE** — a perf run on the
+  wrong level is worse than no perf run, because it looks like data.
+  The map is checked AFTER the windows too, so a run that straddles a
+  round rotation is caught rather than averaged.
+
+**THE FIXTURE IS BUILT AND MEASURED.** All three are pinned now:
+
+- **THE MAP** — `CI_MAP=<map>`, plus an EMPTY map cycle for the CI
+  instance so the rotation cannot move the map under a run. An empty
+  cycle file disables the rotation
+  (`crates/server/src/rules/mapcycle.rs`: no items means `do_cycle =
+  false`).
+- **THE VIEWPOINT** — the angles with the client's `ts_test_angles`,
+  the POSITION with the server's `ts_tp <player#> <x> <y> <z> [yaw]
+  [pitch]`. `ts_tp` needs `sv_cheats 1`, which the CI stack derives
+  for the CI INSTANCE ONLY; production's `server.cfg` keeps `sv_cheats
+  0` and the shared source file is never changed.
+- **THE WARM-UP** — the harness waits until the frame cost stops
+  moving before it starts the real measurement (a teleport invalidates
+  the client's PVS and the cost falls 2.5x over the next minute).
+
+**THE POSITION COMES FROM THE MAP'S OWN NAV DATA.** The server loads
+each map's `.ndm` file; its nodes are positions on the map's floor —
+where the bots stand and the players spawn. The first node is the same
+on every run. The format is a count and 20-byte node records, so the
+fixture position is the first 24 bytes of the file.
+
+**TWO TRAPS WORTH REMEMBERING.** The bots' `SHIPPED` table LOOKS like
+coordinates and is not — it is the map's node COUNT and link COUNT
+(`(ts_casa, 345, 1936, 1)` = 345 nodes, 1936 links, 1 ladder node),
+and the count matches the `.ndm` header exactly. And the server
+appends " (1)" to a duplicate name while a killed harness leaves its
+connection behind, so a lookup by "PerfProbe" can pick a STALE
+connection — which is exactly what happened, and the measurement was
+taken wherever the client happened to spawn. The harness now uses a
+unique name per run, set on the engine after the boot (the identity is
+REMEMBERED in local storage and the saved copy wins over the modal).
+
+**THE WINDOW IS PART OF THE FIXTURE.** The canvas fills the window,
+and the engine's frame cost is the pixel count it draws: 2400x1794
+backing measured 4.26-4.34 ms, 3456x1882 measured 5.34 ms. So
+`--window WxH` pins it, before the canvas is read.
+
+**THE CAPSTONE: THE PATCH, IN FPS, AT THE WORST-CASE FIXTURE.**
+
+The A-B-A at `ts_lobbyduel` nav node 1, with the fixture pinned and
+the engine settled for 60 seconds before the first phase:
+
+    A  as shipped        frame  8.89 ms   getError 1095 calls/s   106.6 fps
+    B  getError removed  frame  1.91 ms   getError    0 calls/s   120.2 fps
+    A  restored          frame  8.89 ms   getError 1115 calls/s   105.6 fps
+
+    saving from the patch: 6.98 ms per frame
+    restored-vs-baseline drift: +0.01 ms
+
+**THE SHIPPED BUILD DOES NOT FIT THE 120 Hz BUDGET; THE PATCHED ONE
+DOES.** 8.89 ms against a budget of 8.33 ms — so the shipped client
+runs at 106 fps on a 120 Hz display and the patched one runs at the
+display's full 120. **The patch saves 6.98 ms a frame, 79% of the
+frame, and the drift is +0.01 ms.**
+
+**THE SETTLE IS WHAT MADE THE A-B-A RIGOROUS.** The A-B-A used to
+start its first phase ten seconds after the teleport, while the
+engine was still rebuilding its PVS — so the baseline was measured
+mid-transient and the restored phase, thirty seconds later on a
+settled engine, came out FASTER. That read as -3.36 ms of "drift"
+when it was the settle. Waiting the same 60 seconds the fixture
+waits took the drift to **+0.01 ms**.
+
+**THE RESULT — same map, same fixture, three fresh runs, M3 Pro:**
+
+    run 1   windows 2.05 / 1.83 / 1.75 ms   ->  1.83 ms
+    run 2   windows 2.13 / 2.10 / 2.19 ms   ->  2.19 ms
+    run 3   windows 1.81 / 2.38 / 2.27 ms   ->  2.38 ms
+
+**A 1.3x spread between fresh runs, down from the 4.9x the random spawn
+produced on the same map.**
+
+**AND THE RESIDUAL IS AMBIENT, NOT MEASUREMENT ERROR.** Over ninety
+minutes, the same fixture, the same canvas and the same machine read
+2.19 ms and then 5.34 ms; the same canvas ten minutes apart read 5.34
+ms and 2.48 ms. The engine did not change — the MACHINE did, under a
+sustained campaign of 120 Hz rendering on an M3 Pro whose GPU clocks
+down as it heats. **Every result now carries the machine's load
+average**, so a reading taken while the machine was busy can be
+recognised as one. **This is why the comparison is A-B-A WITHIN A
+SESSION, not two numbers hours apart** — measure A, then the candidate,
+then A again, and compare against the A that brackets it. The A-B-A
+drift figure (+0.03 ms, -0.06 ms) is the honest measure of how much
+of a difference is the change and how much is the clock.
+
+**THE WORST-CASE FIXTURE, AND WHERE IT IS.** The map sweep and the
+node scan together pick it:
+
+- **THE MAP: `ts_lobbyduel`.** It is the heaviest of the maps that can
+  be pinned at all, at 8.23 ms at its own nav node against ts_casa's
+  ~2-5 ms at the same kind of fixture.
+- **THE PLACE: nav node 1**, at `-101, -355, 388`, which measured
+  **10.12 ms** — against 8.20 ms at node 0, 5.77 ms at node 4 and
+  10.10 ms at node 5. **AND THE FRAME COUNT IS THE ARGUMENT, NOT THE MILLISECONDS.**
+
+The 120 Hz budget is 8.33 ms a frame. The scan's frame counts per
+6-second window say what that means to a player:
+
+    node   ms/frame   frames/6s    fps    budget
+      0      8.20        720      120.0   under
+      1     10.12        574       95.7   OVER
+      2      8.40        687      114.5   OVER
+      3      8.18        721      120.2   under
+      4      5.77        719      119.8   under
+      5     10.10        580       96.7   OVER
+
+**At node 0 the engine JUST FITS the 120 Hz budget**, so the frame
+count pins at the display rate and a regression has to be 1.6% before
+anything a player can see moves. **At node 1 it does not fit, so the
+frame count is a direct readout of the engine's cost** — 574 frames
+where node 0 gives 720 — and a regression makes it fall further,
+immediately.
+
+**THAT IS WHY THE FIXTURE IS THE WORST-CASE NODE AND NOT NODE ZERO.**
+A regression level has to be in the regime where a regression IS
+visible. Node zero is reproducible, but it is reproducible at a
+display rate that hides the thing you are trying to measure.
+
+**A 1.75x spread across six positions on ONE
+  map.** Node zero was never the worst case; picking it would have
+  left 23% of the cost on the table, which is exactly the margin a
+  regression test needs.
+
+**THE CONTROLLED TABLE.** Every map that can be pinned, pinned to its
+own first nav node, two runs each, map + position + angles + warm-up +
+window all fixed:
+
+    ts_lobbyduel    node 0   32, -352, 388    8.23 ms / 8.20 ms
+    ts_hammertime   node 0  192,  -64, 292    4.53 ms / 4.50 ms
+    ts_casa         node 0  704, 1472,  68    4.52 ms / 4.31 ms
+
+**AND `ts_lobbyduel` NODE 1 IS 10.12 ms.** So `ts_lobbyduel` is
+**1.8x** the next map at the same kind of fixture, and Kyle's instinct
+that it was the heaviest was right — it just took a controlled
+comparison to say so.
+
+The three maps without nav data (`ts_lobby`, `ts_antrodome`,
+`ts_frigid`) are **NOT** in this table. They cannot be pinned, so
+their numbers are at random spawns, and the harness refuses to rank
+them rather than quietly measuring a random spot.
+
+
+**TWO MORE THINGS THE FIXTURE LEARNED.**
+
+- **NODE ZERO IS REPRODUCIBLE BUT ARBITRARY.** It may be a quiet
+  corner, and a regression fixture in a quiet corner hides a
+  regression. So the nodes can be read one at a time, the player put
+  on each, and each measured — `--fixture-node N` and
+  `tools/perf/scan-fixture-cost.sh`. **The worst-case fixture is the
+  most expensive node on the heaviest map.**
+- **ONLY 22 MAPS HAVE NAV DATA** — the bot-enabled ones. `ts_lobby`,
+  `ts_antrodome` and `ts_frigid` have no `.ndm` at all, so they
+  CANNOT be pinned, and their numbers are at random spawns. The
+  harness says "NOT PINNED" and refuses to rank them rather than
+  quietly measuring a random spot.
+
+**"THE SAME MAP" IS NOT "THE SAME MEASUREMENT".** A fixture that pins
+only the map produces numbers that differ by 3-5x between runs, and a
+real regression hides inside that spread.
+
+**THE MEASUREMENT HYGIENE LESSON, WHICH COST THE MOST TIME.** The first
+two runs of the same measurement on the same machine disagreed by 3.3×
+(3.88 ms vs 12.67 ms per frame). The cause was **my own harness**: it
+left four game tabs running on Kyle's MacBook at once, and the
+contention inflated every reading. Kyle noticed and said so. The
+lessons, now written into the tools: **one game instance at a time**,
+close the tab when the harness is done, and **A-B-A** rather than A-B —
+the restore phase is what proves the effect is the change and not the
+passage of time.
+
 **As of:** 2026-11-06 — **THE PLAYER'S LOADOUT SURVIVES A MAP CHANGE, AND IT
 IS LIVE.** webXash **#44** → `a009a254`; the parent **#138** → `b7a18a1`; the
 deploy green (run 42245716979: *Deploy to production* ✅, *Verify in a real

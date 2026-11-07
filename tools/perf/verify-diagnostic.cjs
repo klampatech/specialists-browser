@@ -18,6 +18,7 @@ const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { chromium } = loadPlaywright();
 const fs = require('fs');
+const path = require('path');
 
 const URL_ = 'https://bulletballet.dev/';
 
@@ -108,7 +109,8 @@ const URL_ = 'https://bulletballet.dev/';
   // evaluate exactly that.
   const bookmarklet = fs
     .readFileSync(
-      '/home/kyle/Development/specialists-browser/tools/perf/diagnose-fullscreen.bookmarklet.txt',
+      // derived from where THIS FILE lives, not hardcoded
+      path.join(__dirname, 'diagnose-fullscreen.bookmarklet.txt'),
       'utf8',
     )
     .trim();

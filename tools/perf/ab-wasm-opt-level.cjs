@@ -33,6 +33,7 @@
  *   node tools/perf/ab-wasm-opt-level.cjs [--gpu] [--json OUT]
  */
 const { loadPlaywright } = require('../deploy/lib/browser.cjs');
+const path = require('node:path');
 const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { chromium } = loadPlaywright();
@@ -58,7 +59,16 @@ const PORT = 8899;
 // cannot work against a TLS port, and the game never connects — which
 // looks like an engine failure and produces nonsense measurements.
 const LOCAL = `https://127.0.0.1:${PORT}/`;
-const CLIENT_WASM = '/home/kyle/Development/specialists-browser/webxash/dist/cl_dlls/client_emscripten_wasm32.wasm';
+// derived from where THIS FILE lives, not hardcoded
+const CLIENT_WASM = path.join(
+  __dirname,
+  '..',
+  '..',
+  'webxash',
+  'dist',
+  'cl_dlls',
+  'client_emscripten_wasm32.wasm',
+);
 
 const GPU_ARGS = [
   '--use-angle=vulkan',

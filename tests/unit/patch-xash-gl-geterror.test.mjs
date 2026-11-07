@@ -1,0 +1,371 @@
+/**
+ * The glue patch that stops the engine's per-frame `gl.getError()`
+ * round-trip.
+ *
+ * WHY THIS TEST EXISTS
+ * --------------------
+ * This patch is the difference between the engine fitting inside a
+ * 120 Hz frame period and not fitting inside it — measured on Kyle's
+ * MacBook Pro, 2026-11-07:
+ *
+ *     frame cost, as shipped   9.62 ms   (a 120 Hz frame is 8.33 ms)
+ *     frame cost, patched      8.13 ms
+ *
+ * A patch that silently does nothing is the worst possible outcome:
+ * the game would be slow forever and nothing would say why. So this
+ * test asserts the four things that matter:
+ *
+ *   1. It patches the real code.
+ *   2. It is idempotent — re-running does not double-patch.
+ *   3. It FAILS LOUDLY when the anchor is gone, rather than shipping
+ *      an unpatched glue that looks patched.
+ *   4. The `?gldebug=1` escape hatch survives, because a fix that
+ *      removes the ability to debug the thing it fixed is a trap.
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const SCRIPT = join(ROOT, 'webxash', 'scripts', 'patch-xash-gl-geterror.cjs');
+const CHECK = join(ROOT, 'webxash', 'scripts', 'check-xash-glue.cjs');
+
+/**
+ * A fixture shaped like the real minified glue, with just enough
+ * around the target that the anchor has to be found rather than
+ * assumed.
+ */
+const ORIGINAL = `
+var GL = { lastError: 0, recordError: function (e) { GL.lastError = e; } };
+var GLctx = { getError: function () { return 0; } };
+var _emscripten_glGetBufferParameteriv = (target, value, data) => { };
+var _emscripten_glGetError = () => { var error = GLctx.getError() || GL.lastError; GL.lastError = 0; return error; };
+var _emscripten_glGetFloatv = (name_, p) => { };
+`;
+
+function fixture(contents = ORIGINAL) {
+  const dir = mkdtempSync(join(tmpdir(), 'xash-glue-'));
+  const file = join(dir, 'xash.js');
+  writeFileSync(file, contents, 'utf8');
+  return { dir, file };
+}
+
+function run(file, env = {}) {
+  try {
+    const stdout = execFileSync(process.execPath, [SCRIPT, file], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...env },
+    });
+    return { code: 0, stdout, stderr: '' };
+  } catch (e) {
+    return {
+      code: e.status ?? 1,
+      stdout: e.stdout ? e.stdout.toString() : '',
+      stderr: e.stderr ? e.stderr.toString() : '',
+    };
+  }
+}
+
+test('the patch replaces the per-frame getError with a rate-limited check', () => {
+  const { dir, file } = fixture();
+  try {
+    const r = run(file);
+    assert.equal(r.code, 0, r.stderr);
+
+    const src = readFileSync(file, 'utf8');
+
+    // The original is gone.
+    assert.ok(
+      !src.includes('var error = GLctx.getError() || GL.lastError;'),
+      'the original _emscripten_glGetError is still in the file'
+    );
+
+    // The patch is in.
+    assert.ok(src.includes('_xashGlErrorRateLimited'), 'the marker is missing');
+
+    // The glue's OWN error bookkeeping survives — this is what catches
+    // bad arguments passed to the glue, and it is free.
+    assert.ok(src.includes('var error = GL.lastError;'), 'GL.lastError is no longer read');
+    assert.ok(src.includes('GL.lastError = 0;'), 'GL.lastError is no longer cleared');
+
+    // The real check is still there, just rate-limited.
+    assert.ok(src.includes('var real = GLctx.getError();'), 'the real check was removed');
+    assert.ok(src.includes('> 250'), 'the rate limit is missing');
+
+    // The escape hatch survives.
+    assert.ok(src.includes("location.search.indexOf('gldebug=1')"), 'the debug switch is missing');
+
+    assert.match(r.stdout, /patched/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the patch is idempotent', () => {
+  const { dir, file } = fixture();
+  try {
+    const first = run(file);
+    assert.equal(first.code, 0, first.stderr);
+    const afterFirst = readFileSync(file, 'utf8');
+
+    const second = run(file);
+    assert.equal(second.code, 0, second.stderr);
+    assert.match(second.stdout, /already applied/);
+
+    const afterSecond = readFileSync(file, 'utf8');
+    assert.equal(afterSecond, afterFirst, 'a second run changed the file');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the patch fails loudly when the anchor is gone', () => {
+  // A glue whose getError has been re-minified differently. The patch
+  // MUST NOT claim success — a silent no-op here means the game ships
+  // slow and nothing says why.
+  const { dir, file } = fixture(
+    ORIGINAL.replace(
+      'var error = GLctx.getError() || GL.lastError;',
+      'var error = GL.lastError;'
+    )
+  );
+  try {
+    const r = run(file);
+    assert.equal(r.code, 1, 'the patch did not fail on a missing anchor');
+    assert.match(r.stderr, /could not find the original _emscripten_glGetError/);
+    assert.ok(
+      !readFileSync(file, 'utf8').includes('_xashGlErrorRateLimited'),
+      'the file was modified despite the failure'
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the patch fails loudly when the anchor is ambiguous', () => {
+  const { dir, file } = fixture(ORIGINAL + ORIGINAL);
+  try {
+    const r = run(file);
+    assert.equal(r.code, 1, 'the patch did not fail on an ambiguous anchor');
+    assert.match(r.stderr, /appears 2 times/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the patch skips a missing glue without failing the install', () => {
+  // The dependency may not be installed yet (postinstall ordering, or
+  // a production install with --omit=dev). That is not an error.
+  const dir = mkdtempSync(join(tmpdir(), 'xash-glue-'));
+  try {
+    const r = run(join(dir, 'does-not-exist.js'));
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /not present; skipping/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the build gate fails a bundle whose glue is not patched', () => {
+  // The gate is the last line of defence. Vite serves its
+  // dependency-optimisation cache rather than the file on disk, so a
+  // patch that applied cleanly can still be absent from the build —
+  // and the game would be slow forever with nothing in the logs.
+  const dir = mkdtempSync(join(tmpdir(), 'xash-dist-'));
+  try {
+    const assets = join(dir, 'assets');
+    mkdirSync(assets, { recursive: true });
+
+    // An unpatched glue: the engine's glGetError, but no ?gldebug=1.
+    writeFileSync(
+      join(assets, 'xash3d-abc123.js'),
+      'var _emscripten_glGetError = () => { var error = GLctx.getError() || GL.lastError; return error; };',
+      'utf8'
+    );
+
+    let code = 0;
+    let stderr = '';
+    try {
+      execFileSync(process.execPath, [CHECK, dir], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      code = e.status ?? 1;
+      stderr = e.stderr ? e.stderr.toString() : '';
+    }
+    assert.equal(code, 1, 'the gate passed a bundle with an unpatched glue');
+    assert.match(stderr, /the built engine glue is NOT patched/);
+
+    // And it PASSES once the glue is patched.
+    writeFileSync(
+      join(assets, 'xash3d-abc123.js'),
+      'var _emscripten_glGetError = () => { var debug = location.search.indexOf("gldebug=1"); return error; };',
+      'utf8'
+    );
+    const stdout = execFileSync(process.execPath, [CHECK, dir], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    assert.match(stdout, /the engine glue is patched/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a cache built from the UNPATCHED glue is dropped', () => {
+  // The failure this whole patch exists to prevent: Vite serves its
+  // dependency-optimisation cache rather than the file on disk, so a
+  // cache built before the patch keeps shipping the unpatched glue —
+  // and the build is green, and the game is simply still slow.
+  const { dir, file } = fixture();
+  const cache = mkdtempSync(join(tmpdir(), 'xash-vite-cache-'));
+  try {
+    const deps = join(cache, 'deps');
+    mkdirSync(deps, { recursive: true });
+    writeFileSync(
+      join(deps, 'xash3d-fwgs.js'),
+      'var _emscripten_glGetError = () => { var error = GLctx.getError() || GL.lastError; return error; };',
+      'utf8'
+    );
+
+    const r = run(file, { XASH_VITE_CACHE: cache });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /patched/);
+    assert.equal(
+      existsSync(join(cache, 'deps')),
+      false,
+      'the stale cache survived — the next build would ship the unpatched glue'
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(cache, { recursive: true, force: true });
+  }
+});
+
+test('a cache that already carries the patch is KEPT', () => {
+  // The script runs from postinstall. Dropping the cache every time
+  // makes every install make the next dev server re-bundle the 3.9 MB
+  // engine glue from scratch — for nothing. The cache that needs
+  // dropping is the one built from the UNPATCHED glue.
+  const { dir, file } = fixture();
+  const cache = mkdtempSync(join(tmpdir(), 'xash-vite-cache-'));
+  try {
+    assert.equal(run(file).code, 0);
+
+    const deps = join(cache, 'deps');
+    mkdirSync(deps, { recursive: true });
+    const cached = join(deps, 'xash3d-fwgs.js');
+    writeFileSync(
+      cached,
+      'var _emscripten_glGetError = () => { var d = location.search.indexOf("gldebug=1"); return error; };',
+      'utf8'
+    );
+
+    // The patch is already applied, so nothing changes the glue and
+    // the cache is still good.
+    const r = run(file, { XASH_VITE_CACHE: cache });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /already applied/);
+    assert.equal(
+      existsSync(cached),
+      true,
+      'a cache that is already patched was dropped — every install would re-bundle the engine'
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(cache, { recursive: true, force: true });
+  }
+});
+
+test('the shipped rate limiter behaves the way the patch claims', () => {
+  // The A-B-A proved the MECHANISM (that removing the per-frame
+  // getError saves 1.26 ms of a 2.41 ms frame). What it cannot prove
+  // is that the patch we SHIP actually rate-limits, rather than
+  // silently keeping the old behaviour or, worse, never checking at
+  // all.
+  //
+  // So this evaluates the patched function that the real patch script
+  // produces, against a controlled clock and a counting mock of
+  // GLctx.getError.
+  const { dir, file } = fixture();
+  try {
+    assert.equal(run(file).code, 0);
+    const patched = readFileSync(file, 'utf8');
+
+    // Pull the patched function out of the file the patch produced.
+    //
+    // Brace matching, not index hunting: the patch writes a multi-line
+    // function, and an index-based extraction is exactly the kind of
+    // thing that breaks the moment the patch's formatting changes.
+    const start = patched.indexOf('var _emscripten_glGetError =');
+    assert.notEqual(start, -1, 'the patched function is not in the file');
+    const bodyStart = patched.indexOf('{', start);
+    let depth = 0;
+    let end = -1;
+    for (let i = bodyStart; i < patched.length; i++) {
+      const ch = patched[i];
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    assert.notEqual(end, -1, 'the patched function is not closed');
+    const src = patched.slice(start, end + 1).replace(/^var /, '(') + ')';
+
+    // Build a function with the glue's surrounding names in scope.
+    const make = new Function(
+      'GLctx',
+      'GL',
+      'location',
+      'performance',
+      `return ${src};`
+    );
+
+    let realCalls = 0;
+    const GLctx = { getError: () => { realCalls += 1; return 0; } };
+    let now = 1000;
+    const performance = { now: () => now };
+    const GL = { lastError: 0 };
+
+    // --- without the debug flag -------------------------------------
+    const fn = make(GLctx, GL, { search: '' }, performance);
+
+    fn();
+    fn();
+    fn();
+    fn();
+    assert.equal(realCalls, 1, 'four calls in the same millisecond must cost one real check');
+
+    now += 300;
+    fn();
+    assert.equal(realCalls, 2, 'a new 250 ms window must produce a new real check');
+
+    now += 100;
+    fn();
+    assert.equal(realCalls, 2, 'a call inside the window must not re-check');
+
+    // --- the glue's own bookkeeping still works ----------------------
+    GL.lastError = 1281; // GL_INVALID_ENUM
+    now += 300;
+    assert.equal(fn(), 1281, 'GL.lastError must still be returned');
+    assert.equal(GL.lastError, 0, 'GL.lastError must still be cleared');
+
+    // --- with the debug flag -----------------------------------------
+    let debugCalls = 0;
+    const debugGLctx = { getError: () => { debugCalls += 1; return 0; } };
+    const debugFn = make(debugGLctx, { lastError: 0 }, { search: '?gldebug=1' }, performance);
+    debugFn();
+    debugFn();
+    debugFn();
+    assert.equal(debugCalls, 3, '?gldebug=1 must restore the original per-call behaviour');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
