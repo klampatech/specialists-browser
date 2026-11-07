@@ -237,6 +237,11 @@ taken wherever the client happened to spawn. The harness now uses a
 unique name per run, set on the engine after the boot (the identity is
 REMEMBERED in local storage and the saved copy wins over the modal).
 
+**THE WINDOW IS PART OF THE FIXTURE.** The canvas fills the window,
+and the engine's frame cost is the pixel count it draws: 2400x1794
+backing measured 4.26-4.34 ms, 3456x1882 measured 5.34 ms. So
+`--window WxH` pins it, before the canvas is read.
+
 **THE RESULT — same map, same fixture, three fresh runs, M3 Pro:**
 
     run 1   windows 2.05 / 1.83 / 1.75 ms   ->  1.83 ms
@@ -244,10 +249,34 @@ REMEMBERED in local storage and the saved copy wins over the modal).
     run 3   windows 1.81 / 2.38 / 2.27 ms   ->  2.38 ms
 
 **A 1.3x spread between fresh runs, down from the 4.9x the random spawn
-produced on the same map.** The spread rises monotonically across the
-three runs, one after another: the M3 Pro warming up. **That residual
-is AMBIENT, and it is what the A-B-A pattern is for** — measure A, then
-the candidate, then A again, in one session.
+produced on the same map.**
+
+**AND THE RESIDUAL IS AMBIENT, NOT MEASUREMENT ERROR.** Over ninety
+minutes, the same fixture, the same canvas and the same machine read
+2.19 ms and then 5.34 ms; the same canvas ten minutes apart read 5.34
+ms and 2.48 ms. The engine did not change — the MACHINE did, under a
+sustained campaign of 120 Hz rendering on an M3 Pro whose GPU clocks
+down as it heats. **Every result now carries the machine's load
+average**, so a reading taken while the machine was busy can be
+recognised as one. **This is why the comparison is A-B-A WITHIN A
+SESSION, not two numbers hours apart** — measure A, then the candidate,
+then A again, and compare against the A that brackets it. The A-B-A
+drift figure (+0.03 ms, -0.06 ms) is the honest measure of how much
+of a difference is the change and how much is the clock.
+
+**TWO MORE THINGS THE FIXTURE LEARNED.**
+
+- **NODE ZERO IS REPRODUCIBLE BUT ARBITRARY.** It may be a quiet
+  corner, and a regression fixture in a quiet corner hides a
+  regression. So the nodes can be read one at a time, the player put
+  on each, and each measured — `--fixture-node N` and
+  `tools/perf/scan-fixture-cost.sh`. **The worst-case fixture is the
+  most expensive node on the heaviest map.**
+- **ONLY 22 MAPS HAVE NAV DATA** — the bot-enabled ones. `ts_lobby`,
+  `ts_antrodome` and `ts_frigid` have no `.ndm` at all, so they
+  CANNOT be pinned, and their numbers are at random spawns. The
+  harness says "NOT PINNED" and refuses to rank them rather than
+  quietly measuring a random spot.
 
 **"THE SAME MAP" IS NOT "THE SAME MEASUREMENT".** A fixture that pins
 only the map produces numbers that differ by 3-5x between runs, and a

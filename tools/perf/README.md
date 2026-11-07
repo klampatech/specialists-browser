@@ -353,6 +353,17 @@ spawn. The harness now uses a unique name per run and sets it on the
 engine after the boot, because the identity is REMEMBERED in local
 storage and the saved copy can win over the identity modal.
 
+**THE WINDOW IS PART OF IT TOO.** The canvas fills the window, and the
+engine's frame cost is the pixel count it draws (the client says so
+itself, in `webxash/src/services/video-settings.ts`):
+
+    canvas 2400x1794 backing   ->  4.26 - 4.34 ms
+    canvas 3456x1882 backing   ->  5.34 ms
+
+So `--window WxH` pins it, and the pin happens BEFORE the canvas is
+read — otherwise the report says one size while the engine drew
+another.
+
 **THE RESULT.** Same map, same fixture, three fresh runs on Kyle's
 MacBook Pro (M3 Pro, 120 Hz), the CI stack, the shipped bundle:
 
@@ -361,12 +372,23 @@ MacBook Pro (M3 Pro, 120 Hz), the CI stack, the shipped bundle:
     run 3   windows 1.81 / 2.38 / 2.27 ms   ->  2.38 ms
 
 **A 1.3x spread between fresh runs, down from the 4.9x that the random
-spawn produced on the same map.** And the spread runs MONOTONICALLY
-UPWARD across the three runs, one after another, which is the machine
-warming up rather than the measurement wandering: the M3 Pro throttles
-as it heats. **That residual is AMBIENT, and it is what the A-B-A
-pattern is for** — measure A, then the candidate, then A again, in one
-session, and compare against the A that brackets it.
+spawn produced on the same map.**
+
+**AND THE RESIDUAL IS AMBIENT, NOT MEASUREMENT ERROR.** Over ninety
+minutes of measurement the same fixture, the same canvas and the same
+machine read 2.19 ms and then 5.34 ms; the same canvas ten minutes
+apart read 5.34 ms and 2.48 ms. The engine did not change — the
+MACHINE did, under a sustained campaign of 120 Hz rendering on an M3
+Pro whose GPU clocks down as it heats. Nothing in the harness can
+control that, but it can SHOW it: **every result now carries the
+machine's load average**, and a reading taken while the machine was
+busy can be recognised as one.
+
+**Which is exactly why the comparison is A-B-A WITHIN A SESSION, and
+not two numbers hours apart.** Measure A, then the candidate, then A
+again, and compare against the A that brackets it. The A-B-A drift
+figure (+0.03 ms, -0.06 ms) is the honest measure of how much of a
+difference is the change and how much is the clock.
 
 **"THE SAME MAP" IS NOT "THE SAME MEASUREMENT".** A fixture that pins
 only the map produces numbers that differ by 3-5x between runs, and a
