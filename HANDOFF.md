@@ -153,41 +153,66 @@ rate — what the game is actually delivering — is kept separately and
 labelled as such. The readout shows BOTH, because the difference between
 them is the whole story.
 
-**THE MAP IS WORTH ~8x, AND THE SERVER ROTATES ITS MAP EVERY THREE
-MINUTES.** Kyle observed that `ts_lobbyduel` "seems to be the heaviest"
-map and offered it as the level for a perf test. Taking that as a
-question rather than a conclusion, the tooling now pins the map, reads
-it from the registry, and FAILS the run if it is not the map that was
-asked for — because the CI server runs `roundtime 180` and its cycle
-has 22 entries, so a run that does not pin the map is measuring
-whichever map the rotation happened to reach.
+**THE MAP, THE VIEWPOINT AND THE WARM-UP — AND A COMPARISON THAT WAS
+CONFOUNDED.** Kyle observed that `ts_lobbyduel` "seems to be the
+heaviest" map and offered it as the level for a perf test. Taking that
+as a question rather than a conclusion is what exposed the biggest
+measurement trap in this project.
 
-**THAT WAS THE MISSING PIECE IN THE CONTRADICTORY MEASUREMENTS ABOVE.**
-An earlier pair of runs read **2.90 ms** and **13.26 ms** per frame on
-the same server, the same machine, the same browser — on two different
-maps. Not contention: the map.
+**THE TRAP: THE VIEWPOINT.** The server picks the spawn point at
+RANDOM (`crates/server/src/rules/spawnpoint.rs:98` uses
+`eng.random_long`), and the spawn carries its own angles. The engine's
+per-frame cost is dominated by what is VISIBLE — a player facing a
+wall costs almost nothing. **Repeating ONE map on freshly-booted
+servers gave 1.5 ms, then 5.0 ms, then 1.8 ms** — same map, same
+bundle, same machine, same browser. **A 3x spread from the spawn
+alone.**
 
-**MEASURED (Kyle's MacBook, M3 Pro, 120 Hz, one tab, the same bundle):
+**THE SECOND TRAP: THE WARM-UP.** The first measurement window is
+always the most expensive — the engine is still settling after the map
+load. Measured: 8.18, then 6.12, then 6.16 ms on the same map and the
+same view. A 25% drop that is the engine warming up, not the map
+changing.
 
-    ts_lobbyduel   ~1.5 ms    120 Hz, 120 fps
-    ts_frigid      ~3.25 ms   120 Hz, 120 fps
-    ts_antrodome   ~4.95 ms   120 Hz, 120 fps
-    ts_lobby       ~9.5 ms    120 Hz, ~102 fps
-    ts_hammertime  ~9.55 ms   120 Hz, ~100 fps
-    ts_casa        ~12.7 ms   60 Hz,  ~78 fps
+**THE THIRD TRAP: THE SERVER ROTATES ITS MAP EVERY THREE MINUTES**
+(`roundtime 180`, 22 entries in the cycle). A run that does not pin
+the map measures whichever map the rotation reached — and **that was
+the missing piece in the contradictory measurements above**: an earlier
+pair read **2.90 ms** and **13.26 ms** per frame on the same server,
+machine and browser, on two different maps.
 
-**SO KYLE'S INSTINCT WAS RIGHT IN SUBSTANCE AND WRONG IN THE DETAIL:
-the LEVEL dominates the measurement — worth ~8x — but `ts_lobbyduel` is
-the LIGHTEST of the ones measured, not the heaviest.** `ts_casa` is the
-worst case: the engine misses vsyncs and the browser drops to 60 Hz.
+**THE FIRST MAP COMPARISON WAS CONFOUNDED, AND IT WAS WRONG.** Six
+maps, one run each, produced a clean-looking table from ~1.5 ms to
+~12.7 ms and the conclusion that the map was worth ~8x, with
+`ts_lobbyduel` the lightest and `ts_casa` the heaviest. **That
+conclusion was not supported**, because the viewpoint, the warm-up and
+the run count were all uncontrolled. The map's own contribution is
+smaller than it looked.
 
-**THE TOOLS:** `tools/perf/lib/fleet-map.cjs` reads the map from the
-registry's public server list; the harnesses print it with every
-result; `--map` makes a mismatch a HARD FAILURE (a perf run on the
-wrong level is worse than no perf run, because it looks like data),
-and the map is checked AFTER the measurement windows too, so a run that
-straddles a round rotation is caught rather than averaged.
-`tools/perf/measure-map-cost.sh` drives the whole comparison.
+**THE TOOLING NOW CONTROLS ALL THREE:**
+
+- the view is **pinned** with the client's `ts_test_angles <pitch>
+  <yaw>` before measuring;
+- the camera origin, eye and angles are **read and reported** with
+  every result, from the engine's own `ts_test_view` command
+  (`tools/perf/lib/viewpoint.cjs`);
+- the result prints the **settled** frame cost separately from the
+  warm-up one, and `measure-map-cost.sh` takes **two runs per map**;
+- `tools/perf/lib/fleet-map.cjs` reads the map from the registry, and
+  `--map` makes a mismatch a **HARD FAILURE** — a perf run on the
+  wrong level is worse than no perf run, because it looks like data.
+  The map is checked AFTER the windows too, so a run that straddles a
+  round rotation is caught rather than averaged.
+
+**WHAT A PERF FIXTURE ACTUALLY NEEDS:** the map (fixed with
+`CI_MAP=<map>`), the viewpoint (the angles are pinnable client-side;
+the POSITION is pinnable with the server's `ts_tp <player#> <x> <y> <z>
+[yaw] [pitch]`, which sets origin and angles in one command and needs
+`sv_cheats 1` plus a route to the server console), and the warm-up
+(skipped, or medianed away). **"THE SAME MAP" IS NOT "THE SAME
+MEASUREMENT"** — a fixture that pins only the map produces numbers
+that differ by 3x between runs, and a real regression hides inside
+that spread.
 
 **THE MEASUREMENT HYGIENE LESSON, WHICH COST THE MOST TIME.** The first
 two runs of the same measurement on the same machine disagreed by 3.3×

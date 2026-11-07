@@ -45,7 +45,7 @@ const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
 const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
 const { describeMaps, checkMap, readFleet } = require('./lib/fleet-map.cjs');
-const { readViewpoint, describeViewpoint } = require('./lib/viewpoint.cjs');
+const { readViewpoint, describeViewpoint, pinView } = require('./lib/viewpoint.cjs');
 const { chromium } = loadPlaywright();
 
 const URL_ = 'https://ci.bulletballet.dev/';
@@ -236,22 +236,59 @@ async function engineCost(page) {
   // not always the same place. A perf number without a viewpoint is a
   // number of unknown provenance — exactly like a perf number without
   // a map.
+  // PIN THE VIEW BEFORE MEASURING.
+  //
+  // The server picks the spawn point at random, and the spawn carries
+  // its own angles, so the same map can be measured looking in
+  // completely different directions - and the engine's cost is
+  // dominated by what is visible. Measured: the same map read 11-13 ms
+  // in one run and 1.8 ms in another.
+  const pinned = await pinView(page, 0, 0);
+  if (pinned) await page.waitForTimeout(500);
   const viewpoint = await readViewpoint(page);
   console.log(
     `  renderer: ${info.renderer}\n  canvas: ${info.css.join('x')} CSS = ${info.backing.join('x')} backing (dpr ${info.dpr}, screen ${info.screen.join('x')})\n  map: ${maps}   players: ${people}\n  view: ${describeViewpoint(viewpoint)}`
   );
 
   console.log(`\n  --- ${REPEATS} windows, each 6 s ---\n`);
+  const windowCosts = [];
   for (let i = 0; i < REPEATS; i++) {
     const cost = await engineCost(page);
     const w = await window_(page, 6);
     const pacerMs = cost ? cost.engineWorkMs : (w.pacing ? w.pacing.engineWorkMs : 0);
+    windowCosts.push(pacerMs);
     console.log(
       `  #${i + 1}  tick ${String(w.tickHz).padStart(5)} Hz   engine ${pacerMs.toFixed(2).padStart(6)} ms   ` +
         `gpu backlog med ${w.gpuBacklogMedMs.toFixed(2).padStart(6)} ms  max ${w.gpuBacklogMaxMs.toFixed(2).padStart(7)} ms   ` +
         `frames ${w.frames}`
     );
     await page.waitForTimeout(1500);
+  }
+
+  // THE WARM-UP WINDOW IS NOT THE ENGINE'S COST.
+  //
+  // The FIRST window is always the most expensive: the engine is still
+  // settling after the map load (shader compiles, the first pass over
+  // the geometry, the caches filling). Measured on ts_casa: 8.18 ms,
+  // then 6.12, then 6.16 — a 25% drop that is the engine warming up,
+  // not the map changing.
+  //
+  // So a perf fixture takes the SETTLED number: the median of the
+  // windows after the first. Both are printed, because a reader who
+  // only has one number needs to know which one it is.
+  const medianOf = (a) => {
+    if (!a.length) return 0;
+    const s2 = a.slice().sort((x, y) => x - y);
+    return s2[Math.floor(s2.length / 2)];
+  };
+  if (windowCosts.length) {
+    const settled = windowCosts.slice(1);
+    console.log('');
+    console.log(`  frame cost, all windows:  ${medianOf(windowCosts).toFixed(2)} ms`);
+    console.log(
+      `  frame cost, SETTLED:       ${(settled.length ? medianOf(settled) : medianOf(windowCosts)).toFixed(2)} ms` +
+        `   (the first window is the engine warming up)`
+    );
   }
 
   // THE MAP MUST STILL BE THE MAP AFTER THE MEASUREMENT.

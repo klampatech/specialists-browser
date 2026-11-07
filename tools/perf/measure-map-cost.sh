@@ -35,8 +35,13 @@ for MAP in "${MAPS[@]}"; do
   ssh -o BatchMode=yes "$PROD" "CI_MAP=$MAP bash /home/ubuntu/ci-stack.sh up" 2>&1 | tail -2
   sleep 5
 
-  timeout 500 node "$REPO/tools/perf/measure-engine-cost.cjs" --repeat 4 2>&1 \
-    | grep -E "map:|tick|#" | sed 's/^/  /'
+  # TWO RUNS PER MAP, because the spawn point is random and the
+  # viewpoint moves the cost by several times. One run per map is a
+  # sample, not a measurement.
+  for RUN in 1 2; do
+    timeout 500 node "$REPO/tools/perf/measure-engine-cost.cjs" --repeat 4 2>&1 \
+      | grep -E "map:|view:|SETTLED|tick" | sed 's/^/  /'
+  done
 done
 
 echo ""

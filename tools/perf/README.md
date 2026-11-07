@@ -255,60 +255,73 @@ would measure two maps and report the average.
 does the whole loop — down, up on the next map, measure — and tears the
 CI stack down at the end.
 
-### 4e.1 WHAT THE MAP IS WORTH
+### 4e.1 THE MAP IS NOT THE ONLY VARIABLE — AND THE FIRST PASS AT IT WAS WRONG
 
-Measured 2026-11-07 on Kyle's MacBook Pro (M3 Pro, 120 Hz), one tab,
-the same bundle, each map on its own freshly-booted server:
+**THE FIRST COMPARISON OF THE MAPS WAS CONFOUNDED, AND THE TOOLING HAS
+SINCE BEEN FIXED. THIS IS THE HONEST VERSION.**
 
-| map | engine cost | tick | delivered |
-|---|---|---|---|
-| ts_lobbyduel | ~1.5 ms | 120 Hz | 120 fps |
-| ts_frigid | ~3.25 ms | 120 Hz | 120 fps |
-| ts_antrodome | ~4.95 ms | 120 Hz | 120 fps |
-| ts_lobby | ~9.5 ms | 120 Hz | ~102 fps |
-| ts_hammertime | ~9.55 ms | 120 Hz | ~100 fps |
-| **ts_casa** | **~12.7 ms** | **60 Hz** | **~78 fps** |
+The first pass measured six maps, one run each, and produced a clean
+-looking table from `ts_lobbyduel` at ~1.5 ms to `ts_casa` at ~12.7 ms
+— and concluded that the map was worth ~8x, with `ts_lobbyduel` the
+lightest. **That conclusion was not supported by the data, because the
+comparison had three uncontrolled variables.**
 
-**THE MAP IS WORTH ~8x.** That is more than the difference between a
-patched engine and an unpatched one, and more than the difference
-between a good machine and a slow one. **A perf run that does not say
-which map it was on is nearly meaningless.**
+**1. THE VIEWPOINT.** The server picks the spawn point at RANDOM
+(`crates/server/src/rules/spawnpoint.rs:98` uses `eng.random_long`), and
+the spawn carries its own angles. The engine's per-frame cost is
+dominated by what is VISIBLE — a player facing a wall costs almost
+nothing. Repeating one map on freshly-booted servers gave **1.5 ms**,
+then **5.0 ms**, then **1.8 ms**, with the same map, bundle, machine and
+browser. **That is a 3x spread from the spawn alone.**
 
-`ts_casa` is the worst case measured: the engine misses vsyncs, the
-browser drops to 60 Hz, and the game delivers ~78 fps. `ts_lobbyduel` —
-which looks like the obvious candidate for "the heaviest", being a
-duel arena — is the LIGHTEST.
+**2. THE WARM-UP.** The FIRST measurement window is always the most
+expensive — the engine is still settling after the map load. Measured:
+8.18, then 6.12, then 6.16 ms on the same map, same view. A 25% drop
+that is the engine warming up, not the map changing.
 
-**THE BOTS ARE NOT THE CONFOUND.** The CI server runs
-`ts_bot_quota 16`, but the orchestrator's target for the CI instance is
-zero, and the runs report `1h/0b` — the harness's own player and no
-bots. The spread is the map.
+**3. THE RUN COUNT.** One run per map is a sample, not a measurement.
 
-### 4e.2 AND THE MAP ALONE IS NOT ENOUGH — THE VIEWPOINT MATTERS TOO
+**THE FIXES ARE IN THE TOOLING NOW:**
 
-Repeating `ts_lobbyduel` on a freshly-booted server gave **1.5 ms** in
-one run and **5.0 ms** in another. Same map, same bundle, same machine,
-same browser.
-
-**The difference was where the player was standing and looking.** The
-engine's per-frame cost is dominated by what is visible: a player
-facing a wall costs almost nothing, and a player looking across a map
-costs a lot. The spawn is not the same place every time.
-
-So `lib/viewpoint.cjs` reads the camera origin, the eye position and
-the angles out of the engine's own `ts_test_view` developer command,
-and every result states where it was measured from:
+- the view is **pinned** with the client's `ts_test_angles <pitch>
+  <yaw>` before measuring, so the direction is not a variable;
+- the camera origin, eye and angles are **read and reported** with
+  every result, from the engine's own `ts_test_view` command
+  (`lib/viewpoint.cjs`), so a number can be traced to where it was
+  taken;
+- the result prints the **settled** frame cost separately from the
+  warm-up one, and the comparison script takes **two runs per map**.
 
 ```
   map: ts_casa   players: 1h/0b
-  view: origin [1234.0 567.0 64.0], angles [0.0 45.0 0.0]
+  view: origin -592.0, -1024.0, 385.0, angles 0.0, 0.0, 0.0
+
+  frame cost, all windows:  8.80 ms
+  frame cost, SETTLED:       9.40 ms   (the first window is the engine warming up)
 ```
 
-**A PERF FIXTURE NEEDS BOTH THE MAP AND THE VIEWPOINT.** "The same map"
-is not "the same measurement". The remaining piece for a truly
-reproducible fixture is to PLACE the player — the server's
-`ts_dev_forcejoin` dev aid already exists and prints each player's
-origin, so the groundwork is there.
+**THE BOTS ARE NOT A CONFOUND.** The CI server runs `ts_bot_quota 16`,
+but the orchestrator's target for the CI instance is zero, and the runs
+report `1h/0b` — the harness's own player and no bots.
+
+### 4e.2 WHAT A PERF FIXTURE ACTUALLY NEEDS
+
+Three things, in the order they matter:
+
+1. **THE MAP** — fix it with `CI_MAP=<map>` when the server starts.
+   It is worth something, but less than it looks like once the other
+   two are controlled.
+2. **THE VIEWPOINT** — the biggest single variable, worth ~3-4x on its
+   own. The angles are pinnable with the client's `ts_test_angles`; the
+   **position** is pinnable with the server's `ts_tp <player#> <x> <y>
+   <z> [yaw] [pitch]`, which sets the origin AND the angles in one
+   command. It needs `sv_cheats 1` and a route to the server console.
+3. **THE WARM-UP** — skip the first window, or take the median of the
+   rest.
+
+**"THE SAME MAP" IS NOT "THE SAME MEASUREMENT".** A perf fixture that
+pins only the map will produce numbers that differ by 3x between runs,
+and a regression that is real will hide inside that spread.
 
 ## 4c. THE ENGINE CALLS `gl.getError()` TEN TIMES A FRAME
 

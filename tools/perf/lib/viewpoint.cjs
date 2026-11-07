@@ -84,6 +84,46 @@ async function readViewpoint(page) {
 }
 
 /**
+ * PIN THE VIEW, so the measurement is reproducible.
+ *
+ * The server picks the spawn point at RANDOM
+ * (`crates/server/src/rules/spawnpoint.rs:98` uses `eng.random_long`),
+ * and the spawn point carries its own angles. So two runs of the same
+ * map can look in completely different directions, and the engine's
+ * per-frame cost — which is dominated by what is VISIBLE — changes
+ * with them. Measured: the same map read 11-13 ms in one run and
+ * 1.8 ms in another.
+ *
+ * The client's own `ts_test_angles <pitch> <yaw>` developer command
+ * sets the view angles, which removes the direction from the
+ * variable. The POSITION still varies with the spawn, so this makes
+ * the measurement comparable rather than identical — but it removes
+ * the largest source of the spread.
+ *
+ * @param {import('playwright').Page} page
+ * @param {number} pitch
+ * @param {number} yaw
+ * @returns {Promise<boolean>} whether the command was accepted
+ */
+async function pinView(page, pitch = 0, yaw = 0) {
+  return page
+    .evaluate(
+      async ([p, y]) => {
+        const xash = window.__xash;
+        if (!xash || typeof xash.Cmd_ExecuteString !== 'function') return false;
+        try {
+          xash.Cmd_ExecuteString(`ts_test_angles ${p} ${y}`);
+          return true;
+        } catch (e) {
+          return false;
+        }
+      },
+      [pitch, yaw]
+    )
+    .catch(() => false);
+}
+
+/**
  * A one-line description of the viewpoint, for a results table.
  */
 function describeViewpoint(viewpoint) {
@@ -94,4 +134,4 @@ function describeViewpoint(viewpoint) {
   return parts.join(', ') || 'unknown';
 }
 
-module.exports = { readViewpoint, describeViewpoint };
+module.exports = { readViewpoint, describeViewpoint, pinView };

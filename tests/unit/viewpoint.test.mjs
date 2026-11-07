@@ -30,7 +30,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const require = createRequire(import.meta.url);
 const viewpoint = require(join(ROOT, 'tools', 'perf', 'lib', 'viewpoint.cjs'));
 
-const { readViewpoint, describeViewpoint } = viewpoint;
+const { readViewpoint, describeViewpoint, pinView } = viewpoint;
 
 /**
  * A page whose `evaluate` runs the supplied function against a fake
@@ -142,4 +142,36 @@ test('a viewpoint is described in one line', () => {
     'origin 1 2 3, angles 0 45 0'
   );
   assert.equal(describeViewpoint(null), 'unknown');
+});
+
+test('the view can be pinned, so the direction is not a variable', async () => {
+  const issued = [];
+  const page = {
+    evaluate: async (fn, arg) => {
+      const win = { __xash: { Cmd_ExecuteString: (cmd) => issued.push(cmd) } };
+      globalThis.window = win;
+      try {
+        return await fn(arg);
+      } finally {
+        delete globalThis.window;
+      }
+    },
+  };
+  const ok = await pinView(page, 0, 45);
+  assert.equal(ok, true);
+  assert.deepEqual(issued, ['ts_test_angles 0 45']);
+});
+
+test('a build without the engine cannot pin the view', async () => {
+  const page = {
+    evaluate: async (fn, arg) => {
+      globalThis.window = {};
+      try {
+        return await fn(arg);
+      } finally {
+        delete globalThis.window;
+      }
+    },
+  };
+  assert.equal(await pinView(page, 0, 0), false);
 });
