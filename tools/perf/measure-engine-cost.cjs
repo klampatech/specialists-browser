@@ -61,7 +61,12 @@ const { readViewpoint, describeViewpoint, pinView, waitForArrival } = require('.
 const { findServerPlayer, pinFixturePosition } = require('./lib/fixture-view.cjs');
 const { chromium } = loadPlaywright();
 
-const URL_ = 'https://ci.bulletballet.dev/';
+// WHERE THE CLIENT IS SERVED FROM.
+//
+// Overridable, because the whole point of a perf harness is to be
+// able to measure a CANDIDATE BUILD against the shipped one, and a
+// hardcoded URL makes that impossible without editing the harness.
+const URL_ = process.env.XASH_PERF_URL || 'https://ci.bulletballet.dev/';
 const REPEATS = Number(process.argv[process.argv.indexOf('--repeat') + 1] || 5);
 // A UNIQUE NAME PER RUN.
 //

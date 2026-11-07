@@ -443,6 +443,32 @@ comparison is only readable when the two readings are close together,
 and the window has to be pinned because there is no way to know which
 canvas a number was taken at.**
 
+**THE CAPSTONE: THE PATCH, IN FPS, AT THE WORST-CASE FIXTURE.**
+
+The A-B-A at `ts_lobbyduel` nav node 1, with the fixture pinned and
+the engine settled for 60 seconds before the first phase:
+
+    A  as shipped        frame  8.89 ms   getError 1095 calls/s   106.6 fps
+    B  getError removed  frame  1.91 ms   getError    0 calls/s   120.2 fps
+    A  restored          frame  8.89 ms   getError 1115 calls/s   105.6 fps
+
+    saving from the patch: 6.98 ms per frame
+    restored-vs-baseline drift: +0.01 ms
+
+**THE SHIPPED BUILD DOES NOT FIT THE 120 Hz BUDGET; THE PATCHED ONE
+DOES.** 8.89 ms against a budget of 8.33 ms — so the shipped client
+runs at 106 fps on a 120 Hz display and the patched one runs at the
+display's full 120. **The patch saves 6.98 ms a frame, 79% of the
+frame, and the drift is +0.01 ms.**
+
+**THE SETTLE IS WHAT MADE THE A-B-A RIGOROUS.** The A-B-A used to
+start its first phase ten seconds after the teleport, while the
+engine was still rebuilding its PVS — so the baseline was measured
+mid-transient and the restored phase, thirty seconds later on a
+settled engine, came out FASTER. That read as -3.36 ms of "drift"
+when it was the settle. Waiting the same 60 seconds the fixture
+waits took the drift to **+0.01 ms**.
+
 **THE RESULT.** Same map, same fixture, three fresh runs on Kyle's
 MacBook Pro (M3 Pro, 120 Hz), the CI stack, the shipped bundle:
 

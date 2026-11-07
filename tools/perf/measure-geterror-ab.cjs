@@ -39,10 +39,47 @@ const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
 const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
 const { describeMaps, checkMap } = require('./lib/fleet-map.cjs');
 const { findServerPlayer, pinFixturePosition } = require('./lib/fixture-view.cjs');
+
 const { pinView, waitForArrival } = require('./lib/viewpoint.cjs');
 
 const URL_ = 'https://ci.bulletballet.dev/';
 const args = process.argv.slice(2);
+
+/**
+ * HOW LONG TO WAIT AFTER THE TELEPORT BEFORE THE FIRST PHASE.
+ *
+ * A teleport invalidates the client's PVS and the engine spends the
+ * next half-minute rebuilding it, with the frame cost falling by 2.5x
+ * as it does. Phase A used to start immediately, so the BASELINE was
+ * measured mid-transient and the RESTORED phase — thirty seconds
+ * later, on a settled engine — came out FASTER. That is not drift,
+ * and it is not the patch: it is the settle, and it made the A-B-A
+ * read -3.36 ms of "drift" where it should have read near zero.
+ *
+ * So the A-B-A waits the same 60 seconds the fixture waits before it
+ * calls a cost settled.
+ */
+const SETTLE_MS = (() => {
+  const i = args.indexOf('--settle-ms');
+  const v = i >= 0 ? Number(args[i + 1]) : 60000;
+  return Number.isFinite(v) ? v : 60000;
+})();
+
+/**
+ * WHICH NAV NODE TO STAND ON.
+ *
+ * Node zero is reproducible but ARBITRARY — and on `ts_lobbyduel` the
+ * six nodes measure 5.77 to 10.12 ms. Node 1 is the worst case, and
+ * at 10.12 ms the engine does NOT fit the 120 Hz budget (8.33 ms), so
+ * the frame count falls below the display rate. That is where a
+ * regression is visible to a player instead of hiding inside a
+ * vsync-pinned frame count.
+ */
+const FIXTURE_NODE = (() => {
+  const i = args.indexOf('--fixture-node');
+  const v = i >= 0 ? Number(args[i + 1]) : 0;
+  return Number.isFinite(v) ? v : 0;
+})();
 const SAMPLES = Number(args[args.indexOf('--samples') + 1]) || 4;
 const EXPECTED_MAP = args.includes('--map') ? args[args.indexOf('--map') + 1] : null;
 
@@ -61,6 +98,32 @@ async function bootGame(page) {
   if (!fleet.ok) throw new Error('no server to join');
   await page.click('.ts-landing__play');
   await confirmIdentity(page, PLAYER_NAME);
+
+  // THE REMEMBERED IDENTITY WINS OVER THE MODAL.
+  //
+  // The client remembers the identity in local storage, and the saved
+  // copy can beat what the modal was filled with — so the client then
+  // connects as "PerfProbe" whatever the harness asked for, and the
+  // server never learns the unique name the lookup is looking for.
+  // ("the server has no player named PerfProbednbe" — which is what
+  // happened here.)
+  //
+  // Since the server learns the name from the client's userinfo,
+  // setting it on the engine after the boot gets it there in a second
+  // or two.
+  await page
+    .evaluate(async (n) => {
+      const xash = window.__xash;
+      if (!xash || typeof xash.Cmd_ExecuteString !== 'function') return;
+      try {
+        xash.Cmd_ExecuteString(`setinfo name "${n}"`);
+      } catch (e) {
+        /* the lookup below will fail loudly if this did not work */
+      }
+    }, PLAYER_NAME)
+    .catch(() => {});
+  await page.waitForTimeout(1500);
+
   console.log('  booting...');
   const deadline = Date.now() + 420_000;
   while (Date.now() < deadline) {
@@ -148,11 +211,47 @@ function median(a) {
   return s[Math.floor(s.length / 2)];
 }
 
+/**
+ * Count the frames the client actually draws, in the page.
+ *
+ * WHY: THE FRAME COUNT IS THE USER-VISIBLE NUMBER.
+ *
+ * The engine's cost in milliseconds is an internal reading. What a
+ * player sees is the frame rate. On a 120 Hz display the budget is
+ * 8.33 ms a frame, and below that the client holds the display rate
+ * exactly — so a regression that stays under the budget is INVISIBLE
+ * in the frame count. Above it, the frame count IS the engine's cost.
+ *
+ * So the A-B-A counts frames as well as milliseconds, and reports the
+ * fps each phase actually ran at.
+ */
+async function startFrameCounter(page) {
+  await page.evaluate(() => {
+    window.__xashAbFrames = 0;
+    window.__xashAbCounting = true;
+    const tick = () => {
+      if (!window.__xashAbCounting) return;
+      window.__xashAbFrames++;
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  });
+}
+
+async function stopFrameCounter(page) {
+  return page.evaluate(() => {
+    window.__xashAbCounting = false;
+    return window.__xashAbFrames || 0;
+  });
+}
+
 /** Run one phase and collect its samples. */
 async function phase(page, label) {
   const costs = [];
   const calls = [];
   const late = [];
+  await startFrameCounter(page);
+  const startedAt = Date.now();
   for (let i = 0; i < SAMPLES; i++) {
     const before = await page.evaluate(() => window.__xashGetErrorCalls || 0);
     const s = await sample(page);
@@ -164,6 +263,9 @@ async function phase(page, label) {
     calls.push(after - before);
     await page.waitForTimeout(900);
   }
+  const frames = await stopFrameCounter(page);
+  const elapsedS = (Date.now() - startedAt) / 1000;
+  const fps = elapsedS > 0 ? frames / elapsedS : 0;
   const m = median(costs);
   // A PHASE THAT PRODUCED NO SAMPLES MUST NOT TAKE THE RUN DOWN.
   //
@@ -174,6 +276,7 @@ async function phase(page, label) {
   console.log(
     `  ${label.padEnd(22)} frame ${num(m).toFixed(2).padStart(6)} ms   ` +
       `getError ${(num(median(calls)) / 2).toFixed(0).padStart(6)} calls/s   ` +
+      `${fps.toFixed(1).padStart(6)} fps   ` +
       `late ${median(late)}`
   );
   console.log(`    samples: ${costs.map((v) => v.toFixed(2)).join(', ')} ms`);
@@ -229,14 +332,14 @@ async function phase(page, label) {
   if (EXPECTED_MAP) {
     const found = await findServerPlayer(PLAYER_NAME);
     if (found.ok) {
-      const at = await pinFixturePosition(found.player.index, EXPECTED_MAP);
+      const at = await pinFixturePosition(found.player.index, EXPECTED_MAP, { nodeIndex: FIXTURE_NODE });
       if (at.ok) {
         const arrived = await waitForArrival(page, at.origin, {
           tolerance: 8,
           timeoutMs: 20000,
         });
         console.log(
-          `  fixture: PINNED at ${at.origin.join(', ')}   client ` +
+          `  fixture: PINNED at ${at.origin.join(', ')}${FIXTURE_NODE ? ` (node ${FIXTURE_NODE})` : ''}   client ` +
             `${arrived.arrived ? 'ARRIVED' : 'DID NOT ARRIVE'}`
         );
       } else {
@@ -247,7 +350,17 @@ async function phase(page, label) {
     }
   }
   await pinView(page, 0, 0);
-  await page.waitForTimeout(10_000);
+
+  // THE SETTLE, BEFORE THE FIRST PHASE.
+  //
+  // Ten seconds was not enough: the engine spends about half a minute
+  // rebuilding its PVS after a teleport, and the frame cost falls 2.5x
+  // while it does. So the BASELINE was measured mid-transient and the
+  // restored phase — later, on a settled engine — came out FASTER.
+  // The A-B-A read -3.36 ms of "drift" where it should have read
+  // near zero. The fixture waits 60 seconds; the A-B-A now does too.
+  console.log(`  settling for ${Math.round(SETTLE_MS / 1000)} s before the first phase...`);
+  await page.waitForTimeout(SETTLE_MS);
 
   await countGetError(page);
   console.log('\n  --- A-B-A: getError patched in place ---');
