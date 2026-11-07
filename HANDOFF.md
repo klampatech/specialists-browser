@@ -204,15 +204,54 @@ smaller than it looked.
   The map is checked AFTER the windows too, so a run that straddles a
   round rotation is caught rather than averaged.
 
-**WHAT A PERF FIXTURE ACTUALLY NEEDS:** the map (fixed with
-`CI_MAP=<map>`), the viewpoint (the angles are pinnable client-side;
-the POSITION is pinnable with the server's `ts_tp <player#> <x> <y> <z>
-[yaw] [pitch]`, which sets origin and angles in one command and needs
-`sv_cheats 1` plus a route to the server console), and the warm-up
-(skipped, or medianed away). **"THE SAME MAP" IS NOT "THE SAME
-MEASUREMENT"** — a fixture that pins only the map produces numbers
-that differ by 3x between runs, and a real regression hides inside
-that spread.
+**THE FIXTURE IS BUILT AND MEASURED.** All three are pinned now:
+
+- **THE MAP** — `CI_MAP=<map>`, plus an EMPTY map cycle for the CI
+  instance so the rotation cannot move the map under a run. An empty
+  cycle file disables the rotation
+  (`crates/server/src/rules/mapcycle.rs`: no items means `do_cycle =
+  false`).
+- **THE VIEWPOINT** — the angles with the client's `ts_test_angles`,
+  the POSITION with the server's `ts_tp <player#> <x> <y> <z> [yaw]
+  [pitch]`. `ts_tp` needs `sv_cheats 1`, which the CI stack derives
+  for the CI INSTANCE ONLY; production's `server.cfg` keeps `sv_cheats
+  0` and the shared source file is never changed.
+- **THE WARM-UP** — the harness waits until the frame cost stops
+  moving before it starts the real measurement (a teleport invalidates
+  the client's PVS and the cost falls 2.5x over the next minute).
+
+**THE POSITION COMES FROM THE MAP'S OWN NAV DATA.** The server loads
+each map's `.ndm` file; its nodes are positions on the map's floor —
+where the bots stand and the players spawn. The first node is the same
+on every run. The format is a count and 20-byte node records, so the
+fixture position is the first 24 bytes of the file.
+
+**TWO TRAPS WORTH REMEMBERING.** The bots' `SHIPPED` table LOOKS like
+coordinates and is not — it is the map's node COUNT and link COUNT
+(`(ts_casa, 345, 1936, 1)` = 345 nodes, 1936 links, 1 ladder node),
+and the count matches the `.ndm` header exactly. And the server
+appends " (1)" to a duplicate name while a killed harness leaves its
+connection behind, so a lookup by "PerfProbe" can pick a STALE
+connection — which is exactly what happened, and the measurement was
+taken wherever the client happened to spawn. The harness now uses a
+unique name per run, set on the engine after the boot (the identity is
+REMEMBERED in local storage and the saved copy wins over the modal).
+
+**THE RESULT — same map, same fixture, three fresh runs, M3 Pro:**
+
+    run 1   windows 2.05 / 1.83 / 1.75 ms   ->  1.83 ms
+    run 2   windows 2.13 / 2.10 / 2.19 ms   ->  2.19 ms
+    run 3   windows 1.81 / 2.38 / 2.27 ms   ->  2.38 ms
+
+**A 1.3x spread between fresh runs, down from the 4.9x the random spawn
+produced on the same map.** The spread rises monotonically across the
+three runs, one after another: the M3 Pro warming up. **That residual
+is AMBIENT, and it is what the A-B-A pattern is for** — measure A, then
+the candidate, then A again, in one session.
+
+**"THE SAME MAP" IS NOT "THE SAME MEASUREMENT".** A fixture that pins
+only the map produces numbers that differ by 3-5x between runs, and a
+real regression hides inside that spread.
 
 **THE MEASUREMENT HYGIENE LESSON, WHICH COST THE MOST TIME.** The first
 two runs of the same measurement on the same machine disagreed by 3.3×

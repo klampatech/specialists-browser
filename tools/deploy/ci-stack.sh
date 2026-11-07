@@ -155,8 +155,26 @@ make_ci_config() {
   [ -f "$CI_CONFIG_SRC/server.cfg" ] || die "config volume missing: $CI_CONFIG_SRC"
   sudo mkdir -p "$CI_CONFIG_DIR"
   sudo cp "$CI_CONFIG_SRC/gameinfo.txt" "$CI_CONFIG_DIR/gameinfo.txt"
-  sudo cp "$CI_CONFIG_SRC/mapcycle.txt"  "$CI_CONFIG_DIR/mapcycle.txt"
-  sudo sed 's/^ts_bot_quota .*/ts_bot_quota 0/' "$CI_CONFIG_SRC/server.cfg" \
+  # THE CI INSTANCE GETS AN EMPTY MAP CYCLE, AND THIS IS ON PURPOSE.
+  #
+  # The cycle advances every `roundtime` seconds (clamped to 180 s),
+  # which is right for a match server and wrong for a gate. The perf
+  # fixture needs the SAME map for the whole measurement — the map
+  # rotating underneath a run makes the number meaningless — and the
+  # measurement takes longer than one round because the engine has to
+  # settle first.
+  #
+  # An empty cycle file disables the rotation: the server reads it, and
+  # "no items" means "do not cycle"
+  # (`crates/server/src/rules/mapcycle.rs`, `do_cycle = false`).
+  sudo truncate -s 0 "$CI_CONFIG_DIR/mapcycle.txt"
+  # The CI instance also gets sv_cheats 1, and ONLY the CI instance:
+  # the perf fixture needs the server's `ts_tp` to put the player in
+  # the same spot on every run, and `ts_tp` refuses to run without it.
+  # Production's own server.cfg keeps `sv_cheats 0` — this is a derived
+  # CI copy, so the source file is never changed.
+  sudo sed -e 's/^ts_bot_quota .*/ts_bot_quota 0/' \
+         -e 's/^sv_cheats .*/sv_cheats 1/' "$CI_CONFIG_SRC/server.cfg" \
     | sudo tee "$CI_CONFIG_DIR/server.cfg" >/dev/null
   # The container reads the config as uid 10001 (gameserver), the same
   # uid production's config is owned by.
@@ -164,6 +182,10 @@ make_ci_config() {
   sudo chmod 0644 "$CI_CONFIG_DIR"/*
   grep -q "^ts_bot_quota 0$" "$CI_CONFIG_DIR/server.cfg" \
     || die "the derived CI config does not zero the bot quota"
+  grep -q "^sv_cheats 1$" "$CI_CONFIG_DIR/server.cfg" \
+    || die "the derived CI config does not enable cheats (the perf fixture needs ts_tp)"
+  [ ! -s "$CI_CONFIG_DIR/mapcycle.txt" ] \
+    || die "the derived CI config has a map cycle (the map must not rotate under a perf run)"
 }
 
 # ── the game server ───────────────────────────────────────────────────

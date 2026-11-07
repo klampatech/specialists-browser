@@ -304,24 +304,73 @@ that is the engine warming up, not the map changing.
 but the orchestrator's target for the CI instance is zero, and the runs
 report `1h/0b` — the harness's own player and no bots.
 
-### 4e.2 WHAT A PERF FIXTURE ACTUALLY NEEDS
+### 4e.2 THE FIXTURE, AND WHAT IT ACTUALLY NEEDS
 
 Three things, in the order they matter:
 
-1. **THE MAP** — fix it with `CI_MAP=<map>` when the server starts.
-   It is worth something, but less than it looks like once the other
-   two are controlled.
-2. **THE VIEWPOINT** — the biggest single variable, worth ~3-4x on its
-   own. The angles are pinnable with the client's `ts_test_angles`; the
-   **position** is pinnable with the server's `ts_tp <player#> <x> <y>
-   <z> [yaw] [pitch]`, which sets the origin AND the angles in one
-   command. It needs `sv_cheats 1` and a route to the server console.
-3. **THE WARM-UP** — skip the first window, or take the median of the
-   rest.
+1. **THE MAP** — fix it with `CI_MAP=<map>` when the server starts,
+   and give the CI instance an EMPTY map cycle so the rotation cannot
+   move the map underneath a run.
+2. **THE VIEWPOINT** — the biggest single variable, worth 3-5x on its
+   own. Both halves are pinnable:
+   - the **angles** with the client's `ts_test_angles <pitch> <yaw>`;
+   - the **position** with the server's `ts_tp <player#> <x> <y> <z>
+     [yaw] [pitch]`, which sets the origin AND the angles in one
+     command. It needs `sv_cheats 1` — which the CI stack derives for
+     the CI instance only; production's `server.cfg` keeps `sv_cheats
+     0` — and a route to the server console.
+3. **THE WARM-UP** — a teleport invalidates the client's PVS and the
+   client spends the next minute catching up, with the frame cost
+   falling by 2.5x as it does. The harness waits until the cost stops
+   moving before it starts the real measurement.
 
-**"THE SAME MAP" IS NOT "THE SAME MEASUREMENT".** A perf fixture that
-pins only the map will produce numbers that differ by 3x between runs,
-and a regression that is real will hide inside that spread.
+**WHERE THE POSITION COMES FROM.** The map's own nav data. The server
+loads each map's `.ndm` file, and its nodes are positions on the map's
+floor — the same places the bots stand and the players spawn. The
+FIRST node is as good as any, and it is the same on every run.
+
+The `.ndm` format, from `crates/server/src/bots/nodes.rs`:
+
+    count: i32 LE
+    count x node (20 bytes): origin x, y, z (f32 LE), flags, reserved
+
+so the fixture position is the first 24 bytes of the file.
+
+**THE TRAP IN THE BOTS' TABLE.** The `SHIPPED` table in the same file
+looks like coordinates and is not — it is the map's NODE COUNT and
+LINK COUNT. `(ts_casa, 345, 1936, 1)` is 345 nodes, 1936 links, 1
+ladder node. The node COUNT matches the `.ndm` header exactly
+(ts_lobbyduel 154, ts_casa 345, ts_hammertime 132), which is how the
+mistake gets caught. The nav FILE is the ground truth.
+
+**THE TRAP IN THE PLAYER'S NAME.** The server appends " (1)", " (2)"
+to a duplicate name, and a killed harness run leaves its connection
+behind — so "PerfProbe" can be several players at once, and a lookup
+by that name can pick a STALE connection instead of the live client.
+That is not theoretical: it made the fixture teleport the wrong
+player, and the measurement was taken wherever the client happened to
+spawn. The harness now uses a unique name per run and sets it on the
+engine after the boot, because the identity is REMEMBERED in local
+storage and the saved copy can win over the identity modal.
+
+**THE RESULT.** Same map, same fixture, three fresh runs on Kyle's
+MacBook Pro (M3 Pro, 120 Hz), the CI stack, the shipped bundle:
+
+    run 1   windows 2.05 / 1.83 / 1.75 ms   ->  1.83 ms
+    run 2   windows 2.13 / 2.10 / 2.19 ms   ->  2.19 ms
+    run 3   windows 1.81 / 2.38 / 2.27 ms   ->  2.38 ms
+
+**A 1.3x spread between fresh runs, down from the 4.9x that the random
+spawn produced on the same map.** And the spread runs MONOTONICALLY
+UPWARD across the three runs, one after another, which is the machine
+warming up rather than the measurement wandering: the M3 Pro throttles
+as it heats. **That residual is AMBIENT, and it is what the A-B-A
+pattern is for** — measure A, then the candidate, then A again, in one
+session, and compare against the A that brackets it.
+
+**"THE SAME MAP" IS NOT "THE SAME MEASUREMENT".** A fixture that pins
+only the map produces numbers that differ by 3-5x between runs, and a
+real regression hides inside that spread.
 
 ## 4c. THE ENGINE CALLS `gl.getError()` TEN TIMES A FRAME
 

@@ -384,6 +384,24 @@ test('the assets bucket\'s CORS policy lists the CI origin', () => {
   );
 });
 
+test('the CI server gets the cheats the perf fixture needs', () => {
+  // The perf fixture puts the player in the same spot on every run, and
+  // the server's `ts_tp` refuses to run without `sv_cheats 1`. The
+  // flag is set in the DERIVED CI config only — production's own
+  // server.cfg keeps `sv_cheats 0`, and the shared source file is
+  // never changed.
+  assert.match(
+    ciStack,
+    /'s\/\^sv_cheats \.\*\/sv_cheats 1\/'/,
+    'the derived CI config must enable cheats, for the perf fixture\'s ts_tp',
+  );
+  assert.match(
+    ciStack,
+    /grep -q "\^sv_cheats 1\$"/,
+    'the derived CI config must be checked for the cheats flag',
+  );
+});
+
 test('the CI server gets no bots', () => {
   // The bot quota only decides whether NEW bots spawn, so it has to be
   // in the CONFIG, not applied after the fact: setting it at runtime
@@ -395,7 +413,7 @@ test('the CI server gets no bots', () => {
   // one; the server was full.
   assert.match(
     ciStack,
-    /sed 's\/\^ts_bot_quota \.\*\/ts_bot_quota 0\/'/,
+    /sed .*'s\/\^ts_bot_quota \.\*\/ts_bot_quota 0\/'/,
     'the CI config must zero the bot quota, derived from production\'s',
   );
   assert.match(

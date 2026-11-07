@@ -45,11 +45,47 @@ const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
 const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
 const { describeMaps, checkMap, readFleet } = require('./lib/fleet-map.cjs');
-const { readViewpoint, describeViewpoint, pinView } = require('./lib/viewpoint.cjs');
+const { readViewpoint, describeViewpoint, pinView, waitForArrival } = require('./lib/viewpoint.cjs');
+const { findServerPlayer, pinFixturePosition } = require('./lib/fixture-view.cjs');
 const { chromium } = loadPlaywright();
 
 const URL_ = 'https://ci.bulletballet.dev/';
 const REPEATS = Number(process.argv[process.argv.indexOf('--repeat') + 1] || 5);
+// A UNIQUE NAME PER RUN.
+//
+// The server appends " (1)", " (2)" to a duplicate name, and a killed
+// harness run leaves its connection behind — so "PerfProbe" can be
+// several players at once, and a lookup by that name can pick a STALE
+// connection instead of the live client. That is not a theoretical
+// problem: it made the fixture teleport the wrong player, so the
+// measurement was taken wherever the client happened to spawn.
+//
+// The name is set in the identity modal before the client connects,
+// and the server learns it on the CONNECT, so the harness can look the
+// player up by the same unique string.
+const PLAYER_NAME = `PerfProbe${Math.random().toString(36).slice(2, 6)}`;
+
+// How long to wait for the engine's cost to stop moving, and how close
+// two samples have to be to count as "the same".
+//
+// The minimum matters: the cost is steady for a while after a
+// teleport and THEN falls, because the client spends the next minute
+// or so catching up on the entity and sound updates for the new part
+// of the map. Two agreeing samples eight seconds apart are not
+// evidence that the catch-up is over.
+// The `||` has to be OUTSIDE the Number() call: with the flag absent,
+// argv[indexOf + 1] is argv[0] - the script path - and
+// Number('/path/to/script.cjs') is NaN, which would make every
+// comparison against it false and the settle loop never run at all.
+const flagValue = (name, fallback) => {
+  const i = process.argv.indexOf(name);
+  if (i < 0 || !process.argv[i + 1]) return fallback;
+  const n = Number(process.argv[i + 1]);
+  return Number.isFinite(n) ? n : fallback;
+};
+const SETTLE_MAX_MS = flagValue('--settle-ms', 180000);
+const SETTLE_MIN_MS = flagValue('--settle-min-ms', 60000);
+const SETTLE_TOLERANCE = flagValue('--settle-tolerance', 0.05);
 const EXPECTED_MAP = (() => {
   const i = process.argv.indexOf('--map');
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : null;
@@ -121,11 +157,81 @@ async function engineCost(page) {
     const fn = window.__xashForceFrameCap;
     if (typeof fn !== 'function') return null;
     try {
-      return await fn(1);
+      // The force hook answers with the pacer's state object, and the
+      // engine's cost is one of its fields.
+      const state = await fn(1);
+      if (!state) return null;
+      const ms = state.engineWorkMs ?? state.core?.engineWorkMs;
+      return typeof ms === 'number' && Number.isFinite(ms) ? ms : null;
     } catch (e) {
       return null;
     }
   });
+}
+
+/**
+ * WAIT UNTIL THE FRAME COST STOPS MOVING.
+ *
+ * WHY
+ * ---
+ * A teleport invalidates the client's PVS: the server sends a new
+ * potentially-visible set for the player's new position, and the
+ * client spends the next half-minute catching up on the entities and
+ * sounds it now needs. Measured after a fixture teleport on ts_casa:
+ *
+ *     6.59 ms -> 5.58 ms -> 2.61 ms
+ *
+ * — a 2.5x fall across thirty seconds, with the player standing
+ * perfectly still the whole time. Measuring inside that window
+ * measures the CATCH-UP, not the map.
+ *
+ * So the harness does not start the real measurement until the cost
+ * has stopped moving: consecutive samples have to agree to within
+ * `tolerance` before the number is believed.
+ *
+ * @param {import('playwright').Page} page
+ * @param {object} [opts]
+ * @returns {Promise<{stable: boolean, cost: number|null, waitedMs: number, samples: number[]}>}
+ */
+async function stabilize(page, opts = {}) {
+  const {
+    maxMs = SETTLE_MAX_MS,
+    tolerance = SETTLE_TOLERANCE,
+    minSamples = 2,
+    minMs = SETTLE_MIN_MS,
+  } = opts;
+  const started = Date.now();
+  const samples = [];
+  let previous = null;
+
+  while (Date.now() - started < maxMs) {
+    const cost = await engineCost(page);
+    if (cost !== null && Number.isFinite(cost)) {
+      samples.push(cost);
+      if (
+        previous !== null &&
+        samples.length >= minSamples &&
+        Date.now() - started >= minMs &&
+        Math.abs(cost - previous) / Math.max(previous, 0.001) < tolerance
+      ) {
+        return {
+          stable: true,
+          cost,
+          waitedMs: Date.now() - started,
+          samples,
+        };
+      }
+      previous = cost;
+    }
+    await page.waitForTimeout(300);
+  }
+
+  return {
+    stable: false,
+    cost: previous,
+    waitedMs: Date.now() - started,
+    samples,
+  };
 }
 
 (async () => {
@@ -151,7 +257,28 @@ async function engineCost(page) {
     process.exit(1);
   }
   await page.click('.ts-landing__play');
-  await confirmIdentity(page, 'PerfProbe');
+  signalPage = page;
+  await confirmIdentity(page, PLAYER_NAME);
+
+  // MAKE SURE THE SERVER SEES THE UNIQUE NAME.
+  //
+  // The identity is REMEMBERED in local storage, and the saved copy
+  // can win over what the modal was filled with — the client then
+  // connects as "PerfProbe" whatever the harness asked for. Since the
+  // server learns the name from the client's userinfo, setting it on
+  // the engine after the boot gets it there in a second or two.
+  await page
+    .evaluate(async (n) => {
+      const xash = window.__xash;
+      if (!xash || typeof xash.Cmd_ExecuteString !== 'function') return;
+      try {
+        xash.Cmd_ExecuteString(`setinfo name "${n}"`);
+      } catch (e) {
+        /* the lookup below will fail loudly if this did not work */
+      }
+    }, PLAYER_NAME)
+    .catch(() => {});
+  await page.waitForTimeout(1500);
 
   console.log('  booting...');
   let up = false;
@@ -245,9 +372,71 @@ async function engineCost(page) {
   // in one run and 1.8 ms in another.
   const pinned = await pinView(page, 0, 0);
   if (pinned) await page.waitForTimeout(500);
+
+  // AND PIN THE POSITION, which is the bigger variable.
+  //
+  // The angles alone are not enough: the server picks the spawn point
+  // at RANDOM, so two runs of the same map can put the player
+  // somewhere completely different. Measured on ts_casa, same map,
+  // same bundle, same machine, same angles: 1.87 ms in one run and
+  // 9.12 ms in another. A 4.9x spread from the spawn alone.
+  //
+  // The server's `ts_tp` puts the player on the map's fixture node and
+  // sets the angles too. If it cannot be reached, the run says so
+  // rather than quietly measuring a random viewpoint.
+  let fixture = null;
+  if (EXPECTED_MAP) {
+    const found = await findServerPlayer(PLAYER_NAME);
+    if (found.ok) {
+      const at = await pinFixturePosition(found.player.index, EXPECTED_MAP);
+      if (at.ok) {
+        // WAIT FOR THE CLIENT TO ARRIVE.
+        //
+        // The server moves the player instantly; the client interpolates
+        // its own position toward the new one. Measured: the server
+        // said the player was at the fixture node while the client
+        // still reported x=614, and the frame cost measured during
+        // that transit was 1.76 ms against 6.5 ms once it had arrived.
+        // Measuring during the transit measures the wrong place.
+        const arrived = await waitForArrival(page, at.origin, {
+          tolerance: 8,
+          timeoutMs: 20000,
+        });
+        fixture = {
+          origin: at.origin,
+          playerIndex: found.player.index,
+          arrived: arrived.arrived,
+          clientView: arrived.view ? arrived.view.origin : null,
+          waitedMs: arrived.waitedMs,
+        };
+      } else {
+        console.log(`  fixture: NOT PINNED (${at.reason})`);
+      }
+    } else {
+      console.log(`  fixture: NOT PINNED (${found.reason})`);
+    }
+  }
   const viewpoint = await readViewpoint(page);
   console.log(
-    `  renderer: ${info.renderer}\n  canvas: ${info.css.join('x')} CSS = ${info.backing.join('x')} backing (dpr ${info.dpr}, screen ${info.screen.join('x')})\n  map: ${maps}   players: ${people}\n  view: ${describeViewpoint(viewpoint)}`
+    `  renderer: ${info.renderer}\n  canvas: ${info.css.join('x')} CSS = ${info.backing.join('x')} backing (dpr ${info.dpr}, screen ${info.screen.join('x')})\n  map: ${maps}   players: ${people}\n  view: ${describeViewpoint(viewpoint)}` +
+      (fixture
+        ? `\n  fixture: PINNED at ${fixture.origin.join(', ')} (player #${fixture.playerIndex})` +
+          `   client ${fixture.arrived ? 'ARRIVED' : 'DID NOT ARRIVE'}` +
+          (fixture.arrived ? '' : ` (client says ${fixture.clientView})`) +
+          `   after ${fixture.waitedMs} ms`
+        : '')
+  );
+
+  // WAIT UNTIL THE COST IS SETTLED before the real measurement.
+  //
+  // A teleport invalidates the client's PVS and the client spends the
+  // next half-minute catching up, with the frame cost falling by 2.5x
+  // as it does. Measuring inside that window measures the catch-up.
+  const settle = await stabilize(page);
+  console.log(
+    `\n  settling: ${settle.stable ? 'STABLE' : 'NOT STABLE'} at ${Number.isFinite(settle.cost) ? settle.cost.toFixed(2) : '?'} ms` +
+      ` after ${Math.round(settle.waitedMs / 1000)} s` +
+      `   (${settle.samples.length} samples: ${settle.samples.map((x) => x.toFixed(2)).join(', ')})`
   );
 
   console.log(`\n  --- ${REPEATS} windows, each 6 s ---\n`);
@@ -255,7 +444,14 @@ async function engineCost(page) {
   for (let i = 0; i < REPEATS; i++) {
     const cost = await engineCost(page);
     const w = await window_(page, 6);
-    const pacerMs = cost ? cost.engineWorkMs : (w.pacing ? w.pacing.engineWorkMs : 0);
+    // `engineCost` answers with the cost in ms. The pacer's own
+    // reading is the fallback, and the last resort is zero — a number
+    // that cannot be printed is worse than a number that is wrong.
+    const pacerMs = Number.isFinite(cost)
+      ? cost
+      : (w.pacing && Number.isFinite(w.pacing.engineWorkMs)
+          ? w.pacing.engineWorkMs
+          : 0);
     windowCosts.push(pacerMs);
     console.log(
       `  #${i + 1}  tick ${String(w.tickHz).padStart(5)} Hz   engine ${pacerMs.toFixed(2).padStart(6)} ms   ` +
@@ -314,5 +510,40 @@ async function engineCost(page) {
   process.exit(0);
 })().catch((e) => {
   console.error(e);
-  process.exit(1);
+  // The page must not be left running: the next measurement is
+  // refused if another game page is open in the same browser.
+  const p = signalPage;
+  signalPage = null;
+  if (!p) process.exit(1);
+  p.close()
+    .catch(() => {})
+    .finally(() => process.exit(1));
 });
+
+// A KILLED HARNESS MUST NOT LEAVE A GAME RUNNING.
+//
+// The measurement is refused if another game page is open in the same
+// browser, because the two share the main thread and the contention
+// inflates the per-frame cost. A harness that is killed by `timeout`
+// used to leave its page open — and the NEXT run was then refused, and
+// the one after that, until someone noticed and closed the tab by hand.
+//
+// So the signal handlers close the page before the process goes.
+process.on('SIGTERM', () => {
+  cleanupOnSignal();
+});
+process.on('SIGINT', () => {
+  cleanupOnSignal();
+});
+
+let signalPage = null;
+function cleanupOnSignal() {
+  const p = signalPage;
+  signalPage = null;
+  if (!p) {
+    process.exit(143);
+  }
+  p.close()
+    .catch(() => {})
+    .finally(() => process.exit(143));
+}
