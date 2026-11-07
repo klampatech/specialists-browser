@@ -46,6 +46,9 @@ const DEFAULTS = {
   timeoutMs: 20000,
 };
 
+/** One node record: 20 bytes. */
+const NODE_BYTES = 20;
+
 /**
  * Read the first nav node of a map from the CI asset volume.
  *
@@ -54,13 +57,35 @@ const DEFAULTS = {
  * @returns {Promise<{ok: boolean, node?: number[], count?: number, reason?: string}>}
  */
 async function readFirstNavNode(map, opts = {}) {
+  const { ok, node, count, reason } = await readNavNodes(map, 1, opts);
+  if (!ok) return { ok, reason };
+  return { ok, node: node[0], count };
+}
+
+/**
+ * Read the first `limit` nav nodes of a map.
+ *
+ * The first node is the reproducible fixture, but it is ARBITRARY — it
+ * is not necessarily the most expensive spot on the map, and a
+ * regression fixture that stands in a quiet corner hides a regression.
+ * So the nodes can be read one at a time and each one measured.
+ *
+ * @param {string} map
+ * @param {number} limit how many nodes to read
+ * @param {object} [opts]
+ * @returns {Promise<{ok: boolean, nodes?: number[][], count?: number, reason?: string}>}
+ */
+async function readNavNodes(map, limit = 1, opts = {}) {
   const { host, container, assetDir, timeoutMs } = { ...DEFAULTS, ...opts };
 
+  const want = Math.max(1, Math.min(Number(limit) || 1, 512));
+  const bytes = 4 + want * NODE_BYTES;
+
   // The links make the file megabytes, so only the header and the
-  // first node are read.
+  // nodes asked for are read.
   const res = await ssh(
     host,
-    `docker exec ${container} sh -c 'head -c 24 ${assetDir}/${map}.ndm 2>/dev/null | base64 -w0'`,
+    `docker exec ${container} sh -c 'head -c ${bytes} ${assetDir}/${map}.ndm 2>/dev/null | base64 -w0'`,
     timeoutMs
   );
   const b64 = (res.stdout || '').trim().split('\n').pop();
@@ -84,7 +109,38 @@ async function readFirstNavNode(map, opts = {}) {
     };
   }
 
-  return parseFirstNode(buf, map);
+  return parseNodes(buf, want, map);
+}
+
+/**
+ * Parse the node records out of a `.ndm` header.
+ *
+ * Pure, so the unit suite can check it without a server.
+ *
+ * @param {Buffer} buf the head of the file: a count, then the nodes
+ * @param {number} limit how many nodes to take
+ * @param {string} [map] for the error message
+ */
+function parseNodes(buf, limit = 1, map = 'the map') {
+  if (!buf || buf.length < 24) {
+    return { ok: false, reason: `${map} has no nav data — no fixture node` };
+  }
+  const count = buf.readInt32LE(0);
+  const nodes = [];
+  const available = Math.min(Math.max(1, Number(limit) || 1), Math.max(0, count));
+  for (let i = 0; i < available; i++) {
+    const at = 4 + i * NODE_BYTES;
+    if (at + 12 > buf.length) break;
+    nodes.push([
+      buf.readFloatLE(at),
+      buf.readFloatLE(at + 4),
+      buf.readFloatLE(at + 8),
+    ]);
+  }
+  if (!nodes.length) {
+    return { ok: false, reason: `${map} has no nav nodes` };
+  }
+  return { ok: true, nodes, count };
 }
 
 /**
@@ -113,4 +169,4 @@ function parseFirstNode(buf, map = 'the map') {
   return { ok: true, node, count };
 }
 
-module.exports = { readFirstNavNode, parseFirstNode };
+module.exports = { readFirstNavNode, readNavNodes, parseFirstNode, parseNodes };

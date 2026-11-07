@@ -83,6 +83,14 @@ const flagValue = (name, fallback) => {
   const n = Number(process.argv[i + 1]);
   return Number.isFinite(n) ? n : fallback;
 };
+// WHICH NAV NODE TO STAND ON.
+//
+// The first node is the reproducible fixture. A different index is how
+// the EXPENSIVE spots on a map are found: the first node is arbitrary,
+// and a regression fixture that stands in a quiet corner hides a
+// regression.
+const FIXTURE_NODE = flagValue('--fixture-node', 0);
+
 const SETTLE_MAX_MS = flagValue('--settle-ms', 180000);
 const SETTLE_MIN_MS = flagValue('--settle-min-ms', 60000);
 const SETTLE_TOLERANCE = flagValue('--settle-tolerance', 0.05);
@@ -388,7 +396,9 @@ async function stabilize(page, opts = {}) {
   if (EXPECTED_MAP) {
     const found = await findServerPlayer(PLAYER_NAME);
     if (found.ok) {
-      const at = await pinFixturePosition(found.player.index, EXPECTED_MAP);
+      const at = await pinFixturePosition(found.player.index, EXPECTED_MAP, {
+        nodeIndex: FIXTURE_NODE,
+      });
       if (at.ok) {
         // WAIT FOR THE CLIENT TO ARRIVE.
         //
@@ -404,6 +414,7 @@ async function stabilize(page, opts = {}) {
         });
         fixture = {
           origin: at.origin,
+          nodeIndex: FIXTURE_NODE,
           playerIndex: found.player.index,
           arrived: arrived.arrived,
           clientView: arrived.view ? arrived.view.origin : null,
@@ -420,7 +431,9 @@ async function stabilize(page, opts = {}) {
   console.log(
     `  renderer: ${info.renderer}\n  canvas: ${info.css.join('x')} CSS = ${info.backing.join('x')} backing (dpr ${info.dpr}, screen ${info.screen.join('x')})\n  map: ${maps}   players: ${people}\n  view: ${describeViewpoint(viewpoint)}` +
       (fixture
-        ? `\n  fixture: PINNED at ${fixture.origin.join(', ')} (player #${fixture.playerIndex})` +
+        ? `\n  fixture: PINNED at ${fixture.origin.join(', ')}` +
+          `${fixture.nodeIndex ? ` (node ${fixture.nodeIndex})` : ''}` +
+          ` (player #${fixture.playerIndex})` +
           `   client ${fixture.arrived ? 'ARRIVED' : 'DID NOT ARRIVE'}` +
           (fixture.arrived ? '' : ` (client says ${fixture.clientView})`) +
           `   after ${fixture.waitedMs} ms`

@@ -40,7 +40,7 @@
 'use strict';
 
 const { serverCommand, findPlayer } = require('./server-console.cjs');
-const { readFirstNavNode } = require('./nav-node.cjs');
+const { readFirstNavNode, readNavNodes } = require('./nav-node.cjs');
 
 /**
  * WHERE THE POSITION COMES FROM
@@ -126,9 +126,23 @@ async function teleport(index, x, y, z, yaw = 0, pitch = 0, opts = {}) {
  * @returns {Promise<{ok: boolean, origin?: number[], reason?: string}>}
  */
 async function pinFixturePosition(index, map, opts = {}) {
-  const nav = await readFirstNavNode(map, opts);
+  // WHICH NODE. The first one is the reproducible fixture; a different
+  // index is how the EXPENSIVE spots on a map are found, because the
+  // first node is arbitrary and may well be a quiet corner.
+  const nodeIndex = Math.max(0, Number(opts.nodeIndex) || 0);
+  const nav =
+    nodeIndex === 0
+      ? await readFirstNavNode(map, opts)
+      : await readNavNodes(map, nodeIndex + 1, opts).then((r) =>
+          r.ok
+            ? { ok: true, node: r.nodes[nodeIndex], count: r.count }
+            : r
+        );
   if (!nav.ok) {
     return { ok: false, reason: nav.reason };
+  }
+  if (!nav.node) {
+    return { ok: false, reason: `${map} has no nav node at index ${nodeIndex}` };
   }
   const [x, y, z] = nav.node;
 
@@ -154,7 +168,7 @@ async function pinFixturePosition(index, map, opts = {}) {
   if (!res.ok) {
     return { ok: false, reason: res.reason };
   }
-  return { ok: true, origin: res.origin, navNode: nav.node };
+  return { ok: true, origin: res.origin, navNode: nav.node, nodeIndex };
 }
 
 module.exports = {
