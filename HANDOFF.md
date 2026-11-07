@@ -277,6 +277,25 @@ node scan together pick it:
   left 23% of the cost on the table, which is exactly the margin a
   regression test needs.
 
+**THE CONTROLLED TABLE.** Every map that can be pinned, pinned to its
+own first nav node, two runs each, map + position + angles + warm-up +
+window all fixed:
+
+    ts_lobbyduel    node 0   32, -352, 388    8.23 ms / 8.20 ms
+    ts_hammertime   node 0  192,  -64, 292    4.53 ms / 4.50 ms
+    ts_casa         node 0  704, 1472,  68    4.52 ms / 4.31 ms
+
+**AND `ts_lobbyduel` NODE 1 IS 10.12 ms.** So `ts_lobbyduel` is
+**1.8x** the next map at the same kind of fixture, and Kyle's instinct
+that it was the heaviest was right — it just took a controlled
+comparison to say so.
+
+The three maps without nav data (`ts_lobby`, `ts_antrodome`,
+`ts_frigid`) are **NOT** in this table. They cannot be pinned, so
+their numbers are at random spawns, and the harness refuses to rank
+them rather than quietly measuring a random spot.
+
+
 **TWO MORE THINGS THE FIXTURE LEARNED.**
 
 - **NODE ZERO IS REPRODUCIBLE BUT ARBITRARY.** It may be a quiet

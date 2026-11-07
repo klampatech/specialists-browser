@@ -25,6 +25,31 @@
 set -uo pipefail
 
 REPO=/home/kyle/Development/specialists-browser
+
+# RUN FROM A SNAPSHOT.
+#
+# Bash reads a script INCREMENTALLY, by byte offset. So editing a
+# script while it is running does not change the lines already read —
+# it SHIFTS THE BYTES, and bash lands mid-line on whatever the edit
+# left there. That is how the map sweep died with
+#
+#     line 70: syntax error near unexpected token `('
+#
+# on a line that was perfectly valid when written: the edit landed
+# while the sweep was executing it. The sweep's RESULTS were fine (it
+# had finished every map); only the teardown broke.
+#
+# So the script copies ITSELF to a snapshot and runs the snapshot.
+# The copy cannot be edited out from under it.
+if [ -z "${XASH_PERF_SNAPSHOT:-}" ]; then
+  SNAPSHOT=$(mktemp "${TMPDIR:-/tmp}/xash-perf-XXXXXX.sh")
+  cp "$0" "$SNAPSHOT"
+  chmod +x "$SNAPSHOT"
+  export XASH_PERF_SNAPSHOT=1
+  export XASH_PERF_SNAPSHOT_FILE="$SNAPSHOT"
+  exec bash "$SNAPSHOT" "$@"
+fi
+
 PROD=bb-prod
 MAPS=("$@")
 if [ ${#MAPS[@]} -eq 0 ]; then
@@ -78,3 +103,6 @@ echo "==================================================================="
 echo "  tearing the CI stack down"
 echo "==================================================================="
 ssh -o BatchMode=yes "$PROD" 'bash /home/ubuntu/ci-stack.sh down' 2>&1 | tail -4
+
+# The snapshot cleans itself up.
+[ -n "${XASH_PERF_SNAPSHOT_FILE:-}" ] && rm -f "$XASH_PERF_SNAPSHOT_FILE"
