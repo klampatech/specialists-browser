@@ -204,6 +204,44 @@ Counts the `getError` calls in a running session. Run it against a
 DEPLOYED build: if it still reports ~1200 calls/second, the bundle
 shipped without the patch (see §4c).
 
+## 4e. THE MAP IS PART OF THE PERF RESULT
+
+**A PERF NUMBER WITHOUT THE MAP IT WAS TAKEN ON IS A NUMBER OF UNKNOWN
+PROVENANCE.** The engine's frame cost is a property of the MAP as much
+as of the machine: more geometry in view costs more to draw, and the
+player's spawn decides how much of it there is. The server also
+rotates its map on its own schedule, so a run can silently land on a
+different one.
+
+**THE HARNESSES NOW READ IT.** `lib/fleet-map.cjs` reads the map from
+the registry's public server list (`api/servers` — the same relative
+path the landing page fetches), and `measure-engine-cost.cjs` prints
+it with every result.
+
+**`--map` MAKES IT A HARD FAILURE, NOT A WARNING.** A perf run on the
+wrong level is worse than no perf run, because it looks like data:
+
+```sh
+node tools/perf/measure-engine-cost.cjs --map ts_lobbyduel
+#  [map mismatch] this run asked for ts_lobbyduel, and the fleet is on
+#  ts_casa. Start the server on the right map first:
+#  CI_MAP=ts_lobbyduel bash ci-stack.sh up
+```
+
+**STARTING THE SERVER ON A SPECIFIC MAP.** The CI stack's server takes
+its map from `TS_MAP`, which `ci-stack.sh` reads from `CI_MAP`:
+
+```sh
+ssh bb-prod 'CI_MAP=ts_lobbyduel bash /home/ubuntu/ci-stack.sh up'
+```
+
+Each map gets its OWN server, because a run that straddles a rotation
+would measure two maps and report the average.
+
+**COMPARING MAPS:** `tools/perf/measure-map-cost.sh <map> [map ...]`
+does the whole loop — down, up on the next map, measure — and tears the
+CI stack down at the end.
+
 ## 4c. THE ENGINE CALLS `gl.getError()` TEN TIMES A FRAME
 
 Measured 2026-11-07 on Kyle's MacBook Pro, one clean tab, live gameplay:

@@ -44,10 +44,15 @@ const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
 const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
+const { describeMaps, checkMap, readFleet } = require('./lib/fleet-map.cjs');
 const { chromium } = loadPlaywright();
 
 const URL_ = 'https://ci.bulletballet.dev/';
 const REPEATS = Number(process.argv[process.argv.indexOf('--repeat') + 1] || 5);
+const EXPECTED_MAP = (() => {
+  const i = process.argv.indexOf('--map');
+  return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : null;
+})();
 
 /**
  * One measurement window: the engine's cost (from the pacer), the GPU
@@ -173,6 +178,27 @@ async function engineCost(page) {
     process.exit(1);
   }
   console.log('  engine is up.');
+
+  // THE MAP MUST BE THE MAP THE RUN ASKED FOR.
+  //
+  // The server rotates its map on its own schedule, so a run can
+  // silently land on a different one — and a perf number whose map is
+  // unknown is a number of unknown provenance. This is a HARD failure,
+  // not a warning: a perf run on the wrong level is worse than no
+  // perf run, because it looks like data.
+  if (EXPECTED_MAP) {
+    const m = await checkMap(page, EXPECTED_MAP);
+    if (!m.ok) {
+      console.error(
+        `  [map mismatch] this run asked for ${EXPECTED_MAP}, and the fleet is on ` +
+          `${m.maps}. Start the server on the right map first: ` +
+          `CI_MAP=${EXPECTED_MAP} bash ci-stack.sh up`
+      );
+      await page.close().catch(() => {});
+      process.exit(1);
+    }
+    console.log(`  map: ${EXPECTED_MAP} (verified)`);
+  }
   await page.waitForTimeout(5000);
 
   const info = await page.evaluate(() => {
@@ -191,8 +217,19 @@ async function engineCost(page) {
       maxTexture: gl ? gl.getParameter(gl.MAX_TEXTURE_SIZE) : null,
     };
   });
+  // THE MAP IS PART OF THE RESULT.
+  //
+  // The engine's frame cost is a property of the map as much as of the
+  // machine: more geometry in view costs more to draw. A perf number
+  // without the map it was taken on is a number of unknown provenance,
+  // and the server rotates its map on its own schedule.
+  const maps = await describeMaps(page);
+  const serverList = await readFleet(page);
+  const people = serverList
+    .map((f) => `${f.humans}h/${f.bots}b`)
+    .join(' ') || '?';
   console.log(
-    `  renderer: ${info.renderer}\n  canvas: ${info.css.join('x')} CSS = ${info.backing.join('x')} backing (dpr ${info.dpr}, screen ${info.screen.join('x')})`
+    `  renderer: ${info.renderer}\n  canvas: ${info.css.join('x')} CSS = ${info.backing.join('x')} backing (dpr ${info.dpr}, screen ${info.screen.join('x')})\n  map: ${maps}   players: ${people}`
   );
 
   console.log(`\n  --- ${REPEATS} windows, each 6 s ---\n`);
@@ -206,6 +243,25 @@ async function engineCost(page) {
         `frames ${w.frames}`
     );
     await page.waitForTimeout(1500);
+  }
+
+  // THE MAP MUST STILL BE THE MAP AFTER THE MEASUREMENT.
+  //
+  // The CI server runs `roundtime 180`, so the map rotates every three
+  // minutes, and a measurement window can straddle a rotation. That
+  // would average two maps and report it as one.
+  const afterMaps = await describeMaps(page);
+  if (EXPECTED_MAP && afterMaps !== EXPECTED_MAP) {
+    console.error(
+      `  [map changed during the run] this run asked for ${EXPECTED_MAP}, ` +
+        `and the fleet is now on ${afterMaps}. The measurement straddles a ` +
+        `round rotation and is no good.`
+    );
+    await page.close().catch(() => {});
+    process.exit(1);
+  }
+  if (!EXPECTED_MAP) {
+    console.log(`  (map at the end of the run: ${afterMaps})`);
   }
 
   await page.close().catch(() => {});

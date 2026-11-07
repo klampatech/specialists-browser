@@ -44,6 +44,7 @@ const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
 const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
+const { describeMaps } = require('./lib/fleet-map.cjs');
 
 const URL_ = 'https://ci.bulletballet.dev/';
 const args = process.argv.slice(2);

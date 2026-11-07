@@ -92,6 +92,7 @@ const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
 const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
+const { describeMaps } = require('./lib/fleet-map.cjs');
 const { chromium } = loadPlaywright();
 
 const argv = process.argv.slice(2);
@@ -379,6 +380,9 @@ async function setEngineMode(page, w, h) {
   await page.waitForSelector('.ts-landing__play', { timeout: 30_000 });
   const fleet = await waitForFleet(page);
   console.log(`  fleet: ${fleet.servers} server(s) (waited ${fleet.waitedMs} ms)`);
+  // The map is part of the result: the engine's frame cost is a
+  // property of the map as much as of the machine.
+  console.log(`  map:   ${await describeMaps(page)}`);
   if (!fleet.ok) {
     console.error('  no server — cannot measure in-game');
     process.exit(1);
@@ -503,6 +507,7 @@ async function setEngineMode(page, w, h) {
   const out = {
     url: URL_,
     renderer: rend,
+    map: await describeMaps(page),
     client,
     records,
     errors,

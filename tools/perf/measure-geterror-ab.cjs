@@ -36,10 +36,12 @@ const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
 const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
+const { describeMaps, checkMap } = require('./lib/fleet-map.cjs');
 
 const URL_ = 'https://ci.bulletballet.dev/';
 const args = process.argv.slice(2);
 const SAMPLES = Number(args[args.indexOf('--samples') + 1]) || 4;
+const EXPECTED_MAP = args.includes('--map') ? args[args.indexOf('--map') + 1] : null;
 
 async function bootGame(page) {
   await page.goto(URL_, { waitUntil: 'domcontentloaded', timeout: 90_000 });
@@ -178,6 +180,27 @@ async function phase(page, label) {
 
   await bootGame(page);
   console.log('  engine is up; letting it settle...');
+
+  // THE MAP MUST BE THE MAP THE RUN ASKED FOR.
+  //
+  // The server rotates its map on its own schedule, so a run can
+  // silently land on a different one — and a perf number whose map is
+  // unknown is a number of unknown provenance. This is a HARD failure,
+  // not a warning: a perf run on the wrong level is worse than no
+  // perf run, because it looks like data.
+  if (EXPECTED_MAP) {
+    const m = await checkMap(page, EXPECTED_MAP);
+    if (!m.ok) {
+      console.error(
+        `  [map mismatch] this run asked for ${EXPECTED_MAP}, and the fleet is on ` +
+          `${m.maps}. Start the server on the right map first: ` +
+          `CI_MAP=${EXPECTED_MAP} bash ci-stack.sh up`
+      );
+      await page.close().catch(() => {});
+      process.exit(1);
+    }
+    console.log(`  map: ${EXPECTED_MAP} (verified)`);
+  }
   await page.waitForTimeout(10_000);
 
   await countGetError(page);
