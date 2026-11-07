@@ -329,6 +329,28 @@ loads each map's `.ndm` file, and its nodes are positions on the map's
 floor — the same places the bots stand and the players spawn. The
 FIRST node is as good as any, and it is the same on every run.
 
+**...EXCEPT THAT IT IS NOT AS GOOD AS ANY.** Six nodes on
+`ts_lobbyduel`, one map, all pinned and all settled:
+
+    node 0   32, -352, 388     8.20 ms
+    node 1  -101, -355, 388    10.12 ms
+    node 2  -233, -358, 388     8.40 ms
+    node 3  -362, -379, 388     8.18 ms
+    node 4  -504, -388, 388     5.77 ms
+    node 5  -653, -356, 388    10.10 ms
+
+**A 1.75x spread across six positions on ONE map.** Node zero is
+reproducible but ARBITRARY, and it is not the worst case — picking it
+would have left 23% of the cost on the table, which is exactly the
+margin a regression test needs. So the nodes can be read one at a
+time, the player put on each, and each measured
+(`--fixture-node N`, `tools/perf/scan-fixture-cost.sh`).
+
+**THE WORST-CASE FIXTURE, AS IT STANDS: `ts_lobbyduel`, nav node 1,
+at `-101, -355, 388` — 10.12 ms.** Node 5 is essentially tied at
+10.10 ms, and node 4 is the cheap end at 5.77 ms, which is what a
+quiet corner of a map looks like next to a busy one.
+
 The `.ndm` format, from `crates/server/src/bots/nodes.rs`:
 
     count: i32 LE

@@ -24,6 +24,7 @@
 set -uo pipefail
 
 REPO=/home/kyle/Development/specialists-browser
+PROD=bb-prod
 MAP="${1:-}"
 shift || true
 
@@ -50,10 +51,33 @@ echo "==================================================================="
 echo "  SCANNING: $MAP"
 echo "==================================================================="
 
+# THE CI SERVER HAS TO BE ON THE MAP BEING SCANNED.
+#
+# The harness refuses to measure a map it was not asked for — that is
+# the point of the map check — so the scan has to boot the server on
+# the right map first. Without this the scan measured nothing at all
+# and said nothing about why.
+ssh -o BatchMode=yes "$PROD" 'bash /home/ubuntu/ci-stack.sh down' >/dev/null 2>&1
+ssh -o BatchMode=yes "$PROD" "CI_MAP=$MAP bash /home/ubuntu/ci-stack.sh up" 2>&1 | tail -2
+sleep 5
+
 for NODE in "${NODES[@]}"; do
   echo ""
   echo "  --- node $NODE ---"
+  LOG=$(mktemp)
   timeout 500 node "$REPO/tools/perf/measure-engine-cost.cjs" \
-    --repeat 2 --map "$MAP" --fixture-node "$NODE" --settle-min-ms "$SETTLE_MIN" 2>&1 \
-    | grep -E "fixture:|settling:|SETTLED|tick" | sed 's/^/    /'
+    --repeat 2 --map "$MAP" --fixture-node "$NODE" --settle-min-ms "$SETTLE_MIN" >"$LOG" 2>&1
+  RC=$?
+  grep -E "fixture:|settling:|SETTLED|tick" "$LOG" | sed 's/^/    /'
+
+  # A RUN THAT PRODUCED NO RESULT MUST BE LOUD.
+  if ! grep -q "SETTLED" "$LOG"; then
+    echo "    *** NO RESULT (exit $RC) — the tail of its log:"
+    tail -15 "$LOG" | sed 's/^/        /'
+  fi
+  rm -f "$LOG"
 done
+
+echo ""
+echo "  tearing the CI stack down"
+ssh -o BatchMode=yes "$PROD" 'bash /home/ubuntu/ci-stack.sh down' 2>&1 | tail -2

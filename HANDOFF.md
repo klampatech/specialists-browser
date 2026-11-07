@@ -264,6 +264,19 @@ then A again, and compare against the A that brackets it. The A-B-A
 drift figure (+0.03 ms, -0.06 ms) is the honest measure of how much
 of a difference is the change and how much is the clock.
 
+**THE WORST-CASE FIXTURE, AND WHERE IT IS.** The map sweep and the
+node scan together pick it:
+
+- **THE MAP: `ts_lobbyduel`.** It is the heaviest of the maps that can
+  be pinned at all, at 8.23 ms at its own nav node against ts_casa's
+  ~2-5 ms at the same kind of fixture.
+- **THE PLACE: nav node 1**, at `-101, -355, 388`, which measured
+  **10.12 ms** — against 8.20 ms at node 0, 5.77 ms at node 4 and
+  10.10 ms at node 5. **A 1.75x spread across six positions on ONE
+  map.** Node zero was never the worst case; picking it would have
+  left 23% of the cost on the table, which is exactly the margin a
+  regression test needs.
+
 **TWO MORE THINGS THE FIXTURE LEARNED.**
 
 - **NODE ZERO IS REPRODUCIBLE BUT ARBITRARY.** It may be a quiet
