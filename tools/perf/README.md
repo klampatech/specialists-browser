@@ -401,9 +401,22 @@ itself, in `webxash/src/services/video-settings.ts`):
     canvas 2400x1794 backing   ->  4.26 - 4.34 ms
     canvas 3456x1882 backing   ->  5.34 ms
 
+**THOSE TWO ARE TEN MINUTES APART**, so the ambient drift is not what
+separates them — and if anything the drift made the LATER reading
+worse, since the machine was still warming. A bigger canvas costs
+more.
+
 So `--window WxH` pins it, and the pin happens BEFORE the canvas is
 read — otherwise the report says one size while the engine drew
 another.
+
+**BUT THE AMBIENT SWAMPS THE CANVAS COMPARISON ACROSS SESSIONS.** The
+sweep's `ts_casa` — canvas 3456x1994, a LARGER one than 3456x1882 —
+read 4.31 and 4.52 ms, lower than the 5.34 ms of the smaller canvas,
+because two hours later the machine had cooled. **So the canvas
+comparison is only readable when the two readings are close together,
+and the window has to be pinned because there is no way to know which
+canvas a number was taken at.**
 
 **THE RESULT.** Same map, same fixture, three fresh runs on Kyle's
 MacBook Pro (M3 Pro, 120 Hz), the CI stack, the shipped bundle:
