@@ -25,7 +25,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,11 +54,12 @@ function fixture(contents = ORIGINAL) {
   return { dir, file };
 }
 
-function run(file) {
+function run(file, env = {}) {
   try {
     const stdout = execFileSync(process.execPath, [SCRIPT, file], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...env },
     });
     return { code: 0, stdout, stderr: '' };
   } catch (e) {
@@ -211,6 +212,71 @@ test('the build gate fails a bundle whose glue is not patched', () => {
     assert.match(stdout, /the engine glue is patched/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a cache built from the UNPATCHED glue is dropped', () => {
+  // The failure this whole patch exists to prevent: Vite serves its
+  // dependency-optimisation cache rather than the file on disk, so a
+  // cache built before the patch keeps shipping the unpatched glue —
+  // and the build is green, and the game is simply still slow.
+  const { dir, file } = fixture();
+  const cache = mkdtempSync(join(tmpdir(), 'xash-vite-cache-'));
+  try {
+    const deps = join(cache, 'deps');
+    mkdirSync(deps, { recursive: true });
+    writeFileSync(
+      join(deps, 'xash3d-fwgs.js'),
+      'var _emscripten_glGetError = () => { var error = GLctx.getError() || GL.lastError; return error; };',
+      'utf8'
+    );
+
+    const r = run(file, { XASH_VITE_CACHE: cache });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /patched/);
+    assert.equal(
+      existsSync(join(cache, 'deps')),
+      false,
+      'the stale cache survived — the next build would ship the unpatched glue'
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(cache, { recursive: true, force: true });
+  }
+});
+
+test('a cache that already carries the patch is KEPT', () => {
+  // The script runs from postinstall. Dropping the cache every time
+  // makes every install make the next dev server re-bundle the 3.9 MB
+  // engine glue from scratch — for nothing. The cache that needs
+  // dropping is the one built from the UNPATCHED glue.
+  const { dir, file } = fixture();
+  const cache = mkdtempSync(join(tmpdir(), 'xash-vite-cache-'));
+  try {
+    assert.equal(run(file).code, 0);
+
+    const deps = join(cache, 'deps');
+    mkdirSync(deps, { recursive: true });
+    const cached = join(deps, 'xash3d-fwgs.js');
+    writeFileSync(
+      cached,
+      'var _emscripten_glGetError = () => { var d = location.search.indexOf("gldebug=1"); return error; };',
+      'utf8'
+    );
+
+    // The patch is already applied, so nothing changes the glue and
+    // the cache is still good.
+    const r = run(file, { XASH_VITE_CACHE: cache });
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /already applied/);
+    assert.equal(
+      existsSync(cached),
+      true,
+      'a cache that is already patched was dropped — every install would re-bundle the engine'
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(cache, { recursive: true, force: true });
   }
 });
 
