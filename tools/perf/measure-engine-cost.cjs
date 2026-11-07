@@ -45,6 +45,7 @@ const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
 const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
 const { describeMaps, checkMap, readFleet } = require('./lib/fleet-map.cjs');
+const { readViewpoint, describeViewpoint } = require('./lib/viewpoint.cjs');
 const { chromium } = loadPlaywright();
 
 const URL_ = 'https://ci.bulletballet.dev/';
@@ -228,8 +229,16 @@ async function engineCost(page) {
   const people = serverList
     .map((f) => `${f.humans}h/${f.bots}b`)
     .join(' ') || '?';
+  // WHERE THE PLAYER WAS STANDING.
+  //
+  // The same map measured 1.5 ms once and 5.0 ms another time, because
+  // the engine's cost is dominated by what is visible and the spawn is
+  // not always the same place. A perf number without a viewpoint is a
+  // number of unknown provenance — exactly like a perf number without
+  // a map.
+  const viewpoint = await readViewpoint(page);
   console.log(
-    `  renderer: ${info.renderer}\n  canvas: ${info.css.join('x')} CSS = ${info.backing.join('x')} backing (dpr ${info.dpr}, screen ${info.screen.join('x')})\n  map: ${maps}   players: ${people}`
+    `  renderer: ${info.renderer}\n  canvas: ${info.css.join('x')} CSS = ${info.backing.join('x')} backing (dpr ${info.dpr}, screen ${info.screen.join('x')})\n  map: ${maps}   players: ${people}\n  view: ${describeViewpoint(viewpoint)}`
   );
 
   console.log(`\n  --- ${REPEATS} windows, each 6 s ---\n`);

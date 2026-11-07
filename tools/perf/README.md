@@ -263,9 +263,11 @@ the same bundle, each map on its own freshly-booted server:
 | map | engine cost | tick | delivered |
 |---|---|---|---|
 | ts_lobbyduel | ~1.5 ms | 120 Hz | 120 fps |
+| ts_frigid | ~3.25 ms | 120 Hz | 120 fps |
 | ts_antrodome | ~4.95 ms | 120 Hz | 120 fps |
-| ts_hammertime | ~9.5 ms | 120 Hz | 100 fps |
-| ts_casa | ~12.7 ms | 60 Hz | ~78 fps |
+| ts_lobby | ~9.5 ms | 120 Hz | ~102 fps |
+| ts_hammertime | ~9.55 ms | 120 Hz | ~100 fps |
+| **ts_casa** | **~12.7 ms** | **60 Hz** | **~78 fps** |
 
 **THE MAP IS WORTH ~8x.** That is more than the difference between a
 patched engine and an unpatched one, and more than the difference
