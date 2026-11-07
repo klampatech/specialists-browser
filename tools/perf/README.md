@@ -284,6 +284,32 @@ duel arena — is the LIGHTEST.
 zero, and the runs report `1h/0b` — the harness's own player and no
 bots. The spread is the map.
 
+### 4e.2 AND THE MAP ALONE IS NOT ENOUGH — THE VIEWPOINT MATTERS TOO
+
+Repeating `ts_lobbyduel` on a freshly-booted server gave **1.5 ms** in
+one run and **5.0 ms** in another. Same map, same bundle, same machine,
+same browser.
+
+**The difference was where the player was standing and looking.** The
+engine's per-frame cost is dominated by what is visible: a player
+facing a wall costs almost nothing, and a player looking across a map
+costs a lot. The spawn is not the same place every time.
+
+So `lib/viewpoint.cjs` reads the camera origin, the eye position and
+the angles out of the engine's own `ts_test_view` developer command,
+and every result states where it was measured from:
+
+```
+  map: ts_casa   players: 1h/0b
+  view: origin [1234.0 567.0 64.0], angles [0.0 45.0 0.0]
+```
+
+**A PERF FIXTURE NEEDS BOTH THE MAP AND THE VIEWPOINT.** "The same map"
+is not "the same measurement". The remaining piece for a truly
+reproducible fixture is to PLACE the player — the server's
+`ts_dev_forcejoin` dev aid already exists and prints each player's
+origin, so the groundwork is there.
+
 ## 4c. THE ENGINE CALLS `gl.getError()` TEN TIMES A FRAME
 
 Measured 2026-11-07 on Kyle's MacBook Pro, one clean tab, live gameplay:
