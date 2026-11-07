@@ -339,6 +339,31 @@ FIRST node is as good as any, and it is the same on every run.
     node 4  -504, -388, 388     5.77 ms
     node 5  -653, -356, 388    10.10 ms
 
+**AND THE FRAME COUNT IS THE ARGUMENT, NOT THE MILLISECONDS.**
+
+The 120 Hz budget is 8.33 ms a frame. The scan's frame counts per
+6-second window say what that means to a player:
+
+    node   ms/frame   frames/6s    fps    budget
+      0      8.20        720      120.0   under
+      1     10.12        574       95.7   OVER
+      2      8.40        687      114.5   OVER
+      3      8.18        721      120.2   under
+      4      5.77        719      119.8   under
+      5     10.10        580       96.7   OVER
+
+**At node 0 the engine JUST FITS the 120 Hz budget**, so the frame
+count pins at the display rate and a regression has to be 1.6% before
+anything a player can see moves. **At node 1 it does not fit, so the
+frame count is a direct readout of the engine's cost** — 574 frames
+where node 0 gives 720 — and a regression makes it fall further,
+immediately.
+
+**THAT IS WHY THE FIXTURE IS THE WORST-CASE NODE AND NOT NODE ZERO.**
+A regression level has to be in the regime where a regression IS
+visible. Node zero is reproducible, but it is reproducible at a
+display rate that hides the thing you are trying to measure.
+
 **A 1.75x spread across six positions on ONE map.** Node zero is
 reproducible but ARBITRARY, and it is not the worst case — picking it
 would have left 23% of the cost on the table, which is exactly the
