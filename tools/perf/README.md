@@ -159,6 +159,15 @@ when the harness is pointed at the CI stack, for the same reason.
 A measurement harness that can silently measure the wrong thing is
 worse than one that refuses to measure.
 
+**AND THE BROWSER MUST HAVE AT LEAST ONE PAGE.** `chromium.connectOverCDP()`
+fails with `Protocol error (Browser.setDownloadBehavior): Browser context
+management is not supported` when the browser has **no pages open at
+all** — which is exactly what happens after a harness cleans up, or when
+a person closes the last tab. The message is about a protocol and never
+mentions pages, so the obvious reading ("the browser is broken") is
+wrong. `lib/cdp-targets.cjs` opens a blank tab when one is needed, and
+says so.
+
 ### `profile-client.cjs` — where the time actually goes
 
 The CDP CPU profiler, run against a live session, aggregating SELF time

@@ -91,6 +91,7 @@ const { loadPlaywright } = require('../deploy/lib/browser.cjs');
 const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
+const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
 const { chromium } = loadPlaywright();
 
 const argv = process.argv.slice(2);
@@ -336,6 +337,10 @@ async function setEngineMode(page, w, h) {
     );
     process.exit(2);
   }
+
+  // Playwright cannot connect to a browser that has NO pages open, and it
+  // says so in a way that never mentions pages. One blank tab fixes it.
+  await ensureAtLeastOnePage(String(CDP));
 
   const browser = await chromium.connectOverCDP(String(CDP));
   const ctx = browser.contexts()[0];

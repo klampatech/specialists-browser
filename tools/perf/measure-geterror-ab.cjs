@@ -35,6 +35,7 @@ const { loadPlaywright } = require('../deploy/lib/browser.cjs');
 const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
+const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
 
 const URL_ = 'https://ci.bulletballet.dev/';
 const args = process.argv.slice(2);
@@ -162,6 +163,10 @@ async function phase(page, label) {
 
 (async () => {
   const { chromium } = loadPlaywright();
+  // Playwright cannot connect to a browser that has NO pages open, and it
+  // says so in a way that never mentions pages. One blank tab fixes it.
+  await ensureAtLeastOnePage('http://localhost:9223');
+
   const browser = await chromium.connectOverCDP('http://localhost:9223');
   const ctx = browser.contexts()[0];
   // Refuse to measure beside another live game instance: they share
