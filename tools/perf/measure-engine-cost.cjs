@@ -40,6 +40,17 @@
  * between two runs is not a measurement yet.
  */
 const { loadPlaywright } = require('../deploy/lib/browser.cjs');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * The machine the CLIENT runs on — the one whose frame cost is being
+ * measured. Overridable, because the machine's name is not the same
+ * everywhere.
+ */
+const AMBIENT_HOST = process.env.XASH_AMBIENT_HOST || 'macbook';
 const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
@@ -91,6 +102,32 @@ const flagValue = (name, fallback) => {
 // regression.
 const FIXTURE_NODE = flagValue('--fixture-node', 0);
 
+// THE WINDOW SIZE.
+//
+// The canvas fills the window, and the engine's frame cost is the
+// PIXEL COUNT it draws (see webxash/src/services/video-settings.ts):
+//
+//     canvas 2400x1794 backing  ->  4.26 - 4.34 ms
+//     canvas 3456x1882 backing  ->  5.34 ms
+//
+// So the window is part of the fixture, and a perf number without one
+// is a number of unknown provenance, exactly like a number without a
+// position.
+//
+// WHAT THIS IS NOT: the window was NOT what made an earlier run read
+// 2.19 ms and the same fixture read 5.34 ms ninety minutes later. The
+// canvas in the 2.19 ms run was not recorded, but the maximised
+// measurement above settles it — the cost followed the pixels, and
+// the climb over the session was AMBIENT (the machine and its desktop
+// get busier while a measurement campaign runs). The ambient state is
+// reported with every result; see AMBIENT below.
+const WINDOW_SIZE = (() => {
+  const v = process.argv[process.argv.indexOf('--window') + 1];
+  if (!v || !/^\d+x\d+$/.test(v)) return null;
+  const [width, height] = v.split('x').map(Number);
+  return { width, height };
+})();
+
 const SETTLE_MAX_MS = flagValue('--settle-ms', 180000);
 const SETTLE_MIN_MS = flagValue('--settle-min-ms', 60000);
 const SETTLE_TOLERANCE = flagValue('--settle-tolerance', 0.05);
@@ -104,6 +141,86 @@ const EXPECTED_MAP = (() => {
  * backlog (from gl.finish), the tick rate, and the frame interval
  * distribution — all from the same window, so they can be compared.
  */
+/**
+ * Set the browser window to a fixed size.
+ *
+ * The canvas fills the viewport, so this is what pins the canvas —
+ * and the engine's frame cost follows the canvas. Returns the size it
+ * set, or null when the browser refused.
+ */
+/**
+ * The AMBIENT state of the machine the client runs on.
+ *
+ * WHY THIS IS REPORTED
+ * --------------------
+ * The same map, the same position, the same angles, the same canvas,
+ * ninety minutes apart: 2.19 ms and 5.34 ms. The engine did not
+ * change; the MACHINE did. A perf number without the machine's state
+ * attached to it is a number of unknown provenance — which is the
+ * whole reason the fixture pins the map, the place and the angle.
+ *
+ * So the number is reported next to what the machine was doing. It
+ * cannot be controlled from here; it can only be SEEN, and a reading
+ * taken while the machine was busy can be recognised as one.
+ *
+ * macOS reports the CPU's speed limit, which is the thermal throttle
+ * made visible: 100 means running at full speed, less means the
+ * machine is holding the processor back.
+ */
+async function readAmbient() {
+  const out = { load: null, speedLimit: null, host: null };
+  try {
+    const { stdout } = await execFileAsync(
+      'ssh',
+      [
+        '-o',
+        'BatchMode=yes',
+        '-o',
+        'ConnectTimeout=5',
+        AMBIENT_HOST,
+        // `|| true` because the grep is allowed to find nothing: this
+        // Mac's `pmset -g therm` reports no CPU_Speed_Limit line, and
+        // without it the grep's exit code was failing the whole
+        // command and taking the load average down with it.
+        'uptime; pmset -g therm 2>/dev/null | grep -i "CPU_Speed_Limit" || true',
+      ],
+      { timeout: 8000, maxBuffer: 1024 * 1024 }
+    );
+    const load = /load average[s]?:\s*([\d.]+)/.exec(stdout);
+    if (load) out.load = Number(load[1]);
+    const limit = /CPU_Speed_Limit\s*=\s*(\d+)/i.exec(stdout);
+    if (limit) out.speedLimit = Number(limit[1]);
+    out.host = AMBIENT_HOST;
+  } catch (e) {
+    /* the machine's state is context, not a reason to fail */
+  }
+  return out;
+}
+
+async function pinWindowSize(page, size) {
+  if (!size) return null;
+  const client = await page.context().newCDPSession(page);
+  try {
+    const { windowId } = await client.send('Browser.getWindowForTarget');
+    await client.send('Browser.setWindowBounds', {
+      windowId,
+      bounds: {
+        left: 0,
+        top: 0,
+        width: size.width,
+        height: size.height,
+        windowState: 'normal',
+      },
+    });
+    await page.waitForTimeout(1500);
+    return size;
+  } catch (e) {
+    return null;
+  } finally {
+    await client.detach().catch(() => {});
+  }
+}
+
 async function window_(page, seconds) {
   return page.evaluate(async (secs) => {
     const c = document.getElementById('canvas');
@@ -335,8 +452,24 @@ async function stabilize(page, opts = {}) {
     }
     console.log(`  map: ${EXPECTED_MAP} (verified)`);
   }
+
+  // THE WINDOW, BEFORE THE CANVAS IS READ.
+  //
+  // The canvas fills the viewport, and the engine's frame cost
+  // follows the canvas — so the window is part of the fixture, and it
+  // has to be set BEFORE the canvas is measured, or the report says
+  // one size while the engine drew another.
+  const pinnedWindow = await pinWindowSize(page, WINDOW_SIZE);
+  if (WINDOW_SIZE) {
+    console.log(
+      `  window: ${pinnedWindow ? `${WINDOW_SIZE.width}x${WINDOW_SIZE.height} (pinned)` : 'the browser refused to resize'}` +
+        (pinnedWindow ? '' : ' — the canvas is whatever it happened to be')
+    );
+  }
   await page.waitForTimeout(5000);
 
+  // THE MACHINE'S STATE, while the measurement is being taken.
+  const ambient = await readAmbient();
   const info = await page.evaluate(() => {
     const c = document.getElementById('canvas');
     let gl = null;
@@ -429,7 +562,10 @@ async function stabilize(page, opts = {}) {
   }
   const viewpoint = await readViewpoint(page);
   console.log(
-    `  renderer: ${info.renderer}\n  canvas: ${info.css.join('x')} CSS = ${info.backing.join('x')} backing (dpr ${info.dpr}, screen ${info.screen.join('x')})\n  map: ${maps}   players: ${people}\n  view: ${describeViewpoint(viewpoint)}` +
+    `  renderer: ${info.renderer}\n  canvas: ${info.css.join('x')} CSS = ${info.backing.join('x')} backing (dpr ${info.dpr}, screen ${info.screen.join('x')})` +
+    `\n  ambient: ${ambient.load !== null ? `load ${ambient.load}` : 'load not measured'}` +
+    `${ambient.speedLimit !== null ? `, cpu speed limit ${ambient.speedLimit}%` : ''}` +
+    `\n  map: ${maps}   players: ${people}\n  view: ${describeViewpoint(viewpoint)}` +
       (fixture
         ? `\n  fixture: PINNED at ${fixture.origin.join(', ')}` +
           `${fixture.nodeIndex ? ` (node ${fixture.nodeIndex})` : ''}` +
