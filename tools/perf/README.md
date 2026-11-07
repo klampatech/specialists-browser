@@ -228,6 +228,19 @@ node tools/perf/measure-engine-cost.cjs --map ts_lobbyduel
 #  CI_MAP=ts_lobbyduel bash ci-stack.sh up
 ```
 
+**THE SERVER ROTATES ITS MAP EVERY THREE MINUTES — SO A PERF RUN MUST
+PIN THE MAP.** The CI server runs `roundtime 180`, and its map cycle
+(`tools/deploy/config/mapcycle.txt`) has 22 entries. A run that does
+not pin the map is measuring whichever map the rotation happened to
+reach, and the map is worth **8x** of frame cost on its own — so two
+runs on "the same" server can differ by 4x for no reason a reader of
+the numbers could guess.
+
+This is not hypothetical: it is what made an earlier pair of
+measurements look contradictory. One read 2.90 ms per frame and the
+other 13.26 ms, on the same server, the same machine, the same
+browser — on two different maps.
+
 **STARTING THE SERVER ON A SPECIFIC MAP.** The CI stack's server takes
 its map from `TS_MAP`, which `ci-stack.sh` reads from `CI_MAP`:
 
@@ -241,6 +254,33 @@ would measure two maps and report the average.
 **COMPARING MAPS:** `tools/perf/measure-map-cost.sh <map> [map ...]`
 does the whole loop — down, up on the next map, measure — and tears the
 CI stack down at the end.
+
+### 4e.1 WHAT THE MAP IS WORTH
+
+Measured 2026-11-07 on Kyle's MacBook Pro (M3 Pro, 120 Hz), one tab,
+the same bundle, each map on its own freshly-booted server:
+
+| map | engine cost | tick | delivered |
+|---|---|---|---|
+| ts_lobbyduel | ~1.5 ms | 120 Hz | 120 fps |
+| ts_antrodome | ~4.95 ms | 120 Hz | 120 fps |
+| ts_hammertime | ~9.5 ms | 120 Hz | 100 fps |
+| ts_casa | ~12.7 ms | 60 Hz | ~78 fps |
+
+**THE MAP IS WORTH ~8x.** That is more than the difference between a
+patched engine and an unpatched one, and more than the difference
+between a good machine and a slow one. **A perf run that does not say
+which map it was on is nearly meaningless.**
+
+`ts_casa` is the worst case measured: the engine misses vsyncs, the
+browser drops to 60 Hz, and the game delivers ~78 fps. `ts_lobbyduel` —
+which looks like the obvious candidate for "the heaviest", being a
+duel arena — is the LIGHTEST.
+
+**THE BOTS ARE NOT THE CONFOUND.** The CI server runs
+`ts_bot_quota 16`, but the orchestrator's target for the CI instance is
+zero, and the runs report `1h/0b` — the harness's own player and no
+bots. The spread is the map.
 
 ## 4c. THE ENGINE CALLS `gl.getError()` TEN TIMES A FRAME
 

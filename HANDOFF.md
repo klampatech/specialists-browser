@@ -153,6 +153,40 @@ rate — what the game is actually delivering — is kept separately and
 labelled as such. The readout shows BOTH, because the difference between
 them is the whole story.
 
+**THE MAP IS WORTH ~8x, AND THE SERVER ROTATES ITS MAP EVERY THREE
+MINUTES.** Kyle observed that `ts_lobbyduel` "seems to be the heaviest"
+map and offered it as the level for a perf test. Taking that as a
+question rather than a conclusion, the tooling now pins the map, reads
+it from the registry, and FAILS the run if it is not the map that was
+asked for — because the CI server runs `roundtime 180` and its cycle
+has 22 entries, so a run that does not pin the map is measuring
+whichever map the rotation happened to reach.
+
+**THAT WAS THE MISSING PIECE IN THE CONTRADICTORY MEASUREMENTS ABOVE.**
+An earlier pair of runs read **2.90 ms** and **13.26 ms** per frame on
+the same server, the same machine, the same browser — on two different
+maps. Not contention: the map.
+
+**MEASURED (Kyle's MacBook, M3 Pro, 120 Hz, one tab, the same bundle):
+
+    ts_lobbyduel   ~1.5 ms    120 Hz, 120 fps
+    ts_antrodome   ~4.95 ms   120 Hz, 120 fps
+    ts_hammertime  ~9.5 ms    120 Hz, 100 fps
+    ts_casa        ~12.7 ms   60 Hz,  ~78 fps
+
+**SO KYLE'S INSTINCT WAS RIGHT IN SUBSTANCE AND WRONG IN THE DETAIL:
+the LEVEL dominates the measurement — worth ~8x — but `ts_lobbyduel` is
+the LIGHTEST of the ones measured, not the heaviest.** `ts_casa` is the
+worst case: the engine misses vsyncs and the browser drops to 60 Hz.
+
+**THE TOOLS:** `tools/perf/lib/fleet-map.cjs` reads the map from the
+registry's public server list; the harnesses print it with every
+result; `--map` makes a mismatch a HARD FAILURE (a perf run on the
+wrong level is worse than no perf run, because it looks like data),
+and the map is checked AFTER the measurement windows too, so a run that
+straddles a round rotation is caught rather than averaged.
+`tools/perf/measure-map-cost.sh` drives the whole comparison.
+
 **THE MEASUREMENT HYGIENE LESSON, WHICH COST THE MOST TIME.** The first
 two runs of the same measurement on the same machine disagreed by 3.3×
 (3.88 ms vs 12.67 ms per frame). The cause was **my own harness**: it
