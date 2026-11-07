@@ -23,6 +23,129 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-07 — **THE CLIENT IS FAST; HALF THE ENGINE'S FRAME WAS
+A `glGetError()` ROUND-TRIP, AND THE PLAYER CAN NOW SEE WHY THEIR GAME
+FEELS SLOW.** Kyle asked whether the client could do more on the PLAYER's
+side — WebGPU, the browser syncing the frame rate to the display, and
+`about:config` settings — and whether the game window is windowed-borderless.
+This block is what came out of answering that with measurements on his
+MacBook Pro rather than on the rig.
+
+**THE ANSWERS TO HIS FOUR QUESTIONS, SHORT.**
+
+1. **WebGPU: NO, AND IT CANNOT BE.** The engine runs `-ref webgl2`
+   (SPEC.md: "WebGL2 (not WebGPU for Phase 1)"). WebGPU belongs to
+   specialists-web (Babylon), not here.
+2. **THE BROWSER DOES SYNC THE FRAME RATE TO THE DISPLAY — and that is
+   the whole ballgame.** `requestAnimationFrame` is vsync-aligned, so the
+   game's frame rate is the display's, capped by what the engine can
+   finish. It is also the thing that silently halves on a laptop.
+3. **`about:config` IS FIREFOX-ONLY.** Chrome has no equivalent
+   (`chrome://settings/performance` → Energy Saver **off**, and
+   `chrome://gpu` to check for SwiftShader); Safari/macOS is governed by
+   Low Power Mode. There is no one setting that fixes all three.
+4. **THE GAME IS BROWSER-FULLSCREEN, NOT OS-WINDOWED-BORDERLESS** — and
+   that is right. `browserFullscreen` (on by default) does
+   `documentElement.requestFullscreen({navigationUI:'hide'})`; the
+   engine's own `fullScreen` argument is always OFF (`-windowed`), which
+   is inert in a browser. It is also near-irrelevant to performance: the
+   engine is not fill-bound (see below).
+
+**THE MEASUREMENTS (Kyle's MacBook Pro, M3 Pro, Liquid Retina XDR
+3456×2234 at dpr 2, macOS 26.2, Chrome 157, on battery, ONE browser
+tab).** Measured with `tools/perf/measure-live-client.cjs`, which drives
+the REAL browser over CDP instead of launching its own Chromium — the
+rig's harness cannot see the display's refresh rate, the power state or
+the real GPU.
+
+- the panel's own rate (CoreGraphics, a native probe): **120.0 Hz**
+- a bare rAF loop with no game: **120.5 Hz**
+- the browser's rate with the game idle: **120.0 Hz**
+- the engine's frame cost, in a map: **2.41 ms** (it read 13–16 ms
+  until the tab contamination below was found)
+- the GPU's backlog (`gl.finish`): **0.00 ms** — the GPU is idle
+- the tick rate in play: **120 Hz**, 0 late ticks
+
+**SO THE ENGINE IS NOT THE CONSTRAINT ON THAT MACHINE.** 2.41 ms of an
+8.33 ms 120 Hz frame is 29% of the budget, and the cost is flat across an
+8.4× range of render resolutions — **the engine is CPU-bound, not
+fill-bound**, so resolution-side levers are worthless and the only lever
+that matters is the browser's refresh rate.
+
+**THE REAL CONSTRAINT WAS FOUND BY THE CPU PROFILER
+(`tools/perf/profile-client.cjs`): the engine calls `glGetError()` ABOUT
+TEN TIMES PER FRAME, and each call is a GPU ROUND-TRIP.** In Chrome,
+`WebGLRenderingContext.getError()` has to flush the command buffer and
+wait for the error state, so it cannot be answered from a queue. The
+glue's implementation is `GLctx.getError() || GL.lastError`, and the
+engine asks for it after every GL batch.
+
+Measured over 3 s of live play: **1230 calls/second**, and the A-B-A
+(`tools/perf/measure-geterror-ab.cjs`, which patches the behaviour in
+place, measures, restores, and measures again so a drift cannot be
+mistaken for an effect):
+
+    A  as shipped        frame  2.41 ms   getError  1230 calls/s
+    B  getError removed  frame  1.15 ms   getError     0 calls/s
+    A  restored          frame  2.44 ms   (drift +0.03 ms)
+
+**So `gl.getError()` was 52% of the engine's frame.** The fix is a third
+glue patch, `webxash/scripts/patch-xash-gl-geterror.cjs`: the glue's own
+error bookkeeping (`GL.lastError`) is kept, and the expensive real check
+is rate-limited to 4 times a second. **Detection is slowed, not
+removed** — a genuine GL error still surfaces within 250 ms — and
+`?gldebug=1` on the page URL restores the original behaviour exactly,
+because a fix that removes the ability to debug what it fixed is a trap.
+
+**TWO TRAPS IN THAT PATCH, BOTH OF WHICH WOULD HAVE SILENTLY DONE
+NOTHING.**
+
+- **VITE'S DEPENDENCY CACHE.** Vite pre-bundles `xash3d-fwgs` into
+  `node_modules/.vite/deps/` and serves THAT, not the file on disk. The
+  first build after patching shipped the **unpatched** glue — the cache
+  was three weeks old — and the build was green. The patch script now
+  drops `node_modules/.vite` when it patches.
+- **THE MINIFIER STRIPS COMMENTS.** The patch's marker is a comment, so
+  it is gone from the bundle; a build-time check cannot look for it. The
+  check looks for `gldebug=1` instead, which is a string literal and
+  survives. `webxash/scripts/check-xash-glue.cjs` runs at the end of the
+  build and **fails the build** if the bundle's glue is not patched —
+  the same lesson as `check-xash-wasm.cjs`, which exists because a
+  silently-broken wasm reached production once.
+
+**THE PLAYER CAN NOW SEE WHY THEIR GAME FEELS SLOW.** A new "Your
+client" tab on the landing page (`TSPerformance.vue`) shows what the game
+measured on THIS machine: the refresh rate the browser is actually
+delivering, the engine's frame cost against the display's budget, the
+GPU it is drawing on, and — only when there is something to change — the
+browser-specific setting that changes it (Chrome's Energy Saver, Firefox's
+`about:config` refresh-rate preference, macOS Low Power Mode). The
+policy is `webxash/src/services/perf-check.ts` (import-free, so the
+parent's unit suite can test it directly) and the gathering is
+`perf-collect.ts`. **The readout refuses to guess**: a number that was
+not measured is reported as "not measured", never as a plausible guess.
+
+**THE PACER WAS MEASURING THE WRONG THING.** The frame pacer's
+"display rate" was the interval between its own ticks, which is the
+display's period **PLUS the engine's work** — so a slow engine made the
+reading LOW, and the pacer concluded the display was half as fast as it
+was and capped against a rate the display does not have. The panel's
+rate is now measured **while the page is idle** (`measureIdleDisplayHz`,
+on the landing page and again before the engine boots), and the live
+rate — what the game is actually delivering — is kept separately and
+labelled as such. The readout shows BOTH, because the difference between
+them is the whole story.
+
+**THE MEASUREMENT HYGIENE LESSON, WHICH COST THE MOST TIME.** The first
+two runs of the same measurement on the same machine disagreed by 3.3×
+(3.88 ms vs 12.67 ms per frame). The cause was **my own harness**: it
+left four game tabs running on Kyle's MacBook at once, and the
+contention inflated every reading. Kyle noticed and said so. The
+lessons, now written into the tools: **one game instance at a time**,
+close the tab when the harness is done, and **A-B-A** rather than A-B —
+the restore phase is what proves the effect is the change and not the
+passage of time.
+
 **As of:** 2026-11-05, LATER — **THE PLAYER'S LOADOUT NOW SURVIVES A MAP
 CHANGE (the port's change is written, tested and proved; the PRs are
 open).** The buy menu's loadout reset to the default on **every map

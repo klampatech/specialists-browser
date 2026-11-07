@@ -115,6 +115,108 @@ The main one. Against production (or any URL):
 node tools/perf/measure-client-perf.cjs --gpu --sizes 1920x1080 --modes 1920x1080,1280x720
 ```
 
+### `measure-live-client.cjs` — measure the PLAYER'S machine, not a lab
+
+Every other harness here LAUNCHES its own Chromium. That is the right
+call for the rig (repeatable, headless, no human) and the wrong call
+for the question "why does this feel slow on MY laptop?", because a
+launched browser cannot see the display's refresh rate, the machine's
+power state, the device pixel ratio or the real GPU.
+
+This one attaches to a browser that is ALREADY RUNNING, over CDP:
+
+```sh
+# on the machine, once:
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --remote-debugging-port=9223 --user-data-dir=/tmp/chrome-perf-profile \
+  --no-first-run --no-default-browser-check about:blank &
+
+# from here:
+node tools/perf/measure-live-client.cjs --cdp http://localhost:9223 \
+  --url https://ci.bulletballet.dev/ --window-seconds 20
+```
+
+It puts the browser WINDOW into fullscreen over CDP
+(`Browser.setWindowBounds {windowState:'fullscreen'}`) rather than asking
+the page for DOM fullscreen — over SSH the document is not focused, so
+`requestFullscreen` is refused and the pointer lock fails with
+`WrongDocumentError`.
+
+**ONE GAME INSTANCE AT A TIME.** This is the rule that cost the most
+time. The first two runs of the same measurement on the same machine
+disagreed by 3.3× (3.88 ms vs 12.67 ms per frame) because the harness
+had left four game tabs running at once; the contention inflated every
+reading. Close the tab when the harness is done, and check
+`curl -s http://localhost:9223/json/list | grep -c '"type": "page"'`.
+
+### `profile-client.cjs` — where the time actually goes
+
+The CDP CPU profiler, run against a live session, aggregating SELF time
+by function and printing the call chain for the hot ones. This is what
+found the `gl.getError()` tax (see §4c).
+
+```sh
+node tools/perf/profile-client.cjs --seconds 10
+```
+
+### `measure-geterror-ab.cjs` — the A/B that proves a patch
+
+Patches a behaviour IN PLACE, measures, restores, and measures again —
+A-B-A, so a drift over the run cannot be mistaken for an effect. It is
+how the `gl.getError()` patch was measured:
+
+```
+A  as shipped        frame  2.41 ms   getError  1230 calls/s
+B  getError removed  frame  1.15 ms   getError     0 calls/s
+A  restored          frame  2.44 ms   (drift +0.03 ms)
+```
+
+### `measure-engine-cost.cjs` — is it CPU or the GPU?
+
+The engine's rAF callback duration and the GPU's backlog (`gl.finish`)
+in the same window. If the backlog is ~0, the cost is CPU; if the
+backlog is ~the cost, the GPU is the bottleneck. This is the check that
+separated "the browser throttled the display" from "the engine is slow"
+when two runs disagreed.
+
+### `verify-gl-error.cjs` — is the patch actually live?
+
+Counts the `getError` calls in a running session. Run it against a
+DEPLOYED build: if it still reports ~1200 calls/second, the bundle
+shipped without the patch (see §4c).
+
+## 4c. THE ENGINE CALLS `gl.getError()` TEN TIMES A FRAME
+
+Measured 2026-11-07 on Kyle's MacBook Pro, one clean tab, live gameplay:
+
+```
+getError calls        1230 per second  (~10 per frame)
+frame cost, as shipped   2.41 ms
+frame cost, patched      1.15 ms
+```
+
+`WebGLRenderingContext.getError()` has to flush the command buffer and
+wait for the error state, so it cannot be answered from a queue — it is a
+GPU ROUND-TRIP in the middle of the engine's frame callback. The engine
+asks for it after every GL batch, which is a diagnostic, not a
+correctness requirement.
+
+The fix is `webxash/scripts/patch-xash-gl-geterror.cjs`: the glue's own
+`GL.lastError` bookkeeping is kept, and the expensive real check is
+rate-limited to 4 times a second. `?gldebug=1` restores the original
+behaviour exactly.
+
+**TWO TRAPS THAT WOULD HAVE MADE THE PATCH SILENTLY DO NOTHING.**
+
+- **Vite's dependency cache.** Vite pre-bundles `xash3d-fwgs` into
+  `node_modules/.vite/deps/` and serves THAT, not the file on disk. The
+  first build after patching shipped the unpatched glue and the build
+  was green. The patch script drops `node_modules/.vite` when it patches.
+- **The minifier strips comments**, so a build-time check cannot look
+  for the patch's marker comment. `check-xash-glue.cjs` looks for the
+  `gldebug=1` string literal instead, and **fails the build** if the
+  bundle's glue is not patched.
+
 ### `measure-input-latency.cjs`
 
 Input latency, end to end:
