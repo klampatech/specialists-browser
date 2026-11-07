@@ -45,11 +45,12 @@ const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 
 const URL_ = 'https://ci.bulletballet.dev/';
 const args = process.argv.slice(2);
+const TARGET = args.includes('--url') ? args[args.indexOf('--url') + 1] : URL_;
 const CDP = args.includes('--cdp') ? args[args.indexOf('--cdp') + 1] : 'http://localhost:9223';
 
 /** Boot the game and wait until the engine is drawing. */
 async function bootGame(page) {
-  await page.goto(URL_, { waitUntil: 'domcontentloaded', timeout: 90_000 });
+  await page.goto(TARGET, { waitUntil: 'domcontentloaded', timeout: 90_000 });
   await page.waitForSelector('.ts-landing__play', { timeout: 30_000 });
   const fleet = await waitForFleet(page);
   if (!fleet.ok) throw new Error('no server to join');

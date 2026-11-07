@@ -213,3 +213,93 @@ test('the build gate fails a bundle whose glue is not patched', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('the shipped rate limiter behaves the way the patch claims', () => {
+  // The A-B-A proved the MECHANISM (that removing the per-frame
+  // getError saves 1.26 ms of a 2.41 ms frame). What it cannot prove
+  // is that the patch we SHIP actually rate-limits, rather than
+  // silently keeping the old behaviour or, worse, never checking at
+  // all.
+  //
+  // So this evaluates the patched function that the real patch script
+  // produces, against a controlled clock and a counting mock of
+  // GLctx.getError.
+  const { dir, file } = fixture();
+  try {
+    assert.equal(run(file).code, 0);
+    const patched = readFileSync(file, 'utf8');
+
+    // Pull the patched function out of the file the patch produced.
+    //
+    // Brace matching, not index hunting: the patch writes a multi-line
+    // function, and an index-based extraction is exactly the kind of
+    // thing that breaks the moment the patch's formatting changes.
+    const start = patched.indexOf('var _emscripten_glGetError =');
+    assert.notEqual(start, -1, 'the patched function is not in the file');
+    const bodyStart = patched.indexOf('{', start);
+    let depth = 0;
+    let end = -1;
+    for (let i = bodyStart; i < patched.length; i++) {
+      const ch = patched[i];
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    assert.notEqual(end, -1, 'the patched function is not closed');
+    const src = patched.slice(start, end + 1).replace(/^var /, '(') + ')';
+
+    // Build a function with the glue's surrounding names in scope.
+    const make = new Function(
+      'GLctx',
+      'GL',
+      'location',
+      'performance',
+      `return ${src};`
+    );
+
+    let realCalls = 0;
+    const GLctx = { getError: () => { realCalls += 1; return 0; } };
+    let now = 1000;
+    const performance = { now: () => now };
+    const GL = { lastError: 0 };
+
+    // --- without the debug flag -------------------------------------
+    const fn = make(GLctx, GL, { search: '' }, performance);
+
+    fn();
+    fn();
+    fn();
+    fn();
+    assert.equal(realCalls, 1, 'four calls in the same millisecond must cost one real check');
+
+    now += 300;
+    fn();
+    assert.equal(realCalls, 2, 'a new 250 ms window must produce a new real check');
+
+    now += 100;
+    fn();
+    assert.equal(realCalls, 2, 'a call inside the window must not re-check');
+
+    // --- the glue's own bookkeeping still works ----------------------
+    GL.lastError = 1281; // GL_INVALID_ENUM
+    now += 300;
+    assert.equal(fn(), 1281, 'GL.lastError must still be returned');
+    assert.equal(GL.lastError, 0, 'GL.lastError must still be cleared');
+
+    // --- with the debug flag -----------------------------------------
+    let debugCalls = 0;
+    const debugGLctx = { getError: () => { debugCalls += 1; return 0; } };
+    const debugFn = make(debugGLctx, { lastError: 0 }, { search: '?gldebug=1' }, performance);
+    debugFn();
+    debugFn();
+    debugFn();
+    assert.equal(debugCalls, 3, '?gldebug=1 must restore the original per-call behaviour');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

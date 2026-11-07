@@ -125,6 +125,23 @@ parent's unit suite can test it directly) and the gathering is
 `perf-collect.ts`. **The readout refuses to guess**: a number that was
 not measured is reported as "not measured", never as a plausible guess.
 
+**THE SHIPPED PATCH WAS THEN PROVED END-TO-END, IN A REAL BROWSER,
+AGAINST A REAL GAME SERVER.** The A-B-A above proves the mechanism;
+it does not prove that the patch we SHIP rate-limits rather than
+silently keeping the old behaviour. So the patched build was served
+locally (`tools/perf/serve-local-build.cjs`, pointed at the CI stack so
+no test player ever entered the production leaderboard), the MacBook
+played it, and `tools/perf/verify-gl-error.cjs` counted the calls:
+
+    the shipped patch        4.0 calls/second    1.25 ms per frame
+    the same build, ?gldebug=1
+                            1200.0 calls/second  1.81 ms per frame
+
+**Four real checks a second, exactly as designed — and the escape hatch
+puts the old behaviour back on demand.** The mean cost of one real
+check, measured properly this time, is **0.083 ms**; at ten calls a
+frame that is 0.83 ms of every frame.
+
 **THE PACER WAS MEASURING THE WRONG THING.** The frame pacer's
 "display rate" was the interval between its own ticks, which is the
 display's period **PLUS the engine's work** — so a slow engine made the
