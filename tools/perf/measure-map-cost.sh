@@ -52,8 +52,24 @@ for MAP in "${MAPS[@]}"; do
   # view and the spawn stays random — which is the confounded
   # measurement this script was written to replace.
   for RUN in 1 2; do
-    timeout 500 node "$REPO/tools/perf/measure-engine-cost.cjs" --repeat 4 --map "$MAP" 2>&1 \
-      | grep -E "map:|fixture:|view:|settling:|SETTLED|tick" | sed 's/^/  /'
+    LOG=$(mktemp)
+    timeout 500 node "$REPO/tools/perf/measure-engine-cost.cjs" --repeat 4 --map "$MAP" >"$LOG" 2>&1
+    RC=$?
+    grep -E "map:|fixture:|view:|settling:|SETTLED|tick" "$LOG" | sed 's/^/  /'
+
+    # A RUN THAT PRODUCED NO RESULT MUST BE LOUD.
+    #
+    # The first version of this script piped the harness straight into
+    # a grep, so a run that threw — or was killed by the timeout —
+    # left NO line in the output at all, and a map with no data looked
+    # exactly like a map with no result. Two maps came back empty that
+    # way and nobody could tell why. The full log is kept, and the
+    # reason is printed.
+    if ! grep -q "SETTLED" "$LOG"; then
+      echo "  *** RUN $RUN PRODUCED NO RESULT (exit $RC) — the tail of its log:"
+      tail -20 "$LOG" | sed 's/^/      /'
+    fi
+    rm -f "$LOG"
   done
 done
 

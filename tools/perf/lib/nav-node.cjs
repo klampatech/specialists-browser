@@ -57,9 +57,29 @@ const NODE_BYTES = 20;
  * @returns {Promise<{ok: boolean, node?: number[], count?: number, reason?: string}>}
  */
 async function readFirstNavNode(map, opts = {}) {
-  const { ok, node, count, reason } = await readNavNodes(map, 1, opts);
-  if (!ok) return { ok, reason };
-  return { ok, node: node[0], count };
+  return firstNode(await readNavNodes(map, 1, opts));
+}
+
+/**
+ * The first node out of a parsed nav result.
+ *
+ * PURE, so the unit suite can cover it. It exists as its own function
+ * because the version that read `node[0]` off a result that spells it
+ * `nodes` broke the fixture for EVERY MAP WITH NAV DATA — and the
+ * maps without nav data were unaffected, which made the failure look
+ * like a property of the maps rather than a bug.
+ *
+ * @param {object} res the result of `parseNodes` / `readNavNodes`
+ */
+function firstNode(res) {
+  if (!res || !res.ok) {
+    return { ok: false, reason: (res && res.reason) || 'no nav data' };
+  }
+  const node = res.nodes && res.nodes[0];
+  if (!node) {
+    return { ok: false, reason: 'no nav nodes' };
+  }
+  return { ok: true, node, count: res.count };
 }
 
 /**
@@ -169,4 +189,4 @@ function parseFirstNode(buf, map = 'the map') {
   return { ok: true, node, count };
 }
 
-module.exports = { readFirstNavNode, readNavNodes, parseFirstNode, parseNodes };
+module.exports = { readFirstNavNode, readNavNodes, parseFirstNode, parseNodes, firstNode };
