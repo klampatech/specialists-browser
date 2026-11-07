@@ -13,9 +13,18 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
-const ROOT = '/home/kyle/Development/specialists-browser';
+// THE REPO ROOT, DERIVED FROM THIS FILE'S OWN LOCATION.
+//
+// It used to be hardcoded to /home/kyle/Development/specialists-browser,
+// which passes on Kyle's machine and fails on the CI runner, where the
+// repo is at /home/runner/work/specialists-browser — with an ENOENT on
+// tools/perf. The local suite could not see the problem: the path it
+// hardcoded is exactly the path that existed. A test that depends on
+// where it was RUN is not a test.
+const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const { num, ms } = require(join(ROOT, 'tools', 'perf', 'lib', 'format.cjs'));
 
 function source(file) {

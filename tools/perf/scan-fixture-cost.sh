@@ -23,7 +23,20 @@
 # With no node indexes, it scans the first ten.
 set -uo pipefail
 
-REPO=/home/kyle/Development/specialists-browser
+# THE REPO ROOT, DERIVED FROM WHERE THIS SCRIPT LIVES.
+#
+# It used to be hardcoded to /home/kyle/Development/specialists-browser,
+# which works on Kyle's machine and nowhere else. The unit suite could
+# not see it either — the two tests that read these scripts hardcoded
+# the same path, so they passed locally and failed on the CI runner
+# (where the repo is at /home/runner/work/...) with an ENOENT.
+#
+# It is derived BEFORE the snapshot copy below, because inside the
+# snapshot BASH_SOURCE points at the temp file and the original
+# location is gone — so the root travels with the snapshot as an
+# exported variable.
+REPO="${XASH_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+export XASH_REPO_ROOT="$REPO"
 
 # RUN FROM A SNAPSHOT.
 #

@@ -34,9 +34,10 @@ const arg = (n, d) => {
 };
 
 const PORT = Number(arg('port', 8899));
-const DIR = path.resolve(
-  arg('dir', '/home/kyle/Development/specialists-browser/webxash/dist'),
-);
+// The repo root is derived from where THIS FILE lives, not hardcoded —
+// a hardcoded path works on one machine and fails on every other one.
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+const DIR = path.resolve(arg('dir', path.join(REPO_ROOT, 'webxash', 'dist')));
 const PROXY = arg('proxy', 'https://bulletballet.dev');
 const ASSET_BASE = arg(
   'asset-base',
