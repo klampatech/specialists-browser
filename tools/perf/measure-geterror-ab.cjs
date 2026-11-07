@@ -27,7 +27,7 @@
  * than the whole-frame saving it implied.
  *
  * USAGE
- *   node tools/perf/_diag-geterror-ab.cjs [--samples 4]
+ *   node tools/perf/measure-geterror-ab.cjs [--samples 4] [--map <map>]
  */
 'use strict';
 
@@ -37,11 +37,21 @@ const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
 const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
 const { describeMaps, checkMap } = require('./lib/fleet-map.cjs');
+const { findServerPlayer, pinFixturePosition } = require('./lib/fixture-view.cjs');
+const { pinView, waitForArrival } = require('./lib/viewpoint.cjs');
 
 const URL_ = 'https://ci.bulletballet.dev/';
 const args = process.argv.slice(2);
 const SAMPLES = Number(args[args.indexOf('--samples') + 1]) || 4;
 const EXPECTED_MAP = args.includes('--map') ? args[args.indexOf('--map') + 1] : null;
+
+// A UNIQUE NAME PER RUN.
+//
+// The server appends " (1)" to a duplicate name, and a killed harness
+// run leaves its connection behind — so a lookup by "PerfProbe" can
+// pick a STALE connection instead of the live client, and the fixture
+// would teleport the wrong one.
+const PLAYER_NAME = `PerfProbe${Math.random().toString(36).slice(2, 6)}`;
 
 async function bootGame(page) {
   await page.goto(URL_, { waitUntil: 'domcontentloaded', timeout: 90_000 });
@@ -49,7 +59,7 @@ async function bootGame(page) {
   const fleet = await waitForFleet(page);
   if (!fleet.ok) throw new Error('no server to join');
   await page.click('.ts-landing__play');
-  await confirmIdentity(page, 'PerfProbe');
+  await confirmIdentity(page, PLAYER_NAME);
   console.log('  booting...');
   const deadline = Date.now() + 420_000;
   while (Date.now() < deadline) {
@@ -201,6 +211,35 @@ async function phase(page, label) {
     }
     console.log(`  map: ${EXPECTED_MAP} (verified)`);
   }
+  // THE FIXTURE: THE MAP, THE PLACE AND THE ANGLE.
+  //
+  // A perf number whose viewpoint is unknown is a number of unknown
+  // provenance, and the same map measured 1.87 ms and 9.12 ms in two
+  // runs because the server picks the spawn point at RANDOM. The
+  // A-B-A controls for that with its own structure, but pinning it
+  // makes the number comparable with every other measurement taken on
+  // the same fixture.
+  if (EXPECTED_MAP) {
+    const found = await findServerPlayer(PLAYER_NAME);
+    if (found.ok) {
+      const at = await pinFixturePosition(found.player.index, EXPECTED_MAP);
+      if (at.ok) {
+        const arrived = await waitForArrival(page, at.origin, {
+          tolerance: 8,
+          timeoutMs: 20000,
+        });
+        console.log(
+          `  fixture: PINNED at ${at.origin.join(', ')}   client ` +
+            `${arrived.arrived ? 'ARRIVED' : 'DID NOT ARRIVE'}`
+        );
+      } else {
+        console.log(`  fixture: NOT PINNED (${at.reason})`);
+      }
+    } else {
+      console.log(`  fixture: NOT PINNED (${found.reason})`);
+    }
+  }
+  await pinView(page, 0, 0);
   await page.waitForTimeout(10_000);
 
   await countGetError(page);
@@ -210,6 +249,16 @@ async function phase(page, label) {
   await page.waitForTimeout(2000);
   const b = await phase(page, 'B  getError removed');
   await restoreGetError(page);
+  // RE-ARM THE COUNTER.
+  //
+  // `__xashCountingGetError` holds the ORIGINAL getError (the name is
+  // misleading), so the restore puts the real getError back — not the
+  // counting wrapper. The cost returns to the baseline, which is the
+  // point, but the call counter is then dead: it read 0 calls/s in a
+  // restored phase that was really calling getError 1230 times a
+  // second. Wrapping the restored original makes the readout mean
+  // something again.
+  await countGetError(page);
   await page.waitForTimeout(2000);
   const c = await phase(page, 'A  restored');
 
