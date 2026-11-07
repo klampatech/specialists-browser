@@ -32,6 +32,7 @@
 'use strict';
 
 const { loadPlaywright } = require('../deploy/lib/browser.cjs');
+const { num } = require('./lib/format.cjs');
 const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
@@ -164,9 +165,15 @@ async function phase(page, label) {
     await page.waitForTimeout(900);
   }
   const m = median(costs);
+  // A PHASE THAT PRODUCED NO SAMPLES MUST NOT TAKE THE RUN DOWN.
+  //
+  // `median([])` is undefined, and `undefined.toFixed(2)` is a
+  // TypeError — which would land AFTER the phase, taking the whole
+  // A-B-A with it and leaving nothing to read. A failure path has to
+  // REPORT, not crash.
   console.log(
-    `  ${label.padEnd(22)} frame ${m.toFixed(2).padStart(6)} ms   ` +
-      `getError ${(median(calls) / 2).toFixed(0).padStart(6)} calls/s   ` +
+    `  ${label.padEnd(22)} frame ${num(m).toFixed(2).padStart(6)} ms   ` +
+      `getError ${(num(median(calls)) / 2).toFixed(0).padStart(6)} calls/s   ` +
       `late ${median(late)}`
   );
   console.log(`    samples: ${costs.map((v) => v.toFixed(2)).join(', ')} ms`);
@@ -263,10 +270,11 @@ async function phase(page, label) {
   const c = await phase(page, 'A  restored');
 
   console.log('\n  --- RESULT ---');
-  console.log(`  baseline ${a.toFixed(2)} ms -> patched ${b.toFixed(2)} ms -> restored ${c.toFixed(2)} ms`);
-  console.log(`  saving from the patch: ${(a - b).toFixed(2)} ms per frame`);
+  const safe = (v) => (Number.isFinite(v) ? v : 0);
+  console.log(`  baseline ${num(a).toFixed(2)} ms -> patched ${num(b).toFixed(2)} ms -> restored ${num(c).toFixed(2)} ms`);
+  console.log(`  saving from the patch: ${(num(a) - num(b)).toFixed(2)} ms per frame`);
   console.log(
-    `  restored-vs-baseline drift: ${(c - a >= 0 ? '+' : '') + (c - a).toFixed(2)} ms ` +
+    `  restored-vs-baseline drift: ${(num(c) - num(a) >= 0 ? '+' : '') + (num(c) - num(a)).toFixed(2)} ms ` +
       `(a drift close to zero means the effect is the patch, not the passage of time)`
   );
   for (const hz of [60, 120, 144, 165, 240]) {

@@ -40,6 +40,7 @@
  * between two runs is not a measurement yet.
  */
 const { loadPlaywright } = require('../deploy/lib/browser.cjs');
+const { num, ms } = require('./lib/format.cjs');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 
@@ -267,6 +268,15 @@ async function window_(page, seconds) {
     return {
       frames: intervals.length,
       tickHz: intervals.length ? +(1000 / med(intervals)).toFixed(1) : 0,
+      // THE `med` AND `mean` ABOVE ARE THE IN-PAGE ONES, AND THEY
+      // ALREADY RETURN 0 FOR AN EMPTY LIST.
+      //
+      // This block runs inside `page.evaluate()`, which is
+      // SERIALISED AND RUN IN THE BROWSER — so a Node-side helper is
+      // not in scope here. Reaching for one is how this file ended
+      // up with `ReferenceError: num is not defined` in the middle of
+      // a measurement: the helper was correct, and the SCOPE was
+      // wrong. A page-side function may only use what the page has.
       intervalMedMs: +med(intervals).toFixed(2),
       gpuBacklogMedMs: +med(backlog).toFixed(2),
       gpuBacklogMeanMs: +mean(backlog).toFixed(2),
@@ -583,7 +593,7 @@ async function stabilize(page, opts = {}) {
   // as it does. Measuring inside that window measures the catch-up.
   const settle = await stabilize(page);
   console.log(
-    `\n  settling: ${settle.stable ? 'STABLE' : 'NOT STABLE'} at ${Number.isFinite(settle.cost) ? settle.cost.toFixed(2) : '?'} ms` +
+    `\n  settling: ${settle.stable ? 'STABLE' : 'NOT STABLE'} at ${ms(settle.cost)} ms` +
       ` after ${Math.round(settle.waitedMs / 1000)} s` +
       `   (${settle.samples.length} samples: ${settle.samples.map((x) => x.toFixed(2)).join(', ')})`
   );
@@ -603,7 +613,7 @@ async function stabilize(page, opts = {}) {
           : 0);
     windowCosts.push(pacerMs);
     console.log(
-      `  #${i + 1}  tick ${String(w.tickHz).padStart(5)} Hz   engine ${pacerMs.toFixed(2).padStart(6)} ms   ` +
+      `  #${i + 1}  tick ${String(w.tickHz).padStart(5)} Hz   engine ${num(pacerMs).toFixed(2).padStart(6)} ms   ` +
         `gpu backlog med ${w.gpuBacklogMedMs.toFixed(2).padStart(6)} ms  max ${w.gpuBacklogMaxMs.toFixed(2).padStart(7)} ms   ` +
         `frames ${w.frames}`
     );
@@ -629,9 +639,9 @@ async function stabilize(page, opts = {}) {
   if (windowCosts.length) {
     const settled = windowCosts.slice(1);
     console.log('');
-    console.log(`  frame cost, all windows:  ${medianOf(windowCosts).toFixed(2)} ms`);
+    console.log(`  frame cost, all windows:  ${num(medianOf(windowCosts)).toFixed(2)} ms`);
     console.log(
-      `  frame cost, SETTLED:       ${(settled.length ? medianOf(settled) : medianOf(windowCosts)).toFixed(2)} ms` +
+      `  frame cost, SETTLED:       ${num(settled.length ? medianOf(settled) : medianOf(windowCosts)).toFixed(2)} ms` +
         `   (the first window is the engine warming up)`
     );
   }
