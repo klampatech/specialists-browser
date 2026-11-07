@@ -42,6 +42,7 @@
 const { loadPlaywright } = require('../deploy/lib/browser.cjs');
 const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
+const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
 const { chromium } = loadPlaywright();
 
 const URL_ = 'https://ci.bulletballet.dev/';
@@ -123,6 +124,10 @@ async function engineCost(page) {
 (async () => {
   const browser = await chromium.connectOverCDP('http://localhost:9223');
   const ctx = browser.contexts()[0];
+  // Refuse to measure beside another live game instance: they share
+  // the main thread and the contention makes the number meaningless.
+  await assertSingleGameInstance(browser, 'measure-engine-cost');
+
   const page = await ctx.newPage();
   page.on('pageerror', (e) => console.log('  [pageerror] ' + String(e).slice(0, 160)));
 

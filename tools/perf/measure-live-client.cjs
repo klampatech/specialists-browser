@@ -90,6 +90,7 @@
 const { loadPlaywright } = require('../deploy/lib/browser.cjs');
 const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
+const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
 const { chromium } = loadPlaywright();
 
 const argv = process.argv.slice(2);
@@ -342,6 +343,10 @@ async function setEngineMode(page, w, h) {
     console.error('  the browser has no context to drive');
     process.exit(1);
   }
+  // Refuse to measure beside another live game instance: they share
+  // the main thread and the contention makes the number meaningless.
+  await assertSingleGameInstance(browser, 'measure-live-client');
+
   const page = await ctx.newPage();
 
   const errors = [];

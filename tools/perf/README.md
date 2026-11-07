@@ -142,12 +142,22 @@ the page for DOM fullscreen — over SSH the document is not focused, so
 `requestFullscreen` is refused and the pointer lock fails with
 `WrongDocumentError`.
 
-**ONE GAME INSTANCE AT A TIME.** This is the rule that cost the most
-time. The first two runs of the same measurement on the same machine
-disagreed by 3.3× (3.88 ms vs 12.67 ms per frame) because the harness
-had left four game tabs running at once; the contention inflated every
-reading. Close the tab when the harness is done, and check
-`curl -s http://localhost:9223/json/list | grep -c '"type": "page"'`.
+**ONE GAME INSTANCE AT A TIME — AND THE HARNESS REFUSES IF YOU
+FORGET.** This is the rule that cost the most time. The first two runs
+of the same measurement on the same machine disagreed by 3.3× (3.88 ms
+vs 12.67 ms per frame) because the harness had left four game tabs
+running at once; the contention inflated every reading.
+
+**`lib/one-game-instance.cjs` now enforces it.** Every harness that
+boots a game calls `assertSingleGameInstance()` before it opens its
+page, and **refuses to measure** if another game instance is already
+running in that browser — with the command that lists the tabs and the
+one that closes them. A blank tab is fine; a live game instance is not,
+because they share the main thread. A production session is caught even
+when the harness is pointed at the CI stack, for the same reason.
+
+A measurement harness that can silently measure the wrong thing is
+worse than one that refuses to measure.
 
 ### `profile-client.cjs` — where the time actually goes
 
