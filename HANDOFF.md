@@ -23,10 +23,140 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-07, LATER — **THE READOUT GETS ITS OWN TAB, AND THE WEB UI'S
+READOUT SURVIVES THE QUIT. BOTH ARE BUILT, VERIFIED IN A REAL BROWSER, AND IN A PR
+WAITING FOR KYLE'S APPROVAL.**
+
+Kyle asked for two changes to the client readout. **Both are implemented, both are
+tested, and both are in PRs.** The work is five commits on the branch
+`feat/readout-tabs-session`, across the two repos:
+
+| repo | commit | what |
+|---|---|---|
+| `webxash` | `717e2fe` | the options overlay gets the two tabs (Task A) |
+| `webxash` | `7659754` | the session snapshot, the merge, the past tense (Task B) |
+| `webxash` | `4ada49d` | the fix round: the restored report never contradicts itself |
+| parent | `6881365` | the parent suite: the new invariant + the policy tests |
+| parent | `d7cb1b1` | the parent suite: a restored report never says the game has not run |
+
+**webXash PR #49 is open and waiting for Kyle's approving review** (an approving
+review from `klampatech` with an **EMPTY body** — that is the signature of a human
+tapping Approve; `EVO_MERGE_OK=1` only unlocks the merge). The parent PR comes
+AFTER it, pointing at webXash's **squash** SHA — never at the branch head.
+
+### WHAT SHIPPED
+
+**TASK A — THE ESC MODAL IS TWO TABS.** "Settings" and "Your Client", in a real ARIA
+tablist (`role="tablist"` / `tab` / `tabpanel`, `aria-selected`, `aria-controls`,
+`aria-labelledby`, **roving tabindex**, ArrowLeft/ArrowRight/Home/End with the
+selection following the focus). The strip is **outside the scroll area** — it shares
+the header row with the brand mark and the close button, so it costs **ZERO** extra
+height. The Quit button stays in the Session group of the Settings tab; the readout
+is in the Your Client panel and is not in the Settings panel at all. The labels are
+exactly "Your Client" (capital C) in the tab, on the landing page and in the
+readout's own heading.
+
+**THE FOCUS TRAP STILL HOLDS** — the name input takes the focus when the overlay
+opens, because without it the keystrokes go to `<body>` and the ENGINE eats them as
+game commands. Three things make it work, and all three are load-bearing:
+`v-show` (not `v-if`) on the panels, so the input is always in the DOM; the tab reset
+to `settings` **synchronously in the watcher callback, before the await**; and
+`await nextTick()` before `focus()`. Move that reset after the await and `focus()`
+fails **silently** on a `display:none` element — no exception, no console line, the
+name field just stops working.
+
+**TASK B — THE WEB UI'S READOUT SURVIVES THE QUIT.** The landing page restores the
+last match's measured facts from **`sessionStorage`** (not `localStorage` — same tab,
+dies with the tab), and the report says where they came from: `source:
+'last-session'`, a `measuredAt` stamp, a provenance finding ("These numbers are from
+your last game, 12 minutes ago") and a **"Last game — 12 minutes ago"** label
+directly **above** the numbers block, because the numbers are the first thing the
+player reads. Every claim about the game is in the **past tense** ("the game was
+capped to 60 fps", "was drawing", "used", "was running"); the browser's own rate
+stays in the present tense only when it was measured live on that page.
+
+### THE TWO BLOCKING HOLES THE CROSS-VENDOR REVIEW CAUGHT
+
+Claude Code reviewed the change (the review's shape: **blocking / non-blocking /
+nits**, and every load-bearing claim re-verified by Evo's own tool calls). It found
+two, and **Evo reproduced B-1 against the real module before accepting it**:
+
+1. **`refresh-unknown` could still fire on restored facts.** The guard was
+   `displayHz <= 0`, but the restored `displayHz` is the SESSION's — and a short
+   match leaves it at `0` while the engine's frame cost is already known (the pacer
+   only trusts its display figure after ten intervals). The landing page could say
+   *"The game has not run yet"* next to *"The game was drawing 7.7 megapixels"* and
+   *"Your client was set up properly in your last game"* — three contradictory
+   claims on one screen, which is the exact failure this feature exists to kill.
+   **Fixed in both places**: the writer now refuses a half-measured snapshot
+   (`displayHz > 0` as well as `engineWorkMs > 0`), and the report never emits
+   `refresh-unknown` for restored facts at all.
+2. **The headline number was in the present tense.** The numbers block sits ABOVE the
+   findings, so "120 Hz — the game is drawing 60 fps" was the first thing the player
+   read, about a game that is not running. The row is tensed on `report.source`, and
+   the provenance label now sits above the numbers.
+
+**THE LESSON, FOR THE NEXT SESSION: a restored report has to be checked for
+CONTRADICTIONS, not for the presence of one finding.** The old test asserted
+"`refresh-unknown` is absent" against a fixture whose `displayHz` was 60 — so it only
+ever exercised the case that already worked. The new fixture uses
+`displayHz: 0, engineWorkMs: 4`, which is the case that was broken.
+
+### THE GEOMETRY — THE STANDING CONSTRAINT, MEASURED
+
+The Quit button must be fully visible without scrolling. The tabs cost the strip's
+height (~52px when it had a row of its own) and the modal is content-sized, so
+losing the readout moved the modal's top edge DOWN. **Fixed structurally**: the strip
+shares the header row (zero extra height) and the modal's top edge is anchored
+(`align-items: flex-start` + `padding-top: 4vh`), so it no longer depends on the
+current tab's content.
+
+Measured in the real app (the CI rig, the same instrument — the same probe, the same
+1600×1057 viewport — on the OLD build and on the NEW one):
+
+| | old single panel | new two tabs |
+|---|---|---|
+| the Quit button, without scrolling | needs a **977px** viewport | needs a **874px** viewport |
+| the panel's scrolling container | the panel itself, 1985px of content in a 928px box | the body, **723px of content in a 723px box — no scrolling at all** |
+| the Quit button's box (at 1057px) | y 921–950 | y 788–817 |
+| the strip's cost | — | **zero** (it shares the header row) |
+
+So the tabs did not cost the Quit button its reach: the new design needs **103px LESS**
+viewport height for the Quit button to be visible without scrolling, because the
+readout is no longer in the panel at all.
+
+### HOW IT WAS VERIFIED (the CI rig, never production)
+
+- `bunx vue-tsc --noEmit` → clean; `bun run build` → clean, with the WASM and the
+  GL-glue gates.
+- The parent suite: **719/719** (`node --experimental-strip-types --test
+  tests/unit/*.test.mjs`).
+- **A real browser, on the CI rig**: the landing page → the engine boot → the ESC
+  overlay → the tabs → the quit → the landing page again. The harness is
+  `~/.hermes/cache/scratch/verify-readout-v2.cjs` (scratch is pruned — copy it into
+  the repo if it should survive). It asserts the tablist's shape, the ARIA wiring,
+  the roving tabindex, the strip outside the scroll area, the readout only in the
+  Your Client panel, the Quit button's GEOMETRY, the focus on the name input, the
+  snapshot in `sessionStorage`, and that the landing page says the numbers are from
+  the last game and **not** "the game has not run yet". **47/47.**
+
+**THE RIG RECIPE (it is not obvious):**
+```bash
+ssh bb-prod 'bash /home/ubuntu/ci-stack.sh up'      # the CI game server, bridge, registry
+cd webxash && VITE_BRIDGE_ADDRESS=ci.bulletballet.dev:443 bun run build
+node tools/perf/serve-local-build.cjs --proxy https://ci.bulletballet.dev
+# a headful Chrome on :9223 (real key events), then the harness
+ssh bb-prod 'bash /home/ubuntu/ci-stack.sh down'    # ALWAYS tear it down
+```
+**The `VITE_BRIDGE_ADDRESS` is the part that matters**: the browser opens the
+WebSocket to the page's own host, so without it the local build talks to the
+PRODUCTION bridge and the test player lands in the public leaderboard. The rig's
+`/api/servers` must answer with `ts-ci-0`, never the production fleet.
+
 **As of:** 2026-11-07, LATEST — **THE READOUT GETS ITS OWN TAB, AND THE
-WEB UI'S READOUT SURVIVES THE QUIT.** Kyle asked for two changes to
-the client readout, and **NEITHER IS IMPLEMENTED YET — both trees are
-clean and this is a fresh task.** Read this whole block before
+WEB UI'S READOUT SURVIVES THE QUIT.** Kyle asked for two changes to the client
+readout, and **NEITHER IS IMPLEMENTED YET — both trees are clean and this is a
+fresh task.** Read this whole block before
 touching anything.
 
 ### THE TWO REQUESTS, VERBATIM
@@ -5176,15 +5306,20 @@ the parts that are known traps.
 
 # § NEXT TASK
 
-> ## THE READOUT GETS A TAB, AND THE WEB UI'S READOUT SURVIVES THE QUIT (2026-11-07, LATEST)
+> ## THE READOUT GETS A TAB, AND THE WEB UI'S READOUT SURVIVES THE QUIT (2026-11-07, DONE — WAITING FOR THE MERGE)
 >
-> **This is the ONE task.** Kyle asked for two changes to the client
-> readout, and **NEITHER IS IMPLEMENTED YET — both trees are clean.**
-> **§ CURRENT STATE's newest block has the whole picture: the two
-> requests verbatim, the root cause with line numbers, the design
-> decisions, the tests that break, the verification rig and the PR
-> sequence. READ THAT BLOCK FIRST — it is the work order, and this is
-> only the headline.**
+> **BUILT, TESTED, AND IN A PR.** webXash **#49** is open and waiting for Kyle's
+> approving review (an approving review from `klampatech` with an **EMPTY body** —
+> that is the signature of a human tapping Approve; `EVO_MERGE_OK=1` only unlocks
+> the merge). **The only thing left is the merge**, and then the deploy runs on its
+> own: the parent PR follows the webXash merge, pointing at webXash's **squash** SHA
+> — never at the branch head. § CURRENT STATE's newest block has the whole story:
+> what shipped, the two blocking holes the cross-vendor review caught (and the
+> lesson: a restored report has to be checked for CONTRADICTIONS), the geometry
+> measured on both builds, the CI-rig recipe and the PR sequence.
+>
+> **THE OLD WORK ORDER BELOW IS KEPT AS THE RECORD.** It is what the work was
+> planned from, and the traps in it are the ones that actually bit:
 >
 > **TASK A — THE IN-GAME ESC MODAL GETS TWO TABS.** "Let's move the
 > 'Your Client' section in the in game ESC options settings to it's own
