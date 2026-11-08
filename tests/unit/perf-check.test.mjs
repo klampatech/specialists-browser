@@ -568,6 +568,71 @@ test('a restored report says where it came from, and says it in the past tense',
   assert.match(budget.detail, /A frame took 13\.30 ms/);
 });
 
+test('a restored report never says the game has not run', () => {
+  // THE HALF-MEASURED MATCH.
+  //
+  // The pacer only trusts its own display figure after ten intervals,
+  // so a SHORT match leaves `displayHz` at 0 while the engine's frame
+  // cost is already known. That snapshot was real, and it was written
+  // verbatim, so the report has to cope with it: the game DID run.
+  //
+  // The claim it must never make is "the game has not run yet" —
+  // especially not next to "the game was drawing 7.7 megapixels" and
+  // "your client was set up properly in your last game".
+  const half = session({ displayHz: 0, sustainableFps: 0 });
+  const resolved = resolvePerfFacts(landing(), half);
+  assert.equal(resolved.fromLastSession, true);
+  assert.equal(resolved.displayHz, 0);
+  assert.equal(resolved.engineWorkMs, 13.3);
+
+  const report = buildPerfReport(resolved, 1760000000000);
+  assert.equal(
+    report.findings.some((f) => f.id === 'refresh-unknown'),
+    false,
+    'a restored report must never claim the game has not run'
+  );
+  // And it says where the numbers came from, instead.
+  assert.ok(
+    report.findings.some((f) => f.id === 'last-session'),
+    'and it says where they came from'
+  );
+
+  // THE LIVE CASE STILL SAYS IT, because there the game really has
+  // not run. The guard is about the SOURCE, not about the number.
+  const live = buildPerfReport(landing());
+  assert.ok(
+    live.findings.some((f) => f.id === 'refresh-unknown'),
+    'a live report with no measurement still says the game has not run'
+  );
+});
+
+test("the browser's own rate is not claimed as live when it came from the session", () => {
+  // THE FIRST RENDER OF THE LANDING READOUT.
+  //
+  // The report is built before the idle measurement resolves, so the
+  // browser's rate can be the session's — and then a present-tense
+  // title asserts a live reading that is really the last match's.
+  const resolved = resolvePerfFacts(landing({ panelHz: 0 }), session());
+  assert.equal(resolved.panelHzFromSession, true);
+  const report = buildPerfReport(resolved, 1760000000000);
+
+  const refresh = report.findings.find((f) => f.id === 'refresh-ok');
+  assert.ok(refresh, 'the browser rate is still reported');
+  assert.match(refresh.title, /was delivering 120 refreshes a second/);
+  assert.doesNotMatch(refresh.title, /is delivering/);
+
+  // And the same for the throttled case: the browser was offering
+  // them, it is not offering them now.
+  const throttled = buildPerfReport(
+    resolvePerfFacts(landing({ panelHz: 0 }), session({ panelHz: 30 })),
+    1760000000000
+  );
+  const offer = throttled.findings.find((f) => f.id === 'refresh-throttled');
+  assert.ok(offer, 'the throttled browser is still reported');
+  assert.match(offer.title, /was only offering 30 refreshes a second/);
+  assert.doesNotMatch(offer.title, /is only offering/);
+});
+
 test('a live report is still in the present tense', () => {
   const report = buildPerfReport(healthy({ panelHz: 120, displayHz: 60, engineWorkMs: 13.3, capFps: 60, everyNth: 2 }));
   assert.equal(report.source, 'live');
@@ -588,4 +653,13 @@ test('the age of a measurement is said in words', () => {
   assert.equal(describeSessionAge(now - 12 * 60 * 1000, now), '12 minutes ago');
   assert.equal(describeSessionAge(now - 3 * 3600 * 1000, now), '3 hours ago');
   assert.equal(describeSessionAge(now - 2 * 86400 * 1000, now), '2 days ago');
+});
+
+test('a measurement with no timestamp has no age', () => {
+  // "moments ago" is a recency claim, and a number whose age is
+  // unknown cannot carry one.
+  const now = 1760000000000;
+  assert.equal(describeSessionAge(0, now), 'at an unknown time');
+  assert.equal(describeSessionAge(-1, now), 'at an unknown time');
+  assert.equal(describeSessionAge(NaN, now), 'at an unknown time');
 });
