@@ -23,6 +23,340 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-07, LATEST — **THE READOUT GETS ITS OWN TAB, AND THE
+WEB UI'S READOUT SURVIVES THE QUIT.** Kyle asked for two changes to
+the client readout, and **NEITHER IS IMPLEMENTED YET — both trees are
+clean and this is a fresh task.** Read this whole block before
+touching anything.
+
+### THE TWO REQUESTS, VERBATIM
+
+> **"Let's move the "Your Client" section in the in game ESC options
+> settings to it's own tab within the modal. We can have "Settings" and
+> "Your Client""**
+
+> **"Also on the web ui, the "Your Client" section should update once a
+> game is played and quit back to the web ui. Currently it always says
+> to measure it in game."**
+
+Triggering message id `1568847566420971540`. These are BUILD requests,
+not questions — Kyle wants them implemented, tested and shipped.
+
+### TASK A — THE IN-GAME ESC MODAL GETS TWO TABS
+
+The modal today is ONE long scrolling panel. The readout is its last
+group, after the Session group that holds the Quit button
+(`webxash/src/components/XashOptionsOverlay.vue`, 828 lines):
+
+| lines | what |
+|---|---|
+| 28–34 | header: brand mark, `Options` title, close button |
+| 55–116 | **Identity** group — name field, `Set name`, the character picker (9 models) |
+| 118–154 | **Controls** group — sensitivity, FOV, volume, `Apply` |
+| 168–187 | **Buy menu** group — the Classic/Modern switch |
+| 189–221 | **Session** group — the fullscreen switch (205–217) and the **Quit** button (218–220) |
+| 241–244 | **Your client** group — `<h3 class="opts__legend">Your client</h3>` + `<TSPerformance embed />` |
+
+The build: a **tab strip** with exactly two tabs — **"Settings"** and
+**"Your Client"**. Settings holds the five existing groups; Your Client
+holds the readout. The tab strip goes **OUTSIDE the scroll area**, so
+it is always visible and the player can always get back to Settings
+(one click) — that is what keeps Quit recoverable from the readout.
+
+**THE QUIT CONSTRAINT, AND WHY THE TABS HELP IT.** The standing rule
+from the readout work is "keep Quit readily reachable rather than
+allowing a long readout section to push it below the fold." Today the
+readout is a sibling group of Quit, so the panel scrolls further and
+Quit rides lower. With the readout in its OWN tab the Settings tab is
+**shorter than it has been since the readout was added**, so Quit ends
+up MORE reachable than now, not less. Quit stays in the Session group
+of the Settings tab — it is a session action and it belongs there.
+
+**THE ACCESSIBILITY SHAPE (do this properly, it is a tablist).**
+`role="tablist"` on the strip; `role="tab"` + `aria-selected` +
+`aria-controls` on each button; `role="tabpanel"` + `aria-labelledby`
+on each panel; **roving tabindex** (the selected tab is `tabindex="0"`,
+the rest `-1`); **ArrowLeft/ArrowRight/Home/End** move the selection.
+The project's a11y standard is high — see the `opts__close` focus-ring
+comment (style, 539–595) — so a bare click-only tab strip is not
+acceptable.
+
+**THE FOCUS TRAP, AND IT IS A REAL ONE.** The overlay focuses the name
+input when it opens (`watch(open, …)`, lines 337–351, `focus()` at
+349–350), because without focus the keystrokes go to `<body>` and the
+ENGINE eats them as game commands. With tabs, the name input lives in
+the Settings panel — if that panel is hidden when the overlay opens,
+`focus()` on a hidden element **silently fails** and the name field
+stops receiving keystrokes. So: **reset `activeTab` to `settings`
+whenever the overlay opens**, and move focus to the panel on a tab
+switch (`tabindex="-1"` on the panel). `setBridgeSuspended(true)`
+(347) keeps the game from eating the keys while the overlay is open,
+so a focus miss does not reach the game — but the field still silently
+stops working, which is the same class of bug the original focus fix
+was about.
+
+**THE VISUAL PRECEDENT IS ALREADY IN THE FILE.** The selected tab
+should use the amber-plate idiom of `opts__switch-btn--on` (style,
+820–825: amber fill, ground-coloured label); the Quit button keeps
+`opts__btn--danger` (771–779, red). The panel is `min(28rem, 92vw)`,
+`max-height: 88vh`, `overflow-y: auto` (492–506) — split it into a
+fixed head + fixed tab strip + a scrolling body.
+
+**THE LABEL RENAMES.** The user asked for **"Your Client"** (capital
+C). Today the UI says "Your client" in four places:
+`TSPerformance.vue:3` (the `h2`), `XashOptionsOverlay.vue:242` (the
+legend — which becomes the tab label), `XashLanding.vue:225` (the
+landing tab label), and `perf-check.ts:541` (a prose sentence —
+leave that one alone; it is prose, not a label). Use exactly
+**"Settings"** and **"Your Client"** for the two tab labels.
+
+### TASK B — THE WEB UI READOUT MUST SURVIVE THE QUIT
+
+**THE ROOT CAUSE, WITH THE EVIDENCE.** `quitToWebUi()`
+(`XashOptionsOverlay.vue:426–438`) ends with `window.location.href = '/'`
+— **a full page load**. Everything the readout knows lives in module
+state that dies with the page:
+
+- `frame-pacing-apply.ts` — `core` (188–197) holds `displayHz`,
+  `engineWorkMs`, `sustainableFps`, `capFps`, `lateTicks`,
+  `measuredTicks`; `idleDisplayHz` (299) holds the display rate. Both
+  are module-level `let`s. A reload resets them to zero.
+- The canvas backing store — `canvasBacking()` (`perf-collect.ts:78–83`)
+  reads `document.getElementById('canvas')`, which on the landing page
+  is the 300×150 placeholder.
+
+So on the landing page `collectPerfFacts()` (`perf-collect.ts:92–119`)
+returns `displayHz = 0` and `engineWorkMs = 0`, and
+`buildPerfReport()` (`perf-check.ts:355–557`) emits the finding at
+389–397:
+
+> title: **"The game has not run yet, so its frame rate is not known"**
+> detail: **"…that is measured as soon as it is running in a map."**
+
+That detail is the "always says to measure it in game" Kyle is
+reporting. And it sits under a summary that says the opposite
+(`summary`, 526–541): before the idle measurement lands the summary is
+`"Your client has not been measured yet."` (541, tone `info`); after it
+lands the summary is `"Your browser is set up properly. Nothing to do."`
+(tone `ok`) — **while the finding underneath still says the game has
+not run.** The contradiction is the symptom.
+
+**THE FIX: A SESSION SNAPSHOT, RESTORED ON THE LANDING PAGE.**
+`sessionStorage` — the same tab, survives the `location.href` hop,
+dies with the tab. **NOT localStorage:** a measurement from another day
+on possibly-changed hardware is a different claim, and the request is
+specifically "played a game and quit back to the web ui" — same tab.
+
+**WHAT IS RESTORED, AND FROM WHERE.** The rule is: *live wins for
+anything live can measure; the session fills the gaps the live page
+cannot.*
+
+| field | source | why |
+|---|---|---|
+| `displayHz` | **session** | the rate the GAME was delivering; only exists in a match |
+| `engineWorkMs` | **session** | the engine's per-frame cost |
+| `sustainableFps` | **session** | derived from `engineWorkMs` |
+| `capFps`, `everyNth` | **session** | the cap in force during the match |
+| `lateTicks`, `measuredTicks` | **session** | the late-frame fraction |
+| `backingWidth/Height` | **session** | the game's real render size. **The landing canvas's 300×150 MUST NOT win here** — that is the trap the readout already guards against (`perf-check.ts:501–521`, `inGame = facts.engineWorkMs > 0` at 510) |
+| `panelHz` | **live**, else session | the DISPLAY's rate. Decision: use the live idle measurement, because the budget question is "can this machine hit the display's budget" and the engine's frame cost does not change with the display rate. The live one is measured at `main.ts:71–72` and `xash-loader.ts:842` |
+| `renderer` | live probe, else session | `probeRenderer()` (`perf-collect.ts:48–68`) already reports the same GPU off a throwaway canvas |
+| `userAgent`, `dpr` | live | |
+
+**WHERE TO WRITE THE SNAPSHOT.** Two sites, both worth having:
+1. `XashOptionsOverlay.quitToWebUi()` — explicitly, right before
+   `window.location.href = '/'` (line 437). This is the path the
+   request names.
+2. A `pagehide` catch-all, so closing the tab or navigating away any
+   other way keeps the session. The loader already registers its own
+   `beforeunload` at `xash-loader.ts:1662` (the reload confirmation) —
+   that is a DIFFERENT listener; `pagehide` is the right hook for "the
+   page is going away".
+
+**GUARD BOTH WRITES ON `engineWorkMs > 0`.** Otherwise the LANDING page
+writes its own empty facts on the way out and destroys the very session
+it is supposed to show. This is the single easiest way to get this
+wrong.
+
+**WHERE TO READ IT.** `collectPerfFacts()` merges the restored session
+into the live facts when the live engine has measured nothing. Put the
+MERGE in **`perf-check.ts`** as a pure exported function (e.g.
+`resolvePerfFacts(live, session)`), because `perf-check.ts` has **NO
+IMPORTS ON PURPOSE** — that is what lets the parent's unit suite
+`import` it directly under `node --experimental-strip-types` and
+exercise the policy with no browser. `perf-collect.ts` does the
+browser-touching half (read `sessionStorage`, merge, return the report).
+
+**THE HONESTY REQUIREMENT — THE RESTORED NUMBERS ARE NOT LIVE.** A
+readout that shows last-match numbers as if they were measured now is
+exactly the failure mode this whole feature was built to avoid ("A
+readout that guesses teaches the player to ignore it",
+`perf-check.ts`). So the provenance has to be in the report:
+- add to `PerfFacts`: `fromLastSession?: boolean` and
+  `measuredAt?: number` (epoch ms);
+- add to `PerfReport`: `source: 'live' | 'last-session'` and
+  `measuredAt: number`;
+- in `buildPerfReport`, when the facts came from a session:
+  - the summary must not claim a live reading — e.g. *"Your client was
+    set up properly in your last game. Nothing to do."* / *"Your browser
+    was holding the game back in your last game. The fixes are below."*;
+  - the game findings go **past tense**, because the game is not
+    running: "The game **is** capped to X fps" → "**was** capped"; "The
+    game **is drawing** X fps on a Y Hz display" → "**was drawing**";
+    "The game **is drawing** X megapixels" → "**was drawing**"; "The
+    game **uses** X% of your frame budget" → "**used**"; "The game **is
+    running** at your display's full rate" → "**was running**";
+  - add a provenance finding (say id `last-session`, severity `info`)
+    naming the source and the age — "These numbers are from your last
+    game, N minutes ago" — and that playing again refreshes them.
+- `refresh-unknown` (389–397) must NOT fire for restored facts
+  (`displayHz > 0` handles this automatically — but assert it).
+
+**THE PANEL MUST NOT BE AFFECTED IN-GAME.** The embedded copy in the
+overlay reads the LIVE game; only the landing copy restores the
+session. `TSPerformance` is used in exactly two places —
+`XashLanding.vue:163` (`<TSPerformance />`) and
+`XashOptionsOverlay.vue:243` (`<TSPerformance embed />`). The `embed`
+prop currently only controls the `h2` (line 3, `v-if="!embed"`).
+**Recommendation:** replace `embed?: boolean` with one explicit prop —
+`context?: 'landing' | 'game'`, default `'landing'` — where
+`context === 'game'` also implies "embedded, drop the heading". One
+prop, two meanings that always coincide, and the data source is
+explicit rather than inferred from a presentation flag. The overlay
+call becomes `<TSPerformance context="game" />`.
+
+**"MEASURE AGAIN" IS A NO-OP TODAY — KNOW THIS BEFORE YOU TOUCH IT.**
+`remeasure()` (`TSPerformance.vue:182–190`) calls
+`ensurePanelRateMeasured()`, and that function
+(`perf-collect.ts:133–137`) returns the **cached** idle rate when one
+exists (`getIdleDisplayHz() > 0` → return early). So the button does
+not re-measure anything; it re-reads the report. On the landing page the
+only thing that can be re-measured is the DISPLAY rate — the engine's
+frame cost can only change by playing a game. **Recommendation:** leave
+the button's behaviour alone for this task and make the copy honest
+(the provenance finding says the game numbers refresh by playing
+again). Calling `measureIdleDisplayHz()` directly would be a true
+re-measure, but only on the landing page — the page must be IDLE, and
+in the overlay the engine is running, which is precisely the
+contamination trap documented in `frame-pacing-apply.ts:278–299`.
+
+### THE TESTS THAT MUST CHANGE, AND THE ONES TO ADD
+
+**`tests/unit/perf-check.test.mjs` (371 lines) — the assertion that
+WILL BREAK.** The test at 335–371, *"the readout is reachable while the
+game is running"*, asserts on the raw source text:
+
+```js
+const quitAt = overlay.indexOf('opts__btn--danger');
+const readoutAt = overlay.indexOf('<TSPerformance');
+assert.ok(quitAt < readoutAt, 'the Quit button must come BEFORE the readout in the overlay');
+```
+
+That encodes the OLD single-panel design ("Quit before the readout in
+one scroll panel"), which the tabs deliberately replace. **Rewrite it
+to the new invariant**, which is stronger: the readout can never push
+Quit down, because it is not in the same panel. Assert against stable
+anchors in the source — e.g. `id="opts-panel-settings"` and
+`id="opts-panel-client"` — that (a) there is a tablist with exactly
+two tabs labelled "Settings" and "Your Client", (b) the Quit button is
+inside the Settings panel, (c) the readout is inside the Your Client
+panel, and (d) the readout is **not** in the Settings panel.
+Note this file does **not** strip comments before regexing, so keep
+the markup regex-friendly.
+
+**New policy tests to add (same file):**
+- `resolvePerfFacts(live, session)` returns the live facts unchanged
+  when the game is running (`engineWorkMs > 0`);
+- returns the live facts unchanged when there is no session;
+- merges the session's engine numbers when the game has not run;
+- **the landing canvas's 300×150 backing size does NOT win** — the
+  session's backing size does;
+- `buildPerfReport` on session facts emits no `refresh-unknown`;
+- the session report carries `source: 'last-session'` + `measuredAt`,
+  and its summary/findings are past tense.
+
+**`tests/unit/escape-gate.test.mjs` (149–170)** reads the overlay with
+`stripComments()` and asserts `role="switch"`,
+`noteFullscreenExitRequested` and `toggleFullscreen` are present. Keep
+all three; the new tab markup (`role="tab"`, `role="tabpanel"`) does
+not collide with them.
+
+### HOW TO VERIFY IT (CI RIG ONLY — NEVER PRODUCTION)
+
+- **Typecheck + build** in `webxash`: `bunx vue-tsc --noEmit` then
+  `bun run build` — the build script also runs
+  `scripts/check-xash-wasm.cjs` and `scripts/check-xash-glue.cjs`, so
+  the WASM and GL-glue gates come with it.
+- **Parent unit suite**: `node --experimental-strip-types --test
+  tests/unit/*.test.mjs` (currently 709/709).
+- **Browser**: the **CI rig**, never production — production gameplay
+  pollutes the leaderboard. `tools/deploy/ci-stack.sh` builds the
+  derived CI config (cheats on, zero bots, no rotation) and
+  `tools/perf/serve-local-build.cjs` is the local HTTPS/CI proxy.
+  The previous session's harness
+  `/home/kyle/.hermes/cache/scratch/verify-readout.cjs` (12,544 bytes)
+  drives landing → engine boot → ESC overlay → the readout assertions;
+  **it needs two new cases**: (1) click the "Your Client" tab and
+  assert the panel shows the readout with Quit still reachable in
+  Settings, and (2) quit to the web UI and assert the landing page
+  shows the RESTORED numbers and no longer says "the game has not run
+  yet". Assert the **geometry** too — the Quit button's bounding box
+  inside the viewport without scrolling.
+- **Tear the rig down afterwards**: no tunnels, no servers, no browser
+  processes left running. Verify production afterwards by reading the
+  served bundle, never by playing on it.
+
+### THE PR SEQUENCE (THE SUBMODULE FIRST, OR THE POINTER REVERTS)
+
+Both repos have active `main` rulesets: deletions blocked, force pushes
+blocked, **one approving review required**. The parent's `main` is
+`62e000e`, webXash's `main` is `d26d17e`.
+
+1. **webXash first.** Branch from webXash `main` (`d26d17e`), commit
+   the frontend work, push, PR to `klampatech/webXash`, squash-merge.
+   **Record the SQUASH SHA** — a squash-merge creates a NEW commit and
+   the branch tip is not reachable from `main`.
+2. **Then the parent.** Branch from parent `main` (`62e000e`), point the
+   `webxash` gitlink at the webXash **squash** SHA, commit, push, PR to
+   `klampatech/specialists-browser`, squash-merge.
+3. **Never** point the parent at a pre-squash webXash SHA: the pointer
+   would name a commit that only exists while a PR ref does.
+4. **One parent PR, one pointer move.** Do not split this into two
+   parent PRs that both move the pointer — each would change the same
+   tree entry from the same base to a different target and they would
+   conflict, or one would silently revert the other's pointer.
+5. **Kyle approves.** An approving review from `klampatech` with an
+   **EMPTY body** is the signature of a human tapping Approve;
+   `EVO_MERGE_OK=1` only unlocks the merge, it is NOT the approval.
+   `scripts/merge_webxash_parent_pair.sh` (in the `specialists-browser`
+   skill) encodes the whole sequence.
+6. After the parent merge the deploy runs on its own; verify the
+   **served bundle** and the deploy run, and keep the public leaderboard
+   empty.
+
+### THE TRAPS, IN ONE PLACE
+
+- **A browser test against production is illegal here.** It kicks real
+  players and pollutes the leaderboard. Use the CI rig.
+- **The readout must never claim a number it did not measure.** The
+  restored numbers are real, but they are NOT live — the provenance is
+  not optional polish, it is the feature.
+- **The landing canvas is 300×150.** It must never be reported as the
+  game's render size.
+- **`sessionStorage`, not `localStorage`** — see above.
+- **Guard the snapshot write on `engineWorkMs > 0`** or the landing
+  page erases the session on its way out.
+- **Never push to `main`.** Branch + PR + merge, every time, including
+  one-line doc changes.
+- **Never approve your own PR.** The review guard exists; Kyle is the
+  human who approves.
+- **Agent-authored GitHub comments must disclose that the agent
+  posted them.**
+- **No secrets in this file, in a commit, or in a PR body.** If you
+  encounter credentials while reading the SSH/skill material, redact
+  them; do not copy their values anywhere.
+- **Do not disturb `.worktrees/feat-character-portraits`.**
+
 **As of:** 2026-11-07, LATEREST — **THE CHARACTER PICKER CAN SHOW THE
 CHARACTERS THE GAME DOES NOT DRAW, AND THE RECIPE IS COMMITTED.**
 Kyle asked for uniform portraits of every character model that is
@@ -4842,9 +5176,61 @@ the parts that are known traps.
 
 # § NEXT TASK
 
+> ## THE READOUT GETS A TAB, AND THE WEB UI'S READOUT SURVIVES THE QUIT (2026-11-07, LATEST)
+>
+> **This is the ONE task.** Kyle asked for two changes to the client
+> readout, and **NEITHER IS IMPLEMENTED YET — both trees are clean.**
+> **§ CURRENT STATE's newest block has the whole picture: the two
+> requests verbatim, the root cause with line numbers, the design
+> decisions, the tests that break, the verification rig and the PR
+> sequence. READ THAT BLOCK FIRST — it is the work order, and this is
+> only the headline.**
+>
+> **TASK A — THE IN-GAME ESC MODAL GETS TWO TABS.** "Let's move the
+> 'Your Client' section in the in game ESC options settings to it's own
+> tab within the modal. We can have 'Settings' and 'Your Client'."
+> The readout moves out of the scrolling Settings panel and into its own
+> tab, so it can never push the **Quit** button below the fold — the
+> standing constraint, now satisfied structurally instead of by ordering.
+> The tab strip is a real ARIA tablist (roving tabindex, arrow keys), it
+> sits OUTSIDE the scroll area, and the overlay resets to the Settings
+> tab when it opens (otherwise the name field loses its focus and the
+> ENGINE eats the keystrokes — the original focus bug).
+>
+> **TASK B — THE WEB UI READOUT MUST SURVIVE THE QUIT.** "Also on the
+> web ui, the 'Your Client' section should update once a game is played
+> and quit back to the web ui. Currently it always says to measure it in
+> game." **The root cause is the full page load:** `quitToWebUi()` does
+> `window.location.href = '/'`, which destroys the module state the
+> readout lives in, so the landing page always reports "The game has
+> not run yet, so its frame rate is not known" — under a summary that
+> simultaneously says "Your browser is set up properly. Nothing to do."
+> The fix is a **sessionStorage snapshot** of the last match's measured
+> facts, restored on the landing page, **labelled as from the last
+> game** — a readout that shows last-match numbers as if they were live
+> is the exact failure this whole feature was built to avoid.
+>
+> **WHERE THE WORK LIVES.** `webxash/src/components/XashOptionsOverlay.vue`
+> (the tabs, the Quit path, the snapshot write),
+> `webxash/src/components/TSPerformance.vue` (the data source and the
+> provenance line), `webxash/src/services/perf-collect.ts` (read the
+> snapshot, merge it) and `webxash/src/services/perf-check.ts` (**the
+> PURE policy — the merge function and the past-tense/provenance copy
+> go here, because this module has no imports on purpose so the parent
+> suite can import it directly**). Parent test:
+> `tests/unit/perf-check.test.mjs`.
+>
+> **THE GATES.** Typecheck + build in `webxash` (`bunx vue-tsc
+> --noEmit`, `bun run build` — which carries the WASM and GL-glue
+> gates), the parent unit suite (currently 709/709), and a **CI-rig**
+> browser run — **never production**. webXash PR first, then the parent
+> PR pointing the submodule at the **squash** SHA. One parent PR, one
+> pointer move. Kyle approves; `EVO_MERGE_OK=1` is not the approval.
+
 > ## THE LOADOUT — SHIP THE MAP-CHANGE HALF, THEN FIX THE SESSION HALF (2026-11-05, later)
 >
-> **This is the ONE task.** The player's buy-menu loadout resets to the
+> **This is the NEXT task after the one above — still open, parked by
+> Kyle's 2026-11-07 request.** The player's buy-menu loadout resets to the
 > default on every map change (the report), and it is gone between
 > sessions. § CURRENT STATE's newest block has the whole picture; read it
 > before touching anything.
