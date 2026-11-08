@@ -70,6 +70,7 @@ requireSubmodule();
 const pacing = await import(PACING_TS);
 const {
   chooseFrameCap,
+  decideFrameGate,
   frameIntervalMs,
   isLate,
   shouldCap,
@@ -238,4 +239,272 @@ test('isLate: the threshold is RELATIVE to the budget, never constant', () => {
 
   // And the fixed threshold really would have missed it:
   assert.ok(12.1 < 20, 'a fixed 20ms threshold would have called this on time');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// THE GATE DECISION — the hysteresis.
+//
+// WHY THIS EXISTS
+// ---------------
+// The pacer used to decide ONCE, three seconds after the engine booted,
+// from a two-second window, and never measure again for the rest of the
+// match. On Kyle's M3 Pro that produced a 30 fps cap on a machine that
+// could have run the game at 60:
+//
+//     the boot reading      15.94 ms a frame
+//     sustainableFps(15.94) = 53
+//     chooseFrameCap(120, 53) = 30 fps
+//     120 / 30 = 4          -> one frame in four
+//
+// The whole difference between "30 fps on a machine that was drawing
+// 60" and "60 fps" is the QUALITY of one measurement. The engine needs
+// 25-30 seconds to reach steady state, and the first window is the most
+// expensive one it will ever produce.
+//
+// So the pacer measures warm, measures again, and moves the gate only
+// when the evidence supports it. These are the rules for that.
+//
+// THE ASYMMETRY IS THE POINT
+// --------------------------
+// Widening the gate (more frames) risks judder; narrowing it (fewer
+// frames) risks a player who feels the game got slower. The engine
+// getting FASTER after the warm-up is the normal case and is the case
+// worth acting on immediately. The engine getting slower for one window
+// is usually a scene, not a regression.
+
+/** The measured boot reading from Kyle's 120 Hz M3 Pro. */
+const BOOT_WORK_MS = 15.94;
+/** A settled reading on the same machine. */
+const SETTLED_WORK_MS = 12;
+
+test('decideFrameGate: a measurement that cannot be used changes nothing', () => {
+  // No panel rate: the display's refresh rate was never measured.
+  const noPanel = decideFrameGate({
+    panelHz: 0,
+    engineWorkMs: BOOT_WORK_MS,
+    currentEveryNth: 4,
+    settled: true,
+    consecutiveSame: 3,
+    lateFraction: 0,
+  });
+  assert.equal(noPanel.everyNth, 4, 'the gate must not move');
+  assert.equal(noPanel.changed, false);
+  assert.match(noPanel.reason, /not usable/i);
+
+  // No engine cost: the measurement window was empty.
+  const noCost = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: 0,
+    currentEveryNth: 4,
+    settled: true,
+    consecutiveSame: 3,
+    lateFraction: 0,
+  });
+  assert.equal(noCost.everyNth, 4, 'the gate must not move');
+  assert.equal(noCost.changed, false);
+  assert.match(noCost.reason, /not usable/i);
+});
+
+test('decideFrameGate: a warm-up window adopts the target as a PROVISIONAL gate', () => {
+  // The boot reading, three seconds in, on a 120 Hz panel.
+  //
+//   15.94 ms -> 53 fps -> chooseFrameCap(120, 53) = 30 fps -> 1 in 4
+  const d = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: BOOT_WORK_MS,
+    currentEveryNth: 1,
+    settled: false,
+    consecutiveSame: 1,
+    lateFraction: 0.5,
+  });
+  assert.equal(d.everyNth, 4, 'the boot reading asks for one frame in four');
+  assert.equal(d.capFps, 30);
+  assert.equal(d.changed, true);
+  assert.equal(
+    d.provisional,
+    true,
+    'a gate taken from a warm-up reading is provisional, and the readout says so'
+  );
+});
+
+test('decideFrameGate: a warm-up window NEVER moves a gate that is in force', () => {
+  // The gate is already at one frame in two, and this window is still
+  // inside the warm-up. The reading says "one frame in four" — which
+  // would HALVE the player's frame rate — and it must not be acted on.
+  const d = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: 30,
+    currentEveryNth: 2,
+    settled: false,
+    consecutiveSame: 1,
+    lateFraction: 0,
+  });
+  assert.equal(d.everyNth, 2, 'the gate in force must not move');
+  assert.equal(d.changed, false);
+  assert.equal(d.capFps, 60);
+});
+
+test('decideFrameGate: a settled window that agrees with the gate clears the provisional flag', () => {
+  const d = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: BOOT_WORK_MS,
+    currentEveryNth: 4,
+    settled: true,
+    consecutiveSame: 2,
+    lateFraction: 0,
+  });
+  assert.equal(d.everyNth, 4, 'the gate is confirmed, not moved');
+  assert.equal(d.changed, false);
+  assert.equal(
+    d.provisional,
+    false,
+    'a settled window has confirmed the gate, so it is no longer provisional'
+  );
+});
+
+test('decideFrameGate: a settled window MAY widen the gate when the frames are landing', () => {
+  // The engine got faster after the warm-up: 12 ms a frame, 70 fps
+  // sustainable, so the policy asks for 60 fps — one frame in two.
+  const d = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: SETTLED_WORK_MS,
+    currentEveryNth: 4,
+    settled: true,
+    consecutiveSame: 1,
+    lateFraction: 0.02,
+  });
+  assert.equal(d.everyNth, 2, 'the gate widens to one frame in two');
+  assert.equal(d.capFps, 60);
+  assert.equal(d.changed, true);
+  assert.equal(d.provisional, false);
+});
+
+test('decideFrameGate: a settled window REFUSES to widen while frames are arriving late', () => {
+  // THE MOST IMPORTANT RULE IN THE FEATURE.
+  //
+  // The engine is already missing its slots — more than 5% of its
+  // frames arrived late. Asking it for MORE frames would make the
+  // judder worse. The gate stays exactly where it is.
+  const d = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: SETTLED_WORK_MS,
+    currentEveryNth: 4,
+    settled: true,
+    consecutiveSame: 1,
+    lateFraction: 0.16,
+  });
+  assert.equal(d.everyNth, 4, 'the gate must not widen');
+  assert.equal(d.changed, false);
+  assert.equal(d.capFps, 30);
+  assert.match(d.reason, /late/i, 'and the reason has to say why');
+});
+
+test('decideFrameGate: the late threshold is 5%, and 5% itself is allowed', () => {
+  // The rule is "more than 5% late". Exactly 5% is not more than 5%.
+  const atLimit = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: SETTLED_WORK_MS,
+    currentEveryNth: 4,
+    settled: true,
+    consecutiveSame: 1,
+    lateFraction: 0.05,
+  });
+  assert.equal(atLimit.everyNth, 2, '5% late is not "more than 5% late"');
+
+  const overLimit = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: SETTLED_WORK_MS,
+    currentEveryNth: 4,
+    settled: true,
+    consecutiveSame: 1,
+    lateFraction: 0.051,
+  });
+  assert.equal(overLimit.everyNth, 4, 'more than 5% late blocks the widening');
+});
+
+test('decideFrameGate: ONE expensive window may not narrow the gate', () => {
+  // A firefight, a shader compilation, a GC pause: one window where the
+  // engine cost 30 ms. Narrowing on that alone would halve the player's
+  // frame rate for a scene, not for a regression.
+  const d = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: 30,
+    currentEveryNth: 2,
+    settled: true,
+    consecutiveSame: 1,
+    lateFraction: 0,
+  });
+  assert.equal(d.everyNth, 2, 'the gate must not narrow on one window');
+  assert.equal(d.changed, false);
+  assert.equal(d.capFps, 60);
+  assert.match(d.reason, /second window/i, 'and it says it is waiting');
+});
+
+test('decideFrameGate: TWO consecutive windows may narrow the gate', () => {
+  const d = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: 30,
+    currentEveryNth: 2,
+    settled: true,
+    consecutiveSame: 2,
+    lateFraction: 0,
+  });
+  // 30 ms -> 28 fps -> chooseFrameCap(120, 28) = 24 fps -> 1 in 5
+  assert.equal(d.everyNth, 5);
+  assert.equal(d.capFps, 24);
+  assert.equal(d.changed, true);
+  assert.equal(d.provisional, false);
+});
+
+test('decideFrameGate: the pacer never asks for more than the engine sustains', () => {
+  // `chooseFrameCap`'s existing contract, and the one that stops the
+  // pacer from asking a slow engine for frames it cannot finish.
+  for (const [panelHz, workMs] of [
+    [120, BOOT_WORK_MS],
+    [120, SETTLED_WORK_MS],
+    [240, 8],
+    [60, 4],
+    [144, 12],
+  ]) {
+    const d = decideFrameGate({
+      panelHz,
+      engineWorkMs: workMs,
+      currentEveryNth: 1,
+      settled: true,
+      consecutiveSame: 2,
+      lateFraction: 0,
+    });
+    assert.ok(
+      d.capFps <= sustainableFps(workMs),
+      `${panelHz} Hz at ${workMs} ms asked for ${d.capFps} fps, more than the ${sustainableFps(workMs)} the engine sustains`
+    );
+    assert.ok(d.capFps <= panelHz, 'and never more than the display can show');
+  }
+});
+
+test('decideFrameGate: capFps is the rate the gate means', () => {
+  const d = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: SETTLED_WORK_MS,
+    currentEveryNth: 4,
+    settled: true,
+    consecutiveSame: 1,
+    lateFraction: 0,
+  });
+  assert.equal(d.capFps, 120 / d.everyNth);
+});
+
+test('decideFrameGate: the decision says what it was asked for', () => {
+  // The caller counts the consecutive windows that asked for the SAME
+  // target, so the decision has to report the target it was based on.
+  const d = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: 30,
+    currentEveryNth: 2,
+    settled: true,
+    consecutiveSame: 1,
+    lateFraction: 0,
+  });
+  assert.equal(d.targetEveryNth, 5, 'the window asked for one frame in five');
+  assert.equal(d.everyNth, 2, 'and the gate did not move');
 });
