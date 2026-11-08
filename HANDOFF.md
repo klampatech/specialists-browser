@@ -23,6 +23,77 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-07, LATEREST — **THE CHARACTER PICKER CAN SHOW THE
+CHARACTERS THE GAME DOES NOT DRAW, AND THE RECIPE IS COMMITTED.**
+Kyle asked for uniform portraits of every character model that is
+selectable from the default menu, because only about seven existed.
+
+**THE DEFAULT MENU HAS SEVEN CHARACTERS, AND THE SEVEN ARE EXACTLY THE
+ONES THAT HAD PORTRAITS.** The game's own `mp_teammodels` default is
+`seal;merc|gordon;laurence|agent|hitman;castor` (the literal string in
+`ts/dlls/ts_i686.so`, mirrored by the port's `DEFAULT_MODELS`), and the
+mod ships a `ts/models/player/<name>/<name>.bmp` for precisely those
+seven and for nobody else. The seven we had were not missing - they were
+the game's own painted portraits.
+
+**THE MOD SHIPS SIXTEEN USABLE CHARACTER MODELS.** `ts/models/player/`
+holds seventeen directories; **sixteen** are usable and one is not:
+`ala` ships as `models/player/ala/ala2.mdl`, and the engine resolves a
+player model as `models/player/<name>/<name>.mdl`
+(`R_StudioSetupPlayerModel`, `ref/gl/gl_studio.c`), so the name "ala"
+resolves to a file that does not exist and the engine silently falls
+back to the default player model. There is no such character in the
+game.
+
+**THE NINE THAT HAD NO PORTRAIT NOW HAVE ONE.** Rendered with the
+[Half-Life Asset Manager 3.0](https://github.com/SamVanheer/HalfLifeAssetManager)
+(`halflifeassetmanager_3.0.0_amd64.deb`), headless under Xvfb +
+openbox + Mesa's software rasteriser - no GPU. The recipe is committed
+here, `tools/portraits/capture-portraits.sh` and
+`tools/portraits/normalize-portraits.py`.
+
+**THE TWO TRAPS IN THAT CAPTURE, both of which cost a run each.**
+
+- **HLAM IS SINGLE-INSTANCE.** A second process hands its file to the
+  first and exits. So a capture loop that does not wait for the previous
+  instance to die captures the PREVIOUS model again - the first version
+  of this captured `merc` twice and called it `seal`. The capture now
+  kills any instance before it starts and matches the window by THIS
+  model's file name.
+- **THE ANIMATION PLAYS WHILE YOU LOOK AT IT.** The pose in the
+  viewport is frame N of sequence 0, and N is whatever the clock said.
+  The capture clicks the timeline's Play/Pause and Restart buttons
+  (frame 0, animation stopped) before the screenshot, so the pose is
+  the character's own idle and not a random frame.
+
+**THE NORMALISER MAKES THEM UNIFORM.** The subject's **height** is
+normalised (not its width), the portrait crop is sized in **head
+widths** so every head is the same size in the frame, the background is
+transparent like the game's art, and the RGB is **gamma-lifted (0.60)**:
+GoldSource's studio lighting leaves the black-clad characters nearly
+black, and the picker's tile is dark too, so a straight render of `merc`
+is a dark blob on a dark tile. The lift is what makes the renders
+readable next to the painted art.
+
+**THE SEVEN GAME-DRAWN PORTRAITS ARE UNTOUCHED.** The painted art is
+better than a render at 72px and it is the game's own; the renders are
+for the nine that have no other portrait. A uniform render set for all
+sixteen exists in the generated output if that is ever wanted instead.
+
+**WHAT IS NOT CHANGED, DELIBERATELY.** The character's **list** in the
+picker is still the server's `mp_teammodels` decision. With the live
+server's four teams the port's rules replace a requested model with a
+random model from the player's team (`rules/teams.rs :: userinfo_changed`
+-> `model_for(&team)`), so listing the nine in the picker today would be
+a promise the server does not keep. Making them selectable is a server
+config change (which team owns which character) and that is Kyle's call.
+
+**THE DELIVERY IS TWO PRs.** **webXash #47** (the nine portraits) and
+**the parent** (the recipe + these docs + the submodule pointer). The
+pointer is repointed at webXash main's squash of #47, **`2103b92`**,
+because a squash-merge makes a new commit and the pointer must name
+one that exists on webXash main.
+
 **As of:** 2026-11-07, LATER — **THE GL ROUND-TRIP FIX IS LIVE ON
 PRODUCTION, AND THE CLIENT IS SHIPPING THE READOUT WITH IT.** The four
 PRs are merged and the deploy is green.
@@ -64,7 +135,6 @@ against the same artifact production now serves): **8.89 ms -> 1.91 ms
 a frame, 106.6 fps -> 120.2 fps** on a 120 Hz display, with an A-B-A
 drift of **+0.01 ms**. The shipped build does not fit the 120 Hz
 budget; the patched one does.
-
 **As of:** 2026-11-07 — **THE CLIENT IS FAST; HALF THE ENGINE'S FRAME WAS
 A `glGetError()` ROUND-TRIP, AND THE PLAYER CAN NOW SEE WHY THEIR GAME
 FEELS SLOW.** Kyle asked whether the client could do more on the PLAYER's
