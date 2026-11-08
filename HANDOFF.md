@@ -89,10 +89,52 @@ a promise the server does not keep. Making them selectable is a server
 config change (which team owns which character) and that is Kyle's call.
 
 **THE DELIVERY IS TWO PRs.** **webXash #47** (the nine portraits) and
-**the parent** (the recipe + these docs + the submodule pointer, which
-is repointed after #47 merges, because a squash-merge makes a new
-commit and the pointer must name one that exists on webXash main).
+**the parent** (the recipe + these docs + the submodule pointer). The
+pointer is repointed at webXash main's squash of #47, **`2103b92`**,
+because a squash-merge makes a new commit and the pointer must name
+one that exists on webXash main.
 
+**As of:** 2026-11-07, LATER — **THE GL ROUND-TRIP FIX IS LIVE ON
+PRODUCTION, AND THE CLIENT IS SHIPPING THE READOUT WITH IT.** The four
+PRs are merged and the deploy is green.
+
+**WHAT MERGED, IN THE ORDER IT HAD TO MERGE.**
+
+- **webXash #45** -> `a96f33c` (the stale client WASM backups, out of
+  the repo)
+- **webXash #46** -> `c17e2ab` (**the fix**: the GL-check rate limit,
+  the build gate that refuses to ship an unpatched bundle, and the
+  "Your client" readout)
+- **the parent #139** -> `d218468` (the loadout docs)
+- **the parent #140** -> `2cc23db` (the fixture, the sweep, the node
+  scan, the A-B-A, the tests, and the submodule pointer)
+
+**THE SUBMODULE POINTER HAD TO BE REPOINTED AT THE SQUASH.** It was on
+webXash's BRANCH TIP, and a squash-merge makes a new commit, so the
+branch tip is not reachable from webXash's main - the pointer would
+have named a commit that only existed because a PR existed. It names
+`c17e2ab`, which IS webXash main's tip.
+
+**THE DEPLOY.** Run `42422560269`: *Deploy to production* green,
+*Verify in a real browser* green. CI on main (`42422560283`): 4/4.
+Production answers HTTP 200 in 57 ms; the fleet reports `ts-0` on
+`ts_antrodome`, 16/32, tick 100, one human and fifteen bots - **no
+test player in the production leaderboard**, because the browser gate
+plays the deployed ARTIFACT against the CI game server, not against
+production.
+
+**THE LIVE BUNDLE CARRIES THE PATCH** (read back from
+`https://bulletballet.dev/assets/xash3d-DopHvWf3.js`, not inferred):
+the original round-trip (`GLctx.getError() || GL.lastError`) is
+**absent**, the rate limiter and its 250 ms budget are **present**, and
+so is the `gldebug=1` escape hatch. The main bundle carries "Your
+client".
+
+**THE MEASURED EFFECT** (on the CI stack, at the worst-case fixture,
+against the same artifact production now serves): **8.89 ms -> 1.91 ms
+a frame, 106.6 fps -> 120.2 fps** on a 120 Hz display, with an A-B-A
+drift of **+0.01 ms**. The shipped build does not fit the 120 Hz
+budget; the patched one does.
 **As of:** 2026-11-07 — **THE CLIENT IS FAST; HALF THE ENGINE'S FRAME WAS
 A `glGetError()` ROUND-TRIP, AND THE PLAYER CAN NOW SEE WHY THEIR GAME
 FEELS SLOW.** Kyle asked whether the client could do more on the PLAYER's
