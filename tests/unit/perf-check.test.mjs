@@ -56,6 +56,8 @@ const {
   refreshRateLooksThrottled,
   frameBudgetMs,
   formatMegapixels,
+  resolvePerfFacts,
+  describeSessionAge,
 } = perf;
 
 /** A healthy client: a real GPU, a fast display, a comfortable engine. */
@@ -77,6 +79,53 @@ function healthy(over = {}) {
     backingHeight: 2234,
     ...over,
   };
+}
+
+/**
+ * THE LAST MATCH, AS A SESSION SNAPSHOT.
+ *
+ * The numbers are the MacBook's measured case: a 120 Hz panel, an
+ * engine that needs 13.3 ms (so it cannot finish inside a 120 Hz frame
+ * period), the game capped to 60 fps, and a 3456×2234 render target.
+ */
+function session(over = {}) {
+  return {
+    displayHz: 60,
+    panelHz: 120,
+    engineWorkMs: 13.3,
+    sustainableFps: 63,
+    capFps: 60,
+    everyNth: 2,
+    lateTicks: 40,
+    measuredTicks: 240,
+    backingWidth: 3456,
+    backingHeight: 2234,
+    renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)',
+    measuredAt: 1760000000000,
+    ...over,
+  };
+}
+
+/**
+ * THE LANDING PAGE'S FACTS.
+ *
+ * The canvas is a 300×150 placeholder there, and no engine has run,
+ * so the game has measured nothing.
+ */
+function landing(over = {}) {
+  return healthy({
+    displayHz: 0,
+    panelHz: 120,
+    engineWorkMs: 0,
+    sustainableFps: 0,
+    capFps: 0,
+    everyNth: 1,
+    lateTicks: 0,
+    measuredTicks: 0,
+    backingWidth: 300,
+    backingHeight: 150,
+    ...over,
+  });
 }
 
 test('the browser family is detected from the user agent', () => {
@@ -333,39 +382,284 @@ test('the readout does not claim a refresh rate it has not measured', () => {
 });
 
 test('the readout is reachable while the game is running', () => {
-  // THE GAP THIS CLOSED.
+  // THE GAP THIS CLOSED, AND THE ONE THAT CAME AFTER IT.
   //
   // The panel lived on the landing page, and the landing page is
   // DESTROYED when the engine boots — so the frame cost, the budget
   // and the delivered frame rate were only ever measurable and never
   // visible. The in-game options overlay is the one place a player can
   // reach while the game is running.
+  //
+  // AND THEN: the readout became its own TAB, because a long readout
+  // in the same panel pushed the Quit button — the one control a
+  // player reaches for when they want to LEAVE a match — down the
+  // scroll. The invariant is now stronger than "the Quit button comes
+  // first in the source": the two are in DIFFERENT PANELS, so the
+  // readout cannot push the Quit button down at all.
   const overlay = readFileSync(
     join(WEBXASH, 'src', 'components', 'XashOptionsOverlay.vue'),
     'utf8'
   );
-  assert.match(overlay, /<TSPerformance\s+embed\s*\/>/, 'the overlay carries the panel');
+  assert.match(overlay, /<TSPerformance\s+context="game"\s*\/>/, 'the overlay carries the panel');
   assert.match(overlay, /import TSPerformance from/, 'and imports it');
 
-  // And the panel drops its own heading when it is embedded, because
-  // the overlay's legend carries it.
+  // And the panel drops its own heading in the game, because the
+  // overlay's tab strip carries the name.
   const panel = readFileSync(
     join(WEBXASH, 'src', 'components', 'TSPerformance.vue'),
     'utf8'
   );
-  assert.match(panel, /v-if="!embed"/, 'the heading is dropped when embedded');
-
-  // AND THE READOUT DOES NOT PUSH THE WAY OUT OF A MATCH BELOW THE FOLD.
-  //
-  // The overlay is a narrow scrolling panel, and the Quit button is in
-  // its Session group. The readout is long — the numbers, the findings
-  // and the button — so putting it BEFORE the Session group buries the
-  // one control a player reaches for when they want to leave.
-  const quitAt = overlay.indexOf('opts__btn--danger');
-  const readoutAt = overlay.indexOf('<TSPerformance');
-  assert.ok(quitAt > 0 && readoutAt > 0, 'both the Quit button and the readout are present');
-  assert.ok(
-    quitAt < readoutAt,
-    'the Quit button must come BEFORE the readout in the overlay'
+  assert.match(panel, /v-if="context !== 'game'"/, 'the heading is dropped in the game');
+  assert.match(
+    panel,
+    /context\?:\s*'landing'\s*\|\s*'game'/,
+    'the panel takes a context, not a presentation flag'
   );
+
+  // THE TABLIST: exactly two tabs, and they are the ones Kyle asked
+  // for — "Settings" and "Your Client".
+  assert.match(overlay, /role="tablist"/, 'the strip is a real tablist');
+  const tabButtons = [...overlay.matchAll(/<button[^>]*\bid="opts-tab-[a-z]+"/g)];
+  assert.equal(tabButtons.length, 2, 'there are exactly two tabs');
+
+  const tabBlock = (id) => {
+    const at = overlay.indexOf(`id="${id}"`);
+    assert.ok(at > 0, `the overlay has the ${id} tab`);
+    return overlay.slice(at, overlay.indexOf('</button>', at));
+  };
+
+  const settingsTab = tabBlock('opts-tab-settings');
+  assert.match(settingsTab, /role="tab"/, 'a tab is a tab');
+  assert.match(settingsTab, /aria-selected/, 'a tab says whether it is selected');
+  assert.match(settingsTab, /aria-controls="opts-panel-settings"/, 'a tab names its panel');
+  assert.match(settingsTab, /tabindex/, 'the tabs carry a roving tabindex');
+  assert.match(settingsTab, /\bSettings\s*$/, 'the first tab is Settings');
+
+  const clientTab = tabBlock('opts-tab-client');
+  assert.match(clientTab, /role="tab"/, 'a tab is a tab');
+  assert.match(clientTab, /aria-selected/, 'a tab says whether it is selected');
+  assert.match(clientTab, /aria-controls="opts-panel-client"/, 'a tab names its panel');
+  assert.match(clientTab, /tabindex/, 'the tabs carry a roving tabindex');
+  assert.match(clientTab, /\bYour Client\s*$/, 'the second tab is Your Client');
+
+  // THE TWO PANELS.
+  const settingsAt = overlay.indexOf('id="opts-panel-settings"');
+  const clientAt = overlay.indexOf('id="opts-panel-client"');
+  assert.ok(settingsAt > 0 && clientAt > settingsAt, 'the overlay has both panels');
+  assert.match(overlay, /role="tabpanel"/, 'the panels are real tab panels');
+  assert.match(overlay, /aria-labelledby="opts-tab-settings"/, 'the Settings panel names its tab');
+  assert.match(overlay, /aria-labelledby="opts-tab-client"/, 'the Your Client panel names its tab');
+
+  const settingsPanel = overlay.slice(settingsAt, clientAt);
+  const clientPanel = overlay.slice(clientAt, overlay.indexOf('</template>'));
+
+  // (b) The Quit button is in the Settings panel.
+  assert.match(settingsPanel, /opts__btn--danger/, 'the Quit button is in the Settings panel');
+  assert.doesNotMatch(clientPanel, /opts__btn--danger/, 'and not in the readout panel');
+
+  // (c) The readout is in the Your Client panel.
+  assert.match(
+    clientPanel,
+    /<TSPerformance\s+context="game"\s*\/>/,
+    'the readout is in the Your Client panel'
+  );
+
+  // (d) And the readout is NOT in the Settings panel. THIS is the
+  // invariant: it cannot push the Quit button down, because it is not
+  // in the same panel at all.
+  assert.doesNotMatch(
+    settingsPanel,
+    /<TSPerformance/,
+    'the readout must not be in the Settings panel'
+  );
+});
+
+test('the live facts win while the game is running', () => {
+  // The in-game readout reads the LIVE game. A restored number must
+  // never appear in front of a player who is looking at the game right
+  // now — that would be a lie told at the exact moment it matters.
+  const live = healthy({ engineWorkMs: 13.3, displayHz: 60 });
+  const resolved = resolvePerfFacts(live, session());
+  assert.equal(resolved, live, 'the live facts are returned unchanged');
+  assert.equal(resolved.fromLastSession, undefined);
+  assert.equal(resolved.displayHz, 60);
+});
+
+test('without a session the live facts are unchanged', () => {
+  const live = landing();
+  assert.equal(resolvePerfFacts(live, null), live);
+  assert.equal(resolvePerfFacts(live, undefined), live);
+  // And a session that never measured a frame is worthless: restoring
+  // it would restore zeroes.
+  assert.equal(resolvePerfFacts(live, session({ engineWorkMs: 0 })), live);
+});
+
+test('the session fills the gaps the landing page cannot measure', () => {
+  const resolved = resolvePerfFacts(landing(), session());
+
+  // THE GAME'S NUMBERS: the session's.
+  assert.equal(resolved.displayHz, 60);
+  assert.equal(resolved.engineWorkMs, 13.3);
+  assert.equal(resolved.sustainableFps, 63);
+  assert.equal(resolved.capFps, 60);
+  assert.equal(resolved.everyNth, 2);
+  assert.equal(resolved.lateTicks, 40);
+  assert.equal(resolved.measuredTicks, 240);
+
+  // THE DISPLAY'S RATE: the live one. The budget question is "can this
+  // machine hit the display's budget", and the engine's frame cost
+  // does not change with the display rate.
+  assert.equal(resolved.panelHz, 120);
+
+  // THE BROWSER: the live ones.
+  assert.equal(resolved.dpr, 2);
+  assert.match(resolved.userAgent, /Chrome/);
+
+  // AND THE PROVENANCE.
+  assert.equal(resolved.fromLastSession, true);
+  assert.equal(resolved.measuredAt, 1760000000000);
+});
+
+test("the landing canvas's 300x150 placeholder does not win", () => {
+  // THE TRAP. On the landing page the canvas is a 300×150 placeholder,
+  // and the live facts carry that size. Reporting it as the game's
+  // render size would say the game draws 0.045 megapixels — which is
+  // both wrong and alarming.
+  const resolved = resolvePerfFacts(landing(), session());
+  assert.equal(resolved.backingWidth, 3456);
+  assert.equal(resolved.backingHeight, 2234);
+
+  // And the report shows the game's real render size.
+  const report = buildPerfReport(resolved, 1760000000000);
+  const size = report.findings.find((f) => f.id === 'render-size');
+  assert.ok(size, 'the render size is reported');
+  assert.match(size.detail, /3456×2234 device pixels/);
+});
+
+test('a restored report says where it came from, and says it in the past tense', () => {
+  const resolved = resolvePerfFacts(landing(), session());
+  const measuredAt = 1760000000000;
+  const report = buildPerfReport(resolved, measuredAt + 12 * 60 * 1000);
+
+  // THE PROVENANCE.
+  assert.equal(report.source, 'last-session');
+  assert.equal(report.measuredAt, measuredAt);
+  const provenance = report.findings.find((f) => f.id === 'last-session');
+  assert.ok(provenance, 'the report says the numbers are from the last game');
+  assert.equal(provenance.severity, 'info');
+  assert.match(provenance.title, /from your last game, 12 minutes ago/);
+  assert.match(provenance.detail, /not running now/);
+
+  // AND NOT THE "THE GAME HAS NOT RUN YET" FINDING: the game DID run.
+  assert.ok(
+    !report.findings.some((f) => f.id === 'refresh-unknown'),
+    'a restored session must not claim the game has not run'
+  );
+
+  // THE PAST TENSE. The game is not running, so every claim about it
+  // is about what it did.
+  assert.match(report.summary, /last game/);
+  const capped = report.findings.find((f) => f.id === 'capped');
+  assert.match(capped.title, /was capped to 60 fps/);
+  assert.doesNotMatch(capped.title, /is capped/);
+  const delivering = report.findings.find((f) => f.id === 'delivering');
+  assert.match(delivering.title, /was drawing 60 fps/);
+  const budget = report.findings.find((f) => f.id === 'budget-tight');
+  assert.match(budget.detail, /A frame took 13\.30 ms/);
+});
+
+test('a restored report never says the game has not run', () => {
+  // THE HALF-MEASURED MATCH.
+  //
+  // The pacer only trusts its own display figure after ten intervals,
+  // so a SHORT match leaves `displayHz` at 0 while the engine's frame
+  // cost is already known. That snapshot was real, and it was written
+  // verbatim, so the report has to cope with it: the game DID run.
+  //
+  // The claim it must never make is "the game has not run yet" —
+  // especially not next to "the game was drawing 7.7 megapixels" and
+  // "your client was set up properly in your last game".
+  const half = session({ displayHz: 0, sustainableFps: 0 });
+  const resolved = resolvePerfFacts(landing(), half);
+  assert.equal(resolved.fromLastSession, true);
+  assert.equal(resolved.displayHz, 0);
+  assert.equal(resolved.engineWorkMs, 13.3);
+
+  const report = buildPerfReport(resolved, 1760000000000);
+  assert.equal(
+    report.findings.some((f) => f.id === 'refresh-unknown'),
+    false,
+    'a restored report must never claim the game has not run'
+  );
+  // And it says where the numbers came from, instead.
+  assert.ok(
+    report.findings.some((f) => f.id === 'last-session'),
+    'and it says where they came from'
+  );
+
+  // THE LIVE CASE STILL SAYS IT, because there the game really has
+  // not run. The guard is about the SOURCE, not about the number.
+  const live = buildPerfReport(landing());
+  assert.ok(
+    live.findings.some((f) => f.id === 'refresh-unknown'),
+    'a live report with no measurement still says the game has not run'
+  );
+});
+
+test("the browser's own rate is not claimed as live when it came from the session", () => {
+  // THE FIRST RENDER OF THE LANDING READOUT.
+  //
+  // The report is built before the idle measurement resolves, so the
+  // browser's rate can be the session's — and then a present-tense
+  // title asserts a live reading that is really the last match's.
+  const resolved = resolvePerfFacts(landing({ panelHz: 0 }), session());
+  assert.equal(resolved.panelHzFromSession, true);
+  const report = buildPerfReport(resolved, 1760000000000);
+
+  const refresh = report.findings.find((f) => f.id === 'refresh-ok');
+  assert.ok(refresh, 'the browser rate is still reported');
+  assert.match(refresh.title, /was delivering 120 refreshes a second/);
+  assert.doesNotMatch(refresh.title, /is delivering/);
+
+  // And the same for the throttled case: the browser was offering
+  // them, it is not offering them now.
+  const throttled = buildPerfReport(
+    resolvePerfFacts(landing({ panelHz: 0 }), session({ panelHz: 30 })),
+    1760000000000
+  );
+  const offer = throttled.findings.find((f) => f.id === 'refresh-throttled');
+  assert.ok(offer, 'the throttled browser is still reported');
+  assert.match(offer.title, /was only offering 30 refreshes a second/);
+  assert.doesNotMatch(offer.title, /is only offering/);
+});
+
+test('a live report is still in the present tense', () => {
+  const report = buildPerfReport(healthy({ panelHz: 120, displayHz: 60, engineWorkMs: 13.3, capFps: 60, everyNth: 2 }));
+  assert.equal(report.source, 'live');
+  assert.equal(report.measuredAt, 0);
+  assert.match(report.summary, /set up properly/);
+  const capped = report.findings.find((f) => f.id === 'capped');
+  assert.match(capped.title, /is capped to 60 fps/);
+  assert.ok(
+    !report.findings.some((f) => f.id === 'last-session'),
+    'a live report has no provenance finding'
+  );
+});
+
+test('the age of a measurement is said in words', () => {
+  const now = 1760000000000;
+  assert.equal(describeSessionAge(now - 5 * 1000, now), 'moments ago');
+  assert.equal(describeSessionAge(now - 60 * 1000, now), '1 minute ago');
+  assert.equal(describeSessionAge(now - 12 * 60 * 1000, now), '12 minutes ago');
+  assert.equal(describeSessionAge(now - 3 * 3600 * 1000, now), '3 hours ago');
+  assert.equal(describeSessionAge(now - 2 * 86400 * 1000, now), '2 days ago');
+});
+
+test('a measurement with no timestamp has no age', () => {
+  // "moments ago" is a recency claim, and a number whose age is
+  // unknown cannot carry one.
+  const now = 1760000000000;
+  assert.equal(describeSessionAge(0, now), 'at an unknown time');
+  assert.equal(describeSessionAge(-1, now), 'at an unknown time');
+  assert.equal(describeSessionAge(NaN, now), 'at an unknown time');
 });
