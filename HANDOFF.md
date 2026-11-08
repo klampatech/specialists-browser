@@ -24,8 +24,7 @@
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
 **As of:** 2026-11-07, LATER — **THE READOUT GETS ITS OWN TAB, AND THE WEB UI'S
-READOUT SURVIVES THE QUIT. BOTH ARE BUILT, VERIFIED IN A REAL BROWSER, AND IN A PR
-WAITING FOR KYLE'S APPROVAL.**
+READOUT SURVIVES THE QUIT. BUILT, VERIFIED, MERGED, AND LIVE ON PRODUCTION.**
 
 Kyle asked for two changes to the client readout. **Both are implemented, both are
 tested, and both are in PRs.** The work is five commits on the branch
@@ -39,10 +38,15 @@ tested, and both are in PRs.** The work is five commits on the branch
 | parent | `6881365` | the parent suite: the new invariant + the policy tests |
 | parent | `d7cb1b1` | the parent suite: a restored report never says the game has not run |
 
-**webXash PR #49 is open and waiting for Kyle's approving review** (an approving
-review from `klampatech` with an **EMPTY body** — that is the signature of a human
-tapping Approve; `EVO_MERGE_OK=1` only unlocks the merge). The parent PR comes
-AFTER it, pointing at webXash's **squash** SHA — never at the branch head.
+**MERGED AND DEPLOYED (2026-11-08).** Kyle approved both PRs with the empty-body
+signature (the human one; `EVO_MERGE_OK=1` is NOT the approval). webXash **#49**
+squash-merged to `44b6167`; the parent's **#144** (`fa24a17`) carries the pointer
+at that SHA — never at the branch head. The parent's CI was green on the
+**repointed** tip (Frontend, Unit, Port, Docker — all four), and the deploy's own
+"Verify in a real browser" job passed. **The served production bundle carries the
+feature**: `xash.perf.session.v1`, the `Last game — …` label, the `tablist`
+wiring, and the tensed wording (`The game was drawing …`) — with the old
+present-tense string gone from the bundle.
 
 ### WHAT SHIPPED
 
@@ -5306,17 +5310,14 @@ the parts that are known traps.
 
 # § NEXT TASK
 
-> ## THE READOUT GETS A TAB, AND THE WEB UI'S READOUT SURVIVES THE QUIT (2026-11-07, DONE — WAITING FOR THE MERGE)
+> ## THE READOUT GETS A TAB, AND THE WEB UI'S READOUT SURVIVES THE QUIT (2026-11-07, DONE — MERGED AND DEPLOYED)
 >
-> **BUILT, TESTED, AND IN A PR.** webXash **#49** is open and waiting for Kyle's
-> approving review (an approving review from `klampatech` with an **EMPTY body** —
-> that is the signature of a human tapping Approve; `EVO_MERGE_OK=1` only unlocks
-> the merge). **The only thing left is the merge**, and then the deploy runs on its
-> own: the parent PR follows the webXash merge, pointing at webXash's **squash** SHA
-> — never at the branch head. § CURRENT STATE's newest block has the whole story:
-> what shipped, the two blocking holes the cross-vendor review caught (and the
-> lesson: a restored report has to be checked for CONTRADICTIONS), the geometry
-> measured on both builds, the CI-rig recipe and the PR sequence.
+> **SHIPPED.** webXash **#49** (`44b6167`) and the parent's **#144** (`fa24a17`)
+> are merged, the parent's CI was green on the repointed tip, the deploy's browser
+> gate passed, and the feature is live on production. § CURRENT STATE's newest
+> block has the whole story: what shipped, the two blocking holes the cross-vendor
+> review caught (and the lesson: a restored report has to be checked for
+> CONTRADICTIONS), the geometry measured on both builds, and the CI-rig recipe.
 >
 > **THE OLD WORK ORDER BELOW IS KEPT AS THE RECORD.** It is what the work was
 > planned from, and the traps in it are the ones that actually bit:
@@ -5364,8 +5365,8 @@ the parts that are known traps.
 
 > ## THE LOADOUT — SHIP THE MAP-CHANGE HALF, THEN FIX THE SESSION HALF (2026-11-05, later)
 >
-> **This is the NEXT task after the one above — still open, parked by
-> Kyle's 2026-11-07 request.** The player's buy-menu loadout resets to the
+> **THIS IS THE NEXT TASK NOW.** The readout work above is done, merged and live;
+> this one is still open, parked by Kyle's 2026-11-07 request. The player's buy-menu loadout resets to the
 > default on every map change (the report), and it is gone between
 > sessions. § CURRENT STATE's newest block has the whole picture; read it
 > before touching anything.
