@@ -23,7 +23,144 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
-**As of:** 2026-11-09, LATEST — **THE CHARACTER PICKER SHOWS ALL SIXTEEN
+**As of:** 2026-11-09, LATEST — **THE READOUT SAYS WHAT TO DO, THE GAMING PC
+IS REACHABLE, AND IT IS A 60 Hz PANEL — WHICH IS THE WHOLE OF "FULLSCREEN
+IS SLOWER".**
+
+Kyle's two threads converged. The performance diagnostics had to become
+**accurate and actionable**, and he wanted the game measured **on his own
+machine while he plays**. Both are now in place, and the second one turned
+up the answer to the question he was actually asking.
+
+**WHAT SHIPPED** (webXash **#53** → `27cfe99`; parent **#151** → `…`, with
+the submodule pointer landing on webxash's main so the deploy carries it):
+
+1. **THE DIAGNOSTICS NOW ANSWER "WHAT DO I DO".** The `Your Client` tab
+   and the ESC performance tab report the **gap to the next refresh rate
+   in milliseconds** ("1.06 ms away from 144 fps"), the **frame-time
+   distribution** (p50/p90/p99/max, so judder is visible instead of
+   averaged away), and an **engine-bound checklist** — draw-cost switches,
+   giving the machine the whole CPU/GPU, killing the overlays, the judder,
+   the fullscreen comparison — where every item says *where* and *why*.
+2. **A NEW "Draw cost" CARD IN ESC → GAME**, offering the CVars the
+   player can flip: `r_drawviewmodel`, `r_lockpvs`, `r_shadows`,
+   `r_detailtextures`, `cl_himodels`. **Nothing is claimed** — the
+   project's own cvar sweep found the effect smaller than the drift (53%,
+   and in every cycle the build that ran second won) — but the readout
+   measures the frame cost in ms, so a player can flip one and see.
+3. **AN "Export log" BUTTON** (ESC → Performance) that downloads the
+   whole match's timeline as JSON: every measurement window, the frame
+   cost, the rate the game drew at, the rate the browser handed it, the
+   gate, the late frames, and **whether the game was fullscreen at the
+   time**, grouped fullscreen-vs-windowed **by medians** (so one
+   expensive window cannot fabricate a difference).
+4. **THE BROWSER THROTTLE THE 60 Hz FLOOR MISSED.** Chrome's Energy
+   Saver does not always halve the refresh rate — on a 120 Hz panel it
+   went to 78 Hz, which is *above* the 60 Hz "throttled" floor, so the
+   readout said everything was fine and blamed the engine. The engine's
+   tick rate **cannot** tell the two apart: a slow engine and a slow
+   browser stretch frame intervals identically. The pacer now measures
+   the display **before the engine exists** (an idle baseline) and
+   compares the live rate against it.
+
+**FOUR REAL BUGS FOUND WHILE AUDITING THE DIAGNOSTICS** (not gaps in the
+advice — wrong answers):
+
+1. **THE BUDGET WAS MEASURED AGAINST THE WRONG RATE.** The landing page
+   restores the last match's numbers while the browser is still running,
+   so there were two rates in play, and the comparison was between them:
+   a 7.20 ms frame measured on a 144 Hz panel is **over** that panel's
+   6.94 ms budget, but against the landing page's own 60 Hz reading it
+   looked like 43% — a green bar and "everything is fine" for a game
+   that was over budget on the display it was playing on. **The budget is
+   now the one that applied to the game**, and the rate measured right
+   now is a separate fact with its own finding.
+2. **"Re-measure" RE-READ THE OLD NUMBER.** It now asks the pacer for a
+   fresh measurement window, so changing a setting and hitting Re-measure
+   tells you whether it helped.
+3. **A CONCURRENT MEASUREMENT WIPED ITS OWN SAMPLES.** A measurement
+   window resets the observation buffers, so two overlapping windows
+   erased each other's data. The pacer now serialises them.
+4. **THE CI DRAW-COST CHECK WAS READING AN ENGINE NOBODY RUNS.** It read
+   `webxash/public/xash3d-fwgs/` — gitignored, a leftover from an older
+   layout, and on this machine a **different `xash.wasm`** than the one
+   that ships. It now reads `node_modules/xash3d-fwgs`, skips loudly when
+   no engine is installed, and runs for real in the Frontend job.
+   **Now positively verified:** the npm engine is **byte-identical** to
+   the deployed one (`libref_webgl2.wasm` and `xash.wasm`, md5 match
+   against the content-hashed files bulletballet.dev serves), and every
+   cvar offered above is **present in the deployed engine**. `cl_weather`,
+   which the project's own sweep tried, **does not exist in this build**
+   and could never have worked.
+
+**THE GAMING PC IS NOW REACHABLE, AND WHAT IT SAYS IS THE HEADLINE.**
+`cachyos-x8664` joined the tailnet (100.121.0.20). It is **CachyOS**,
+kernel 7.3.1, **AMD Ryzen 7 8700G + Radeon RX 7700 XT** (Navi 32,
+amdgpu), 32 GB, and its desktop is **niri** on Wayland. Port 22 there is
+**Tailscale SSH** — `tailscaled` intercepts it and authenticates by
+*tailnet identity*, so there is no `authorized_keys` and the tailnet ACL
+is the whole access control. The login shell is `fish`.
+
+> **THE DISPLAY IS AN Acer EB321HQU AT 2560×1440 @ 59.951 Hz, WITH
+> VARIABLE REFRESH RATE *NOT SUPPORTED*.**
+>
+> **A 60 Hz PANEL.** There is no 120/144 Hz mode on it at any resolution.
+> So the frame budget on that machine is **16.67 ms**, and with no VRR
+> there is nothing to absorb a missed frame — an overrun is a visible
+> hitch, full stop.
+
+**AND THE FULLSCREEN QUESTION, MEASURED ON HIS MACHINE:**
+
+| | window | CSS | megapixels |
+|---|---|---|---|
+| fullscreen | 2560×1440 | 2560×1384 | **3.54 MP** |
+| windowed (niri tiles in columns) | 1274×1388 | 1274×1245 | **1.59 MP** |
+
+**Fullscreen is 2.2× the fragments of the tiled window.** "Fullscreen
+runs worse than the windowed browser" is very probably **not a mystery —
+it is pixel count**, and it is fill-bound. **The lever is the client's
+RENDER SCALE, not a cvar**: at 67% the fragments fall by ~55%. The
+readout shows `RENDER SIZE` in megapixels right next to `FRAME COST`, so
+that number can be watched moving.
+
+**THE LIVE MEASUREMENT PATH WORKS END TO END, ON THE REAL GPU.**
+`tools/perf/watch-client.cjs` (attach-only, no dependencies, never
+launches or controls the browser) attaches over CDP; the
+`tools/perf/watch-remote.sh` tunnel reaches it on the gaming PC. Verified
+against the real thing over the tunnel:
+
+```
+renderer:  ANGLE (AMD, AMD Radeon RX 7800 XT (radeonsi navi32 ACO), OpenGL 4.6)
+```
+
+— the Navi 32 chip, **not SwiftShader**. Chrome for Testing 158 was
+installed on the gaming PC **without sudo** (Playwright's own browser
+cache, `~/.cache/ms-playwright`), because the box has **Firefox only**
+and Playwright's `connectOverCDP` does not speak to Firefox.
+
+**THE THREE TRAPS THE REAL MACHINE TAUGHT** (all fixed in
+`watch-client.cjs`, and the second one is the reason the A/B was
+previously worthless):
+
+1. **`document.fullscreenElement` IS NULL FOR THE BROWSER'S OWN
+   FULLSCREEN** (F11, `--start-fullscreen`) — only the DOM API sets it.
+   The `fs` column labelled fullscreen runs as windowed. It now also
+   asks the canvas's size against the screen's.
+2. **`Browser.setWindowBounds` IS SILENTLY IGNORED UNDER NIRI** — the
+   compositor owns the geometry, so the request reports success and
+   changes nothing, and the A/B compared two identical windows and
+   reported "no difference". Each phase now reports its real window
+   size, and the comparison says in capitals when the comparison never
+   happened. **The reliable fullscreen is a relaunch with
+   `--start-fullscreen`** (`/home/kyle/opt/relaunch.sh` on the box).
+3. **NIRI DOES NOT EXPORT `WAYLAND_DISPLAY` TO ITSELF** — niri *is* the
+   Wayland server, so the variable has to come from the socket directory
+   and from Xwayland's own argument, or Chromium dies with "Missing X
+   server or $DISPLAY".
+
+**THE PLAN FOR THE MEASUREMENT SESSION IS IN § NEXT TASK.**
+
+**As of:** 2026-11-09, EARLIER — **THE CHARACTER PICKER SHOWS ALL SIXTEEN
 CHARACTERS, AND THE EARLIER CLAIM THAT THE SERVER THROWS THE CHOICE AWAY
 WAS WRONG. webXash #51 IS UP FOR KYLE'S APPROVAL.**
 
@@ -5669,6 +5806,197 @@ the parts that are known traps.
 
 # § NEXT TASK
 
+> ## THE MONITORING SESSION: KYLE PLAYS, EVO MEASURES (2026-11-09, PLANNED —
+> NOT YET RUN)
+>
+> **THE ONE TASK.** A measurement session on Kyle's gaming PC: he plays
+> the game, Evo watches it live and drills into the frame drops, and the
+> fullscreen-vs-windowed difference is settled **with numbers on his
+> machine** rather than a belief.
+>
+> **WHY IT IS STILL OPEN.** The access works, the harness works, and the
+> numbers are on the way — but **no match has been played under
+> measurement yet**. The landing page runs no `requestAnimationFrame`
+> loop, so the watcher correctly reports *"NO FRAMES AT ALL"* until a
+> match is actually running. **Everything below is written so the next
+> session can start without re-deriving any of it.**
+>
+> ---
+>
+> ### THE TWO MEASUREMENT PATHS, AND WHY BOTH MATTER
+>
+> They measure different browsers, and **that difference is itself part
+> of the answer**.
+>
+> | | **PATH 1 — the live watcher** | **PATH 2 — the in-game Export log** |
+> |---|---|---|
+> | what it measures | a browser Evo attached to | the match Kyle is playing |
+> | which browser | **Chromium** (installed on the box) | **Firefox** (what he actually plays) |
+> | fidelity to his experience | a proxy | **the real thing** |
+> | what it gives | per-second timeline, p50/p95/p99, late%, long tasks, event-loop lag, input latency | every measurement window the pacer took, fullscreen-vs-windowed by medians |
+> | needs a client deploy | no | **yes** (the button is in the new client) |
+>
+> **WEBGL PERFORMANCE IS NOT THE SAME IN FIREFOX AND CHROMIUM.** A
+> Chromium number is a proxy for his Firefox session, and the difference
+> between them is worth knowing on its own. So: **measure in Chromium for
+> the controlled A/B, and measure in Firefox via the Export log for the
+> number he actually lives with.**
+>
+> ---
+>
+> ### PATH 1 — THE LIVE WATCHER (step by step)
+>
+> **ON THE GAMING PC** (one command, from m5):
+>
+> ```sh
+> ssh cachyos-x8664 'bash /home/kyle/opt/relaunch.sh windowed'
+> # ...or...
+> ssh cachyos-x8664 'bash /home/kyle/opt/relaunch.sh fullscreen'
+> ```
+>
+> It kills the old instance, relaunches the **same profile**
+> (`~/opt/bb-cdp`, so the same GPU and the same settings), and prints the
+> resulting window size. **The debugger port 9223 binds to localhost
+> only** and is unauthenticated — m5 reaches it over the SSH tunnel, and
+> **it must never be exposed to the network**.
+>
+> **FROM m5**, while Kyle plays:
+>
+> ```sh
+> cd ~/Development/specialists-browser
+> OUT=~/bb-session-windowed.json bash tools/perf/watch-remote.sh cachyos-x8664 600
+> ```
+>
+> The printed line is one row per second:
+>
+> ```
+> t(s)  fps  p50  p95  p99  late%  engine ms  brHz  panel Hz  lag ms  lt  fs  canvas  css
+> ```
+>
+> **Read these five first:**
+>
+> - **`engine ms`** — the pacer's own frame cost. The headline.
+> - **`p50` vs `p99`** — the judder. `p99 > p50 × 1.2` is uneven pacing.
+> - **`late %`** — frame intervals over 1.5× the median. On a 60 Hz panel
+>   with no VRR, every late frame is a visible hitch.
+> - **`brHz` vs `panel Hz`** — the browser's rate against the display's.
+>   A gap is browser throttling.
+> - **`fs`** — fullscreen or not, **now correct** (it asks the canvas's
+>   size against the screen's, because `document.fullscreenElement` is
+>   null for F11).
+>
+> **The fullscreen A/B — the controlled comparison.** CDP's
+> `Browser.setWindowBounds` **is silently ignored under niri**, so the
+> A/B is done by relaunching:
+>
+> ```sh
+> # phase A — windowed
+> ssh cachyos-x8664 'bash /home/kyle/opt/relaunch.sh windowed'
+> OUT=~/bb-A-windowed.json bash tools/perf/watch-remote.sh cachyos-x8664 300
+>
+> # phase B — fullscreen, same profile, same GPU
+> ssh cachyos-x8664 'bash /home/kyle/opt/relaunch.sh fullscreen'
+> OUT=~/bb-B-fullscreen.json bash tools/perf/watch-remote.sh cachyos-x8664 300
+> ```
+>
+> **Then A, then B, then A again** — the third run is the drift, and the
+> repo's rule is that a B−A difference smaller than the drift is not a
+> finding. The watcher prints this comparison itself if `--fullscreen-ab`
+> is used, but under niri it will (correctly) refuse to claim a
+> difference it could not produce.
+>
+> ---
+>
+> ### PATH 2 — THE IN-GAME EXPORT LOG (the faithful one)
+>
+> **Needs the new client deployed** — the button is in webXash #53, and
+> the deploy fires when the parent's submodule pointer moves. **Verify
+> the deploy landed before starting:**
+>
+> ```sh
+> curl -sk https://bulletballet.dev/ | grep -oE '/assets/index-[A-Za-z0-9]+\.js'
+> # then: does the deployed bundle contain the new readout?
+> curl -sk "https://bulletballet.dev/assets/index-<hash>.js" | grep -c "Export log"
+> ```
+>
+> **Then:** Kyle plays, opens **ESC → Performance → Export log**, and the
+> file lands in `~/Downloads` on the gaming PC. **Pull it:**
+>
+> ```sh
+> ssh cachyos-x8664 'ls -t ~/Downloads/*.json | head -3'
+> scp cachyos-x8664:'~/Downloads/<file>.json' /tmp/
+> ```
+>
+> **What to read in it:** `byMode.fullscreen` against `byMode.windowed`
+> (medians, so one expensive window cannot fake a difference), the
+> `pacing` block, and the per-window timeline.
+>
+> ---
+>
+> ### THE HYPOTHESES BEING TESTED, AND WHAT EACH OUTCOME MEANS
+>
+> **H1 — PIXEL COUNT.** Fullscreen is 3.54 MP against 1.59 MP tiled
+> (**2.2×**). *Prediction:* engine frame cost rises with render size and
+> falls with render scale. **If it holds,** the fix is the client's
+> **render scale** (67% ≈ −55% fragments), not a cvar, and not a browser
+> flag. **If it does NOT hold,** the engine is not fill-bound and the
+> cost is elsewhere — go to H4.
+>
+> **H2 — NO HEADROOM ON A 60 Hz PANEL.** The budget is 16.67 ms and there
+> is **no VRR**, so anything over is a visible hitch. *Prediction:*
+> `late %` above zero, `p99` well clear of `p50`, and the pacer capping
+> to 60 fps. **If it holds,** the honest answer to "we're leaving
+> performance on the table" is *the panel*, not the code — and the
+> actionable step becomes render scale.
+>
+> **H3 — BROWSER THROTTLING.** Chrome Energy Saver, or Firefox's own
+> power saving. *Prediction:* `brHz` below `panel Hz`, and the readout's
+> new `refresh-dropped` finding fires. **If it holds,** the fix is a
+> browser setting and costs nothing.
+>
+> **H4 — SOMETHING ELSE ENTIRELY.** GC, long tasks, event-loop lag, a
+> background process, thermal throttling. *Prediction:* the lag median
+> spikes above 50 ms, or long tasks appear, or `engine ms` is fine while
+> the frame intervals are not. **If it holds,** the watcher says so and
+> the hunt moves to *what* is eating the frame.
+>
+> ---
+>
+> ### THE TRAPS, SO THE NEXT SESSION DOES NOT REDISCOVER THEM
+>
+> - **"NO FRAMES AT ALL" IS NOT A BUG.** The landing page runs no rAF
+>   loop. The harness needs a match actually running.
+> - **THE FAMILY BOX IS A DIFFERENT MACHINE.** `cachyos-x8664-family`
+>   (NVIDIA GTX 980, gamescope, user `family`) vs `cachyos-x8664`
+>   (AMD RX 7700 XT, niri, user `kyle`). The tunnel's default host was
+>   changed to the right one on 2026-11-09; do not probe the other.
+> - **THE LOGIN SHELL IS `fish`.** Inline heredocs get mangled — scp a
+>   script and run it with `bash`.
+> - **THE SSH TUNNEL'S LOCAL PORT MUST NOT BE THE BROWSER'S PORT.** The
+>   first version used 9223 on both sides and silently watched the
+>   **wrong browser** when the tunnel failed. It is 19223 now, and the
+>   script refuses to run if that port is busy.
+> - **A HIDDEN TAB REPORTS ZERO LONG TASKS, EVER** — Chrome does not run
+>   the long-task machinery for a page nobody is looking at. The harness
+>   says "ZERO BY OBSERVATION" in that case.
+> - **THE `fs` COLUMN AND `document.fullscreenElement`.** Only the DOM
+>   API sets it; F11 never does. Both facts are now reported.
+> - **THE ENGINE MUST BE READ FROM `node_modules/xash3d-fwgs`.** The
+>   gitignored `webxash/public/xash3d-fwgs/` is a stale copy holding a
+>   **different** `xash.wasm`.
+> - **THE LOGS ARE ON M5.** `~/bb-*.json` from the watcher, and the
+>   exported log pulled from the gaming PC. Keep them; they are the
+>   evidence.
+>
+> ### WHAT "DONE" LOOKS LIKE
+>
+> A written answer, with numbers, to: **"is fullscreen slower on my
+> machine, and by how much?"** — plus one of: a confirmed cause, or an
+> honest "still unexplained, here is what it is not". **A measurement
+> that rules a hypothesis out is worth as much as one that confirms
+> one**, and the repo's rule is to say what the data shows rather than
+> what was hoped.
+>
 > ## THE PACER MEASURES THE ENGINE WARM, AND KEEPS MEASURING (2026-11-08, DONE — APPROVED AND MERGED INTO WEBXASH)
 >
 > **SHIPPED AND LIVE.** webXash **#50** merged as **`9a2cac0`** after Kyle's
@@ -6294,6 +6622,37 @@ ssh bb-prod 'curl -sS 127.0.0.1:8081/api/registry'         # fleet detail
 ssh bb-prod 'curl -sS 127.0.0.1:8090/api/orchestrator'      # decisions + history
 ssh bb-prod 'curl -sS 127.0.0.1:27017/health'              # bridge allowlist
 ```
+
+**THE GAMING PC (Kyle's own, `cachyos-x8664` — Tailscale SSH, so the
+tailnet ACL is the access control, and the login shell is `fish`):**
+
+```bash
+# is it there?
+ssh -o BatchMode=yes -o ConnectTimeout=15 cachyos-x8664 'echo ok'
+
+# what is the display actually doing?  (niri's own IPC)
+ssh cachyos-x8664 'bash /home/kyle/opt/relaunch.sh windowed'
+#   -> "Current mode: 2560x1440 @ 59.951 Hz", "Variable refresh rate: not supported"
+
+# the browser the watcher attaches to, with the CDP debugger on localhost
+ssh cachyos-x8664 'bash /home/kyle/opt/relaunch.sh fullscreen'
+curl -s http://127.0.0.1:9223/json/version   # (over ssh, not from m5)
+
+# watch a live match from m5, through the SSH tunnel
+cd ~/Development/specialists-browser
+OUT=~/bb-session.json bash tools/perf/watch-remote.sh cachyos-x8664 600
+```
+
+**THE HARNESSES THAT EXIST FOR THIS** (`tools/perf/`, all
+dependency-free, all attach-only where it matters):
+
+| harness | what it does |
+|---|---|
+| `watch-client.cjs` | **live per-frame timeline** over CDP. Never launches or controls the browser. |
+| `watch-remote.sh` | the same, on another machine, over an SSH tunnel. Local port ≠ the browser's port, on purpose. |
+| `measure-pacing-timeline.cjs` | the frame-time distribution, in the CI rig. |
+| `measure-live-client.cjs` | drives a real browser with real key events. |
+| `ab-wasm-opt-level.cjs` | the WASM optimisation A/B. |
 
 **The admin console, locally** (it is not deployed yet — phase 5):
 
