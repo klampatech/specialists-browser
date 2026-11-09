@@ -23,6 +23,251 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-09, LATEST — **THE PACER'S HYSTERESIS IS REBUILT, AND
+webXash #50 IS APPROVED AND MERGED. THE PARENT POINTER LANDS WITH THIS
+COMMIT.**
+
+Kyle reviewed webXash PR #50, asked for this work before he would sign it
+off, and approved it once it was done — his own empty-body review, read
+back before the merge. Two reviews of the pacing policy had run by then (one broad
+review that hung and was killed, one focused review that completed), and
+a second focused review — of the **fixes** rather than of the original
+work — found that the fix for the pump had itself become a performance
+regression. Kyle's rule is verbatim: *"The only thing worse than
+performance optimizations that don't do anything is performance
+optimizations that actively make performance worse."* This change is
+about honouring that rule on the code that is already written.
+
+**THE DEFECT, MACHINE-CHECKED AGAINST THE REAL POLICY CODE** (not taken
+on trust — `node --experimental-strip-types` against
+`webxash/src/services/frame-pacing.ts`):
+
+- The pump fix was a **15% band on the engine's sustainable rate**, held
+  between the last gate change and the next.
+- On a **120 Hz panel** the step from 60 fps to 120 fps is a **0.8%**
+  change in the sustainable rate (119 → 121, at 7.14 → 7.00 ms of frame
+  cost). A 15% band swallows that step whole.
+- So: the target said `everyNth 1` (120 fps), the policy **held the gate
+  at 2 (60 fps)**, and the player stayed at 60 fps until the engine was
+  **12% faster** than the cost that produced 60 fps.
+- The band could also **veto the physical promise**: on a 100 Hz panel
+  with an 11.0 ms frame the target correctly computed `everyNth 2` (the
+  frame needs two ticks), the band threw it away, and the engine was
+  asked for 100 fps with a frame that overruns its 10 ms slot by 10%
+  **every frame** — the judder the feature exists to remove.
+- And the band was **blind to the panel side**: any target change caused
+  by the measured display rate was band-blocked too, so the gate could
+  latch on the wrong rate and stay there.
+
+**WHY A BAND CANNOT DO THIS JOB.** The gate's decisions are *discrete
+steps* (60 ↔ 120 fps), and a percentage band on the sustainable rate
+does not map onto a step. A band in the right units — a hysteresis
+*around the threshold* — still sacrifices a window of cost either side
+of it. The rule that does map is **consecutive windows**: a target that
+flickers never produces two of them, so it cannot move the gate, while a
+change that *persists* does.
+
+**THE PLAN, AS BUILT** (webxash `5c41df1`, the parent's tests):
+
+1. **The band is deleted** (`COST_DEADBAND`, `currentBasisFps`, and the
+   branch in `frame-pacing.ts`). It is the wrong instrument.
+2. **The gate moves only when two consecutive SETTLED windows ask for
+   the same target** — symmetrically, for widening as well as narrowing.
+   The narrowing already required two; the widening was immediate, and
+   that asymmetry is what ratcheted a flickering target open.
+3. **The narrowing also has to clear the threshold the cost is measured
+   against**, by more than the measurement noise. The engine's frame cost
+   is measured with about 1.4% of noise (7.00 ms and 7.20 ms are the
+   same view on the same machine) and the gate changes at a *threshold* —
+   850/120 = 7.083 ms of frame cost on a 120 Hz panel — so a reading that
+   straddled it would close the gate and open it again. The threshold is
+   a COST (850 × everyNth / panelHz for the cap, 1000 / panelHz for the
+   slot) and the gate closes when the cost is past the easier of the two.
+   **The symmetric counter alone is not enough**: a target that dwells
+   two windows on each side of the threshold still oscillates, which is
+   what this band is for.
+4. **The counter ignores warm-up windows.** It counts every window that
+   reaches the policy today, so the first settled window can narrow on
+   the strength of two *warm-up* readings — contrary to the rule's
+   intent.
+5. **A PROVISIONAL gate follows the latest warm-up reading.** It was
+   taken from the least trustworthy reading the engine will ever produce
+   (the 3-second window, while the engine compiles shaders and streams
+   the map) and it could not move again until the first settled window —
+   ~23 seconds at a tight gate. A gate that has been **settled** still may
+   not move on a warm-up reading.
+6. **The physical promise stays in the TARGET**: the target's tick count
+   is at least the number of ticks the engine's frame needs to fit its
+   slot. The gate then *converges* on it within a window instead of
+   being vetoed indefinitely.
+7. **A forced gate — the measurement harness's — is not the policy's to
+   move**, and the policy says so in its reason.
+8. **The late-frame guard is untouched**: a widening is still refused
+   while more than 5% of the engine's frames arrived late. It is the most
+   important rule in the feature.
+9. **Two small honesty fixes** from the same review: the empty-window
+   path no longer inherits a stale `capFps` (so the readout cannot name
+   a rate the current gate no longer implies), and a gate left in place
+   keeps its provisional flag.
+
+**THE REPLACEMENT, VALIDATED BEFORE IT WAS WRITTEN.** The new policy was
+prototyped in the scratch directory and machine-checked with seven
+cases: the pump (a cost alternating around the 7.083 ms threshold)
+produces **zero** gate moves; a sustained improvement from 7.14 to 7.00
+ms reaches **120 fps** again; the 100 Hz / 11 ms case **converges** on
+the promise rather than being vetoed; a provisional gate is replaced by
+the first settled window; one expensive window does not narrow the gate
+and two do; and a widening is still refused while 9% of frames are late.
+
+**THE GATES AFTER THE CHANGE — ALL GREEN.** The parent's unit suite
+**757/757**, `vue-tsc --noEmit` clean, `bun run build` clean, the
+CI-address build clean, and the shipped-readout browser gate **47/47**.
+
+**AND THE RE-MEASUREMENT ON THE M3 PRO** (the CI stack only, never
+production; eight bots in the world). `ts_casa`, six viewpoints, the
+player moving:
+
+- **View 1** — the engine cost **11.17 ms**, was delivering 83.5 fps,
+  and **38.1% of its frames arrived late**: it was overrunning its slot
+  by 34%. **The pacer narrowed to 60 fps and the late fraction went to
+  0%.** That is the pacer doing its job for the first time; the old
+  build reported a frozen 1.31 ms for the whole match and never knew
+  the scene was expensive.
+- **Views 3–6** — the scene was cheap, the gate came off the cap, and
+  the engine ran at 120.0 fps with 0.0% late.
+- The **timeline** over 110 seconds: the gate in force never changed,
+  the engine's fps ran 119.3–120.8, the late fraction 0% (median), and
+  the pacer's last word was *"the engine costs 1.53 ms a frame (554 fps)
+  against a 120 Hz display -> not capping; the settled reading confirms
+  the gate"*.
+
+The full numbers are in `docs/CLIENT-PERF-RESULTS.md`.
+
+**APPROVED AND MERGED.** webXash **#50** merged as **`9a2cac0`**, whose tree
+is byte-for-byte the tree Kyle approved (`git diff origin/main 5c41df1` is
+empty — the squash carries exactly what he reviewed). This commit repoints
+the parent at it, and the deploy runs when it lands.
+
+**As of:** 2026-11-08, LATEST — **THE PACER MEASURES THE ENGINE WARM, AND
+KEEPS MEASURING. THE READOUT STOPS BLAMING THE BROWSER.**
+
+Kyle looked at the "Your Client" tab after a game and asked two questions:
+
+1. *"Is the 'locked at 30fps / 60fps' an engine limitation we can change?
+   I want the game as performant as possible on modern hardware. If
+   there's an artificial fps limiter imposed, can we remove it?"*
+2. *"Is the information in this screenshot accurate? How do we fix any of
+   it?"*
+
+**THE ANSWER TO (1): THE 30 FPS IS NOT AN ENGINE LIMIT — IT IS OUR PACER,
+AND IT WAS CHOOSING WRONG.** The engine has no frame limiter in the
+browser at all: `fps_max` is inert while vsync is on (`engine/common/
+host.c` reads it only when vsync is off), so the engine targets 200 fps
+and draws on every tick the browser offers. The cap is
+`webxash/src/services/frame-pacing.ts` (the policy) plus
+`frame-pacing-apply.ts` (the machinery) — and it decided from **one
+measurement, taken three seconds after the engine booted, over a
+two-second window, and never repeated for the rest of the match.**
+Three seconds in, the engine is compiling shaders and streaming the map:
+that window is the most expensive one it will ever produce.
+
+**THE ANSWER TO (2): THE SCREENSHOT WAS MOSTLY A PICTURE OF THE ENGINE'S
+WARM-UP, PRESENTED AS A PICTURE OF THE MACHINE, AND FOUR OF ITS
+STATEMENTS WERE WRONG.** The "capped" finding printed the **game's** rate
+in a sentence that called it the **display's** rate; the "room to spare"
+finding claimed headroom the engine did not have; the "delivering"
+finding blamed the engine for a frame rate the **cap** was causing; and
+the render-size advice told the player to lower the resolution on a
+machine where the engine is **CPU-bound** (the research measured the
+cost flat across an 8.4x resolution sweep).
+
+**WHAT CHANGED (webxash, six files).**
+
+- **THE POLICY** (`frame-pacing.ts`, still import-free) grew
+  `decideFrameGate(input)`: a settled window may move the gate, a
+  warm-up window never does, a **widening is REFUSED** when more than
+  5% of the engine's frames were late, and a **narrowing needs two
+  consecutive windows** asking for the same target. The asymmetry is the
+  point: widening risks judder, narrowing risks perceived slowness.
+- **THE MACHINERY** (`frame-pacing-apply.ts`) now measures the
+  **engine's** frame rate (`engineFps`) from the engine's own frame
+  starts, counts **late frames** against the **gate's period** (the old
+  metric counted browser ticks and read a quarter of them "late" even
+  when the game was perfectly paced), knows when the engine's **first
+  frame** was, and calls a window **settled** once it closed 15 000 ms
+  (`WARMUP_MS`) after it.
+- **THE SCHEDULE** (`xash-loader.ts`) measures at 3 s (provisional) and
+  then **every 10 s** (`REMEASURE_MS`) for the rest of the match, with no
+  overlap — `applyFrameCap` is async, so the next window starts only
+  after the previous one returns.
+- **THE REPORT** (`perf-check.ts`, still import-free) now **attributes**
+  instead of blaming: *"Your browser is only offering N refreshes a
+  second."* (browser-bound) / *"The game could not keep up with your
+  120 Hz display."* (engine-bound) / *"Your client was set up properly.
+  Nothing to do."* (neither). The "capped" finding names the **panel's**
+  rate, the "room to spare" claim requires the engine's sustainable rate
+  to really be at or above the panel rate, the "delivering" finding
+  blames the **cap** when a cap is in force, the render-size advice says
+  the lever is the engine's per-frame cost, and a new **`cost-age`**
+  finding says *when* the numbers were measured ("…measured 32 seconds
+  into your last game" / "…before the engine had warmed up").
+- **THE FACTS** (`perf-collect.ts`) carry the new fields into
+  `PerfFacts` and the **session snapshot**, so the landing page tells
+  the same truth about the last game. The snapshot's `measuredAt` keeps
+  its meaning (when the game ENDED); the pacer's reading time is a
+  separate field.
+- **THE READOUT** (`TSPerformance.vue`) shows the engine's frame rate
+  beside the panel's rate.
+
+**THE GATES.** `bunx vue-tsc --noEmit` and `bun run build` in `webxash`
+(the build carries the WASM and GL-glue gates), and the parent's unit
+suite — **744 tests, 744 pass** (25 of them new: the policy's rules, the
+machinery's measurements, and the report's honesty rules).
+
+**THE A/B, ON THE CI RIG — `tools/perf/measure-pacing-timeline.cjs`.**
+The harness boots a real client against the **CI** stack, **refuses to
+run** unless the server list is the CI rig (`ts-ci*`) and every
+WebSocket points at `ci.bulletballet.dev`, pins the **map** and the
+**viewpoint** (the map's first nav node — the spawn is random and the
+engine's cost moves with what is visible: a 4.9x spread from the spawn
+alone), measures the engine's frame rate **itself** (the same instrument
+on both builds) and prints a **timeline**: the gate in force, the
+engine's cost, the engine's fps, the browser's tick rate, the late-frame
+fraction and the panel rate. It prints NUMBERS, not a verdict.
+
+Four comparable pairs (same map, same pinned viewpoint, both builds):
+
+| pair | branch engine fps (median) | main engine fps (median) | late-frame fraction |
+|---|---|---|---|
+| 1 | 17.6 | 15.7 | 100% / 100% |
+| 2 | 18.0 | 14.6 | 100% / 100% |
+| 3 | 18.6 | 17.0 | 100% / 100% |
+| 4 | 18.1 | 17.4 | 100% / 100% |
+
+**THE BRANCH'S ENGINE FPS IS NEVER LOWER, AND THE LATE-FRAME FRACTION IS
+NEVER WORSE.** The branch also reports the engine's cost **honestly**:
+main froze its cost at the 3 s warm-up reading (3.5-5.1 ms) for the whole
+match, while the branch's settled readings were 1.6-1.9 ms.
+
+**WHAT THE RIG COULD NOT ANSWER, STATED PLAINLY.** The rig is
+**software-rendered** (SwiftShader) against a 60 Hz panel: the browser
+delivers ~18 ticks/s, so every engine frame is late relative to a 16.7 ms
+gate period and the late-frame fraction reads 100% on **both** builds —
+the metric is degenerate here. The regime the change is FOR (a
+hardware-accelerated client on a 120 Hz panel, where the cap engages)
+is **not reproducible in this rig**, so the cap-engaging path is covered
+by the parent's unit tests and still needs Kyle's real machine.
+
+**A TOOLING BUG FOUND ON THE WAY (NOT FIXED — OUT OF SCOPE).**
+`tools/perf/lib/server-console.cjs` waits for a console answer with a
+**shell** grep — `grep -qE '\[ts\]\s+#\d+'` — and GNU grep's ERE has no
+`\d`, so the grep never matches and every attempt burns its whole
+timeout. The new harness reads the answer in JavaScript instead; the
+shared helper is still broken for every other caller.
+
+**THE NEXT TASK IS NOT THIS ONE.** The **loadout** (Task B's session
+half) is still open and is still Kyle's next task — see § NEXT TASK.
+
 **As of:** 2026-11-07, LATER — **THE READOUT GETS ITS OWN TAB, AND THE WEB UI'S
 READOUT SURVIVES THE QUIT. BUILT, VERIFIED, MERGED, AND LIVE ON PRODUCTION.**
 
@@ -5310,6 +5555,26 @@ the parts that are known traps.
 
 # § NEXT TASK
 
+> ## THE PACER MEASURES THE ENGINE WARM, AND KEEPS MEASURING (2026-11-08, DONE — APPROVED AND MERGED INTO WEBXASH)
+>
+> **SHIPPED.** webXash **#50** merged as **`9a2cac0`** after Kyle's own
+> empty-body review; the parent's pointer lands with it and the deploy runs
+> after. The work order was `docs/CLIENT-PERF-PACING-PLAN.md`, the numbers
+> are in `docs/CLIENT-PERF-RESULTS.md`, and § CURRENT STATE's newest block
+> has the whole story — what was wrong, the review that caught it, the
+> rebuild, and the M3 Pro measurement (at the heavy view the engine was
+> 38.1% late; the pacer narrowed to 60 fps and the late fraction went to
+> 0%).
+>
+> **ONE THING LEFT, AND IT WANTS KYLE'S MACHINE.** The **cap-engaging path**
+> (a hardware-accelerated client on a 120 Hz panel) is **not reproducible in
+> the CI rig** — it is software-rendered there — so the final confirmation
+> wants Kyle's real machine, with `tools/perf/measure-pacing-timeline.cjs` as
+> the harness. It was run there on 2026-11-08 and the numbers are in the
+> results doc.
+>
+> **THE NEXT TASK IS THE LOADOUT** (Task B's session half), below.
+>
 > ## THE READOUT GETS A TAB, AND THE WEB UI'S READOUT SURVIVES THE QUIT (2026-11-07, DONE — MERGED AND DEPLOYED)
 >
 > **SHIPPED.** webXash **#49** (`44b6167`) and the parent's **#144** (`fa24a17`)

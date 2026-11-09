@@ -321,11 +321,22 @@ test('the reported state cannot disagree with the gate', async () => {
     // Now re-measure WITHOUT forcing. The engine sustains far more
     // than the display delivers, so the pacer decides NOT to cap.
     //
+    // `warmupMs: 0` IS THE POINT OF THIS CALL. The policy refuses to
+    // move a gate on a WARM-UP window -- that is the rule that stops
+    // a slow first scene from halving the player's frame rate for the
+    // rest of the match -- so a window that is still inside the
+    // engine's warm-up leaves the gate exactly where it is. To see
+    // the gate COME OFF, this window has to be a settled one.
+    //
     // THE DEFECT THIS GUARDS: the "not capping" branch used to reset
     // the REPORTED `everyNth` to 1 and leave the module-level gate
     // variable at 2. The diagnostics said "not capping, everyNth 1"
     // while the engine was still being offered every second frame.
-    const disengaged = await measure(env, mod, { observeMs: 120 });
+    // TWO settled windows have to ask for the wider gate, in both
+    // directions: a widening on the first reading is what ratchets a
+    // flickering target open.
+    await measure(env, mod, { observeMs: 120, warmupMs: 0 });
+    const disengaged = await measure(env, mod, { observeMs: 120, warmupMs: 0 });
     assert.equal(disengaged.everyNth, 1, 'the reported divisor must be 1');
     assert.equal(disengaged.active, false, 'the reported state must not claim a cap');
     assert.match(disengaged.reason, /not capping/);
@@ -520,5 +531,228 @@ test('?nocap=1 turns the cap off, and the default leaves it on', async () => {
     });
     assert.equal(engaged.everyNth, 2);
     assert.equal(engaged.active, true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// THE MEASUREMENT — measured warm, measured again, and honest about
+// what it measured.
+//
+// WHY THIS EXISTS
+// ---------------
+// Three things the pacer used to get wrong, all of them visible in the
+// screenshot Kyle asked about:
+//
+//   1. THE ENGINE'S OWN FRAME RATE WAS NEVER MEASURED. `displayHz`
+//      was the BROWSER's tick rate, and it meant two different things
+//      depending on whether the cap was engaged: before the cap it was
+//      the game's tick rate, after it the panel's rate — because the
+//      browser keeps ticking while the engine draws every Nth tick.
+//      So the readout said "the game was drawing 60 fps" on a machine
+//      where the game was drawing 30.
+//
+//   2. THE LATE-FRAME METRIC COUNTED THE BROWSER'S TICKS. With the
+//      cap at one frame in four, a quarter of the ticks read "late"
+//      even when the game was perfectly paced, because the engine's
+//      frame overruns the tick it started on.
+//
+//   3. THE MEASUREMENT WAS TAKEN THREE SECONDS AFTER BOOT AND NEVER
+//      AGAIN. The engine needs 25-30 seconds to reach steady state.
+//
+// WHAT IS TESTED HERE
+// -------------------
+//   - the engine's frame rate, counted from the engine's own frames,
+//   - the late-frame metric, against the GATE's period,
+//   - the settled flag, and the age of the measurement,
+//   - and that the state still cannot lie about the gate.
+
+test('the engine\'s frame rate is measured directly, not inferred from the browser\'s ticks', async () => {
+  await withEnv(async (env) => {
+    const mod = await env.load();
+
+    let engineRuns = 0;
+    const engine = () => {
+      engineRuns++;
+      env.win.requestAnimationFrame(engine);
+    };
+
+    mod.installFramePacingShim();
+    env.win.requestAnimationFrame(engine);
+
+    // The first window: no gate in force, so the engine runs on every
+    // tick and its frame rate IS the browser's tick rate.
+    const ungated = await measure(env, mod, { observeMs: 120 });
+    assert.ok(ungated.browserHz > 0, 'the browser\'s tick rate is measured');
+    assert.ok(ungated.engineFps > 0, 'the engine\'s frame rate is measured');
+    assert.equal(
+      Math.round(ungated.engineFps),
+      Math.round(ungated.browserHz),
+      'with no gate in force the engine draws on every tick'
+    );
+
+    // Now engage the gate and measure AGAIN, so the window runs with
+    // the gate in force. This is what the pacer does in a match: it
+    // keeps measuring.
+    await measure(env, mod, { observeMs: 120, force: true, everyNth: 2 });
+    const gated = await measure(env, mod, { observeMs: 120 });
+    assert.equal(gated.everyNth, 2, 'the gate is still in force');
+
+    // The engine now draws on HALF the ticks, so its frame rate is
+    // half the browser's. The old `displayHz` could not tell the two
+    // apart — that is the whole point of the new field.
+    assert.ok(
+      gated.engineFps < gated.browserHz,
+      `the engine drew ${gated.engineFps} fps while the browser ticked ${gated.browserHz} Hz`
+    );
+    assert.ok(
+      Math.abs(gated.engineFps - gated.browserHz / 2) < 1.5,
+      `the engine should be drawing about half the browser's rate, got ${gated.engineFps} against ${gated.browserHz}`
+    );
+  });
+});
+
+test('the late-frame metric measures the ENGINE\'s frames, not the browser\'s ticks', async () => {
+  await withEnv(async (env) => {
+    const mod = await env.load();
+
+    const engine = () => {
+      env.win.requestAnimationFrame(engine);
+    };
+    mod.installFramePacingShim();
+    env.win.requestAnimationFrame(engine);
+
+    await measure(env, mod, { observeMs: 120, force: true, everyNth: 2 });
+    const gated = await measure(env, mod, { observeMs: 120 });
+
+    // THE DENOMINATOR IS THE ENGINE'S FRAMES.
+    //
+    // The browser ticked 40 times in that window and the engine drew
+    // about half of them. A metric that counted the browser's ticks
+    // would report 40 — and would be describing the browser, not the
+    // game.
+    assert.ok(gated.measuredFrames > 0, 'the metric has a denominator');
+    assert.ok(
+      gated.measuredFrames < 40,
+      `the denominator must be the engine's frames (${gated.measuredFrames}), not the browser's ticks`
+    );
+
+    // AND THE THRESHOLD IS THE GATE'S PERIOD, so a perfectly paced
+    // game reads zero late frames even though the browser's ticks are
+    // uneven — which is exactly what a cap produces, and exactly what
+    // the old metric reported as judder.
+    assert.equal(
+      gated.lateFrames,
+      0,
+      'a game that is landing its frames on time must read zero late frames'
+    );
+    assert.equal(gated.lateFraction, 0);
+  });
+});
+
+test('a window is settled only once it closed past the warm-up', async () => {
+  await withEnv(async (env) => {
+    const mod = await env.load();
+    const engine = () => {
+      env.win.requestAnimationFrame(engine);
+    };
+    mod.installFramePacingShim();
+    env.win.requestAnimationFrame(engine);
+
+    // The default warm-up is 15 seconds, and this window is a couple
+    // of seconds long: it is NOT settled, and a decision taken from
+    // it is provisional.
+    const warm = await measure(env, mod, { observeMs: 120 });
+    assert.equal(warm.settled, false, 'a window inside the warm-up is not settled');
+
+    // The same window with no warm-up at all is settled.
+    const settled = await measure(env, mod, { observeMs: 120, warmupMs: 0 });
+    assert.equal(settled.settled, true);
+
+    // And the default is a named constant, because the number is a
+    // parameter and not a law: the research says the engine needs
+    // 25-30 seconds, and 15 is where the curve has flattened enough
+    // for the median to be representative.
+    assert.equal(mod.WARMUP_MS, 15000);
+  });
+});
+
+test('the measurement carries its age', async () => {
+  await withEnv(async (env) => {
+    const mod = await env.load();
+    const engine = () => {
+      env.win.requestAnimationFrame(engine);
+    };
+    mod.installFramePacingShim();
+    env.win.requestAnimationFrame(engine);
+
+    const state = await measure(env, mod, { observeMs: 120 });
+
+    // When the window closed, in epoch milliseconds — so the readout
+    // can say "measured 32 seconds into your game".
+    assert.ok(state.measuredAt > 0, 'the measurement is stamped');
+    // When the engine's first frame was, in epoch milliseconds — so
+    // the same sentence can be said about a RESTORED match.
+    assert.ok(state.gameStartAt > 0, "the engine's first frame is stamped");
+    assert.ok(
+      state.measuredAt >= state.gameStartAt,
+      'the measurement cannot be older than the game it measured'
+    );
+  });
+});
+
+test('the policy\'s own PROVISIONAL gate follows the latest warm-up reading', async () => {
+  await withEnv(async (env) => {
+    const mod = await env.load();
+    let engineRuns = 0;
+    const engine = () => {
+      engineRuns++;
+      env.win.requestAnimationFrame(engine);
+    };
+    mod.installFramePacingShim();
+    env.win.requestAnimationFrame(engine);
+
+    // The first window is a warm-up one, so the gate it adopts is
+    // PROVISIONAL. A second warm-up window has to move it: the
+    // provisional gate was taken from the least trustworthy reading the
+    // engine will ever produce, and it cannot move again until the
+    // first settled window -- 15-20 seconds into a match.
+    const first = await measure(env, mod, { observeMs: 120 });
+    assert.equal(first.provisional, true, 'the first window is a provisional one');
+
+    const second = await measure(env, mod, { observeMs: 120 });
+    assert.equal(second.provisional, true, 'and it is still provisional');
+    assert.match(
+      second.reason,
+      /provisional/i,
+      'the reason has to say the gate is still provisional'
+    );
+  });
+});
+
+test('a warm-up window does not move the gate that is in force', async () => {
+  await withEnv(async (env) => {
+    const mod = await env.load();
+    let engineRuns = 0;
+    const engine = () => {
+      engineRuns++;
+      env.win.requestAnimationFrame(engine);
+    };
+    mod.installFramePacingShim();
+    env.win.requestAnimationFrame(engine);
+
+    // Engage the gate.
+    await measure(env, mod, { observeMs: 120, force: true, everyNth: 2 });
+    assert.equal(mod.getPacingState().everyNth, 2);
+
+    // A FORCED gate is the harness's, so the policy does not move it --
+    // not on a warm-up reading and not on a settled one. It wants to see
+    // what a particular cap does.
+    const after = await measure(env, mod, { observeMs: 120 });
+    assert.equal(
+      after.everyNth,
+      2,
+      'a forced gate must not move'
+    );
+    assert.equal(after.provisional, true, 'and it is still provisional');
   });
 });

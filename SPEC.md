@@ -427,6 +427,105 @@ research), `tools/perf/` (the harnesses) and `tools/perf/results/` (the
 raw JSON behind every number quoted, so the reports can be checked rather
 than taken on trust).
 
+## Client frame pacing — the pacer measures WARM, and keeps measuring (2026-11-08)
+
+**The problem.** Kyle asked two questions about the "Your Client" tab
+after a game: is the "locked at 30fps / 60fps" an engine limitation we
+can change, and is the information in the screenshot accurate?
+
+**The answer to the first: the cap is OURS, and it was choosing from a
+picture of the warm-up.** The engine has no frame limiter in the browser
+(`fps_max` is inert while vsync is on — the engine targets 200 fps and
+draws on every tick the browser offers). The cap is the pacer
+(`frame-pacing.ts` policy, `frame-pacing-apply.ts` machinery), and it
+decided from **one measurement, taken three seconds after the engine
+booted, over a two-second window, and never repeated for the rest of the
+match.** Three seconds in, the engine is compiling shaders and streaming
+the map: it is the most expensive window it will ever produce.
+
+**The answer to the second: the screenshot was a picture of the warm-up
+presented as a picture of the machine**, and four of its statements were
+wrong — the "capped" finding printed the game's rate in a sentence that
+called it the display's rate, the "room to spare" finding claimed headroom
+the engine did not have, the "delivering" finding blamed the engine for
+the cap's doing, and the render-size advice told the player to lower the
+resolution on a machine where the engine is **CPU-bound** (the research
+measured the cost flat across an 8.4x resolution sweep).
+
+**The locked decisions (this supersedes decision 4 of the section
+above, which is kept as the record):**
+
+1. **THE MEASUREMENT IS TAKEN WARM.** A window is **settled** when it
+   closed at least `WARMUP_MS` (15 000 ms) after the engine's **first
+   frame** — not after boot, and not after the shim was installed. The
+   engine's cost settles over 25-30 s (the research), so a reading taken
+   earlier describes the warm-up, not the machine.
+2. **A WARM-UP WINDOW NEVER MOVES AN EXISTING GATE.** If there is no gate
+   yet, the first reading is adopted as a **provisional** gate — the
+   player gets protection from judder in the first seconds — and the
+   readout says the reading is provisional. Only a settled window may
+   move a gate.
+3. **THE PACER KEEPS MEASURING.** A provisional reading at 3 s, then a
+   reading every `REMEASURE_MS` (10 000 ms) for the rest of the match.
+   The server rotates the map every three minutes and the engine's cost
+   moves with what is on screen, so a one-shot number cannot be right for
+   a match. The windows **do not overlap**: `applyFrameCap` is async, so
+   the next one starts only after the previous one returns.
+4. **WIDENING IS ASYMMETRIC WITH NARROWING.** A settled window that wants
+   a WIDER gate (more frames) is **REFUSED** when more than 5% of the
+   engine's frames arrived late — the engine is already missing its
+   slots, and asking for more frames makes the judder worse. A settled
+   window that wants a NARROWER gate (fewer frames) is adopted only after
+   **two consecutive windows** ask for the same target: one expensive
+   window (a firefight, a shader compilation) must not halve the
+   player's frame rate. Widening risks judder; narrowing risks perceived
+   slowness, and the engine getting faster after the warm-up is the
+   normal case.
+5. **THE ENGINE'S FRAME RATE IS MEASURED DIRECTLY.** `displayHz` meant
+   two different things depending on whether the cap was engaged. The
+   state now carries `engineFps` (the engine's own frames),
+   `browserHz` (the browser's tick rate) and `panelHz` (the display's
+   rate, measured while the page was idle) — three numbers that say
+   three different things.
+6. **THE LATE-FRAME METRIC COUNTS THE ENGINE'S FRAMES.** The old metric
+   counted browser-tick gaps over 1.5x the tick budget, so with a cap
+   engaged a quarter of the ticks read "late" **even when the game was
+   perfectly paced**. The metric that answers "is the judder gone" is the
+   engine's frame spacing against the **gate's period** — with a 30 fps
+   gate (a slot every 33.3 ms) and the engine's frames landing every
+   33.3 ms, the frames are NOT late. The threshold stays relative.
+7. **THE READOUT ATTRIBUTES, IT DOES NOT BLAME.** **Browser-bound**: the
+   browser is offering materially less than the panel's rate while the
+   engine fits its budget — *"Your browser is only offering N refreshes a
+   second."* **Engine-bound**: the browser is keeping up but the engine's
+   cost exceeds the budget — *"The game could not keep up with your 120 Hz
+   display."* **Neither**: *"Your client was set up properly. Nothing to
+   do."* The report never says "your browser was holding the game back"
+   for the engine-bound case, and the "capped" finding names the **panel's**
+   rate, never the game's.
+8. **THE REPORT SAYS WHEN IT MEASURED.** *"…measured 32 seconds into your
+   last game"*, and for a provisional reading *"…before the engine had
+   warmed up"*. The snapshot's `measuredAt` keeps its old meaning (when
+   the game ENDED — the provenance depends on it); the pacer's reading
+   time is a separate field.
+9. **THE RENDER-SIZE ADVICE IS CORRECTED, NOT REMOVED.** The render size
+   is a real fact; the advice was wrong. The lever is the engine's
+   per-frame cost, not the pixel count.
+10. **THE POLICY STAYS IMPORT-FREE.** `frame-pacing.ts` and
+    `perf-check.ts` still have no imports, so the parent suite imports
+    the **real** modules.
+
+**Where the evidence lives.** `docs/CLIENT-PERF-PACING-PLAN.md` (the
+plan this was built from, with the measurements), `docs/CLIENT-PERF-
+RESEARCH.md` (the GPU research behind decision 9), the parent's unit
+suite (`tests/unit/frame-pacing.test.mjs`,
+`frame-pacing-apply.test.mjs`, `perf-check.test.mjs`) and
+`tools/perf/measure-pacing-timeline.cjs` (the A/B harness: it boots a
+real client against the **CI** stack, pins the map and the viewpoint,
+and prints the pacer's timeline — the gate in force, the engine's cost,
+the engine's fps, the browser's tick rate, the late-frame fraction and
+the panel rate).
+
 ## The modern buy flow — the port's second flow (2026-11-01)
 
 **The problem.** The buy menu the browser shows is a **view** over the

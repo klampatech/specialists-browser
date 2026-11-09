@@ -66,17 +66,28 @@ function healthy(over = {}) {
     renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)',
     userAgent:
       'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36',
+    // THE GAME'S RATE, measured from the engine's own frames.
     displayHz: 120,
+    engineFps: 120,
+    // THE BROWSER'S TICK RATE.
+    browserHz: 120,
+    // THE DISPLAY'S RATE.
     panelHz: 120,
     engineWorkMs: 4,
     sustainableFps: 212,
     capFps: 0,
     everyNth: 1,
-    lateTicks: 0,
-    measuredTicks: 240,
+    lateFrames: 0,
+    measuredFrames: 240,
     dpr: 2,
     backingWidth: 3456,
     backingHeight: 2234,
+    // WHEN the cost was measured, and whether that reading was past
+    // the engine's warm-up. The game started 32 seconds before the
+    // measurement closed.
+    costMeasuredAt: 1760000032000,
+    costSettled: true,
+    gameStartAt: 1760000000000,
     ...over,
   };
 }
@@ -91,17 +102,24 @@ function healthy(over = {}) {
 function session(over = {}) {
   return {
     displayHz: 60,
+    engineFps: 60,
+    browserHz: 120,
     panelHz: 120,
     engineWorkMs: 13.3,
     sustainableFps: 63,
     capFps: 60,
     everyNth: 2,
-    lateTicks: 40,
-    measuredTicks: 240,
+    lateFrames: 40,
+    measuredFrames: 240,
     backingWidth: 3456,
     backingHeight: 2234,
     renderer: 'ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)',
     measuredAt: 1760000000000,
+    // The game started two minutes before it ended, and the cost was
+    // measured 32 seconds into it.
+    gameStartAt: 1759999880000,
+    costMeasuredAt: 1759999912000,
+    costSettled: true,
     ...over,
   };
 }
@@ -115,15 +133,20 @@ function session(over = {}) {
 function landing(over = {}) {
   return healthy({
     displayHz: 0,
+    engineFps: 0,
+    browserHz: 120,
     panelHz: 120,
     engineWorkMs: 0,
     sustainableFps: 0,
     capFps: 0,
     everyNth: 1,
-    lateTicks: 0,
-    measuredTicks: 0,
+    lateFrames: 0,
+    measuredFrames: 0,
     backingWidth: 300,
     backingHeight: 150,
+    costMeasuredAt: 0,
+    costSettled: false,
+    gameStartAt: 0,
     ...over,
   });
 }
@@ -291,10 +314,16 @@ test('the engine being the limit is described honestly', () => {
   // The MacBook's measured case: the browser delivers 120 Hz, the
   // engine needs 13.3 ms and a 120 Hz frame period is 8.33 ms. The
   // readout must NOT blame the browser for this.
+  //
+  // `engineFps` is the game's own frame rate, counted from the
+  // engine's frames — so it is 60 here, the same as `displayHz`. The
+  // two fields describe the same thing (the game's rate), and the
+  // facts have to agree with themselves.
   const report = buildPerfReport(
     healthy({
       panelHz: 120,
       displayHz: 60,
+      engineFps: 60,
       engineWorkMs: 13.3,
       sustainableFps: 63,
       capFps: 60,
@@ -318,7 +347,7 @@ test('the engine being the limit is described honestly', () => {
 
 test('the report refuses to guess at numbers it has not measured', () => {
   const report = buildPerfReport(
-    healthy({ panelHz: 0, displayHz: 0, engineWorkMs: 0, sustainableFps: 0, measuredTicks: 0 })
+    healthy({ panelHz: 0, displayHz: 0, engineWorkMs: 0, sustainableFps: 0, measuredFrames: 0 })
   );
   const ids = report.findings.map((f) => f.id);
   assert.ok(ids.includes('refresh-unknown'));
@@ -503,8 +532,10 @@ test('the session fills the gaps the landing page cannot measure', () => {
   assert.equal(resolved.sustainableFps, 63);
   assert.equal(resolved.capFps, 60);
   assert.equal(resolved.everyNth, 2);
-  assert.equal(resolved.lateTicks, 40);
-  assert.equal(resolved.measuredTicks, 240);
+  // THE ENGINE'S FRAMES, not the browser's ticks. The metric changed
+  // what it counts; the numbers are the same shape.
+  assert.equal(resolved.lateFrames, 40);
+  assert.equal(resolved.measuredFrames, 240);
 
   // THE DISPLAY'S RATE: the live one. The budget question is "can this
   // machine hit the display's budget", and the engine's frame cost
@@ -637,7 +668,12 @@ test('a live report is still in the present tense', () => {
   const report = buildPerfReport(healthy({ panelHz: 120, displayHz: 60, engineWorkMs: 13.3, capFps: 60, everyNth: 2 }));
   assert.equal(report.source, 'live');
   assert.equal(report.measuredAt, 0);
-  assert.match(report.summary, /set up properly/);
+  // THE SUMMARY NAMES THE BOTTLENECK NOW. These facts are
+  // engine-bound (13.3 ms against an 8.33 ms budget), so the summary
+  // says the game could not keep up — in the present tense, because
+  // the game is running.
+  assert.match(report.summary, /could not keep up with your 120 Hz display/);
+  assert.doesNotMatch(report.summary, /last game/);
   const capped = report.findings.find((f) => f.id === 'capped');
   assert.match(capped.title, /is capped to 60 fps/);
   assert.ok(
@@ -662,4 +698,202 @@ test('a measurement with no timestamp has no age', () => {
   assert.equal(describeSessionAge(0, now), 'at an unknown time');
   assert.equal(describeSessionAge(-1, now), 'at an unknown time');
   assert.equal(describeSessionAge(NaN, now), 'at an unknown time');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// THE ATTRIBUTION — who is actually holding the game back.
+//
+// WHY THIS EXISTS
+// ---------------
+// Kyle's screenshot said: "Your browser was holding the game back in
+// your last game." The browser was delivering 120 of 120 Hz. The GPU
+// was hardware-accelerated. The engine used 191% of the frame budget.
+// The browser held nothing back; the engine could not keep up.
+//
+// The summary was hardcoded to blame the browser whenever ANY finding
+// was a warning, and the only warning in that report was a late-frame
+// count that was itself measuring the wrong thing.
+//
+// So the attribution is now decided from the facts:
+//
+//   BROWSER-BOUND  the browser is offering materially less than the
+//                  display's rate, and the engine's cost fits the
+//                  budget -> the browser is the thing to fix;
+//   ENGINE-BOUND   the browser is keeping up, and the engine's cost
+//                  exceeds the budget -> the game could not keep up
+//                  with the display;
+//   NEITHER        nothing to fix.
+
+test('the summary blames the ENGINE when the engine is over the budget', () => {
+  // The MacBook's real case: the browser delivers 120 Hz, the engine
+  // needs 13.3 ms and a 120 Hz frame period is 8.33 ms.
+  const report = buildPerfReport(
+    healthy({
+      panelHz: 120,
+      browserHz: 120,
+      displayHz: 60,
+      engineFps: 60,
+      engineWorkMs: 13.3,
+      sustainableFps: 63,
+      capFps: 60,
+      everyNth: 2,
+    })
+  );
+  assert.doesNotMatch(
+    report.summary,
+    /holding the game back/,
+    'the browser was keeping up; it must not be blamed'
+  );
+  assert.match(report.summary, /could not keep up with your 120 Hz display/);
+});
+
+test('the summary blames the BROWSER when the browser is offering less than the display', () => {
+  // The browser is handing the game 30 refreshes a second on a 120 Hz
+  // panel, and the engine could do 212 fps — so the browser is the
+  // thing to fix, and the readout has to name it.
+  const report = buildPerfReport(
+    healthy({
+      panelHz: 120,
+      browserHz: 30,
+      displayHz: 30,
+      engineFps: 30,
+      engineWorkMs: 4,
+      sustainableFps: 212,
+    })
+  );
+  assert.match(report.summary, /only offering 30 refreshes a second/);
+});
+
+test('the summary says there is nothing to do when nothing is wrong', () => {
+  const report = buildPerfReport(healthy());
+  assert.match(report.summary, /set up properly/);
+  assert.doesNotMatch(report.summary, /holding the game back/);
+  assert.doesNotMatch(report.summary, /could not keep up/);
+});
+
+test('the capped finding names the PANEL rate, never the game\'s rate', () => {
+  // THE SENTENCE THAT WAS WRONG IN THE SCREENSHOT.
+  //
+  // The game was drawing 60 fps on a 120 Hz panel, and the finding
+  // said "Your display ran at 60 Hz" — because it printed the game's
+  // rate in a sentence that called it the display's.
+  const restored = buildPerfReport(resolvePerfFacts(landing(), session()), 1760000000000);
+  const capped = restored.findings.find((f) => f.id === 'capped');
+  assert.ok(capped, 'the cap is reported');
+  assert.match(capped.detail, /Your display ran at 120 Hz/);
+  assert.doesNotMatch(capped.detail, /ran at 60 Hz/);
+
+  // And the live one, in the present tense.
+  const live = buildPerfReport(
+    healthy({
+      panelHz: 120,
+      browserHz: 120,
+      displayHz: 60,
+      engineFps: 60,
+      engineWorkMs: 13.3,
+      sustainableFps: 63,
+      capFps: 60,
+      everyNth: 2,
+    })
+  );
+  const liveCapped = live.findings.find((f) => f.id === 'capped');
+  assert.match(liveCapped.detail, /Your display runs at 120 Hz/);
+  assert.doesNotMatch(liveCapped.detail, /runs at 60 Hz/);
+});
+
+test('the refresh finding only claims headroom when the engine really has it', () => {
+  // THE OTHER SENTENCE THAT WAS WRONG IN THE SCREENSHOT.
+  //
+  // "The game could sustain 53 fps, so it had room to spare" — against
+  // a 120 Hz panel with an 8.33 ms budget, 53 fps is the opposite of
+  // headroom. The sentence borrowed the browser's green tick to
+  // attach an engine claim that was untrue.
+  const over = buildPerfReport(
+    healthy({
+      panelHz: 120,
+      browserHz: 120,
+      displayHz: 60,
+      engineFps: 60,
+      engineWorkMs: 15.94,
+      sustainableFps: 53,
+    })
+  );
+  const ok = over.findings.find((f) => f.id === 'refresh-ok');
+  assert.ok(ok, 'the browser keeping up is still reported');
+  assert.doesNotMatch(ok.detail, /room to spare/);
+  assert.match(ok.detail, /keeping up/i);
+
+  // With real headroom, it says so.
+  const roomy = buildPerfReport(healthy());
+  assert.match(roomy.findings.find((f) => f.id === 'refresh-ok').detail, /room to spare/);
+});
+
+test('the delivering finding blames the CAP when the cap is in force', () => {
+  // With the cap on, the low frame rate is the CAP'S DOING: the game
+  // was paced to land evenly on the display. Calling it "the engine's
+  // own limit" is the opposite of the truth.
+  const capped = buildPerfReport(
+    healthy({
+      panelHz: 120,
+      browserHz: 120,
+      displayHz: 30,
+      engineFps: 30,
+      engineWorkMs: 15.94,
+      sustainableFps: 53,
+      capFps: 30,
+      everyNth: 4,
+    })
+  );
+  const d = capped.findings.find((f) => f.id === 'delivering');
+  assert.ok(d, 'the frame rate is reported');
+  assert.match(d.title, /drawing 30 fps on a 120 Hz display/);
+  assert.match(d.detail, /paced to land evenly/i);
+  assert.doesNotMatch(d.detail, /engine's own limit/);
+
+  // With NO cap in force, the engine IS the limit.
+  const uncapped = buildPerfReport(
+    healthy({
+      panelHz: 120,
+      browserHz: 120,
+      displayHz: 30,
+      engineFps: 30,
+      engineWorkMs: 15.94,
+      sustainableFps: 53,
+      capFps: 0,
+      everyNth: 1,
+    })
+  );
+  const u = uncapped.findings.find((f) => f.id === 'delivering');
+  assert.match(u.detail, /engine's own limit/);
+});
+
+test('the render-size finding does not advise lowering the resolution on a GPU client', () => {
+  // THE RESEARCH MEASURED THE ENGINE'S COST FLAT ACROSS AN 8.4x
+  // RESOLUTION SWEEP. It is CPU-bound, not fill-bound, and 640x360
+  // changed nothing on a machine with a GPU. The advice used to buy
+  // blur, not frames.
+  const report = buildPerfReport(healthy());
+  const size = report.findings.find((f) => f.id === 'render-size');
+  assert.ok(size, 'the render size is still reported — it is a real fact');
+  assert.match(size.detail, /3456×2234 device pixels/);
+  assert.doesNotMatch(size.detail, /makes the game lighter on the GPU/);
+  assert.match(size.detail, /per-frame cost|pixel count/i);
+});
+
+test('the report says WHEN the numbers were measured', () => {
+  // A settled reading, 32 seconds into the game.
+  const settled = buildPerfReport(healthy());
+  const age = settled.findings.find((f) => f.id === 'cost-age');
+  assert.ok(age, 'the measurement carries its age');
+  assert.match(age.title, /32 seconds into your game/);
+
+  // A provisional reading — taken before the engine had warmed up.
+  const provisional = buildPerfReport(healthy({ costSettled: false }));
+  const p = provisional.findings.find((f) => f.id === 'cost-age');
+  assert.match(p.title, /before the engine had warmed up/);
+
+  // And the restored report says it about the LAST game.
+  const restored = buildPerfReport(resolvePerfFacts(landing(), session()), 1760000000000);
+  const r = restored.findings.find((f) => f.id === 'cost-age');
+  assert.match(r.title, /32 seconds into your last game/);
 });
