@@ -70,6 +70,7 @@ requireSubmodule();
 const pacing = await import(PACING_TS);
 const {
   chooseFrameCap,
+  computeFrameTarget,
   decideFrameGate,
   frameIntervalMs,
   isLate,
@@ -166,6 +167,145 @@ test('chooseFrameCap: the drift tolerance does not let the pacer exceed the ENGI
   assert.ok(cap.fps <= 100, 'must not exceed what the engine sustains, whatever the display measured');
   const slow = chooseFrameCap(119.976, 40);
   assert.ok(slow.fps <= 40, 'a slow engine must still be capped');
+});
+
+test('computeFrameTarget: the engine\'s frame must fit in the slot it is given', () => {
+  // THE PROMISE THAT MATTERS IS PHYSICAL, NOT A POLICY LINE.
+  //
+  // The engine draws one frame every N ticks, so the slot is
+  // N/panelHz long. A frame that does not fit in its slot overruns it
+  // and judders. The gate therefore has to be at least the number of
+  // ticks the frame needs -- and the RATE must not be thrown away
+  // either: on a 100 Hz panel the cap\'s rate is not on the panel\'s
+  // grid, and the gate has to land on the grid rate nearest it.
+  const cases = [
+    { panelHz: 100, workMs: 850 / 95, sustainable: 95 },
+    { panelHz: 165, workMs: 850 / 150, sustainable: 150 },
+    { panelHz: 100, workMs: 850 / 48, sustainable: 48 },
+    { panelHz: 75, workMs: 850 / 60, sustainable: 60 },
+    { panelHz: 120, workMs: 15.94, sustainable: 53 },
+  ];
+  for (const c of cases) {
+    const target = computeFrameTarget(c.panelHz, c.workMs);
+    const effective = c.panelHz / target.everyNth;
+    const capability = 1000 / c.workMs;
+    assert.ok(
+      effective <= capability + 1e-6,
+      `a ${c.panelHz} Hz panel with a ${c.workMs.toFixed(2)} ms frame was ` +
+        `asked for ${effective.toFixed(1)} fps, which is more than the ` +
+        `${capability.toFixed(1)} fps the engine can physically finish`,
+    );
+    const slotMs = (target.everyNth * 1000) / c.panelHz;
+    assert.ok(
+      slotMs >= c.workMs,
+      `the slot (${slotMs.toFixed(2)} ms) is shorter than the frame (${c.workMs.toFixed(2)} ms)`,
+    );
+  }
+});
+
+test('computeFrameTarget: the gate lands on the panel\'s grid, near the cap', () => {
+  // The gate is a whole number of ticks, so the rate it delivers is
+  // the panel\'s rate divided by that number. It must be the rate
+  // NEAREST the one that was asked for -- not double it.
+  const target = computeFrameTarget(100, 850 / 95);
+  assert.ok(target.everyNth >= 1, 'the gate must be at least one tick');
+  assert.ok(
+    target.fps <= 100 && target.fps > 40,
+    `the gate delivered ${target.fps} fps on a 100 Hz panel (everyNth ${target.everyNth})`,
+  );
+});
+
+test('decideFrameGate: a marginal change in the engine does not move the gate', () => {
+  // THE DEADBAND.
+  //
+  // The sustainable rate crosses the display\'s own rate at
+  // 850/120 = 7.083 ms of frame cost, so a change of one and a half
+  // per cent in the measured cost moves the target from one frame in
+  // one to one frame in two. With the widening immediate and the
+  // narrowing needing two windows, the gate then pumps between the
+  // two and the player\'s frame rate doubles and halves every half
+  // minute.
+  //
+  // The gate in force was chosen for a sustainable rate; the rate has
+  // to move away from THAT by more than the band before the gate
+  // follows it.
+  const near = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: 7.1,
+    currentEveryNth: 1,
+    settled: true,
+    consecutiveSame: 2,
+    lateFraction: 0,
+    currentBasisFps: 119,
+  });
+  assert.equal(near.everyNth, 1, 'a marginal change must not move the gate');
+  assert.equal(near.changed, false);
+  assert.match(near.reason, /band/, 'the reason should say the band held it');
+
+  // And a REAL change -- the engine genuinely got slower -- moves it.
+  const real = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: 11.5,
+    currentEveryNth: 1,
+    settled: true,
+    consecutiveSame: 2,
+    lateFraction: 0,
+    currentBasisFps: 119,
+  });
+  assert.equal(real.targetEveryNth, 2, 'a real change asks for the narrower gate');
+});
+
+test('decideFrameGate: an alternating sequence of readings does not pump the gate', () => {
+  // THE ANTI-PUMPING PROPERTY, pinned.
+  //
+  // Feed the policy a sequence of windows whose target alternates
+  // around a boundary -- the thing a scene full of players does -- and
+  // the gate must not flip between one frame in one and one frame in
+  // two on every other window.
+  let gate = 2;
+  let basis = 119;
+  const flips = [];
+  for (let i = 0; i < 12; i++) {
+    // 7.083 ms is the boundary: above it the target is 2, below it 1.
+    const work = i % 2 === 0 ? 7.0 : 7.2;
+    const decision = decideFrameGate({
+      panelHz: 120,
+      engineWorkMs: work,
+      currentEveryNth: gate,
+      settled: true,
+      consecutiveSame: 2,
+      lateFraction: 0,
+      currentBasisFps: basis,
+    });
+    if (decision.everyNth !== gate) {
+      flips.push(decision.everyNth);
+      gate = decision.everyNth;
+      basis = 120;
+    }
+  }
+  assert.ok(
+    flips.length <= 1,
+    `the gate flipped ${flips.length} times on a sequence of marginal readings: ${flips.join(', ')}`,
+  );
+});
+
+test('computeFrameTarget: a degenerate measurement cannot produce a degenerate gate', () => {
+  // `chooseFrameCap` says "no cap" with a rate of 0. Turning that into
+  // a gate must not become "one frame in every tick of the display" --
+  // that is one frame a second.
+  const noCost = computeFrameTarget(120, 0);
+  assert.ok(Number.isFinite(noCost.everyNth), 'the gate must be a number');
+  assert.ok(noCost.everyNth >= 1 && noCost.everyNth <= 2, 'a zero cost must not become a one-frame-per-display gate');
+
+  // A NaN panel must not become a NaN gate either: the shim holds the
+  // engine's callback until `tick % everyNth === 0`, and `tick % NaN`
+  // is never true, so the engine would never draw again.
+  const nanPanel = computeFrameTarget(NaN, 8);
+  assert.ok(Number.isFinite(nanPanel.everyNth), 'a NaN panel must not produce a NaN gate');
+  assert.ok(nanPanel.everyNth >= 1, 'the gate must be at least one tick');
+
+  const nanCost = computeFrameTarget(120, NaN);
+  assert.ok(Number.isFinite(nanCost.everyNth), 'a NaN cost must not produce a NaN gate');
 });
 
 test('chooseFrameCap: the chosen rate divides the display evenly', () => {
