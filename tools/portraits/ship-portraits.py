@@ -43,6 +43,17 @@ ships it, because the engine puts the name straight into a file path:
 is unpacked into, and `models/player/bodysaver/bodysaver.mdl` is a
 file that does not exist.
 
+WHAT THIS PROMISES, AND WHAT IT DOES NOT
+----------------------------------------
+It makes the REPOSITORY's portrait folder exactly the roster, and it
+fails loudly rather than shipping half a roster.
+
+It cannot make the DEPLOYED directory exactly the roster. The deploy
+ships the frontend with `rsync -az` and deliberately without
+`--delete`, so a portrait removed from the repository can still be
+served until something removes it by hand. (Right now: `/models/ala.png`
+on production, 30 KB, never requested — the roster has no `ala` in it.)
+
 USAGE
 -----
     tools/portraits/ship-portraits.py <portrait-dir> <webxash-dir>

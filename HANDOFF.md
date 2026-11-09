@@ -101,6 +101,17 @@ parent's unit suite pins the roster, the case, the shared picker and
 the portrait folder — including that the folder holds **exactly** the
 model list and nothing else.
 
+**AND THE ONE THING THE RECIPE CANNOT PROMISE.** The ship script makes
+the **repository's** portrait folder exactly the roster. **The deployed
+directory is not the repository.** The deploy ships the frontend with
+`rsync -az` and deliberately **without** `--delete` — *"a deploy should
+not be able to remove files from a live site on the strength of a build
+it does not fully understand"* (`deploy.yml`). So `/models/ala.png` is
+still on production as an **orphan**: 30 KB that the client never
+requests, because the roster has no `ala` in it. It stays until
+something removes it by hand. **Do not read it as the client offering a
+seventeenth character.**
+
 **THE PR SEQUENCE IS TWO PRs, AND THE POINTER WAITS.** webXash #51
 first (Kyle's approval, then the squash), and the parent after, with
 the pointer at the squash — never at the branch tip.
