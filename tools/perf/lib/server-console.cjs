@@ -84,14 +84,30 @@ async function serverCommand(cmd, opts = {}) {
   // line arithmetic silently drops the answer.
   const expect = opts.expect ? opts.expect.source : null;
   const attempts = Math.max(1, Math.ceil(timeoutMs / 1500));
+  // THE SHELL-SIDE CHECK HAS TO BE POSIX, NOT JAVASCRIPT.
+  //
+  // The pattern below is a JavaScript regular expression's SOURCE, and
+  // GNU grep's ERE does not know JavaScript's escapes: `\d` matches a
+  // literal "d", and `\s` a literal "s". The check therefore never
+  // matched, every console command burned its whole timeout, and the
+  // caller saw a "the server did not answer" failure even though the
+  // answer was there.
+  //
+  // So the JavaScript-only escapes are translated into the POSIX
+  // classes before the pattern reaches the shell. The authoritative
+  // check is still the JavaScript one below -- this is only there to
+  // stop the poll early.
+  const posixExpect = expect
+    ? expect.replace(/\\d/g, '[0-9]').replace(/\\s/g, '[[:space:]]').replace(/\\w/g, '[A-Za-z0-9_]')
+    : null;
   const script = [
     `TS=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)`,
     `printf '%s\\n' ${shellSingleQuote(cmd)} | docker exec -i ${container} sh -c 'cat > /tmp/console.pipe'`,
     `OUT=""`,
     `for i in $(seq 1 ${attempts}); do`,
     `  OUT=$(docker logs --since "$TS" ${container} 2>&1)`,
-    ...(expect
-      ? [`  if printf '%s' "$OUT" | grep -qE ${shellSingleQuote(expect)}; then break; fi`]
+    ...(posixExpect
+      ? [`  if printf '%s' "$OUT" | grep -qE ${shellSingleQuote(posixExpect)}; then break; fi`]
       : []),
     `  sleep 1`,
     `done`,

@@ -128,6 +128,46 @@ test('chooseFrameCap: never asks for more than the display can show', () => {
   assert.ok(cap.fps <= 106, 'must not exceed what the engine sustains');
 });
 
+test('chooseFrameCap: a display measured a hair under its nominal rate still gets the nominal rate', () => {
+  // A BROWSER'S MEASURED REFRESH RATE LANDS A FRACTION BELOW THE
+  // DISPLAY'S NOMINAL RATE. A 120 Hz panel measures 119.976 Hz; a
+  // 60 Hz panel measures 59.94 Hz; a 144 Hz panel measures 143.88 Hz.
+  // The candidate list only offers rates at or under the display's
+  // rate, so a measured 119.976 EXCLUDES 120 -- and the highest rate
+  // left that divides the display evenly is 60.
+  //
+  // That is not a rounding detail: it halves the frame rate on every
+  // machine, and because the measurement jitters either side of the
+  // nominal rate, the pacer flips between the two caps mid-match.
+  const at120 = chooseFrameCap(119.976, 435);
+  assert.equal(at120.fps, 120, 'a 120 Hz panel measured at 119.976 must still be able to run at 120');
+
+  const at60 = chooseFrameCap(59.94, 435);
+  assert.equal(at60.fps, 60, 'a 60 Hz panel measured at 59.94 must still be able to run at 60');
+
+  const at144 = chooseFrameCap(143.88, 435);
+  assert.equal(at144.fps, 144, 'a 144 Hz panel measured at 143.88 must still be able to run at 144');
+});
+
+test('chooseFrameCap: the measurement drift does not change the cap', () => {
+  // THE ANTI-OSCILLATION PROPERTY: the same engine and the same
+  // display must produce the same cap whether the panel measured
+  // 119.976 or 120.04. If it does not, the pacer changes the frame
+  // rate every ten seconds for no reason at all.
+  const low = chooseFrameCap(119.976, 435);
+  const high = chooseFrameCap(120.04, 435);
+  assert.equal(low.fps, high.fps, 'the cap must not depend on the drift of the measurement');
+});
+
+test('chooseFrameCap: the drift tolerance does not let the pacer exceed the ENGINE', () => {
+  // The tolerance is on the DISPLAY's side only. The pacer must never
+  // ask for more frames than the engine can finish.
+  const cap = chooseFrameCap(119.976, 100);
+  assert.ok(cap.fps <= 100, 'must not exceed what the engine sustains, whatever the display measured');
+  const slow = chooseFrameCap(119.976, 40);
+  assert.ok(slow.fps <= 40, 'a slow engine must still be capped');
+});
+
 test('chooseFrameCap: the chosen rate divides the display evenly', () => {
   // This is the evenness guarantee. A 144 Hz display capped to 60 fps
   // holds each frame for 2.4 refreshes -- an uneven 2/3 pattern,
