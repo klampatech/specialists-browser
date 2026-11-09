@@ -70,6 +70,16 @@ engine frame rate follows the cost down — 86.54 fps at the heavy view of
 `ts_lobbyduel`, 100.00 fps at the heavy view of the populated `ts_casa` — and its
 late-frame fraction rises with it, to 15.43%.
 
+**AND THE AVERAGE ALONE WOULD HAVE MISSED IT.** View 4 of `ts_lobbyduel` is the
+case in one line: the engine's **median** frame rate over that window was
+**120.00 fps**, its **minimum** was **86.54 fps**, its **median** frame cost was
+1.19 ms and its **maximum** was **11.17 ms**. The scene got expensive in the
+middle of the window and the average never showed it. The late-frame fraction
+did — 15.43% — because it counts the frames that missed their slot rather than
+averaging over the ones that did not. A pacer that only ever looked at the
+average cost would have seen a comfortable 1.19 ms at the exact moment the
+engine was missing one frame in six.
+
 **THE VARIANCE IS REAL AND IT IS BIG.** The same map, the same machine, the same
 build: 11.17 ms in one corner and 1.17 ms in another, with the frame rate moving
 from 120 to 86.5. Any single measurement — and the old build only ever took one —
