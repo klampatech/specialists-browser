@@ -1069,6 +1069,57 @@ test('a browser that drops the refresh rate is caught, and the engine is not bla
   );
 });
 
+test('the last game\'s frame cost is measured against the rate IT ran at', () => {
+  // THE CHEERFUL AND WRONG READOUT.
+  //
+  // A 7.20 ms frame measured on a 144 Hz panel is OVER that panel's
+  // 6.94 ms budget. If the landing page compared it against the rate
+  // it measured on the landing page itself — 60 Hz, because that is
+  // what the browser was delivering NOW — it would say "43% of the
+  // budget, everything is fine".
+  //
+  // The numbers come from two different measurements and the
+  // comparison was between them.
+  const live = landing({ panelHz: 60, browserHz: 60 });
+  const facts = resolvePerfFacts(live, session({ panelHz: 144, engineWorkMs: 7.2 }));
+
+  // THE BUDGET IS THE ONE THE GAME RAN AGAINST.
+  assert.equal(facts.panelHz, 144);
+  const report = buildPerfReport(facts);
+  assert.ok(
+    Math.abs(report.numbers.budgetMs - 6.9444) < 0.001,
+    `the budget is ${report.numbers.budgetMs} ms`,
+  );
+  // AND THE PLAYER IS TOLD THEY ARE OVER IT, not under it.
+  assert.ok(report.numbers.budgetUsedPct > 100, `used ${report.numbers.budgetUsedPct}%`);
+  const over = report.findings.find((f) => f.id === 'budget-tight');
+  assert.ok(over, 'the over-budget finding is there');
+  // The game was capped, so the finding is a note rather than a
+  // warning — the pacer had already done the right thing about it.
+  assert.equal(over.severity, 'info');
+  assert.match(over.title, /took longer than your display's frame period/);
+
+  // AND THE RATE THAT IS DIFFERENT IS SAID OUT LOUD, because the
+  // browser's present rate is a fact the last match cannot show.
+  const now = report.findings.find((f) => f.id === 'refresh-now');
+  assert.ok(now, 'the live rate is reported');
+  assert.match(now.title, /60 refreshes a second right now/);
+  assert.match(now.detail, /ran at 144 Hz/);
+});
+
+test('the readout does not invent a live rate when there is not one', () => {
+  // NO LIVE MEASUREMENT, NO CLAIM ABOUT ONE.
+  const facts = resolvePerfFacts(landing({ panelHz: 120 }), session());
+  assert.equal(facts.livePanelHz, 120);
+  const report = buildPerfReport(facts);
+  assert.equal(report.findings.some((f) => f.id === 'refresh-now'), false);
+
+  // AND WITH NO LIVE MEASUREMENT AT ALL, THE FACT IS SIMPLY ABSENT.
+  const noLive = resolvePerfFacts(landing({ panelHz: 0 }), session());
+  assert.equal(noLive.livePanelHz, 0);
+  assert.equal(noLive.panelHz, 120, 'the game\'s own rate is still used');
+});
+
 test('the frame spacing is reported, and uneven spacing is called uneven', () => {
   // THE SPREAD THE ENGINE'S COUNTER CANNOT SEE.
   const even = buildPerfReport(
