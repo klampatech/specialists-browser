@@ -5823,6 +5823,56 @@ the parts that are known traps.
 >
 > ---
 >
+> ### THE FULLSCREEN MECHANISM — AND WHY THE WATCHER CAN SEE IT
+>
+> **THE GAME GOES FULLSCREEN ON LAUNCH, AND THE RESIZE IS THE EVENT.**
+> The landing page's PLAY button has a **"Start full screen" checkbox, and
+> it is ON BY DEFAULT** (`browserFullscreen` in `XashLanding.vue`). The
+> launch calls `enterFullscreen()`, which fullscreens
+> `document.documentElement` — **the document, not the canvas**, so the
+> overlays stay visible.
+>
+> **SO "FULLSCREEN" ON THAT PATH IS DOM FULLSCREEN, AND
+> `document.fullscreenElement` IS SET.** It is **not** set for F11 or
+> `--start-fullscreen`. That is why the watcher's `fs` column now asks
+> the canvas's size against the screen's as well: it has to be right for
+> BOTH ways a player gets there.
+>
+> **AND HERE IS THE MECHANISM THE CLIENT ALREADY DOCUMENTS**
+> (`webxash/src/services/fullscreen.ts`):
+>
+> > It also re-applies the render resolution, because the engine throws it
+> > away on every resize: SDL's resize event calls `VID_SaveWindowSize`,
+> > which calls `R_SaveVideoMode`, which rewrites the engine's `width`,
+> > `height`, `vid_width` and `vid_height` from the new window size. **So
+> > a forced 1280×720 does not survive the viewport growing to 2560×1440 —
+> > measured: the engine went back to 2560×1440 and the frame rate fell
+> > from 16.2/s to 0.4/s.**
+>
+> **THERE IS A 50 ms DEBOUNCED WATCHDOG THAT RE-APPLIES IT** — so the
+> client is not helpless here — but the resize itself is a burst, and the
+> engine is at native resolution until the watchdog fires.
+>
+> **THE WATCHER CAN SEE THIS HAPPENING.** Its `canvas WxH (backing)`
+> column reports the **backing store**, not the CSS size. **A backing
+> store that jumps on entering fullscreen — e.g. 1280×720 → 2560×1440 —
+> is the smoking gun for this mechanism**, and it is visible in the
+> per-second timeline without any inference.
+>
+> **SO THE FULLSCREEN QUESTION HAS TWO CANDIDATE MECHANISMS, AND THEY
+> ARE NOT MUTUALLY EXCLUSIVE:**
+>
+> - **M1 — THE RESOLUTION IS DROPPED ON THE RESIZE** (the forced render
+>   resolution is thrown away and has to be re-applied).
+> - **M2 — PIXEL COUNT** (fullscreen is 3.54 MP against 1.59 MP tiled,
+>   2.2× the fragments).
+>
+> **THE BACKING STORE DISTINGUISHES THEM.** If the backing store grows
+> with the window, M1. If it stays pinned and only the frame cost rises,
+> M2. **If both, both.**
+>
+> ---
+>
 > ### THE TWO MEASUREMENT PATHS, AND WHY BOTH MATTER
 >
 > They measure different browsers, and **that difference is itself part
@@ -5940,7 +5990,10 @@ the parts that are known traps.
 > falls with render scale. **If it holds,** the fix is the client's
 > **render scale** (67% ≈ −55% fragments), not a cvar, and not a browser
 > flag. **If it does NOT hold,** the engine is not fill-bound and the
-> cost is elsewhere — go to H4.
+> cost is elsewhere — go to H4. **Read the BACKING STORE to tell M1 from
+> M2** (see the fullscreen mechanism above): a backing store that grows
+> with the window means the forced resolution was dropped, and that is a
+> different bug with a different fix.
 >
 > **H2 — NO HEADROOM ON A 60 Hz PANEL.** The budget is 16.67 ms and there
 > is **no VRR**, so anything over is a visible hitch. *Prediction:*
