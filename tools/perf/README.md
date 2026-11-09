@@ -4,7 +4,7 @@
 **Subject:** `specialists-browser` / BulletBallet — measuring FPS and latency
 in the browser against production.
 
-This is the operating note for `tools/perf/`. The three harnesses live
+This is the operating note for `tools/perf/`. The harnesses live
 there; this file is how to use them, and the traps that cost time.
 
 ---
@@ -718,6 +718,133 @@ body it is forwarding untouched, the browser tries to inflate bytes that
 are already plain and the response is corrupt. The header has to be
 **deleted**, not set to `undefined` — `res.writeHead` throws
 `ERR_HTTP_INVALID_HEADER_VALUE` on an undefined header value.
+
+### `watch-client.cjs` — watch a game that is ALREADY RUNNING, live
+
+**THE QUESTION IT EXISTS TO ANSWER:** "why does it drop HERE?" — during
+actual play, on the player's own machine, without interrupting them.
+
+Every other harness in this directory either launches its own browser or
+takes a single reading. This one attaches to a browser that is already
+running, installs a per-frame probe in the page, and watches. It
+**never launches the browser and never controls the game** — it reads.
+
+```sh
+# on the machine, once:
+google-chrome --remote-debugging-port=9223 --user-data-dir=/tmp/bb-cdp
+
+# from here:
+node tools/perf/watch-client.cjs --cdp http://localhost:9223 \
+  --url-match bulletballet.dev --seconds 300 --json /tmp/timeline.json
+```
+
+| flag | default | what it does |
+|---|---|---|
+| `--cdp` | `http://localhost:9223` | the browser's debugger |
+| `--url-match` | `bulletballet.dev` | only tabs whose URL contains this |
+| `--seconds` | `120` | how long to watch |
+| `--interval` | `1000` | the printed sample interval, in ms |
+| `--frames` | `6000` | the per-frame ring buffer's size |
+| `--json` | — | write the timeline to a file |
+| `--label` | — | a name for the run, in the output |
+
+**IT READS THE PAGE'S OWN PACER, NOT A SEPARATE PROBE, WHEN THERE IS
+ONE.** The client exposes `window.__xashPacing()`; the watcher calls it
+and reports the engine's frame cost, the browser's rate and the gate in
+force. When there is no pacer — the landing page, or an older build —
+the watcher falls back to its own `requestAnimationFrame` probe, and
+says so in the output.
+
+**AND IT SAYS PLAINLY WHEN THERE IS NOTHING TO SEE.** A landing page
+runs no `requestAnimationFrame` loop, so the watcher prints "NO FRAMES
+AT ALL" and the reason. A harness that prints zeros when it has
+measured nothing teaches the reader to ignore it.
+
+**`--fullscreen-ab` PUTS THE BROWSER WINDOW BOTH WAYS AND COMPARES.**
+Fullscreen presents at the display's own refresh rate and windowed does
+not, which is the usual explanation for "fullscreen is worse". The mode
+is set over CDP with `Browser.setWindowBounds {windowState:'fullscreen'}`
+— **not** `requestFullscreen()`, which is refused over SSH because the
+document is not focused, and which fails the pointer lock with
+`WrongDocumentError`. It needs a window manager on the machine being
+watched; under a bare X server there is none, and the mode change
+cannot be verified.
+
+**ON A WAYLAND COMPOSITOR THE MODE CHANGE IS SILENTLY IGNORED.**
+Chromium's Wayland backend does not implement window bounds
+manipulation — the compositor owns the geometry — so
+`Browser.setWindowBounds` can report success and change nothing. niri
+tiles every window itself, so the request does nothing at all there.
+
+**So the harness now CHECKS rather than assumes.** Each phase reports the
+window's actual size, and if the two states came out the same size the
+comparison says so in capitals:
+
+```
+*** THE TWO WINDOWS WERE THE SAME SIZE (1274x1245). ***
+The compositor owns the geometry here, so the window-state request did
+not take effect. The "no difference" above is a fact about a comparison
+that never happened, NOT a finding about the window state.
+```
+
+**THE RELIABLE WAY TO GO FULLSCREEN ON WAYLAND IS TO RELAUNCH THE
+BROWSER WITH `--start-fullscreen`.** The browser asks the compositor for
+a fullscreen window at startup, the compositor honours it, and it is the
+same state a player is in when they press F11 — so the two phases are
+the two states a player actually lives in:
+
+```sh
+# windowed phase
+google-chrome --remote-debugging-port=9223 --user-data-dir=/tmp/bb-cdp
+# fullscreen phase — same profile, same GPU, same settings
+google-chrome --remote-debugging-port=9223 --user-data-dir=/tmp/bb-cdp --start-fullscreen
+```
+
+**AND `fs` IS NOT `document.fullscreenElement`.** The DOM's answer is
+null for the browser's own fullscreen (F11, `--start-fullscreen`), so a
+harness that reads it labels a fullscreen run as windowed. The `fs`
+column now prints `Y` when the page fills the screen EITHER way — the
+DOM's answer or the canvas's size against the screen's.
+
+### `watch-remote.sh` — the same, from another machine
+
+`watch-client.cjs` speaks CDP to a browser on the same machine. This
+opens an SSH tunnel to another one's and runs the watcher through it.
+
+```sh
+tools/perf/watch-remote.sh cachyos-x8664-family 300
+```
+
+**THE TUNNEL'S LOCAL PORT IS NOT THE BROWSER'S PORT, AND THAT IS THE
+POINT.** The first version used the same port on both sides, and when
+the tunnel failed — the gaming machine was asleep — the watcher
+connected to a Chrome that happened to be listening locally and
+watched the WRONG BROWSER without a word. The local port is now
+separate (`19223` by default), and the script refuses to run if
+something is already on it.
+
+### THE IN-GAME "Export log" BUTTON
+
+The readout in the game (**ESC → Performance → Export log**) downloads
+the match's timeline as JSON: every measurement window the pacer took,
+with the engine's frame cost, the rate the game was drawing, the rate
+the browser was handing it, the gate in force, how many of the engine's
+frames arrived late, and **whether the game was fullscreen when that
+window closed**.
+
+**THE EXPORT GROUPS THE TIMELINE BY FULLSCREEN AND WINDOWED**, with
+medians. That is the "is fullscreen actually slower on my machine?"
+question, answered by the player's own machine rather than by an
+argument — and it is measured from the CANVAS'S SIZE against the
+SCREEN'S, not from `document.fullscreenElement`, which the browser's
+own fullscreen (F11) never sets.
+
+**THE EXPORT IS THE MORE FAITHFUL MEASUREMENT OF THE PLAYER'S OWN
+MACHINE**, because it runs in the session they are actually playing.
+The CDP watcher measures the same engine but needs a browser started
+with a debugging port, and Chrome since 136 ignores that flag on the
+default profile — so it needs a separate `--user-data-dir`, and a
+separate profile is a different browser configuration.
 
 ---
 

@@ -54,11 +54,26 @@ const {
   detectBrowser,
   isSoftwareRenderer,
   refreshRateLooksThrottled,
+  refreshRateWasDropped,
+  nextRateGap,
   frameBudgetMs,
   formatMegapixels,
   resolvePerfFacts,
   describeSessionAge,
+  SAFETY_FACTOR,
+  NARROW_COST_HYSTERESIS,
 } = perf;
+
+/**
+ * THE PACER'S OWN CONSTANTS, READ FROM ITS SOURCE.
+ *
+ * `perf-check.ts` writes the safety factor and the cost hysteresis
+ * out in full, because it has no imports on purpose. Two copies of a
+ * number is a thing that drifts, so the parent's suite reads the
+ * pacer's own values and asserts they are the same — which is the
+ * only thing that keeps the two honest.
+ */
+const framePacing = await import(join(WEBXASH, 'src', 'services', 'frame-pacing.ts'));
 
 /** A healthy client: a real GPU, a fast display, a comfortable engine. */
 function healthy(over = {}) {
@@ -915,4 +930,238 @@ test('the report says WHEN the numbers were measured', () => {
   const restored = buildPerfReport(resolvePerfFacts(landing(), session()), 1760000000000);
   const r = restored.findings.find((f) => f.id === 'cost-age');
   assert.match(r.title, /32 seconds into your last game/);
+});
+
+test('the pacer\'s constants and the readout\'s copy of them agree', () => {
+  // TWO COPIES OF A NUMBER, AND A TEST THAT KEEPS THEM HONEST.
+  //
+  // `perf-check.ts` has no imports on purpose, so the safety factor
+  // and the cost hysteresis are written out in it. The pacer has its
+  // own. If they drift, the readout's "how far to the next rate"
+  // stops being the pacer's own threshold — and the number the
+  // player is told to chase is then a number nobody is using.
+  assert.equal(SAFETY_FACTOR, 0.85);
+  assert.equal(NARROW_COST_HYSTERESIS, framePacing.NARROW_COST_HYSTERESIS);
+  // The pacer's safety factor is inside `sustainableFps`, so it is
+  // checked through the function that uses it.
+  assert.equal(framePacing.sustainableFps(10), 85);
+});
+
+test('the readout says how far the game is from the next frame rate', () => {
+  // A 144 Hz panel, the game held at 72 fps, a frame that costs
+  // 7.2 ms. The pacer's threshold for the next step up is
+  // 1000 * 0.85 * 1 / 144 = 5.90 ms, plus its 4% hysteresis, so the
+  // engine has to reach 6.14 ms — which is 1.06 ms away.
+  const facts = healthy({
+    panelHz: 144,
+    displayHz: 72,
+    engineFps: 72,
+    browserHz: 144,
+    engineWorkMs: 7.2,
+    sustainableFps: 118,
+    capFps: 72,
+    everyNth: 2,
+  });
+  const gap = nextRateGap(facts);
+  assert.ok(gap, 'there is a next step up');
+  assert.equal(gap.currentFps, 72);
+  assert.equal(gap.targetFps, 144);
+  assert.ok(Math.abs(gap.targetCostMs - 6.1389) < 0.001, `the threshold is ${gap.targetCostMs}`);
+  assert.ok(Math.abs(gap.gapMs - 1.0611) < 0.001, `the gap is ${gap.gapMs}`);
+
+  // AND THE FINDING SAYS IT, in the unit the player can act on.
+  const report = buildPerfReport(facts);
+  const finding = report.findings.find((f) => f.id === 'next-rate');
+  assert.ok(finding, 'the gap is reported');
+  assert.match(finding.title, /1\.06 ms cheaper a frame/);
+  assert.match(finding.title, /144 fps/);
+
+  // NO NEXT STEP when the game is already uncapped: the display is
+  // the ceiling, and there is nothing to chase.
+  assert.equal(nextRateGap(healthy({ everyNth: 1, engineWorkMs: 4 })), null);
+  // And no next step without the numbers to say one.
+  assert.equal(nextRateGap(healthy({ panelHz: 0, engineWorkMs: 0 })), null);
+});
+
+test('the engine being the limit comes with something to DO', () => {
+  // THE CASE THAT HAD NO ADVICE AT ALL.
+  //
+  // The engine cannot finish a frame inside the display's frame
+  // period: the readout says so — and then, before this, it handed
+  // the player an EMPTY list of things to do. The MacBook's measured
+  // case: 13.3 ms a frame against an 8.33 ms budget.
+  const report = buildPerfReport(
+    healthy({
+      panelHz: 120,
+      displayHz: 60,
+      engineFps: 60,
+      engineWorkMs: 13.3,
+      sustainableFps: 63,
+      capFps: 60,
+      everyNth: 2,
+      lateFrames: 40,
+      measuredFrames: 240,
+    }),
+  );
+  const ids = report.checklist.map((i) => i.id);
+  // The game's own levers.
+  assert.ok(ids.includes('engine-draw-cost'), 'the draw-cost switches are offered');
+  // The machine.
+  assert.ok(ids.includes('engine-give-the-machine'), 'the machine is offered');
+  // The compositor.
+  assert.ok(ids.includes('engine-overlays'), 'the overlays are offered');
+  // The judder, which the late-frame count proves.
+  assert.ok(ids.includes('judder-interruptions'), 'the judder is explained');
+  // And the fullscreen comparison, which is the measurement the
+  // player can take themselves.
+  assert.ok(ids.includes('compare-fullscreen'), 'fullscreen can be compared');
+  // EVERY ITEM SAYS WHERE TO GO AND WHY.
+  for (const item of report.checklist) {
+    assert.ok(item.action && item.where && item.why, `${item.id} is actionable`);
+  }
+  // And the draw-cost item quotes the player's own numbers.
+  const draw = report.checklist.find((i) => i.id === 'engine-draw-cost');
+  assert.match(draw.why, /13\.30 ms/);
+  assert.match(draw.why, /8\.33 ms/);
+});
+
+test('a browser that drops the refresh rate is caught, and the engine is not blamed for it', () => {
+  // THE THROTTLE THE 60 Hz FLOOR MISSES.
+  //
+  // Chrome's Energy Saver took Kyle's 120 Hz panel to 78 Hz, and
+  // 78 is above the floor the "throttled" test uses — so the readout
+  // called a throttled client healthy.
+  const facts = healthy({
+    idlePanelHz: 120,
+    browserHz: 78,
+    panelHz: 120,
+    engineWorkMs: 4,
+    sustainableFps: 212,
+  });
+  assert.equal(refreshRateWasDropped(facts), true);
+  const report = buildPerfReport(facts);
+  const finding = report.findings.find((f) => f.id === 'refresh-dropped');
+  assert.ok(finding, 'the drop is reported');
+  assert.equal(finding.severity, 'warn');
+  assert.match(finding.title, /120 Hz to 78 Hz/);
+  // AND THE FIX IS OFFERED.
+  assert.ok(report.checklist.some((i) => i.id === 'chrome-energy-saver'));
+
+  // THE ENGINE GETS THE BENEFIT OF THE DOUBT. A slow tick that the
+  // engine's own overrun explains is not a throttle, and saying it
+  // is would send the player to the wrong settings.
+  const slowEngine = healthy({
+    idlePanelHz: 120,
+    browserHz: 60,
+    panelHz: 120,
+    engineWorkMs: 13.3,
+    sustainableFps: 63,
+  });
+  assert.equal(refreshRateWasDropped(slowEngine), false);
+
+  // NOTHING MEASURED, NOTHING CLAIMED.
+  assert.equal(refreshRateWasDropped(healthy({ idlePanelHz: 0 })), false);
+  assert.equal(refreshRateWasDropped(healthy({ browserHz: 0, idlePanelHz: 120 })), false);
+  // AND A DROP INSIDE THE NOISE IS NOT A DROP.
+  assert.equal(
+    refreshRateWasDropped(healthy({ idlePanelHz: 120, browserHz: 115, engineWorkMs: 4 })),
+    false,
+  );
+});
+
+test('the last game\'s frame cost is measured against the rate IT ran at', () => {
+  // THE CHEERFUL AND WRONG READOUT.
+  //
+  // A 7.20 ms frame measured on a 144 Hz panel is OVER that panel's
+  // 6.94 ms budget. If the landing page compared it against the rate
+  // it measured on the landing page itself — 60 Hz, because that is
+  // what the browser was delivering NOW — it would say "43% of the
+  // budget, everything is fine".
+  //
+  // The numbers come from two different measurements and the
+  // comparison was between them.
+  const live = landing({ panelHz: 60, browserHz: 60 });
+  const facts = resolvePerfFacts(live, session({ panelHz: 144, engineWorkMs: 7.2 }));
+
+  // THE BUDGET IS THE ONE THE GAME RAN AGAINST.
+  assert.equal(facts.panelHz, 144);
+  const report = buildPerfReport(facts);
+  assert.ok(
+    Math.abs(report.numbers.budgetMs - 6.9444) < 0.001,
+    `the budget is ${report.numbers.budgetMs} ms`,
+  );
+  // AND THE PLAYER IS TOLD THEY ARE OVER IT, not under it.
+  assert.ok(report.numbers.budgetUsedPct > 100, `used ${report.numbers.budgetUsedPct}%`);
+  const over = report.findings.find((f) => f.id === 'budget-tight');
+  assert.ok(over, 'the over-budget finding is there');
+  // The game was capped, so the finding is a note rather than a
+  // warning — the pacer had already done the right thing about it.
+  assert.equal(over.severity, 'info');
+  assert.match(over.title, /took longer than your display's frame period/);
+
+  // AND THE RATE THAT IS DIFFERENT IS SAID OUT LOUD, because the
+  // browser's present rate is a fact the last match cannot show.
+  const now = report.findings.find((f) => f.id === 'refresh-now');
+  assert.ok(now, 'the live rate is reported');
+  assert.match(now.title, /60 refreshes a second right now/);
+  assert.match(now.detail, /ran at 144 Hz/);
+});
+
+test('the readout does not invent a live rate when there is not one', () => {
+  // NO LIVE MEASUREMENT, NO CLAIM ABOUT ONE.
+  const facts = resolvePerfFacts(landing({ panelHz: 120 }), session());
+  assert.equal(facts.livePanelHz, 120);
+  const report = buildPerfReport(facts);
+  assert.equal(report.findings.some((f) => f.id === 'refresh-now'), false);
+
+  // AND WITH NO LIVE MEASUREMENT AT ALL, THE FACT IS SIMPLY ABSENT.
+  const noLive = resolvePerfFacts(landing({ panelHz: 0 }), session());
+  assert.equal(noLive.livePanelHz, 0);
+  assert.equal(noLive.panelHz, 120, 'the game\'s own rate is still used');
+});
+
+test('the frame spacing is reported, and uneven spacing is called uneven', () => {
+  // THE SPREAD THE ENGINE'S COUNTER CANNOT SEE.
+  const even = buildPerfReport(
+    healthy({
+      pacing: {
+        p50: 13.9,
+        p90: 13.9,
+        p99: 13.9,
+        max: 16.7,
+        buckets: [{ ms: 13.9, count: 200 }],
+        samples: 200,
+      },
+    }),
+  );
+  const evenFinding = even.findings.find((f) => f.id === 'frame-spacing');
+  assert.ok(evenFinding, 'the spacing is reported');
+  assert.equal(evenFinding.severity, 'ok');
+  assert.match(evenFinding.title, /evenly spaced at 13\.9 ms/);
+
+  // THE JUDDER CASE: a long tail against a clean median.
+  const uneven = buildPerfReport(
+    healthy({
+      pacing: {
+        p50: 13.9,
+        p90: 16.7,
+        p99: 41.7,
+        max: 55.5,
+        buckets: [
+          { ms: 13.9, count: 180 },
+          { ms: 41.7, count: 12 },
+        ],
+        samples: 192,
+      },
+    }),
+  );
+  const unevenFinding = uneven.findings.find((f) => f.id === 'frame-spacing');
+  assert.equal(unevenFinding.severity, 'warn');
+  assert.match(unevenFinding.title, /worst takes 41\.7 ms/);
+  assert.match(unevenFinding.detail, /judder/);
+
+  // NO MEASUREMENT, NO FINDING. A readout that invents a spread
+  // teaches the player to ignore it.
+  const nothing = buildPerfReport(healthy());
+  assert.equal(nothing.findings.some((f) => f.id === 'frame-spacing'), false);
 });
