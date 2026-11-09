@@ -14,8 +14,8 @@ match. **D.7 webXash engine-port path** → then the **server-DLL WASM
 port**, which is what made a real dedicated server possible. The
 decompile + pump path is now the **single-player fallback**, not the
 production path.
-**Last updated:** 2026-11-01 (the modern buy flow: the port's second flow, by the
-classic weapon slot — and its key rules and its own labels)
+**Last updated:** 2026-11-09 (the character picker: one component, sixteen
+characters, and the case of a model name)
 **Owner:** Kyle
 **Orchestrator:** Evo (Hermes on m5)
 
@@ -74,6 +74,48 @@ the public URL.
 instances" capacity figure is still a budget, not a measurement); the FE
 tweaks and the bulletballet re-brand; single-player depth on the
 fallback path.
+
+## The character picker — one component, sixteen characters, one spelling (2026-11-09)
+
+**The shape.** Two surfaces offer a character: the pre-join "Before you
+join" modal and the in-game `Esc` overlay. Both are the **same
+component** (`CharacterPicker.vue`), fed by **one roster** (`TS_MODELS`
+in `player-identity.ts`). They used to carry their own copy of the card
+markup; they drifted, and they were two chances to disagree about which
+characters exist.
+
+**The rules that hold it together:**
+
+- **The roster is the mod's playable set — sixteen.** `ts/models/player/`
+  holds seventeen directories; `ala` is not one of them, because it ships
+  as `ala2.mdl` and the engine resolves a player model as
+  `models/player/<name>/<name>.mdl`.
+- **The case is the name.** The engine puts the model name straight into
+  a file path, with no case folding. `Bodysaver`, `Spetsnaz` and
+  `SpeziClaus` are capitalised, and the archive is unpacked into a
+  case-sensitive filesystem. A lowercased name loads nothing, and the
+  engine falls back to the default player model **silently** — the
+  player picks a character and gets somebody else. So the name is
+  matched case-insensitively and sent in the mod's own spelling.
+- **One grid, four columns.** Sixteen characters make a rectangle. A
+  wrapped row made three ragged ones.
+- **The colour is the caller's.** The overlay wears the game's amber
+  (it opens inside the match) and the modal wears the shell's phosphor
+  green, through `--picker-*` CSS variables whose defaults live in
+  `var()` fallbacks — a declaration on the component itself would lose
+  to the caller on stylesheet order.
+- **The portraits are uniform.** Every one is 256×256, head and
+  shoulders, framed the same. The seven the game draws painted are the
+  game's own art, re-cropped by the same uniformiser; sixteen tiles of
+  two shapes read as two things.
+- **The server keeps the choice — in deathmatch.** The port replaces a
+  requested model with a random one from the player's team **only in
+  teamplay**. The live server runs `mp_teamplay 0`, so the choice is
+  kept. **If the server ever turns teamplay on, the choice is
+  discarded** — that is the server's ruleset, and it would not be a
+  client bug.
+
+**Screenshots:** `webxash/docs/screenshots/character-picker-*.png`.
 
 ## The admin console: phases 1, 2 and 3 (2026-10-31)
 
