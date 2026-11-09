@@ -21,7 +21,7 @@ the [Half-Life Asset Manager](https://github.com/SamVanheer/HalfLifeAssetManager
 (3.0, the Linux build), which renders GoldSource studio models the way
 the engine does.
 
-## The two scripts
+## The three scripts
 
 ```bash
 # 1. render every model in the mod
@@ -30,6 +30,9 @@ tools/portraits/capture-portraits.sh \
 
 # 2. normalise the captures into uniform portraits
 python3 tools/portraits/normalize-portraits.py /tmp/captures /tmp/portraits
+
+# 3. ship the sixteen playable ones into the web app
+python3 tools/portraits/ship-portraits.py /tmp/portraits/portrait webxash
 ```
 
 Step 2 writes two uniform sets:
@@ -39,8 +42,20 @@ Step 2 writes two uniform sets:
 /tmp/portraits/portrait/  256×256   head and shoulders, square
 ```
 
-The 256×256 set is what `webxash/public/models/` ships for the nine
-characters that have no painted art.
+The 256×256 set is what the web app shows.
+
+Step 3 is the one that decides **which** portraits ship, and it is a
+script rather than a copy because the set is not "everything the
+normaliser produced". It ships the mod's **playable** sixteen and
+refuses `ala`, and it removes any stray portrait left in the
+destination — a picture of a character that cannot be played is a
+picture of nothing.
+
+**THE CASE IS THE NAME.** Step 3 copies `Bodysaver.png`, not
+`bodysaver.png`. The engine puts the model name straight into a file
+path, and the archive is unpacked into a case-sensitive filesystem, so
+a lowercased name resolves to nothing and the engine falls back to the
+default player model without saying so.
 
 ## Dependencies
 

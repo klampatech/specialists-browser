@@ -23,6 +23,88 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-09, LATEST — **THE CHARACTER PICKER SHOWS ALL SIXTEEN
+CHARACTERS, AND THE EARLIER CLAIM THAT THE SERVER THROWS THE CHOICE AWAY
+WAS WRONG. webXash #51 IS UP FOR KYLE'S APPROVAL.**
+
+Kyle asked to continue the character work. The portraits had been
+regenerated for every character the mod ships, and the two menus that
+offer a character still offered **seven** of them, in a wrapped row of
+small buttons, with no picture at all for the nine the game does not
+draw.
+
+**WHAT SHIPPED** (webxash `3723dd5`, the screenshots `8d54641`):
+
+1. **`CharacterPicker.vue` — ONE shared component, used by BOTH menus.**
+   The ESC options overlay and the pre-join identity modal each used to
+   carry their own copy of the card markup. They drifted, and they were
+   two chances to disagree about which characters exist. The roster
+   itself stays in `player-identity.ts`, so the picker, the
+   launch-argument builder and the model setter cannot disagree about
+   it either.
+2. **The roster is all sixteen characters**, in the mod's own spelling.
+3. **The portraits are uniform** — every one is 256×256, head and
+   shoulders, framed the same. The seven painted ones are the game's
+   own art, re-cropped by the same uniformiser; sixteen tiles of two
+   shapes read as two things.
+4. **The model name is sent in the mod's own spelling.** See the case
+   trap below.
+
+**THE CORRECTION, AND IT IS THE IMPORTANT PART.** The 2026-11-07 entry
+further down says the server replaces a requested model with a random
+one from the player's team, so offering sixteen would be *"a promise
+the server does not keep"*. **That is wrong, and it was wrong because
+the mode was assumed instead of measured.**
+
+The path that replaces the model — `rules/teams.rs :: userinfo_changed`
+→ `model_for(&team)` — is reached **only in teamplay**. The live server
+runs **`mp_teamplay 0`** (deathmatch), read over RCON from production
+on 2026-11-09. In deathmatch the requested model is kept. None of the
+sixteen is one of the nine HLDM models, and `mp_defaultteam` is 0, so
+`multiplay_userinfo_changed` leaves it alone too.
+
+So the promise is one the server **does** keep, today. **If the server
+ever turns teamplay on, the choice is discarded** — that is the
+server's ruleset, not the client's, and it would be a one-line config
+change to notice.
+
+**THE CASE TRAP, WHICH WAS LATENT AND WOULD HAVE SHIPPED.** The engine
+resolves a player model as `models/player/<name>/<name>.mdl` — the name
+**verbatim, no case folding** (`R_StudioSetupPlayerModel`,
+`ref/gl/gl_studio.c`). The mod's directories are `Bodysaver`, `Spetsnaz`
+and `SpeziClaus`, capitalised, and the archive is unpacked into a
+case-sensitive filesystem.
+
+So `setinfo model "bodysaver"` asks for a file that does not exist, the
+model fails to load, and the engine **silently** falls back to the
+default player model: the player picks a character and gets somebody
+else, with nothing on screen to say why.
+
+`applyModel` used to lowercase the model. Harmless with seven lowercase
+names; fatal with three capitalised ones. It now matches
+case-insensitively and sends the mod's own spelling (`canonicalModel`).
+Nothing lowercases the name on the way: the client sends the cvar value
+as it is, the server stores the string as it is, and the client
+resolves the path from the string it gets back. Every hop is verbatim.
+
+**MEASURED IN THE BROWSER, NOT ASSUMED.** Clicking the **Bodysaver**
+portrait in the ESC overlay set the engine's own `model` cvar to
+`"Bodysaver"` — read back from the engine's stdout, capital B and all.
+The pre-join modal stored `{"model":"SpeziClaus"}` and carried it out
+on the launch arguments. Both menus rendered all sixteen portraits, and
+the selected tile lit.
+
+**THE RECIPE IS A SCRIPT NOW.** `tools/portraits/ship-portraits.py`
+copies the sixteen and refuses to ship `ala` (the engine resolves
+`models/player/ala/ala.mdl`, and the mod ships `ala2.mdl`). The
+parent's unit suite pins the roster, the case, the shared picker and
+the portrait folder — including that the folder holds **exactly** the
+model list and nothing else.
+
+**THE PR SEQUENCE IS TWO PRs, AND THE POINTER WAITS.** webXash #51
+first (Kyle's approval, then the squash), and the parent after, with
+the pointer at the squash — never at the branch tip.
+
 **As of:** 2026-11-09, LATEST — **THE PACER'S HYSTERESIS IS REBUILT, AND
 webXash #50 IS APPROVED AND MERGED. THE PARENT POINTER LANDS WITH THIS
 COMMIT.**
@@ -811,6 +893,16 @@ random model from the player's team (`rules/teams.rs :: userinfo_changed`
 -> `model_for(&team)`), so listing the nine in the picker today would be
 a promise the server does not keep. Making them selectable is a server
 config change (which team owns which character) and that is Kyle's call.
+
+> **CORRECTED 2026-11-09.** The paragraph above is **wrong**, and it was
+> wrong because it assumed the mode instead of measuring it. The
+> replacement path is reached **only in teamplay**, and the live server
+> runs **`mp_teamplay 0`** (deathmatch) — read over RCON from production.
+> In deathmatch the requested model is kept, so the promise IS one the
+> server keeps. The sixteen characters are now in the picker. **If the
+> server ever turns teamplay on, the choice is discarded** — that is the
+> server's ruleset, not the client's. See the 2026-11-09 entry at the
+> top of this section.
 
 **THE DELIVERY IS TWO PRs.** **webXash #47** (the nine portraits) and
 **the parent** (the recipe + these docs + the submodule pointer). The
