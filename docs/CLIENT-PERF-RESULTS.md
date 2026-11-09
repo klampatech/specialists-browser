@@ -156,7 +156,13 @@ boundary. With the deadband switched off it fails with **twelve flips**
 ## 3. WHAT THE REVIEW FOUND, AND WHAT IT COST
 
 An independent review of the pacing policy found three things that would have
-made the experience worse. All three are fixed in `0f3c7f3`.
+made the experience worse. All three were fixed in `0f3c7f3` — and a second
+review, of those fixes, found that **the fix for the pump had itself become a
+performance regression**. Kyle's rule is verbatim: *"The only thing worse than
+performance optimizations that don't do anything is performance optimizations
+that actively make performance worse."*
+
+### The first round (fixed in `0f3c7f3`)
 
 | finding | the naive fix | what was done instead |
 |---|---|---|
@@ -164,7 +170,82 @@ made the experience worse. All three are fixed in `0f3c7f3`.
 | `computeFrameTarget(120, 0)` could produce a ~1 fps gate | clamp the cost | a measurement that cannot be used produces NO gate |
 | a NaN panel or cost could produce a NaN gate, and `tick % NaN` is never true, so the engine would never have drawn again | clamp the input | same: no gate |
 
----
+### The second round: the band was in the wrong units
+
+The fix for the pump was a **15% band on the engine's sustainable rate**. The
+gate's decisions are *discrete steps*, and on a 120 Hz panel the step from
+60 fps to 120 fps is a **0.8%** change in the sustainable rate (119 → 121, at
+7.14 → 7.00 ms of frame cost). A band swallows that step whole:
+
+- the target said `everyNth 1` (120 fps) and the policy **held the gate at 2
+  (60 fps)** — the player stayed at 60 fps until the engine was **12% faster**;
+- the band could also **veto the physical promise** — on a 100 Hz panel with
+  an 11 ms frame the target correctly computed `everyNth 2` and the band threw
+  it away, leaving the engine asked for 100 fps with a frame that overruns its
+  10 ms slot by 10% **every frame**;
+- and it was **blind to the panel side**, so a reading of the display's own
+  rate could latch the gate on the wrong rate and leave it there.
+
+**WHY A BAND CANNOT DO THIS JOB.** A percentage band on the sustainable rate
+does not map onto a discrete step. A band in the right units — a hysteresis
+*around the threshold* — still sacrifices a window of cost either side of it.
+The rule that does map is **consecutive windows**: a target that flickers never
+produces two of them, so it cannot move the gate, while a change that
+*persists* does.
+
+### The rebuild (`5c41df1`)
+
+- **The band is gone.**
+- **The gate moves only when two consecutive SETTLED windows ask for the same
+  target** — in *both* directions. The narrowing already required two; the
+  widening was immediate, and that asymmetry is what ratcheted a flickering
+  target open.
+- **The narrowing also has to clear the threshold the cost is measured
+  against**, by more than the measurement noise. The engine's frame cost is
+  measured with about 1.4% of noise (7.00 ms and 7.20 ms are the same view on
+  the same machine), and the gate changes at a threshold — 850/120 = 7.083 ms
+  of frame cost on a 120 Hz panel — so a reading that straddled it would
+  close the gate and open it again. The threshold is a **cost**
+  (850 × everyNth / panelHz for the cap, 1000 / panelHz for the slot), and the
+  gate closes when the cost is past the easier of the two.
+- **A PROVISIONAL gate follows the latest warm-up reading.** It was taken
+  from the least trustworthy reading the engine will ever produce — the
+  warm-up window, while it compiles shaders and streams the map — and it
+  could not move again until the first settled window, which is 15–20 seconds
+  into a match. A gate that has been **settled** still may not move on a
+  warm-up reading.
+- **The counter counts settled windows only.** It counted every window that
+  reached the policy, so the first settled window could narrow the gate on the
+  strength of two *warm-up* readings.
+- **A forced gate — the harness's — is not the policy's to move**, and says so.
+- **Two honesty fixes**: the empty-window path no longer inherits a stale cap
+  rate, so the readout cannot name a rate the gate no longer implies; and a
+  gate left in place keeps its provisional flag.
+
+### The rebuild, on the M3 Pro, with eight bots in the world
+
+`ts_casa`, six viewpoints, the player moving. This is the run that shows the
+pacer doing its job for the first time:
+
+| view | yaw | engine cost | engine fps | late fraction | the gate |
+|---|---|---|---|---|---|
+| 1 | 0 | 11.17 ms | 83.5 (min 60.0) | **38.1%** | narrowed to 60 fps |
+| 2 | 60 | 1.84 ms | 60.0 | **0.0%** | 60 fps (the widening takes two windows) |
+| 3 | 120 | 1.98 ms | 120.0 | 0.0% | off the cap |
+| 4 | 180 | 1.61 ms | 120.0 | 0.0% | off the cap |
+| 5 | 240 | 1.65 ms | 120.0 | 0.0% | off the cap |
+| 6 | 300 | 1.30 ms (max 11.54) | 120.0 (min 78.4) | 44.9% | off the cap (the spike did not last a window) |
+
+**At view 1 the engine was overrunning its slot by 34% — 38% of its frames
+arrived late. The pacer saw that, narrowed to 60 fps, and the late fraction
+went to 0%.** The old build could not do that: it reported a frozen 1.31 ms
+for the whole match, so it never knew the scene was expensive.
+
+**And the timeline is quiet.** 110 seconds on one viewpoint: the gate in force
+never changed, the engine's fps ran 119.3–120.8, the late-frame fraction 0%
+(median) with a 1.6% maximum, and the pacer's last word was *"the engine
+costs 1.53 ms a frame (554 fps) against a 120 Hz display -> not capping; the
+settled reading confirms the gate"*.
 
 ## 4. THE CAVEATS, STATED PLAINLY
 

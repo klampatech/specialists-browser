@@ -65,34 +65,48 @@ of it. The rule that does map is **consecutive windows**: a target that
 flickers never produces two of them, so it cannot move the gate, while a
 change that *persists* does.
 
-**THE PLAN.**
+**THE PLAN, AS BUILT** (webxash `5c41df1`, the parent's tests):
 
-1. **Delete the band** (`COST_DEADBAND`, `currentBasisFps`, the branch in
-   `frame-pacing.ts`). It is the wrong instrument.
+1. **The band is deleted** (`COST_DEADBAND`, `currentBasisFps`, and the
+   branch in `frame-pacing.ts`). It is the wrong instrument.
 2. **The gate moves only when two consecutive SETTLED windows ask for
    the same target** — symmetrically, for widening as well as narrowing.
    The narrowing already required two; the widening was immediate, and
    that asymmetry is what ratcheted a flickering target open.
-3. **The counter ignores warm-up windows.** Today it counts every window
-   that reaches the policy, so the first settled window can narrow on the
-   strength of two *warm-up* readings — contrary to the rule's intent.
-4. **A provisional gate is replaced by the first settled window.** It was
+3. **The narrowing also has to clear the threshold the cost is measured
+   against**, by more than the measurement noise. The engine's frame cost
+   is measured with about 1.4% of noise (7.00 ms and 7.20 ms are the
+   same view on the same machine) and the gate changes at a *threshold* —
+   850/120 = 7.083 ms of frame cost on a 120 Hz panel — so a reading that
+   straddled it would close the gate and open it again. The threshold is
+   a COST (850 × everyNth / panelHz for the cap, 1000 / panelHz for the
+   slot) and the gate closes when the cost is past the easier of the two.
+   **The symmetric counter alone is not enough**: a target that dwells
+   two windows on each side of the threshold still oscillates, which is
+   what this band is for.
+4. **The counter ignores warm-up windows.** It counts every window that
+   reaches the policy today, so the first settled window can narrow on
+   the strength of two *warm-up* readings — contrary to the rule's
+   intent.
+5. **A PROVISIONAL gate follows the latest warm-up reading.** It was
    taken from the least trustworthy reading the engine will ever produce
    (the 3-second window, while the engine compiles shaders and streams
-   the map), and today it cannot move until the first settled window —
-   ~23 seconds at a tight gate. A settled reading supersedes a
-   provisional one.
-5. **The physical promise stays in the TARGET**: the target's tick count
+   the map) and it could not move again until the first settled window —
+   ~23 seconds at a tight gate. A gate that has been **settled** still may
+   not move on a warm-up reading.
+6. **The physical promise stays in the TARGET**: the target's tick count
    is at least the number of ticks the engine's frame needs to fit its
    slot. The gate then *converges* on it within a window instead of
    being vetoed indefinitely.
-6. **The late-frame guard is untouched**: a widening is still refused
+7. **A forced gate — the measurement harness's — is not the policy's to
+   move**, and the policy says so in its reason.
+8. **The late-frame guard is untouched**: a widening is still refused
    while more than 5% of the engine's frames arrived late. It is the most
    important rule in the feature.
-7. **Two small honesty fixes** from the same review: the empty-window
-   path inherits a stale `capFps` (so the readout can name a rate the
-   current gate no longer implies), and the deadband branch marked a
-   provisional gate as settled.
+9. **Two small honesty fixes** from the same review: the empty-window
+   path no longer inherits a stale `capFps` (so the readout cannot name
+   a rate the current gate no longer implies), and a gate left in place
+   keeps its provisional flag.
 
 **THE REPLACEMENT, VALIDATED BEFORE IT WAS WRITTEN.** The new policy was
 prototyped in the scratch directory and machine-checked with seven
@@ -103,10 +117,29 @@ the promise rather than being vetoed; a provisional gate is replaced by
 the first settled window; one expensive window does not narrow the gate
 and two do; and a widening is still refused while 9% of frames are late.
 
-**THE GATES AFTER THE CHANGE.** The parent's unit suite, `vue-tsc
---noEmit`, `bun run build`, the CI-address build, the shipped-readout
-browser gate, and a re-measurement on Kyle's M3 Pro (the rig comes back
-up for it — the CI stack only, never production).
+**THE GATES AFTER THE CHANGE — ALL GREEN.** The parent's unit suite
+**757/757**, `vue-tsc --noEmit` clean, `bun run build` clean, the
+CI-address build clean, and the shipped-readout browser gate **47/47**.
+
+**AND THE RE-MEASUREMENT ON THE M3 PRO** (the CI stack only, never
+production; eight bots in the world). `ts_casa`, six viewpoints, the
+player moving:
+
+- **View 1** — the engine cost **11.17 ms**, was delivering 83.5 fps,
+  and **38.1% of its frames arrived late**: it was overrunning its slot
+  by 34%. **The pacer narrowed to 60 fps and the late fraction went to
+  0%.** That is the pacer doing its job for the first time; the old
+  build reported a frozen 1.31 ms for the whole match and never knew
+  the scene was expensive.
+- **Views 3–6** — the scene was cheap, the gate came off the cap, and
+  the engine ran at 120.0 fps with 0.0% late.
+- The **timeline** over 110 seconds: the gate in force never changed,
+  the engine's fps ran 119.3–120.8, the late fraction 0% (median), and
+  the pacer's last word was *"the engine costs 1.53 ms a frame (554 fps)
+  against a 120 Hz display -> not capping; the settled reading confirms
+  the gate"*.
+
+The full numbers are in `docs/CLIENT-PERF-RESULTS.md`.
 
 **As of:** 2026-11-08, LATEST — **THE PACER MEASURES THE ENGINE WARM, AND
 KEEPS MEASURING. THE READOUT STOPS BLAMING THE BROWSER.**
