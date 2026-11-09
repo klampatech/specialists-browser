@@ -23,6 +23,91 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-08, LATEST — **THE PACER'S HYSTERESIS IS BEING REBUILT: A
+BAND IN THE WRONG UNITS WAS HALVING THE FRAME RATE.**
+
+Kyle reviewed webXash PR #50 and asked for this work before he would sign
+it off. Two reviews of the pacing policy had run by then (one broad
+review that hung and was killed, one focused review that completed), and
+a second focused review — of the **fixes** rather than of the original
+work — found that the fix for the pump had itself become a performance
+regression. Kyle's rule is verbatim: *"The only thing worse than
+performance optimizations that don't do anything is performance
+optimizations that actively make performance worse."* This change is
+about honouring that rule on the code that is already written.
+
+**THE DEFECT, MACHINE-CHECKED AGAINST THE REAL POLICY CODE** (not taken
+on trust — `node --experimental-strip-types` against
+`webxash/src/services/frame-pacing.ts`):
+
+- The pump fix was a **15% band on the engine's sustainable rate**, held
+  between the last gate change and the next.
+- On a **120 Hz panel** the step from 60 fps to 120 fps is a **0.8%**
+  change in the sustainable rate (119 → 121, at 7.14 → 7.00 ms of frame
+  cost). A 15% band swallows that step whole.
+- So: the target said `everyNth 1` (120 fps), the policy **held the gate
+  at 2 (60 fps)**, and the player stayed at 60 fps until the engine was
+  **12% faster** than the cost that produced 60 fps.
+- The band could also **veto the physical promise**: on a 100 Hz panel
+  with an 11.0 ms frame the target correctly computed `everyNth 2` (the
+  frame needs two ticks), the band threw it away, and the engine was
+  asked for 100 fps with a frame that overruns its 10 ms slot by 10%
+  **every frame** — the judder the feature exists to remove.
+- And the band was **blind to the panel side**: any target change caused
+  by the measured display rate was band-blocked too, so the gate could
+  latch on the wrong rate and stay there.
+
+**WHY A BAND CANNOT DO THIS JOB.** The gate's decisions are *discrete
+steps* (60 ↔ 120 fps), and a percentage band on the sustainable rate
+does not map onto a step. A band in the right units — a hysteresis
+*around the threshold* — still sacrifices a window of cost either side
+of it. The rule that does map is **consecutive windows**: a target that
+flickers never produces two of them, so it cannot move the gate, while a
+change that *persists* does.
+
+**THE PLAN.**
+
+1. **Delete the band** (`COST_DEADBAND`, `currentBasisFps`, the branch in
+   `frame-pacing.ts`). It is the wrong instrument.
+2. **The gate moves only when two consecutive SETTLED windows ask for
+   the same target** — symmetrically, for widening as well as narrowing.
+   The narrowing already required two; the widening was immediate, and
+   that asymmetry is what ratcheted a flickering target open.
+3. **The counter ignores warm-up windows.** Today it counts every window
+   that reaches the policy, so the first settled window can narrow on the
+   strength of two *warm-up* readings — contrary to the rule's intent.
+4. **A provisional gate is replaced by the first settled window.** It was
+   taken from the least trustworthy reading the engine will ever produce
+   (the 3-second window, while the engine compiles shaders and streams
+   the map), and today it cannot move until the first settled window —
+   ~23 seconds at a tight gate. A settled reading supersedes a
+   provisional one.
+5. **The physical promise stays in the TARGET**: the target's tick count
+   is at least the number of ticks the engine's frame needs to fit its
+   slot. The gate then *converges* on it within a window instead of
+   being vetoed indefinitely.
+6. **The late-frame guard is untouched**: a widening is still refused
+   while more than 5% of the engine's frames arrived late. It is the most
+   important rule in the feature.
+7. **Two small honesty fixes** from the same review: the empty-window
+   path inherits a stale `capFps` (so the readout can name a rate the
+   current gate no longer implies), and the deadband branch marked a
+   provisional gate as settled.
+
+**THE REPLACEMENT, VALIDATED BEFORE IT WAS WRITTEN.** The new policy was
+prototyped in the scratch directory and machine-checked with seven
+cases: the pump (a cost alternating around the 7.083 ms threshold)
+produces **zero** gate moves; a sustained improvement from 7.14 to 7.00
+ms reaches **120 fps** again; the 100 Hz / 11 ms case **converges** on
+the promise rather than being vetoed; a provisional gate is replaced by
+the first settled window; one expensive window does not narrow the gate
+and two do; and a widening is still refused while 9% of frames are late.
+
+**THE GATES AFTER THE CHANGE.** The parent's unit suite, `vue-tsc
+--noEmit`, `bun run build`, the CI-address build, the shipped-readout
+browser gate, and a re-measurement on Kyle's M3 Pro (the rig comes back
+up for it — the CI stack only, never production).
+
 **As of:** 2026-11-08, LATEST — **THE PACER MEASURES THE ENGINE WARM, AND
 KEEPS MEASURING. THE READOUT STOPS BLAMING THE BROWSER.**
 
