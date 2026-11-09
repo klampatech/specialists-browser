@@ -770,6 +770,42 @@ document is not focused, and which fails the pointer lock with
 watched; under a bare X server there is none, and the mode change
 cannot be verified.
 
+**ON A WAYLAND COMPOSITOR THE MODE CHANGE IS SILENTLY IGNORED.**
+Chromium's Wayland backend does not implement window bounds
+manipulation — the compositor owns the geometry — so
+`Browser.setWindowBounds` can report success and change nothing. niri
+tiles every window itself, so the request does nothing at all there.
+
+**So the harness now CHECKS rather than assumes.** Each phase reports the
+window's actual size, and if the two states came out the same size the
+comparison says so in capitals:
+
+```
+*** THE TWO WINDOWS WERE THE SAME SIZE (1274x1245). ***
+The compositor owns the geometry here, so the window-state request did
+not take effect. The "no difference" above is a fact about a comparison
+that never happened, NOT a finding about the window state.
+```
+
+**THE RELIABLE WAY TO GO FULLSCREEN ON WAYLAND IS TO RELAUNCH THE
+BROWSER WITH `--start-fullscreen`.** The browser asks the compositor for
+a fullscreen window at startup, the compositor honours it, and it is the
+same state a player is in when they press F11 — so the two phases are
+the two states a player actually lives in:
+
+```sh
+# windowed phase
+google-chrome --remote-debugging-port=9223 --user-data-dir=/tmp/bb-cdp
+# fullscreen phase — same profile, same GPU, same settings
+google-chrome --remote-debugging-port=9223 --user-data-dir=/tmp/bb-cdp --start-fullscreen
+```
+
+**AND `fs` IS NOT `document.fullscreenElement`.** The DOM's answer is
+null for the browser's own fullscreen (F11, `--start-fullscreen`), so a
+harness that reads it labels a fullscreen run as windowed. The `fs`
+column now prints `Y` when the page fills the screen EITHER way — the
+DOM's answer or the canvas's size against the screen's.
+
 ### `watch-remote.sh` — the same, from another machine
 
 `watch-client.cjs` speaks CDP to a browser on the same machine. This

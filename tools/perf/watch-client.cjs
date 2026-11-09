@@ -420,7 +420,34 @@ async function readSample(page) {
           dpr: window.devicePixelRatio,
           innerW: window.innerWidth,
           innerH: window.innerHeight,
+          // WHETHER THE PAGE IS FULLSCREEN — AND WHICH QUESTION THAT
+          // IS.
+          //
+          // `document.fullscreenElement` is only set when the PAGE asked
+          // for fullscreen through the DOM API. It is NULL for the
+          // browser's own fullscreen (F11, or `--start-fullscreen`),
+          // which is how almost every player plays. A harness that
+          // reports that as "not fullscreen" labels a fullscreen run as
+          // windowed, and the A/B compares two identical states and
+          // reports "no difference" — worse than no answer.
+          //
+          // So both questions are asked and both are kept:
+          //   `fullscreen`      — the DOM's answer, as before
+          //   `fillsTheScreen`  — the canvas's size against the screen's
+          //
+          // And the `fs` column prints Y when EITHER says yes.
           fullscreen: !!document.fullscreenElement,
+          fillsTheScreen: (() => {
+            try {
+              if (!rect || !window.screen) return false;
+              const sw = window.screen.width;
+              const sh = window.screen.height;
+              if (!sw || !sh) return false;
+              return rect.width >= sw * 0.95 && rect.height >= sh * 0.95;
+            } catch (e) {
+              return false;
+            }
+          })(),
           // WHETHER THE PAGE IS VISIBLE AT ALL.
           //
           // A HIDDEN TAB REPORTS NO LONG TASKS, EVER — the browser
@@ -523,7 +550,10 @@ function formatLine(t, st, measuredFps, pacing, lagMedian, longtaskCount, canvas
     `panel ${cell(pacing ? pacing.panelHz : null, 5)}`,
     `lag ${cell(lagMedian, 6, 2)}ms`,
     `lt ${String(longtaskCount).padStart(4)}`,
-    `fs ${canvas.fullscreen ? 'Y' : 'N'}`,
+    // "fs" IS Y WHEN THE PAGE FILLS THE SCREEN, WHICHEVER WAY IT GOT
+    // THERE — the DOM's fullscreen OR the browser's own (F11). See the
+    // note where `fillsTheScreen` is computed.
+    `fs ${canvas.fullscreen || canvas.fillsTheScreen ? 'Y' : 'N'}`,
     `canvas ${String(canvas.backingW).padStart(5)}x${String(canvas.backingH).padEnd(5)}`,
     `css ${String(canvas.cssW).padStart(5)}x${String(canvas.cssH).padEnd(5)}`,
   ].join('  ');
@@ -803,6 +833,36 @@ function summarise(run) {
       const ok = await setWindowState(page, states[i]);
       log(`phase ${names[i]}: the window is ${states[i]}${ok ? '' : ' (the window state could NOT be changed)'}`);
       await new Promise((r) => setTimeout(r, 2000));
+      // DID THE WINDOW ACTUALLY CHANGE SIZE?
+      //
+      // On a Wayland compositor the compositor OWNS the geometry, and
+      // Chromium's `Browser.setWindowBounds` is accepted and silently
+      // ignored — niri tiles every window itself. So the request can
+      // report success while the window stays exactly as it was, and
+      // the A/B then compares two identical states and reports "no
+      // difference", which is worse than no answer at all.
+      //
+      // So the size is checked, and if the two states are the same size
+      // the A/B says so out loud.
+      const sizeNow = await page.evaluate(() => {
+        const c = document.getElementById('canvas');
+        const r = c ? c.getBoundingClientRect() : null;
+        return {
+          cssW: r ? Math.round(r.width) : 0,
+          cssH: r ? Math.round(r.height) : 0,
+          winW: window.innerWidth,
+          winH: window.innerHeight,
+          screenW: window.screen ? window.screen.width : 0,
+          screenH: window.screen ? window.screen.height : 0,
+          domFullscreen: !!document.fullscreenElement,
+        };
+      }).catch(() => null);
+      if (sizeNow) {
+        log(
+          `   the window is now ${sizeNow.winW}x${sizeNow.winH} (canvas ${sizeNow.cssW}x${sizeNow.cssH}, ` +
+            `screen ${sizeNow.screenW}x${sizeNow.screenH}, DOM fullscreen: ${sizeNow.domFullscreen ? 'yes' : 'no'})`,
+        );
+      }
       const before = run.rows.length;
       const phaseGaps = await watch(AB_SECONDS, names[i]);
       const rows = run.rows.slice(before);
@@ -822,6 +882,9 @@ function summarise(run) {
         late: stats.late,
         engineMs: engineMs.length ? median(engineMs) : 0,
         gaps: totalGaps,
+        // THE WINDOW'S SIZE IN THIS PHASE, so the comparison can tell
+        // whether the two states were actually different.
+        canvas: rows.length ? rows[rows.length - 1].canvas : null,
       });
       log('');
     }
@@ -857,6 +920,27 @@ function summarise(run) {
     log('  If the B-A1 difference is not bigger than the drift, there is');
     log('  no reproducible effect — and the repo\'s rule is to say so.');
     log('');
+
+    // DID THE TWO STATES ACTUALLY DIFFER?
+    //
+    // On a Wayland compositor the compositor owns the geometry, so
+    // `Browser.setWindowBounds` can report success and change nothing.
+    // Then A1, B and A2 are all the SAME window, the numbers are all
+    // the same, and "no difference" is the truth — but it is the truth
+    // about a comparison that never happened, and reading it as "the
+    // window state does not matter" would be wrong.
+    const sizeOf = (p) => (p && p.canvas ? `${p.canvas.cssW}x${p.canvas.cssH}` : '?');
+    const aSize = sizeOf(a1);
+    const bSize = sizeOf(b);
+    if (aSize !== '?' && bSize !== '?' && aSize === bSize) {
+      log('  *** THE TWO WINDOWS WERE THE SAME SIZE (' + aSize + '). ***');
+      log('  The compositor owns the geometry here, so the window-state');
+      log('  request did not take effect. The "no difference" above is a');
+      log('  fact about a comparison that never happened, NOT a finding');
+      log('  about the window state. On Wayland, relaunch the browser');
+      log('  with --start-fullscreen for the fullscreen phase.');
+      log('');
+    }
   } else {
     await watch(SECONDS, 'watch');
     log('');
@@ -950,7 +1034,9 @@ function summarise(run) {
       `the canvas:            ${run.lastCanvas.backingW}x${run.lastCanvas.backingH} backing, ` +
         `${run.lastCanvas.cssW}x${run.lastCanvas.cssH} css, dpr ${run.lastCanvas.dpr}, ` +
         `window ${run.lastCanvas.innerW}x${run.lastCanvas.innerH}, ` +
-        `document fullscreen: ${run.lastCanvas.fullscreen ? 'yes' : 'no'}`,
+        `document fullscreen: ${run.lastCanvas.fullscreen ? 'yes' : 'no'}` +
+        `, fills the screen: ${run.lastCanvas.fillsTheScreen ? 'yes' : 'no'}` +
+        ` (the DOM's answer is only about DOM fullscreen; the browser's own F11 never sets it)`,
     );
   }
   log('');
