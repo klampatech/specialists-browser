@@ -101,9 +101,9 @@ function check(name, ok, detail) {
     return {
       present: true,
       text: panel.innerText,
-      rows: Array.from(panel.querySelectorAll('.ts-perf__number')).map((r) => ({
-        label: (r.querySelector('dt') || {}).textContent?.trim(),
-        value: (r.querySelector('dd') || {}).textContent?.trim(),
+      rows: Array.from(panel.querySelectorAll('.ts-perf__stat')).map((r) => ({
+        label: (r.querySelector('.ts-perf__stat-label') || {}).textContent?.trim(),
+        value: (r.querySelector('.ts-perf__stat-value') || {}).textContent?.trim(),
       })),
     };
   });
@@ -200,86 +200,102 @@ function check(name, ok, detail) {
   }
   check('the options overlay opened in-game', overlay.open);
 
-  // ── CASE 1: THE TWO TABS ───────────────────────────────────────────
-  const tabs = await page.evaluate(() => {
-    const list = document.querySelector('.opts [role="tablist"]');
-    if (!list) return { present: false };
-    const els = Array.from(list.querySelectorAll('[role="tab"]'));
-    const panels = {
-      settings: document.querySelector('#opts-panel-settings'),
-      client: document.querySelector('#opts-panel-client'),
-    };
-    const strip = list.getBoundingClientRect();
-    const body = document.querySelector('.opts__body');
-    const bodyBox = body ? body.getBoundingClientRect() : null;
+  // ── CASE 1: THE SIDEBAR, THE THREE PAGES, AND THE QUIT BUTTON ─────
+  //
+  // The overlay used to be a tab strip with two tabs, and the Quit
+  // button lived INSIDE the Settings tab. The redesign made the
+  // readout its own page — and a long readout in the same panel
+  // pushed the Quit button, the control a player reaches for when
+  // they want to LEAVE a match, down the scroll.
+  //
+  // The invariant is now STRUCTURAL: the Quit button is in the
+  // SIDEBAR, outside every page, so no page can push it down at all.
+  // These checks hold it there.
+  const shell = await page.evaluate(() => {
+    const nav = document.querySelector('.opts__side');
+    const sideBtns = nav ? Array.from(nav.querySelectorAll('.opts__side-btn')) : [];
+    const quit = document.querySelector('.opts__quit');
+    const pages = Array.from(document.querySelectorAll('.opts__page'));
+    const frame = document.querySelector('.opts__frame');
+    const qr = quit ? quit.getBoundingClientRect() : null;
     return {
-      present: true,
-      count: els.length,
-      tabs: els.map((t) => ({
-        id: t.id,
-        name: (t.textContent || '').trim(),
-        selected: t.getAttribute('aria-selected'),
-        controls: t.getAttribute('aria-controls'),
-        tabindex: t.getAttribute('tabindex'),
-      })),
-      panelRoles: {
-        settings: panels.settings ? panels.settings.getAttribute('role') : null,
-        client: panels.client ? panels.client.getAttribute('role') : null,
-      },
-      panelLabelledBy: {
-        settings: panels.settings ? panels.settings.getAttribute('aria-labelledby') : null,
-        client: panels.client ? panels.client.getAttribute('aria-labelledby') : null,
-      },
-      // The strip must be OUTSIDE the scrolling body.
-      stripOutsideBody: !!(bodyBox && strip.bottom <= bodyBox.top + 1),
-      stripVisible: strip.width > 0 && strip.height > 0,
-      settingsHasPerf: !!(panels.settings && panels.settings.querySelector('.ts-perf')),
-      clientHasPerf: !!(panels.client && panels.client.querySelector('.ts-perf')),
-      settingsHasQuit: !!(panels.settings && panels.settings.querySelector('.opts__btn--danger')),
-      clientHasQuit: !!(panels.client && panels.client.querySelector('.opts__btn--danger')),
-      settingsVisible: panels.settings ? getComputedStyle(panels.settings).display !== 'none' : false,
-      clientVisible: panels.client ? getComputedStyle(panels.client).display !== 'none' : false,
+      navPresent: !!nav,
+      pageButtons: sideBtns.map((b) => (b.textContent || '').trim()),
+      current: sideBtns
+        .filter((b) => b.getAttribute('aria-current') === 'page')
+        .map((b) => (b.textContent || '').trim()),
+      quitPresent: !!quit,
+      quitInNav: !!(quit && nav && nav.contains(quit)),
+      quitInPage: !!(quit && quit.closest('.opts__page')),
+      quitVisible: !!(qr && qr.width > 0 && qr.height > 0),
+      quitRect: qr
+        ? {
+            top: Math.round(qr.top),
+            bottom: Math.round(qr.bottom),
+            left: Math.round(qr.left),
+            right: Math.round(qr.right),
+          }
+        : null,
+      vh: window.innerHeight,
+      vw: window.innerWidth,
+      frameWidth: frame ? getComputedStyle(frame).width : null,
+      frameHeight: frame ? getComputedStyle(frame).height : null,
+      pageCount: pages.length,
+      visiblePages: pages
+        .filter((p) => getComputedStyle(p).display !== 'none')
+        .map((p) => p.className),
     };
   });
 
-  log('\n--- the tabs ---');
-  log(JSON.stringify(tabs, null, 1));
+  log('\n--- the options shell ---');
+  log(JSON.stringify(shell, null, 1));
   log('');
 
-  check('the overlay has a tablist', tabs.present);
-  check('there are exactly TWO tabs', tabs.count === 2, String(tabs.count));
+  check('the overlay has a sidebar', shell.navPresent === true);
   check(
-    'the tabs are "Settings" and "Your Client"',
-    (tabs.tabs || []).map((t) => t.name).join('|') === 'Settings|Your Client',
-    JSON.stringify((tabs.tabs || []).map((t) => t.name))
+    'the sidebar has exactly THREE pages',
+    (shell.pageButtons || []).length === 3,
+    JSON.stringify(shell.pageButtons)
   );
   check(
-    'each tab has aria-selected and aria-controls',
-    (tabs.tabs || []).every((t) => t.selected !== null && t.controls)
+    'the pages are "Player", "Game" and "Performance"',
+    (shell.pageButtons || []).map((p) => p.replace(/\s+\d+$/, '')).join('|') ===
+      'Player|Game|Performance',
+    JSON.stringify(shell.pageButtons)
   );
   check(
-    'the panels are tabpanels labelled by their tab',
-    tabs.panelRoles.settings === 'tabpanel' &&
-      tabs.panelRoles.client === 'tabpanel' &&
-      tabs.panelLabelledBy.settings === 'opts-tab-settings' &&
-      tabs.panelLabelledBy.client === 'opts-tab-client',
-    JSON.stringify(tabs.panelRoles) + ' ' + JSON.stringify(tabs.panelLabelledBy)
+    'exactly one page is the current one',
+    (shell.current || []).length === 1,
+    JSON.stringify(shell.current)
   );
   check(
-    'the roving tabindex: the selected tab is 0, the other is -1',
-    (tabs.tabs || []).filter((t) => t.selected === 'true').length === 1 &&
-      (tabs.tabs || []).find((t) => t.selected === 'true').tabindex === '0' &&
-      (tabs.tabs || []).find((t) => t.selected !== 'true').tabindex === '-1',
-    JSON.stringify((tabs.tabs || []).map((t) => [t.name, t.selected, t.tabindex]))
+    'the panel opens on the Player page (where the name field is)',
+    (shell.current || [])[0]?.startsWith('Player') === true,
+    JSON.stringify(shell.current)
   );
-  check('the tab strip is OUTSIDE the scrolling body', tabs.stripOutsideBody === true);
-  check('the tab strip is visible', tabs.stripVisible === true);
-  check('the readout is in the Your Client panel', tabs.clientHasPerf === true);
-  check('the readout is NOT in the Settings panel', tabs.settingsHasPerf === false);
-  check('the Quit button is in the Settings panel', tabs.settingsHasQuit === true);
-  check('the Quit button is NOT in the Your Client panel', tabs.clientHasQuit === false);
-  check('the Settings panel is the one showing on open', tabs.settingsVisible === true);
-  check('the Your Client panel is hidden on open', tabs.clientVisible === false);
+  check('the Quit button is there', shell.quitPresent === true);
+  check('the Quit button is IN THE SIDEBAR', shell.quitInNav === true);
+  check(
+    'the Quit button is NOT inside a page — that is what makes it ' +
+      'unreachable-proof',
+    shell.quitInPage === false
+  );
+  check('the Quit button is VISIBLE', shell.quitVisible === true);
+  check(
+    'THE QUIT BUTTON IS INSIDE THE VIEWPORT, WITHOUT SCROLLING',
+    !!shell.quitRect &&
+      shell.quitRect.top >= 0 &&
+      shell.quitRect.bottom <= shell.vh &&
+      shell.quitRect.left >= 0 &&
+      shell.quitRect.right <= shell.vw,
+    JSON.stringify(shell.quitRect)
+  );
+  check(
+    'the window is the design\'s FIXED 960 x 620 frame',
+    shell.frameWidth === '960px' && shell.frameHeight === '620px',
+    `${shell.frameWidth} x ${shell.frameHeight}`
+  );
+  check('there are three pages', shell.pageCount === 3, String(shell.pageCount));
 
   // The name input must hold the focus when the overlay opens — without
   // it the keystrokes go to <body> and the ENGINE eats them.
@@ -293,125 +309,208 @@ function check(name, ok, detail) {
     JSON.stringify(focusOnOpen)
   );
 
-  // ── CASE 1b: CLICK THE "Your Client" TAB ────────────────────────────
-  await page.click('#opts-tab-client');
-  await page.waitForTimeout(600);
-  const afterSwitch = await page.evaluate(() => {
-    const s = document.querySelector('#opts-panel-settings');
-    const c = document.querySelector('#opts-panel-client');
-    const perf = c && c.querySelector('.ts-perf');
-    const strip = document.querySelector('.opts [role="tablist"]');
-    const stripBox = strip ? strip.getBoundingClientRect() : null;
+  /** Click a page in the sidebar, by its label. */
+  const clickPage = async (label) => {
+    await page.evaluate((wanted) => {
+      const b = Array.from(document.querySelectorAll('.opts__side-btn')).find((x) =>
+        (x.textContent || '').trim().startsWith(wanted)
+      );
+      if (b) b.click();
+    }, label);
+    await page.waitForTimeout(800);
+  };
+
+  /** Where the Quit button is, and whether it is on screen. */
+  const quitGeometry = () =>
+    page.evaluate(() => {
+      const quit = document.querySelector('.opts__quit');
+      if (!quit) return null;
+      const r = quit.getBoundingClientRect();
+      const page = document.querySelector('.opts__page:not([style*="display: none"])');
+      const scroller = document.querySelector('.opts__page');
+      return {
+        top: Math.round(r.top),
+        bottom: Math.round(r.bottom),
+        left: Math.round(r.left),
+        right: Math.round(r.right),
+        vh: window.innerHeight,
+        vw: window.innerWidth,
+        fullyVisible:
+          r.top >= 0 && r.bottom <= window.innerHeight && r.left >= 0 && r.right <= window.innerWidth,
+        scrollTop: scroller ? scroller.scrollTop : null,
+        scrollHeight: scroller ? scroller.scrollHeight : null,
+        clientHeight: scroller ? scroller.clientHeight : null,
+        // The page must not be able to push it: the Quit button is not
+        // inside the page at all.
+        insidePage: !!quit.closest('.opts__page'),
+        pageScrolled: !!(scroller && scroller.scrollTop > 0),
+        title: page ? (page.className || '') : null,
+      };
+    });
+
+  // ── CASE 1b: THE PERFORMANCE PAGE — THE READOUT ───────────────────
+  await clickPage('Performance');
+  const perfPage = await page.evaluate(() => {
+    const perf = document.querySelector('.ts-perf');
+    const rows = perf
+      ? Array.from(perf.querySelectorAll('.ts-perf__stat')).map((r) => ({
+          label: (r.querySelector('.ts-perf__stat-label') || {}).textContent?.trim(),
+          value: (r.querySelector('.ts-perf__stat-value') || {}).textContent?.trim(),
+        }))
+      : [];
     return {
-      settingsVisible: s ? getComputedStyle(s).display !== 'none' : null,
-      clientVisible: c ? getComputedStyle(c).display !== 'none' : null,
-      perfVisible: perf ? perf.getBoundingClientRect().height > 0 : false,
-      perfText: perf ? perf.innerText : '',
-      rows: perf
-        ? Array.from(perf.querySelectorAll('.ts-perf__number')).map((r) => ({
-            label: (r.querySelector('dt') || {}).textContent?.trim(),
-            value: (r.querySelector('dd') || {}).textContent?.trim(),
+      present: !!perf,
+      visible: !!(perf && perf.getBoundingClientRect().height > 0),
+      isGame: !!(perf && perf.classList.contains('is-game')),
+      text: perf ? perf.innerText : '',
+      rows,
+      findings: perf
+        ? Array.from(perf.querySelectorAll('.ts-perf__finding')).map((f) => ({
+            title: (f.querySelector('.ts-perf__finding-title') || {}).textContent?.trim(),
+            severity: (f.querySelector('.ts-perf__sev') || {}).textContent?.trim(),
           }))
         : [],
-      stripStillVisible: !!(stripBox && stripBox.height > 0 && stripBox.width > 0),
-      // The way back to Settings must be on screen.
-      stripInViewport: !!(stripBox && stripBox.top >= 0 && stripBox.bottom <= window.innerHeight),
-      activeTab: (document.querySelector('[role="tab"][aria-selected="true"]') || {}).textContent?.trim(),
+      badge: (document.querySelector('.opts__badge') || {}).textContent?.trim() || null,
     };
   });
-  log('\n--- the Your Client tab ---');
-  log(afterSwitch.perfText.replace(/\n{2,}/g, '\n').slice(0, 900));
+  log('\n--- the Performance page ---');
+  log(perfPage.text.replace(/\n{2,}/g, '\n').slice(0, 900));
   log('\n');
-  check('clicking the tab shows the Your Client panel', afterSwitch.clientVisible === true);
-  check('the Settings panel is hidden after the switch', afterSwitch.settingsVisible === false);
-  check('the readout is visible on the Your Client tab', afterSwitch.perfVisible === true);
-  check('the tab strip is still visible on the Your Client tab', afterSwitch.stripStillVisible === true);
-  check('the tab strip is still inside the viewport', afterSwitch.stripInViewport === true);
+
+  check('the Performance page carries the readout', perfPage.present === true);
+  check('the readout is VISIBLE', perfPage.visible === true);
+  check('the readout is in its GAME clothes', perfPage.isGame === true);
   check(
-    'the selected tab is "Your Client"',
-    (afterSwitch.activeTab || '').trim() === 'Your Client',
-    String(afterSwitch.activeTab)
+    'the findings carry a severity label, not just a colour',
+    (perfPage.findings || []).every((f) => /^(OK|Info|Warning|Error)$/i.test(f.severity || '')),
+    JSON.stringify(perfPage.findings)
   );
 
-  const frameCost = (afterSwitch.rows || []).find((r) => /frame cost/i.test(r.label || ''));
+  const frameCost = (perfPage.rows || []).find((r) => /frame cost/i.test(r.label || ''));
   check(
     'THE FRAME COST IS VISIBLE — the number that was never reachable',
     !!frameCost,
-    JSON.stringify(afterSwitch.rows)
+    JSON.stringify(perfPage.rows)
   );
   if (frameCost) {
     const ms = parseFloat((frameCost.value || '').match(/([\d.]+)\s*ms/)?.[1] || '0');
     check('the frame cost is a real measurement, not zero', ms > 0, frameCost.value);
     log(`      frame cost: ${frameCost.value}`);
   }
-  const renderSize = (afterSwitch.rows || []).find((r) => /render size/i.test(r.label || ''));
-  check('the render size IS reported in-game (the game is running)', !!renderSize, JSON.stringify(afterSwitch.rows));
+  const renderSize = (perfPage.rows || []).find((r) => /render size/i.test(r.label || ''));
+  check(
+    'the render size IS reported in-game (the game is running)',
+    !!renderSize,
+    JSON.stringify(perfPage.rows)
+  );
   if (renderSize) {
-    check('and it is not "0.0 megapixels"', !/0\.0 megapixels/.test(renderSize.value || ''), renderSize.value);
+    check(
+      'and it is not "0.0 megapixels"',
+      !/0\.0 megapixels/.test(renderSize.value || ''),
+      renderSize.value
+    );
     log(`      render size: ${renderSize.value}`);
   }
 
-  // ── CASE 1c: BACK TO SETTINGS — AND QUIT IS STILL REACHABLE ────────
-  await page.click('#opts-tab-settings');
-  await page.waitForTimeout(600);
-  const quitGeo = await page.evaluate(() => {
-    const quit = document.querySelector('#opts-panel-settings .opts__btn--danger');
-    if (!quit) return null;
-    const r = quit.getBoundingClientRect();
-    const body = document.querySelector('.opts__body');
-    const panel = document.querySelector('.opts__panel') || document.querySelector('.opts');
-    const cs = getComputedStyle(quit);
-    const vh = window.innerHeight;
-    const bodyRect = body ? body.getBoundingClientRect() : null;
-    const panelRect = panel ? panel.getBoundingClientRect() : null;
-    const bodyClient = body ? body.clientHeight : 0;
-    // The chrome above the body: the head + the panel's own padding.
-    const chrome = panelRect && body ? Math.round(panelRect.height - bodyClient) : 0;
-    // Where the Quit button sits inside the scrolling body.
-    const quitOffset = bodyRect ? Math.round(r.top - bodyRect.top) : 0;
-    const quitH = Math.round(r.height);
-    // THE THRESHOLD: the viewport height at which the Quit button is
-    // fully visible without scrolling.
-    //   - the body is capped at 88vh, so it can only show
-    //     (0.88 * H) - chrome of the Settings content;
-    //   - the modal's top edge is anchored at 4vh (new) or 6vh (the old
-    //     centred 88vh modal), so the button must also fit the viewport.
-    const Hbody = Math.ceil((quitOffset + chrome) / 0.88);
-    const HviewNew = Math.ceil((quitOffset + chrome + quitH) / 0.96);
-    const HviewOld = Math.ceil((quitOffset + chrome + quitH) / 0.94);
-    return {
-      top: Math.round(r.top),
-      bottom: Math.round(r.bottom),
-      vh,
-      vw: window.innerWidth,
-      fullyVisible: r.top >= 0 && r.bottom <= vh && r.left >= 0 && r.right <= window.innerWidth,
-      bodyScrollTop: body ? body.scrollTop : null,
-      bodyScrollHeight: body ? body.scrollHeight : null,
-      bodyClientHeight: bodyClient,
-      chrome,
-      quitOffset,
-      thresholdNew: Math.max(Hbody, HviewNew),
-      thresholdOldCentred: Math.max(Hbody, HviewOld),
-      visible: cs.visibility !== 'hidden' && cs.display !== 'none',
-    };
-  });
-  log('\n--- the Quit button, in the Settings tab ---');
-  log(JSON.stringify(quitGeo));
+  // THE INVARIANT, ON THE PAGE THAT USED TO BREAK IT.
+  const quitOnPerf = await quitGeometry();
+  log('\n--- the Quit button, on the Performance page ---');
+  log(JSON.stringify(quitOnPerf));
   log('');
-  check('the Quit button is there in the Settings tab', !!quitGeo);
-  if (quitGeo) {
-    check('the Quit button is VISIBLE', quitGeo.visible === true);
+  check('the Quit button is still there on the Performance page', !!quitOnPerf);
+  if (quitOnPerf) {
     check(
-      'THE QUIT BUTTON IS INSIDE THE VIEWPORT, WITHOUT SCROLLING',
-      quitGeo.fullyVisible === true && (quitGeo.bodyScrollTop || 0) === 0,
-      JSON.stringify(quitGeo)
+      'THE QUIT BUTTON IS STILL ON SCREEN, ON THE LONGEST PAGE',
+      quitOnPerf.fullyVisible === true,
+      JSON.stringify(quitOnPerf)
     );
     check(
-      'AND THE VIEWPORT IS TALL ENOUGH FOR THAT TO MEAN SOMETHING',
-      quitGeo.vh >= quitGeo.thresholdNew,
-      `viewport ${quitGeo.vh}px vs the ${quitGeo.thresholdNew}px threshold`
+      'and the page did not have to be scrolled to get there',
+      quitOnPerf.pageScrolled === false,
+      `scrollTop ${quitOnPerf.scrollTop}`
     );
   }
+
+  // ── CASE 1c: THE GAME PAGE — THE SLIDERS ──────────────────────────
+  await clickPage('Game');
+  const gamePage = await page.evaluate(() => {
+    const sliders = Array.from(document.querySelectorAll('.opts__row--slider')).map((r) => ({
+      label: (r.querySelector('.opts__row-label') || {}).textContent?.trim(),
+      value: (r.querySelector('.opts__input--num') || {}).value,
+      default: !!r.querySelector('.opts__chip'),
+    }));
+    return {
+      sliders,
+      apply: !!document.querySelector('.opts__btn--primary'),
+      fullscreen: !!document.querySelector('[role="switch"]'),
+      fov: sliders.find((s) => /field of view/i.test(s.label || '')) || null,
+    };
+  });
+  log('\n--- the Game page ---');
+  log(JSON.stringify(gamePage, null, 1));
+  log('');
+
+  check(
+    'the Game page has the three sliders',
+    (gamePage.sliders || []).length === 3,
+    JSON.stringify(gamePage.sliders)
+  );
+  check('the Game page has an Apply button', gamePage.apply === true);
+  check('the Game page has the fullscreen switch', gamePage.fullscreen === true);
+  check(
+    'THE FIELD OF VIEW IS NOT 0 — 0 is not a field of view',
+    !!gamePage.fov && !/^0(\.0+)?$/.test((gamePage.fov.value || '').trim()),
+    gamePage.fov ? gamePage.fov.value : 'no fov row'
+  );
+  check(
+    'and the row says it is showing the default',
+    !!gamePage.fov && gamePage.fov.default === true,
+    gamePage.fov ? JSON.stringify(gamePage.fov) : 'no fov row'
+  );
+
+  const quitOnGame = await quitGeometry();
+  check(
+    'THE QUIT BUTTON IS STILL ON SCREEN, ON THE GAME PAGE',
+    !!quitOnGame && quitOnGame.fullyVisible === true,
+    JSON.stringify(quitOnGame)
+  );
+
+  // ── CASE 1d: BACK TO THE PLAYER PAGE ──────────────────────────────
+  await clickPage('Player');
+  const playerPage = await page.evaluate(() => {
+    const picker = document.querySelector('.opts__roster');
+    const tiles = picker ? picker.querySelectorAll('.picker__char') : [];
+    const selected = picker ? picker.querySelector('.picker__char--on') : null;
+    return {
+      tiles: tiles.length,
+      selectedName: selected
+        ? (selected.querySelector('.picker__name') || {}).textContent?.trim()
+        : null,
+      nameField: !!document.querySelector('.opts__input'),
+      portraits: Array.from(tiles).filter((t) => {
+        const img = t.querySelector('img');
+        return !!img && img.getAttribute('src');
+      }).length,
+    };
+  });
+  log('\n--- the Player page ---');
+  log(JSON.stringify(playerPage));
+  log('');
+  check('the roster has all sixteen characters', playerPage.tiles === 16, String(playerPage.tiles));
+  check(
+    'every character has a portrait',
+    playerPage.portraits === 16,
+    String(playerPage.portraits)
+  );
+  check('one of them is selected', !!playerPage.selectedName, String(playerPage.selectedName));
+  check('the name field is there', playerPage.nameField === true);
+
+  const quitOnPlayer = await quitGeometry();
+  check(
+    'THE QUIT BUTTON IS STILL ON SCREEN, ON THE PLAYER PAGE',
+    !!quitOnPlayer && quitOnPlayer.fullyVisible === true,
+    JSON.stringify(quitOnPlayer)
+  );
 
   await page.screenshot({ path: `${OUT}/readout-in-game.png`, fullPage: false });
   await page.screenshot({ path: `${OUT}/readout-client-tab.png`, fullPage: false });
@@ -419,7 +518,7 @@ function check(name, ok, detail) {
   // ── CASE 2: QUIT TO THE WEB UI — THE READOUT MUST SURVIVE ─────────
   // (The snapshot is written AT the quit, not during the game — so it is
   // checked on the landing page below, where it must exist.)
-  await page.click('#opts-panel-settings .opts__btn--danger');
+  await page.click('.opts__quit');
   // The quit is a FULL PAGE LOAD (window.location.href = '/'), so wait
   // for the new document, not just a route change.
   await page.waitForLoadState('domcontentloaded', { timeout: 60_000 }).catch(() => {});
@@ -436,9 +535,9 @@ function check(name, ok, detail) {
     return {
       present: true,
       text: panel.innerText,
-      rows: Array.from(panel.querySelectorAll('.ts-perf__number')).map((r) => ({
-        label: (r.querySelector('dt') || {}).textContent?.trim(),
-        value: (r.querySelector('dd') || {}).textContent?.trim(),
+      rows: Array.from(panel.querySelectorAll('.ts-perf__stat')).map((r) => ({
+        label: (r.querySelector('.ts-perf__stat-label') || {}).textContent?.trim(),
+        value: (r.querySelector('.ts-perf__stat-value') || {}).textContent?.trim(),
       })),
       session: Object.keys(window.sessionStorage).reduce((acc, k) => {
         acc[k] = window.sessionStorage.getItem(k);
