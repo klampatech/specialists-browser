@@ -17,9 +17,8 @@
  * ran tried `cl_weather` — and `cl_weather` is not in this build at
  * all, so that lever could never have worked.
  *
- * So every cvar in the list is checked against the SHIPPED
- * WebAssembly modules, and the list is checked for the one cvar that
- * must never be in it.
+ * So every cvar in the list is checked against the SHIPPED engine,
+ * and the list is checked for the one cvar that must never be in it.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -42,19 +41,64 @@ if (!existsSync(WEBXASH)) {
 const { DRAW_COST_SWITCHES, isCheap, valueFor } = await import(DRAW_COST_TS);
 
 /**
- * THE SHIPPED ENGINE'S MODULES, AS BYTES.
+ * WHERE THE SHIPPED ENGINE IS.
+ *
+ * `node_modules/xash3d-fwgs` is the engine the client bundles and
+ * ships — the deploy notes say so: "the client bundles the engine out
+ * of node_modules and never requests them" from `public/`.
+ *
+ * THE `public/` COPY IS A FALLBACK AND NOT THE TRUTH. It is
+ * gitignored, it is left over from an older layout, and on this
+ * machine it holds a DIFFERENT `xash.wasm` than the one that ships —
+ * a stale build that is missing cvars the real one has. A test that
+ * read it would be checking a binary nobody runs.
+ *
+ * And when the engine is not installed at all — the unit job does not
+ * run `bun install` — the check SKIPS, loudly, rather than passing on
+ * nothing. The Frontend job has the engine, and runs this file there.
+ */
+const ENGINE_MODULE_DIRS = [
+  join(WEBXASH, 'node_modules', 'xash3d-fwgs', 'dist'),
+  join(WEBXASH, 'public', 'xash3d-fwgs', 'dist'),
+];
+
+/**
+ * THE MODULES, AS BYTES.
  *
  * The cvars live as plain strings in the WebAssembly data section, so
  * a name that is in the module is a name the engine can answer for.
- * Reading the files is the check; running the engine is not
- * possible in a unit test, and the repo's own lesson is that a
- * cvar's VALUE proves nothing — only the cvar's existence does.
+ * Reading the files is the check; running the engine is not possible
+ * in a unit test, and the repo's own lesson is that a cvar's VALUE
+ * proves nothing — only the cvar's existence does.
  */
 const ENGINE_MODULES = [
-  join(WEBXASH, 'public', 'xash3d-fwgs', 'dist', 'libref_webgl2.wasm'),
-  join(WEBXASH, 'public', 'xash3d-fwgs', 'dist', 'xash.wasm'),
-].filter((p) => existsSync(p));
+  join('libref_webgl2.wasm'),
+  join('xash.wasm'),
+]
+  .map((f) => ENGINE_MODULE_DIRS.map((d) => join(d, f)))
+  .flat()
+  .filter((p) => existsSync(p));
 
+/**
+ * IS THE ENGINE HERE?
+ *
+ * The engine is the `xash3d-fwgs` package, and it is an npm
+ * dependency: `bun install` in `webxash/` brings it. A checkout
+ * without it cannot answer the question this file asks, and saying
+ * so is better than quietly checking nothing.
+ */
+function requireEngine(t) {
+  if (ENGINE_MODULES.length === 0) {
+    t.skip(
+      'the engine package is not installed — `bun install` in webxash/. ' +
+        'The Frontend job runs this file with the engine present.',
+    );
+    return false;
+  }
+  return true;
+}
+
+/** Does any of the engine's modules name this cvar? */
 function engineHas(name) {
   for (const path of ENGINE_MODULES) {
     const bytes = readFileSync(path);
@@ -63,8 +107,8 @@ function engineHas(name) {
   return false;
 }
 
-test('every draw-cost switch names a cvar the SHIPPED engine has', () => {
-  assert.ok(ENGINE_MODULES.length > 0, 'the engine modules are there to check against');
+test('every draw-cost switch names a cvar the SHIPPED engine has', (t) => {
+  if (!requireEngine(t)) return;
   for (const sw of DRAW_COST_SWITCHES) {
     assert.ok(
       engineHas(sw.cvar),
@@ -73,9 +117,10 @@ test('every draw-cost switch names a cvar the SHIPPED engine has', () => {
   }
 });
 
-test('the cvar the sweep tried, and this build does not have, is not offered', () => {
+test('the cvar the sweep tried, and this build does not have, is not offered', (t) => {
   // `cl_weather` was in the project's own cvar sweep and is NOT in
   // this build — so it could never have been a lever here.
+  if (!requireEngine(t)) return;
   assert.equal(engineHas('cl_weather'), false);
   assert.equal(
     DRAW_COST_SWITCHES.some((s) => s.cvar === 'cl_weather'),

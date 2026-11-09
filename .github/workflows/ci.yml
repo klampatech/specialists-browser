@@ -74,6 +74,26 @@ jobs:
           fi
           echo "  bundle size: $(du -sh dist | cut -f1)"
 
+      - name: The draw-cost switches name cvars the SHIPPED engine has
+        # WHY THIS RUNS HERE AND NOT IN THE UNIT JOB
+        # ---------------------------------------------
+        # The check reads the engine's own WebAssembly and asks whether
+        # each cvar the draw-cost menu offers is actually IN it. A cvar
+        # that is not in the build does nothing at all, and reads back
+        # exactly like a cvar that was switched on and had no effect.
+        #
+        # The engine is the `xash3d-fwgs` npm package, so it is only
+        # here — this job ran `bun install` — and the unit job does
+        # not have it. So the test SKIPS there, loudly, and runs HERE.
+        #
+        # It also runs against `node_modules/xash3d-fwgs`, which is the
+        # engine the client bundles and ships. The gitignored
+        # `public/xash3d-fwgs` copy is a stale local leftover holding
+        # a DIFFERENT xash.wasm, and checking that would be checking a
+        # binary nobody runs.
+        working-directory: .
+        run: node --experimental-strip-types --test tests/unit/draw-cost.test.mjs
+
 
   unit:
     name: Unit — the regressions that actually bit us
