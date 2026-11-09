@@ -23,11 +23,13 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
-**As of:** 2026-11-08, LATEST — **THE PACER'S HYSTERESIS IS BEING REBUILT: A
-BAND IN THE WRONG UNITS WAS HALVING THE FRAME RATE.**
+**As of:** 2026-11-09, LATEST — **THE PACER'S HYSTERESIS IS REBUILT, AND
+webXash #50 IS APPROVED AND MERGED. THE PARENT POINTER LANDS WITH THIS
+COMMIT.**
 
-Kyle reviewed webXash PR #50 and asked for this work before he would sign
-it off. Two reviews of the pacing policy had run by then (one broad
+Kyle reviewed webXash PR #50, asked for this work before he would sign it
+off, and approved it once it was done — his own empty-body review, read
+back before the merge. Two reviews of the pacing policy had run by then (one broad
 review that hung and was killed, one focused review that completed), and
 a second focused review — of the **fixes** rather than of the original
 work — found that the fix for the pump had itself become a performance
@@ -140,6 +142,11 @@ player moving:
   the gate"*.
 
 The full numbers are in `docs/CLIENT-PERF-RESULTS.md`.
+
+**APPROVED AND MERGED.** webXash **#50** merged as **`9a2cac0`**, whose tree
+is byte-for-byte the tree Kyle approved (`git diff origin/main 5c41df1` is
+empty — the squash carries exactly what he reviewed). This commit repoints
+the parent at it, and the deploy runs when it lands.
 
 **As of:** 2026-11-08, LATEST — **THE PACER MEASURES THE ENGINE WARM, AND
 KEEPS MEASURING. THE READOUT STOPS BLAMING THE BROWSER.**
@@ -5548,23 +5555,25 @@ the parts that are known traps.
 
 # § NEXT TASK
 
-> ## THE PACER MEASURES THE ENGINE WARM, AND KEEPS MEASURING (2026-11-08, DONE — NOT MERGED YET)
+> ## THE PACER MEASURES THE ENGINE WARM, AND KEEPS MEASURING (2026-11-08, DONE — APPROVED AND MERGED INTO WEBXASH)
 >
-> **BUILT, TESTED AND MEASURED, ON BRANCH `feat/pacing-warm-measurement` IN BOTH
-> REPOS.** The work order was `docs/CLIENT-PERF-PACING-PLAN.md`; § CURRENT
-> STATE's newest block has the whole story — what Kyle asked, what was wrong,
-> the six files that changed, the 744-test suite, and the CI-rig A/B numbers
-> (four pairs, the branch's engine fps never lower, the late-frame fraction
-> never worse).
+> **SHIPPED.** webXash **#50** merged as **`9a2cac0`** after Kyle's own
+> empty-body review; the parent's pointer lands with it and the deploy runs
+> after. The work order was `docs/CLIENT-PERF-PACING-PLAN.md`, the numbers
+> are in `docs/CLIENT-PERF-RESULTS.md`, and § CURRENT STATE's newest block
+> has the whole story — what was wrong, the review that caught it, the
+> rebuild, and the M3 Pro measurement (at the heavy view the engine was
+> 38.1% late; the pacer narrowed to 60 fps and the late fraction went to
+> 0%).
 >
-> **NOT DONE: THE MERGE.** webXash first, then the parent, one pointer move,
-> Kyle's approving review — the sequence is in § CURRENT STATE above. The
-> **cap-engaging path** (a hardware-accelerated client on a 120 Hz panel) is
-> **not reproducible in the CI rig** — it is software-rendered there — so it
-> still wants Kyle's real machine, with `tools/perf/measure-pacing-timeline.cjs`
-> as the harness.
+> **ONE THING LEFT, AND IT WANTS KYLE'S MACHINE.** The **cap-engaging path**
+> (a hardware-accelerated client on a 120 Hz panel) is **not reproducible in
+> the CI rig** — it is software-rendered there — so the final confirmation
+> wants Kyle's real machine, with `tools/perf/measure-pacing-timeline.cjs` as
+> the harness. It was run there on 2026-11-08 and the numbers are in the
+> results doc.
 >
-> **AND STILL NOT MINE: THE LOADOUT** (Task B's session half), below.
+> **THE NEXT TASK IS THE LOADOUT** (Task B's session half), below.
 >
 > ## THE READOUT GETS A TAB, AND THE WEB UI'S READOUT SURVIVES THE QUIT (2026-11-07, DONE — MERGED AND DEPLOYED)
 >
