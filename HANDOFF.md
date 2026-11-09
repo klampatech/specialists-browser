@@ -143,10 +143,21 @@ player moving:
 
 The full numbers are in `docs/CLIENT-PERF-RESULTS.md`.
 
-**APPROVED AND MERGED.** webXash **#50** merged as **`9a2cac0`**, whose tree
-is byte-for-byte the tree Kyle approved (`git diff origin/main 5c41df1` is
-empty — the squash carries exactly what he reviewed). This commit repoints
-the parent at it, and the deploy runs when it lands.
+**SHIPPED AND LIVE.** webXash **#50** merged as **`9a2cac0`**, whose tree is
+byte-for-byte the tree Kyle approved (`git diff origin/main 5c41df1` is
+empty — the squash carries exactly what he reviewed). The parent's **#146**
+(`5be4405`) repointed it and merged after Kyle's own empty-body review, the
+deploy's browser gate passed, and production is serving the new bundle
+(`assets/index-kKNXEsss.js`).
+
+**VERIFIED READ-ONLY, NO GAMEPLAY AGAINST PRODUCTION.** The shipped bundle
+carries each of the new policy's distinguishing strings exactly once — *"the
+engine's cost has not yet passed"*, *"the cost has been high for"*,
+*"waiting for a second window before"*, *"the gate is still PROVISIONAL, so
+it"*, *"follows the latest warm-up reading"*, *"the measurement harness, so
+the policy leaves it alone"*, *"in a row have asked for it"* — and none of
+the old band's identifiers (`COST_DEADBAND`, `currentBasisFps`). That is the
+policy that is live, not the one that was reviewed.
 
 **As of:** 2026-11-08, LATEST — **THE PACER MEASURES THE ENGINE WARM, AND
 KEEPS MEASURING. THE READOUT STOPS BLAMING THE BROWSER.**
@@ -5557,9 +5568,11 @@ the parts that are known traps.
 
 > ## THE PACER MEASURES THE ENGINE WARM, AND KEEPS MEASURING (2026-11-08, DONE — APPROVED AND MERGED INTO WEBXASH)
 >
-> **SHIPPED.** webXash **#50** merged as **`9a2cac0`** after Kyle's own
-> empty-body review; the parent's pointer lands with it and the deploy runs
-> after. The work order was `docs/CLIENT-PERF-PACING-PLAN.md`, the numbers
+> **SHIPPED AND LIVE.** webXash **#50** merged as **`9a2cac0`** after Kyle's
+> own empty-body review, the parent's **#146** (`5be4405`) merged after his
+> own, and the deploy's browser gate passed — production serves
+> `assets/index-kKNXEsss.js`, verified read-only. The work order was
+> `docs/CLIENT-PERF-PACING-PLAN.md`, the numbers
 > are in `docs/CLIENT-PERF-RESULTS.md`, and § CURRENT STATE's newest block
 > has the whole story — what was wrong, the review that caught it, the
 > rebuild, and the M3 Pro measurement (at the heavy view the engine was
