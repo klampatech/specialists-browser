@@ -58,7 +58,15 @@
 
 set -euo pipefail
 
-HOST="${1:-cachyos-x8664-family}"
+# THE HOST TO WATCH. The default is Kyle's OWN gaming PC — it is the one
+# on the tailnet that answers, it is the one he plays on, and it is the
+# one the perf work is about.
+#
+# The FAMILY box is `cachyos-x8664-family`: a DIFFERENT machine (NVIDIA
+# GTX 980, gamescope, user `family`), and it was offline as of
+# 2026-11-09. The two names are confusingly close — do not probe one as
+# a stand-in for the other.
+HOST="${1:-cachyos-x8664}"
 SECONDS_TO_WATCH="${2:-300}"
 # THE REMOTE PORT is where the browser's debugger is.
 REMOTE_PORT="${CDP_PORT:-9223}"
