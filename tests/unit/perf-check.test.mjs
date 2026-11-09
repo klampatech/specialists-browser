@@ -419,21 +419,21 @@ test('the readout is reachable while the game is running', () => {
   // visible. The in-game options overlay is the one place a player can
   // reach while the game is running.
   //
-  // AND THEN: the readout became its own TAB, because a long readout
+  // AND THEN: the readout became its own PAGE, because a long readout
   // in the same panel pushed the Quit button — the one control a
   // player reaches for when they want to LEAVE a match — down the
   // scroll. The invariant is now stronger than "the Quit button comes
-  // first in the source": the two are in DIFFERENT PANELS, so the
-  // readout cannot push the Quit button down at all.
+  // first in the source": the Quit button is in the SIDEBAR, outside
+  // every page, so NO page can push it down at all.
   const overlay = readFileSync(
     join(WEBXASH, 'src', 'components', 'XashOptionsOverlay.vue'),
     'utf8'
   );
-  assert.match(overlay, /<TSPerformance\s+context="game"\s*\/>/, 'the overlay carries the panel');
+  assert.match(overlay, /<TSPerformance[\s\S]*?context="game"/, 'the overlay carries the panel');
   assert.match(overlay, /import TSPerformance from/, 'and imports it');
 
   // And the panel drops its own heading in the game, because the
-  // overlay's tab strip carries the name.
+  // overlay's page title carries the name.
   const panel = readFileSync(
     join(WEBXASH, 'src', 'components', 'TSPerformance.vue'),
     'utf8'
@@ -445,62 +445,81 @@ test('the readout is reachable while the game is running', () => {
     'the panel takes a context, not a presentation flag'
   );
 
-  // THE TABLIST: exactly two tabs, and they are the ones Kyle asked
-  // for — "Settings" and "Your Client".
-  assert.match(overlay, /role="tablist"/, 'the strip is a real tablist');
-  const tabButtons = [...overlay.matchAll(/<button[^>]*\bid="opts-tab-[a-z]+"/g)];
-  assert.equal(tabButtons.length, 2, 'there are exactly two tabs');
-
-  const tabBlock = (id) => {
-    const at = overlay.indexOf(`id="${id}"`);
-    assert.ok(at > 0, `the overlay has the ${id} tab`);
-    return overlay.slice(at, overlay.indexOf('</button>', at));
-  };
-
-  const settingsTab = tabBlock('opts-tab-settings');
-  assert.match(settingsTab, /role="tab"/, 'a tab is a tab');
-  assert.match(settingsTab, /aria-selected/, 'a tab says whether it is selected');
-  assert.match(settingsTab, /aria-controls="opts-panel-settings"/, 'a tab names its panel');
-  assert.match(settingsTab, /tabindex/, 'the tabs carry a roving tabindex');
-  assert.match(settingsTab, /\bSettings\s*$/, 'the first tab is Settings');
-
-  const clientTab = tabBlock('opts-tab-client');
-  assert.match(clientTab, /role="tab"/, 'a tab is a tab');
-  assert.match(clientTab, /aria-selected/, 'a tab says whether it is selected');
-  assert.match(clientTab, /aria-controls="opts-panel-client"/, 'a tab names its panel');
-  assert.match(clientTab, /tabindex/, 'the tabs carry a roving tabindex');
-  assert.match(clientTab, /\bYour Client\s*$/, 'the second tab is Your Client');
-
-  // THE TWO PANELS.
-  const settingsAt = overlay.indexOf('id="opts-panel-settings"');
-  const clientAt = overlay.indexOf('id="opts-panel-client"');
-  assert.ok(settingsAt > 0 && clientAt > settingsAt, 'the overlay has both panels');
-  assert.match(overlay, /role="tabpanel"/, 'the panels are real tab panels');
-  assert.match(overlay, /aria-labelledby="opts-tab-settings"/, 'the Settings panel names its tab');
-  assert.match(overlay, /aria-labelledby="opts-tab-client"/, 'the Your Client panel names its tab');
-
-  const settingsPanel = overlay.slice(settingsAt, clientAt);
-  const clientPanel = overlay.slice(clientAt, overlay.indexOf('</template>'));
-
-  // (b) The Quit button is in the Settings panel.
-  assert.match(settingsPanel, /opts__btn--danger/, 'the Quit button is in the Settings panel');
-  assert.doesNotMatch(clientPanel, /opts__btn--danger/, 'and not in the readout panel');
-
-  // (c) The readout is in the Your Client panel.
+  // THE SIDEBAR: three pages, and they are the ones Kyle asked for —
+  // Player, Game and Performance.
+  assert.match(overlay, /<nav class="opts__side"/, 'the sidebar is a nav');
   assert.match(
-    clientPanel,
-    /<TSPerformance\s+context="game"\s*\/>/,
-    'the readout is in the Your Client panel'
+    overlay,
+    /v-for="p in PAGES"/,
+    'the sidebar draws its pages from one list',
   );
 
-  // (d) And the readout is NOT in the Settings panel. THIS is the
-  // invariant: it cannot push the Quit button down, because it is not
-  // in the same panel at all.
-  assert.doesNotMatch(
-    settingsPanel,
-    /<TSPerformance/,
-    'the readout must not be in the Settings panel'
+  // And the list is the three pages Kyle asked for.
+  const pages = overlay.match(/const PAGES:[\s\S]*?\n\];/);
+  assert.ok(pages, 'the page list is defined');
+  for (const label of ['Player', 'Game', 'Performance']) {
+    assert.match(
+      pages[0],
+      new RegExp(`label: '${label}'`),
+      `the ${label} page is in the sidebar's list`,
+    );
+  }
+  assert.equal(
+    [...pages[0].matchAll(/label: '/g)].length,
+    3,
+    'there are exactly three pages',
   );
+
+  // The current page is marked for a screen reader, the way a nav is.
+  assert.match(overlay, /aria-current="page"/, 'the current page says so');
+
+  // THE QUIT BUTTON IS IN THE SIDEBAR, OUTSIDE EVERY PAGE.
+  //
+  // This is the invariant the redesign made structural: the Quit
+  // button is PINNED to the bottom of the sidebar, so the readout —
+  // or any other page — cannot push it below the fold.
+  const quitAt = overlay.indexOf('opts__quit');
+  assert.ok(quitAt > 0, 'the overlay has a Quit button');
+  const sideAt = overlay.indexOf('opts__side');
+  const firstPageAt = overlay.indexOf("v-show=\"page === 'player'\"");
+  assert.ok(quitAt > sideAt, 'the Quit button is in the sidebar');
+  assert.ok(
+    quitAt < firstPageAt,
+    'the Quit button is in the sidebar and NOT inside a page — that is ' +
+      'what makes it unreachable-proof: no page can push it down',
+  );
+
+  // And the readout is in the PERFORMANCE page, and in no other.
+  const perfPageAt = overlay.indexOf("v-show=\"page === 'performance'\"");
+  const playerPageAt = overlay.indexOf("v-show=\"page === 'player'\"");
+  const gamePageAt = overlay.indexOf("v-show=\"page === 'game'\"");
+  assert.ok(playerPageAt > 0 && gamePageAt > 0 && perfPageAt > 0, 'the overlay has three pages');
+
+  const perfPage = overlay.slice(perfPageAt, overlay.indexOf('</section>', perfPageAt));
+  assert.match(
+    perfPage,
+    /<TSPerformance[\s\S]*?context="game"/,
+    'the readout is in the Performance page'
+  );
+
+  const playerPage = overlay.slice(playerPageAt, overlay.indexOf('</section>', playerPageAt));
+  assert.doesNotMatch(playerPage, /<TSPerformance/, 'and not in the Player page');
+
+  const gamePage = overlay.slice(gamePageAt, overlay.indexOf('</section>', gamePageAt));
+  assert.doesNotMatch(gamePage, /<TSPerformance/, 'and not in the Game page');
+
+  // THE FOCUS TRAP, AND THE PAGE IT OPENS ON.
+  //
+  // The name field is focused when the panel opens, and `focus()` on a
+  // HIDDEN input fails SILENTLY — so the panel must open on the page
+  // that carries the field, and it must reset that page SYNCHRONOUSLY
+  // before the focus.
+  assert.match(
+    overlay,
+    /page\.value = 'player'/,
+    'the panel opens on the page that carries the name field'
+  );
+  assert.match(overlay, /nameInput\.value\?\.focus\(\)/, 'and the field takes the focus');
 });
 
 test('the live facts win while the game is running', () => {
