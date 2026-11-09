@@ -215,77 +215,183 @@ test('computeFrameTarget: the gate lands on the panel\'s grid, near the cap', ()
   );
 });
 
-test('decideFrameGate: a marginal change in the engine does not move the gate', () => {
-  // THE DEADBAND.
+// THE COUNTER, RUN THE WAY THE MACHINERY RUNS IT.
+//
+// The machinery counts consecutive SETTLED windows whose target was the
+// same, and ignores warm-up windows. The policy only ever sees the
+// count -- so a sequence test has to count the same way.
+function runGate(panelHz, windows, start = { everyNth: 1, provisional: false }) {
+  let gate = start.everyNth;
+  let provisional = start.provisional;
+  let lastTarget = null;
+  let consecutive = 0;
+  const moves = [];
+  for (const w of windows) {
+    const settled = w.settled !== false;
+    const target = computeFrameTarget(panelHz, w.workMs);
+    if (settled) {
+      if (lastTarget === target.everyNth) consecutive += 1;
+      else {
+        lastTarget = target.everyNth;
+        consecutive = 1;
+      }
+    }
+    const d = decideFrameGate({
+      panelHz,
+      engineWorkMs: w.workMs,
+      currentEveryNth: gate,
+      settled,
+      consecutiveSame: consecutive,
+      lateFraction: w.lateFraction ?? 0,
+      currentProvisional: provisional,
+    });
+    if (d.everyNth !== gate) {
+      moves.push(`${gate}->${d.everyNth}`);
+      gate = d.everyNth;
+    }
+    provisional = d.provisional;
+  }
+  return { gate, moves };
+}
+
+test('decideFrameGate: ONE window that asks for a different gate does not move it', () => {
+  // THE GATE MOVES ON PERSISTENCE, NOT ON A SINGLE READING.
   //
-  // The sustainable rate crosses the display\'s own rate at
-  // 850/120 = 7.083 ms of frame cost, so a change of one and a half
-  // per cent in the measured cost moves the target from one frame in
-  // one to one frame in two. With the widening immediate and the
-  // narrowing needing two windows, the gate then pumps between the
-  // two and the player\'s frame rate doubles and halves every half
-  // minute.
-  //
-  // The gate in force was chosen for a sustainable rate; the rate has
-  // to move away from THAT by more than the band before the gate
-  // follows it.
-  const near = decideFrameGate({
+  // A gate that widens on the first window and narrows only on the
+  // second ratchets: any flicker in the target opens the gate and a
+  // flicker back does not close it. Both directions need two consecutive
+  // SETTLED windows that ask for the same thing.
+  const d = decideFrameGate({
     panelHz: 120,
-    engineWorkMs: 7.1,
+    engineWorkMs: 7.0,
+    currentEveryNth: 2,
+    settled: true,
+    consecutiveSame: 1,
+    lateFraction: 0,
+  });
+  assert.equal(d.everyNth, 2, 'one window must not move the gate');
+  assert.equal(d.changed, false);
+});
+
+test('decideFrameGate: a sustained improvement in the engine reaches the wider gate', () => {
+  // THE 60 -> 120 STEP IS A 0.8% CHANGE IN THE SUSTAINABLE RATE.
+  //
+  // 7.14 ms of frame cost gives 119 fps of headroom and a 60 fps gate;
+  // 7.00 ms gives 121 and a 120 fps gate. A band on the sustainable rate
+  // swallows that step whole, and the player sits at 60 fps until the
+  // engine is 12% faster. What has to be protected is the ENGINE: a
+  // change that PERSISTS has to be followed.
+  const d = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: 7.0,
+    currentEveryNth: 2,
+    settled: true,
+    consecutiveSame: 2,
+    lateFraction: 0,
+  });
+  assert.equal(d.everyNth, 1, 'a sustained improvement must reach 120 fps');
+  assert.equal(d.changed, true);
+});
+
+test('decideFrameGate: the narrowing waits for the cost to be PAST the threshold', () => {
+  // THE MEASUREMENT NOISE MUST NOT CLOSE THE GATE.
+  //
+  // The engine's cost is measured with about 1.4% of noise (7.00 ms and
+  // 7.20 ms are the same view on the same machine). The gate changes at
+  // a threshold -- 850/120 = 7.083 ms of frame cost on a 120 Hz panel --
+  // so a reading that straddles the threshold would close the gate and
+  // open it again.
+  //
+  // The narrowing therefore waits for the cost to be past the threshold
+  // by a margin wider than the noise. A real change still gets through.
+  const marginal = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: 7.2,
     currentEveryNth: 1,
     settled: true,
     consecutiveSame: 2,
     lateFraction: 0,
-    currentBasisFps: 119,
   });
-  assert.equal(near.everyNth, 1, 'a marginal change must not move the gate');
-  assert.equal(near.changed, false);
-  assert.match(near.reason, /band/, 'the reason should say the band held it');
+  assert.equal(marginal.everyNth, 1, 'a reading that straddles the threshold must not close the gate');
+  assert.equal(marginal.changed, false);
 
-  // And a REAL change -- the engine genuinely got slower -- moves it.
   const real = decideFrameGate({
     panelHz: 120,
-    engineWorkMs: 11.5,
+    engineWorkMs: 9.0,
     currentEveryNth: 1,
     settled: true,
     consecutiveSame: 2,
     lateFraction: 0,
-    currentBasisFps: 119,
   });
-  assert.equal(real.targetEveryNth, 2, 'a real change asks for the narrower gate');
+  assert.equal(real.everyNth, 2, 'a cost genuinely past the threshold must close the gate');
+});
+
+test('decideFrameGate: the gate converges on the promise instead of being vetoed', () => {
+  // THE PHYSICAL PROMISE IS NOT NEGOTIABLE.
+  //
+  // On a 100 Hz panel an 11.0 ms frame does not fit a 10 ms slot, so the
+  // target asks for one frame in two. A gate that stays at one frame in
+  // one asks the engine for 100 fps with a frame that overruns its slot
+  // by 10% on every single frame -- the judder the feature exists to
+  // remove. The gate may not move until the second window asks for it
+  // (that is the rule), but it must not be vetoed for good.
+  const run = runGate(
+    100,
+    [{ workMs: 10.0 }, { workMs: 11.0 }, { workMs: 11.0 }],
+    { everyNth: 1, provisional: false },
+  );
+  assert.equal(run.gate, 2, 'the gate must converge on the promise');
+});
+
+test('decideFrameGate: a warm-up window may replace a PROVISIONAL gate', () => {
+  // A PROVISIONAL GATE WAS TAKEN FROM THE LEAST TRUSTWORTHY READING THE
+  // ENGINE WILL EVER PRODUCE -- the warm-up window, while it compiles
+  // shaders and streams the map. It cannot move until the first settled
+  // window, which is around 15-20 seconds into a match: the player sits
+  // on the warm-up's gate for the whole of it.
+  //
+  // A provisional gate may follow the LATEST warm-up reading instead.
+  // A gate that has been SETTLED may not: that is the rule that stops
+  // the pacer chasing the engine around.
+  const provisional = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: 2.0,
+    currentEveryNth: 4,
+    settled: false,
+    consecutiveSame: 0,
+    lateFraction: 0,
+    currentProvisional: true,
+  });
+  assert.equal(provisional.everyNth, 1, 'a provisional gate must follow the latest warm-up reading');
+  assert.equal(provisional.provisional, true, 'and it is still provisional');
+
+  const settled = decideFrameGate({
+    panelHz: 120,
+    engineWorkMs: 2.0,
+    currentEveryNth: 4,
+    settled: false,
+    consecutiveSame: 0,
+    lateFraction: 0,
+    currentProvisional: false,
+  });
+  assert.equal(settled.everyNth, 4, 'a gate in force must NOT move on a warm-up reading');
 });
 
 test('decideFrameGate: an alternating sequence of readings does not pump the gate', () => {
   // THE ANTI-PUMPING PROPERTY, pinned.
   //
   // Feed the policy a sequence of windows whose target alternates
-  // around a boundary -- the thing a scene full of players does -- and
-  // the gate must not flip between one frame in one and one frame in
+  // around a boundary -- which is what a scene full of players does --
+  // and the gate must not flip between one frame in one and one frame in
   // two on every other window.
-  let gate = 2;
-  let basis = 119;
-  const flips = [];
-  for (let i = 0; i < 12; i++) {
-    // 7.083 ms is the boundary: above it the target is 2, below it 1.
-    const work = i % 2 === 0 ? 7.0 : 7.2;
-    const decision = decideFrameGate({
-      panelHz: 120,
-      engineWorkMs: work,
-      currentEveryNth: gate,
-      settled: true,
-      consecutiveSame: 2,
-      lateFraction: 0,
-      currentBasisFps: basis,
-    });
-    if (decision.everyNth !== gate) {
-      flips.push(decision.everyNth);
-      gate = decision.everyNth;
-      basis = 120;
-    }
-  }
+  const run = runGate(
+    120,
+    Array.from({ length: 12 }, (_, i) => ({ workMs: i % 2 === 0 ? 7.0 : 7.2 })),
+    { everyNth: 2, provisional: false },
+  );
   assert.ok(
-    flips.length <= 1,
-    `the gate flipped ${flips.length} times on a sequence of marginal readings: ${flips.join(', ')}`,
+    run.moves.length <= 1,
+    `the gate flipped ${run.moves.length} times on a sequence of marginal readings: ${run.moves.join(', ')}`,
   );
 });
 
@@ -545,12 +651,15 @@ test('decideFrameGate: a settled window that agrees with the gate clears the pro
 test('decideFrameGate: a settled window MAY widen the gate when the frames are landing', () => {
   // The engine got faster after the warm-up: 12 ms a frame, 70 fps
   // sustainable, so the policy asks for 60 fps — one frame in two.
+  //
+  // TWO settled windows have to ask for it: a widening on the first
+  // reading is what ratchets a flickering target open.
   const d = decideFrameGate({
     panelHz: 120,
     engineWorkMs: SETTLED_WORK_MS,
     currentEveryNth: 4,
     settled: true,
-    consecutiveSame: 1,
+    consecutiveSame: 2,
     lateFraction: 0.02,
   });
   assert.equal(d.everyNth, 2, 'the gate widens to one frame in two');
@@ -586,7 +695,7 @@ test('decideFrameGate: the late threshold is 5%, and 5% itself is allowed', () =
     engineWorkMs: SETTLED_WORK_MS,
     currentEveryNth: 4,
     settled: true,
-    consecutiveSame: 1,
+    consecutiveSame: 2,
     lateFraction: 0.05,
   });
   assert.equal(atLimit.everyNth, 2, '5% late is not "more than 5% late"');
@@ -596,7 +705,7 @@ test('decideFrameGate: the late threshold is 5%, and 5% itself is allowed', () =
     engineWorkMs: SETTLED_WORK_MS,
     currentEveryNth: 4,
     settled: true,
-    consecutiveSame: 1,
+    consecutiveSame: 2,
     lateFraction: 0.051,
   });
   assert.equal(overLimit.everyNth, 4, 'more than 5% late blocks the widening');

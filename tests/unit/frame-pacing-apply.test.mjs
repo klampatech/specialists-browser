@@ -332,6 +332,10 @@ test('the reported state cannot disagree with the gate', async () => {
     // the REPORTED `everyNth` to 1 and leave the module-level gate
     // variable at 2. The diagnostics said "not capping, everyNth 1"
     // while the engine was still being offered every second frame.
+    // TWO settled windows have to ask for the wider gate, in both
+    // directions: a widening on the first reading is what ratchets a
+    // flickering target open.
+    await measure(env, mod, { observeMs: 120, warmupMs: 0 });
     const disengaged = await measure(env, mod, { observeMs: 120, warmupMs: 0 });
     assert.equal(disengaged.everyNth, 1, 'the reported divisor must be 1');
     assert.equal(disengaged.active, false, 'the reported state must not claim a cap');
@@ -696,6 +700,35 @@ test('the measurement carries its age', async () => {
   });
 });
 
+test('the policy\'s own PROVISIONAL gate follows the latest warm-up reading', async () => {
+  await withEnv(async (env) => {
+    const mod = await env.load();
+    let engineRuns = 0;
+    const engine = () => {
+      engineRuns++;
+      env.win.requestAnimationFrame(engine);
+    };
+    mod.installFramePacingShim();
+    env.win.requestAnimationFrame(engine);
+
+    // The first window is a warm-up one, so the gate it adopts is
+    // PROVISIONAL. A second warm-up window has to move it: the
+    // provisional gate was taken from the least trustworthy reading the
+    // engine will ever produce, and it cannot move again until the
+    // first settled window -- 15-20 seconds into a match.
+    const first = await measure(env, mod, { observeMs: 120 });
+    assert.equal(first.provisional, true, 'the first window is a provisional one');
+
+    const second = await measure(env, mod, { observeMs: 120 });
+    assert.equal(second.provisional, true, 'and it is still provisional');
+    assert.match(
+      second.reason,
+      /provisional/i,
+      'the reason has to say the gate is still provisional'
+    );
+  });
+});
+
 test('a warm-up window does not move the gate that is in force', async () => {
   await withEnv(async (env) => {
     const mod = await env.load();
@@ -711,15 +744,15 @@ test('a warm-up window does not move the gate that is in force', async () => {
     await measure(env, mod, { observeMs: 120, force: true, everyNth: 2 });
     assert.equal(mod.getPacingState().everyNth, 2);
 
-    // A WARM-UP window must leave it alone. This is the rule that
-    // stops a slow first scene from halving the player's frame rate
-    // for the rest of the match.
+    // A FORCED gate is the harness's, so the policy does not move it --
+    // not on a warm-up reading and not on a settled one. It wants to see
+    // what a particular cap does.
     const after = await measure(env, mod, { observeMs: 120 });
     assert.equal(
       after.everyNth,
       2,
-      'a window inside the warm-up must not move the gate'
+      'a forced gate must not move'
     );
-    assert.equal(after.provisional, true, 'and the gate is still provisional');
+    assert.equal(after.provisional, true, 'and it is still provisional');
   });
 });
