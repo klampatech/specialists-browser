@@ -1,5 +1,10 @@
 # THE PACER, THE READOUT, AND THE 30 FPS — a plan
 
+**THE MEASUREMENTS ARE IN `docs/CLIENT-PERF-RESULTS.md`** — six matched tour runs
+(two maps, an empty world and eight bots, six viewpoints each with its own camera
+yaw) and the 100-130 second timelines that caught the boot decision and the pump.
+This document is the contract; that one is the evidence.
+
 **Written 2026-11-08, after Kyle asked two questions about the "Your Client" tab:**
 
 1. *Is the "locked at 30 fps / 60 fps" an engine limitation? If there is an
