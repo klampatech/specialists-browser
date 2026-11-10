@@ -269,7 +269,7 @@ settled reading confirms the gate"*.
 ## 5. THE GAMING PC, IN FIREFOX: THE FULLSCREEN QUESTION, MEASURED (2026-11-09)
 
 **Machine:** `cachyos-x8664` — Kyle's own gaming PC. CachyOS, Ryzen 7 8700G +
-Radeon RX 7700 XT, **niri on Wayland**, and an **Acer EB321HQU at 2560x1440 @
+Radeon RX 7800 XT, **niri on Wayland**, and an **Acer EB321HQU at 2560x1440 @
 59.951 Hz with variable refresh rate NOT SUPPORTED**. A 60 Hz panel with nothing
 to absorb a missed frame: the frame budget is 16.67 ms and an overrun is a
 visible hitch, full stop.
@@ -464,10 +464,17 @@ somewhere else in that path and is not yet explained.
   the panel rate, the late-frame fraction, the canvas backing store and the
   event-loop lag are all measured; the p50/p95/p99 spacing is not.
 - **Firefox MASKS the WebGL renderer string** — it reports `Radeon R9 200
-  Series` for an RX 7700 XT. Chromium on the same box reports the truth
-  (`ANGLE (AMD, AMD Radeon RX 7800 XT (radeonsi navi32 ACO), OpenGL 4.6)`), so
-  the Firefox renderer line is NOT evidence about the GPU. It is evidence that
-  the rendering is hardware rather than SwiftShader.
+  Series, or similar` for an RX 7800 XT. Chromium on the same box reports the
+  truth (`ANGLE (AMD, AMD Radeon RX 7800 XT (radeonsi navi32 ACO), OpenGL
+  4.6)`), so the Firefox renderer line is NOT evidence about the GPU. It is
+  evidence that the rendering is hardware rather than SwiftShader.
+  **The mask survived `webgl.enable-renderer-query = true` AND
+  `privacy.fingerprintingProtection = false` together**, in the perf profile
+  and in a fresh browser — so it is not a pref left unset.
+  **AND IT MATTERS FOR THE PRODUCT: the client's own Export log reads the
+  renderer the same way, so on Firefox the in-game readout names a GPU that
+  is not the player's.** On Chromium it names the real card. The readout
+  should say "masked by the browser" rather than name a fake card.
 - **The panel is 60 Hz and the browser delivered 60.0 Hz in both phases**, so
   no browser throttling is in play here and the budget is 16.67 ms throughout.
 - **A scene change invalidates a phase.** The A/B/A must be on ONE map: the

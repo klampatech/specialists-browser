@@ -169,7 +169,7 @@ was actually being asked about happened in Firefox.
    condemns you for your own session. The watcher prints it and does
    not act on it.
 4. **FIREFOX MASKS THE WEBGL RENDERER STRING.** Firefox reports
-   `Radeon R9 200 Series` for an RX 7700 XT — a family mask, not the
+   `Radeon R9 200 Series, or similar` for an RX 7800 XT — a family mask, not the
    chip. Chromium on the same box reports the truth
    (`ANGLE (AMD, AMD Radeon RX 7800 XT (radeonsi navi32 ACO),
    OpenGL 4.6)`). **So the renderer line from Firefox is not
@@ -260,7 +260,7 @@ advice — wrong answers):
 
 **THE GAMING PC IS NOW REACHABLE, AND WHAT IT SAYS IS THE HEADLINE.**
 `cachyos-x8664` joined the tailnet (100.121.0.20). It is **CachyOS**,
-kernel 7.3.1, **AMD Ryzen 7 8700G + Radeon RX 7700 XT** (Navi 32,
+kernel 7.3.1, **AMD Ryzen 7 8700G + Radeon RX 7800 XT** (Navi 32,
 amdgpu), 32 GB, and its desktop is **niri** on Wayland. Port 22 there is
 **Tailscale SSH** — `tailscaled` intercepts it and authenticates by
 *tailnet identity*, so there is no `authorized_keys` and the tailnet ACL
@@ -6186,7 +6186,7 @@ the parts that are known traps.
 >   loop. The harness needs a match actually running.
 > - **THE FAMILY BOX IS A DIFFERENT MACHINE.** `cachyos-x8664-family`
 >   (NVIDIA GTX 980, gamescope, user `family`) vs `cachyos-x8664`
->   (AMD RX 7700 XT, niri, user `kyle`). The tunnel's default host was
+>   (AMD RX 7800 XT, niri, user `kyle`). The tunnel's default host was
 >   changed to the right one on 2026-11-09; do not probe the other.
 > - **THE LOGIN SHELL IS `fish`.** Inline heredocs get mangled — scp a
 >   script and run it with `bash`.
