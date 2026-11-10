@@ -45,10 +45,33 @@ XD=$(pgrep -a Xwayland 2>/dev/null | grep -oE ':[0-9]+' | head -1)
 # CLOSE ONLY THIS INSTANCE. The pattern is specific to the profile
 # path, so it cannot match the player's own Firefox, and the bracket
 # in the grep keeps the grep from matching its own command line.
-for pid in $(ps -eo pid,cmd | grep '[f]irefox' | grep -- "--profile $PROFILE" | awk '{print $1}'); do
+PIDS=$(ps -eo pid,cmd | grep '[f]irefox' | grep -- "--profile $PROFILE" | awk '{print $1}')
+for pid in $PIDS; do
   kill "$pid" 2>/dev/null
 done
-sleep 2
+
+# WAIT FOR THEM TO ACTUALLY BE GONE.
+for pid in $PIDS; do
+  for _ in $(seq 1 20); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.5
+  done
+done
+
+# THE PROFILE LOCK.
+#
+# Firefox takes a lock on the profile directory. If the previous
+# instance was killed without releasing it, the next one does not open
+# a window at all -- it opens a "Firefox is already running, do you
+# want to start it anyway?" dialog instead. That is a browser that is
+# ALIVE and answering the remote agent with NO GAME TAB, which is
+# exactly what the watcher saw on 2026-11-09 for an hour and a half.
+#
+# The processes are dead by now, so the lock is stale and the lock is
+# ours to clear.
+for lock in "$PROFILE/parent.lock" "$PROFILE/lock" "$PROFILE/.parentlock"; do
+  [ -e "$lock" ] && rm -f "$lock"
+done
 
 mkdir -p "$PROFILE"
 

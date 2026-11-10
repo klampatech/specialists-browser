@@ -81,6 +81,7 @@ const arg = (name, fallback) => {
 
 const BIDI_URL = String(arg('bidi', 'ws://127.0.0.1:9224/session'));
 const URL_MATCH = String(arg('url-match', 'bulletballet.dev'));
+const GAME_URL = 'https://bulletballet.dev/';
 const SECONDS = Number(arg('seconds', 120));
 const INTERVAL_MS = Number(arg('interval', 1000));
 const FRAMES = Number(arg('frames', 6000));
@@ -308,8 +309,47 @@ async function findTab(client) {
     }
     const tree = await findTab(client).catch(() => null);
     if (!tree || !tree.matches.length) {
-      log('  (re-attached, but no matching tab is open)');
-      return false;
+      // THE TAB IS GONE. SO OPEN ONE.
+      //
+      // The old behaviour was to log "no matching tab is open" and wait.
+      // On 2026-11-09 that is exactly what happened for an hour and a
+      // half: the browser was alive and answering, the game tab was
+      // not there, and the capture never came back — the browser had
+      // come up from a death WITHOUT the tab (a stale profile lock
+      // shows a "Firefox is already running" dialog instead of a
+      // window), and nothing on this side was going to fix that.
+      //
+      // So: take a tab that IS there and navigate it back to the game,
+      // and if there is no tab at all, create one. The next pass of
+      // the loop finds the tab by URL, reinstalls the probe, and the
+      // capture goes on.
+      const gameUrl = String(arg('url', GAME_URL));
+      try {
+        const anyTab = tree && tree.all && tree.all.length ? tree.all[0] : null;
+        if (anyTab) {
+          log(`  (the game tab is gone — navigating "${(anyTab.url || 'a blank tab').slice(0, 60)}" back to the game)`);
+          await client.send('browsingContext.navigate', { context: anyTab.context, url: gameUrl });
+        } else {
+          log('  (the game tab is gone and there is no tab at all — opening one)');
+          await client.send('browsingContext.create', { type: 'tab' });
+        }
+      } catch (e) {
+        log(`  (could not open the game tab: ${String(e && e.message ? e.message : e).slice(0, 110)})`);
+      }
+      await new Promise((r) => setTimeout(r, 2500));
+      const again = await findTab(client).catch(() => null);
+      if (!again || !again.matches.length) {
+        log('  (re-attached, but the game tab still is not open)');
+        return false;
+      }
+      contextId = again.matches[0].context;
+      const ok2 = await evaluate(client, contextId, installProbeFn, FRAMES, PROBE_OPTIONS).catch(() => null);
+      if (!ok2 || !ok2.installed) {
+        log('  (the tab is back, but the probe could not be reinstalled yet — it will be tried again)');
+        return false;
+      }
+      log('  (the game tab is back and the probe is in)');
+      return true;
     }
     contextId = tree.matches[0].context;
     const ok = await evaluate(client, contextId, installProbeFn, FRAMES, PROBE_OPTIONS).catch(() => null);
