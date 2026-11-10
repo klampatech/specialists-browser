@@ -6,7 +6,9 @@
  * reachable there — which is the only way to find out what the browser
  * believes, rather than what a file says.
  */
-const { BidiClient } = require('/home/kyle/Development/specialists-browser/tools/perf/lib/bidi-client.cjs');
+const path = require('path');
+const REPO = path.join(__dirname, '..', '..');
+const { BidiClient } = require(path.join(REPO, 'tools', 'perf', 'lib', 'bidi-client.cjs'));
 
 const NAMES = [
   'webgl.enable-renderer-query',

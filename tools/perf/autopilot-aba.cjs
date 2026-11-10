@@ -120,7 +120,7 @@ function onBox(cmd, timeoutMs = 30000) {
  * title the client gives itself, and focused on purpose.
  */
 function findFirefoxWindow() {
-  const out = onBox('bash /home/kyle/opt/niri-ff.sh windows');
+  const out = onBox('bash $HOME/opt/niri-ff.sh windows');
   const blocks = out.split(/Window ID /).slice(1);
   for (const b of blocks) {
     const id = parseInt(b.slice(0, b.indexOf(':')), 10);
@@ -141,9 +141,9 @@ function toggleFullscreen() {
     log('  (no firefox window found in niri — cannot toggle fullscreen)');
     return false;
   }
-  onBox(`bash /home/kyle/opt/niri-ff.sh focus ${id}`);
+  onBox(`bash $HOME/opt/niri-ff.sh focus ${id}`);
   sleep(400);
-  const out = onBox('bash /home/kyle/opt/niri-ff.sh fullscreen');
+  const out = onBox('bash $HOME/opt/niri-ff.sh fullscreen');
   log(`  (niri: window ${id} fullscreen toggled${/error/i.test(out) ? ' — ' + out.trim().slice(0, 80) : ''})`);
   return true;
 }
@@ -323,7 +323,7 @@ async function engineIsUp(client, contextId) {
   } catch (e) {
     log(`  (could not attach: ${e && e.message ? e.message : e})`);
     log('  (restarting the browser on the box)');
-    onBox('bash /home/kyle/opt/ff-launch.sh windowed', 120000);
+    onBox('bash $HOME/opt/ff-launch.sh windowed', 120000);
     await sleep(12000);
     await attach();
   }
@@ -410,7 +410,7 @@ async function engineIsUp(client, contextId) {
       if (engineWentAway) continue;
       engineWentAway = true;
       log(`  (the browser went away: ${e && e.message ? String(e.message).slice(0, 80) : e})`);
-      onBox('bash /home/kyle/opt/ff-launch.sh windowed', 120000);
+      onBox('bash $HOME/opt/ff-launch.sh windowed', 120000);
       await sleep(14000);
       try {
         await attach();

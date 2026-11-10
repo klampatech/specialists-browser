@@ -102,7 +102,7 @@ if [ "${FF_WATCHDOG:-on}" = "on" ]; then
         continue
       fi
       echo "[watch] the browser on ${HOST} is not answering — bringing it back"
-      ssh "$HOST" 'bash /home/kyle/opt/ff-launch.sh windowed' >/dev/null 2>&1 || true
+      ssh "$HOST" 'bash $HOME/opt/ff-launch.sh windowed' >/dev/null 2>&1 || true
       sleep 15
     done
   ) &
@@ -137,7 +137,7 @@ done
 if [ "$READY" -ne 1 ]; then
   echo "[watch] the Firefox remote agent did not answer on ${HOST}:${REMOTE_PORT}."
   echo "[watch] start it there with:"
-  echo "[watch]   bash /home/kyle/opt/ff-launch.sh windowed"
+  echo '[watch]   bash $HOME/opt/ff-launch.sh windowed'
   exit 1
 fi
 

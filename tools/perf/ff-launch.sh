@@ -34,7 +34,7 @@ set +e
 
 MODE="${1:-windowed}"
 PORT="${FF_PORT:-9224}"
-PROFILE="${FF_PROFILE:-/home/kyle/opt/bb-ff}"
+PROFILE="${FF_PROFILE:-$HOME/opt/bb-ff}"
 
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 WSOCK=$(ls /run/user/$(id -u)/ 2>/dev/null | grep -E '^wayland-[0-9]+$' | head -1)

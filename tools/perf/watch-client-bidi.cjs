@@ -233,7 +233,7 @@ async function findTab(client) {
       log('  session slot. It cannot be ended from here — only a browser');
       log('  restart clears it:');
       log('');
-      log('    ssh cachyos-x8664 \'bash /home/kyle/opt/ff-launch.sh windowed\'');
+      log('    ssh cachyos-x8664 \'bash $HOME/opt/ff-launch.sh windowed\'');
       log('');
       await client.closeGracefully(2000);
       process.exit(2);
@@ -303,7 +303,7 @@ async function findTab(client) {
       if (/Maximum number of active sessions/i.test(String(e && e.message ? e.message : e))) {
         log("  (the agent still holds a session from the browser that died — it");
         log('   can only be cleared by restarting the browser:');
-        log("     ssh cachyos-x8664 'bash /home/kyle/opt/ff-launch.sh windowed')");
+        log("     ssh cachyos-x8664 'bash $HOME/opt/ff-launch.sh windowed')");
         return false;
       }
     }

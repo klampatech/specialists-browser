@@ -72,7 +72,7 @@ done
 
 if ! node "${HERE}/lib/bidi-ping.cjs" "ws://127.0.0.1:${LOCAL_PORT}/session" >/dev/null 2>&1; then
   echo "[aba] the browser's remote agent is not answering — starting the browser"
-  ssh "$HOST" 'bash /home/kyle/opt/ff-launch.sh windowed' >/dev/null 2>&1 || true
+  ssh "$HOST" 'bash $HOME/opt/ff-launch.sh windowed' >/dev/null 2>&1 || true
   for i in $(seq 1 40); do
     if node "${HERE}/lib/bidi-ping.cjs" "ws://127.0.0.1:${LOCAL_PORT}/session" >/dev/null 2>&1; then
       break
