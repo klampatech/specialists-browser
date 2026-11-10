@@ -130,5 +130,17 @@ node "${HERE}/watch-client-bidi.cjs" \
   --json "$OUT"
 STATUS=$?
 
-echo "[watch] done. the log is at ${OUT}"
+# The announcement has to be TRUE.
+#
+# The watcher was killed by a signal before it could write its JSON, and
+# this script still said "done. the log is at <path>" — for a file that
+# did not exist. A path that reads like a deliverable and is not one is
+# worse than no path at all: it sends the next person (or the next
+# agent) looking for a file that was never written.
+if [ -s "${OUT}" ]; then
+  echo "[watch] done. the log is at ${OUT}"
+else
+  echo "[watch] done, but NO LOG WAS WRITTEN (the watcher exited with ${STATUS} before it could write ${OUT})."
+  echo "[watch] the rows that were collected are in the tee'd stdout instead."
+fi
 exit $STATUS
