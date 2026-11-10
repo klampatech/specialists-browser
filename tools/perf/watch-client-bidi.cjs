@@ -152,6 +152,37 @@ async function findTab(client) {
 
 (async () => {
   let client;
+  // A SIGNAL MUST NOT LEAK THE SESSION.
+  //
+  // SIGTERM (a `pkill`, a supervisor stopping the job) and SIGINT (a
+  // Ctrl-C) kill the process wherever it is, and the `session.end` +
+  // graceful close at the end of the run never happen. The agent then
+  // holds a session whose socket is gone, and **that state is
+  // permanent**: `session.new` answers "Maximum number of active
+  // sessions" and `session.end` cannot reach it, so the only cure is a
+  // browser restart — which throws away whatever the player was doing.
+  //
+  // So the signal handler does the release itself. It is the same
+  // release the normal exit does, and it is the difference between
+  // "stop the watcher" and "stop the watcher and restart the browser".
+  // A SIGNAL ASKS THE RUN TO STOP. It does not kill it.
+  //
+  // The first version of this handler called `process.exit()` — which
+  // released the session (good) but SKIPPED THE JSON WRITE, so the rows
+  // of a run that was stopped were lost. That is the worst of both
+  // worlds: the run's numbers are the deliverable.
+  //
+  // So a signal sets a flag, the sampling loop notices it within a
+  // second, and the run finishes the way it finishes normally: the
+  // summary is printed, the JSON is written, the session is ended and
+  // the socket is closed gracefully.
+  let stopRequested = false;
+  const requestStop = () => {
+    stopRequested = true;
+  };
+  process.on('SIGTERM', requestStop);
+  process.on('SIGINT', requestStop);
+
   try {
     client = await BidiClient.connect(BIDI_URL);
   } catch (e) {
@@ -228,6 +259,67 @@ async function findTab(client) {
   }
 
   let contextId = matches[0].context;
+
+  /**
+   * RE-ATTACH AFTER THE BROWSER DIED.
+   *
+   * WHY THIS EXISTS
+   * ---------------
+   * The browser can die mid-session — and on this machine it DOES: the
+   * engine is terminated by Firefox's script run-time watchdog, the
+   * client's rAF shim throws on every frame, and the browser goes down
+   * with it. A watcher that gives up at that point loses the whole run,
+   * including the rows before the crash, because the JSON is only written
+   * at the end.
+   *
+   * So the watcher RE-CONNECTS: a new socket, a new session, the tab
+   * found again, and the probe reinstalled. The run's rows keep
+   * accumulating across the death of the browser.
+   *
+   * AND THE RE-ATTACH CAN FAIL FOR A REASON THAT NEEDS A HUMAN: if the
+   * agent still holds the session of a browser that died without
+   * releasing it, `session.new` answers "Maximum number of active
+   * sessions" and only a browser restart clears it. The watcher says so
+   * rather than retrying forever.
+   */
+  async function reconnect() {
+    log('  (the browser went away — re-attaching)');
+    try {
+      await client.closeGracefully(1500);
+    } catch (e) {
+      /* the socket is already gone */
+    }
+    try {
+      client = await BidiClient.connect(BIDI_URL);
+    } catch (e) {
+      log(`  (could not re-attach: ${String(e && e.message ? e.message : e).slice(0, 120)})`);
+      return false;
+    }
+    try {
+      const s = await client.send('session.new', { capabilities: { alwaysMatch: {} } });
+      if (s && s.sessionId) client.sessionId = s.sessionId;
+    } catch (e) {
+      if (/Maximum number of active sessions/i.test(String(e && e.message ? e.message : e))) {
+        log("  (the agent still holds a session from the browser that died — it");
+        log('   can only be cleared by restarting the browser:');
+        log("     ssh cachyos-x8664 'bash /home/kyle/opt/ff-launch.sh windowed')");
+        return false;
+      }
+    }
+    const tree = await findTab(client).catch(() => null);
+    if (!tree || !tree.matches.length) {
+      log('  (re-attached, but no matching tab is open)');
+      return false;
+    }
+    contextId = tree.matches[0].context;
+    const ok = await evaluate(client, contextId, installProbeFn, FRAMES, PROBE_OPTIONS).catch(() => null);
+    if (!ok || !ok.installed) {
+      log('  (re-attached, but the probe could not be reinstalled)');
+      return false;
+    }
+    return true;
+  }
+
   if (matches.length > 1) log(`(${matches.length} tabs match "${URL_MATCH}"; attaching to the first)`);
 
   log('');
@@ -289,8 +381,12 @@ async function findTab(client) {
     let lastFrames = null;
     let lastNow = null;
 
-    while ((Date.now() - started) / 1000 < seconds) {
+    while (!stopRequested && (Date.now() - started) / 1000 < seconds) {
       await new Promise((r) => setTimeout(r, INTERVAL_MS));
+      if (stopRequested) {
+        log('  (stopping on a signal — writing what was collected)');
+        break;
+      }
 
       let s;
       try {
@@ -310,6 +406,14 @@ async function findTab(client) {
             throw e;
           }
         } catch (e2) {
+          // THE BROWSER DIED. Re-attach and keep the run.
+          if (/connection is closed|not connected|invalid session|WebDriver session does not exist/i.test(String(e2 && e2.message ? e2.message : e2))) {
+            const back = await reconnect().catch(() => false);
+            if (back) {
+              log(`${((Date.now() - started) / 1000).toFixed(1).padStart(6)}s  (re-attached after the browser died)`);
+              continue;
+            }
+          }
           log(`${((Date.now() - started) / 1000).toFixed(1).padStart(6)}s  (no measurement: ${String(e2 && e2.message ? e2.message : e2).slice(0, 120)})`);
           continue;
         }

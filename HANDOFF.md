@@ -54,23 +54,53 @@ the engine's cost is scene-dominated (the same map measured 1.87 ms and
 the third run is the drift. **The A/B/A is the next run.**
 
 **FIREFOX WAS KILLING THE ENGINE, AND IT WAS NOT THE WINDOW BEING
-CLOSED.** The first Firefox session died mid-game with:
+CLOSED.** A Firefox session dies with:
 
 ```
-Script terminated by timeout at:
-_emscripten_glEnableVertexAttribArray@.../xash3d-....js
-@... > WebAssembly.instantiate:wasm-function[46]
+Script terminated by timeout at: <the client bundle>
 ```
 
 **That is Firefox's script run-time watchdog** (`dom.max_script_run_time`,
 default 10 s) interrupting a main-thread call, and because the call was
 inside WebAssembly **the whole WASM execution died with it — the
 engine**, not the page. The client's rAF shim then threw every frame
-and the browser went down with it. **With `dom.max_script_run_time = 0`
-in the dedicated perf profile (`tools/perf/ff-profile-user.js`), the next
-session ran both phases with ZERO timeouts and ZERO JavaScript errors.**
+and the browser went down with it. **The crash lands on the transition
+into fullscreen**, where the event-loop lag spikes to **1258 ms** — a
+1.26-second freeze of the main thread, which is what the watchdog
+kills.
+
+**THE FIRST FIX WAS A NO-OP, AND `prefs.js` IS THE PROOF.** The pref was
+written as `dom.max_script_run_time = 0` ("disable the watchdog").
+Firefox **silently refused the value**: the profile's `prefs.js` came
+back with `dom.max_script_run_time.require_critical_input` applied and
+**no `dom.max_script_run_time` line at all**, while the second pref
+from the same file landed perfectly. **A value outside the pref's static
+range is refused, and that range starts at 1 — so `0` is not a value
+this pref will take.** The watchdog was never disabled, and the next run
+crashed in exactly the same place. The pref is now **3600 seconds** and
+`prefs.js` confirms it landed: a ten-second block inside the engine
+should now pause the game instead of killing it.
+
 It is a profile pref on the PERF profile — not a code change, and not a
 change to the player's own browser.
+
+**THE TWO RUNS, ON TWO MAPS:**
+
+- run 1 — maximized **3.69 ms**, fullscreen **4.45 ms** → **+0.76 ms,
+  +21%**
+- run 2 — maximized **2.44 ms**, fullscreen **2.98 ms** → **+0.54 ms,
+  +22%**
+
+Both runs: **2.07 MP in both phases**, browser 60.0 Hz against a 60 Hz
+panel, lag 4.08 ms, late 0.0%. **The ratio reproduces and the absolute
+gap does not** — the whole scene got 1.25 ms cheaper between the runs
+and the gap shrank with it. **Two runs, two maps, no drift phase: that
+is suggestive, not a finding.** The A/B/A is still owed.
+
+**THE WATCHER NOW SURVIVES A BROWSER DEATH** — it re-attaches (new
+socket, new session, tab found again, probe reinstalled) and keeps the
+run going. And a SIGTERM now asks the run to STOP rather than killing
+it, so the rows of a stopped run are written instead of lost.
 
 **AND THE PROBE IS NOW NON-INVASIVE BY DEFAULT.** `--no-raf-wrap`
 installs it without replacing `window.requestAnimationFrame`: it reads

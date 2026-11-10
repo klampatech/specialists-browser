@@ -285,14 +285,29 @@ was installed *for the watcher*.
 (`--no-raf-wrap`): it reads the client's own pacer, the canvas, the event-loop
 lag and the input latency, and **leaves `window.requestAnimationFrame` alone**.
 
-### THE TWO PHASES
+### THE TWO PHASES — AND THE SECOND RUN
+
+**Run 1** (45 rows maximized, 57 fullscreen):
 
 | | css box | canvas BACKING | megapixels | engine cost | browser | panel | lag | late |
 |---|---|---|---|---|---|---|---|---|
 | **maximized window** | 2560x1315 | 2009x1032 | **2.07** | **3.69 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
-| **fullscreen (F11)** | 2560x1440 | 1920x1080 | **2.07** | **4.45 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
+| **fullscreen (niri)** | 2560x1440 | 1920x1080 | **2.07** | **4.45 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
 
-45 rows in the first phase, 57 in the second, one sample per second.
+**Run 2** (52 rows maximized, 14 fullscreen — the browser died at the
+transition, so the drift phase never ran):
+
+| | css box | canvas BACKING | megapixels | engine cost | browser | panel | lag | late |
+|---|---|---|---|---|---|---|---|---|
+| **maximized window** | 2560x1315 | 2009x1032 | **2.07** | **2.44 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
+| **fullscreen (niri)** | 2560x1440 | 1920x1080 | **2.07** | **2.98 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
+
+**THE RELATIVE DIFFERENCE REPRODUCES; THE ABSOLUTE ONE DOES NOT.** Run 1:
+**+0.76 ms, +21%**. Run 2: **+0.54 ms, +22%**. The absolute cost of BOTH
+phases fell by about 1.25 ms between the runs (a different map, a different
+scene), and the absolute gap shrank with it — while the ratio held at ~21-22%.
+That is suggestive and NOT a finding: two runs on two maps, with no drift
+phase in either, cannot separate the window state from the scene.
 
 ### WHAT THIS SETTLES: THE PIXEL-COUNT STORY IS OUT
 
@@ -338,12 +353,41 @@ the whole WASM execution is killed with it — **the engine, not the page**. The
 client's rAF shim then threw on every frame, and the browser went down with
 the pointer-lock teardown errors.
 
-With `dom.max_script_run_time = 0` (and
-`dom.max_script_run_time.require_critical_input = false`) in the dedicated
-perf profile (`tools/perf/ff-profile-user.js`), the next session ran **both
-phases with zero "Script terminated by timeout" and zero JavaScript errors**,
-and Firefox stayed up. **This is a profile pref on the PERF profile, not a
-code change and not a change to the player's own browser.**
+**THE FIRST FIX WAS A NO-OP, AND THE PROFILE PROVES IT.** The pref was
+written as `dom.max_script_run_time = 0` ("disable the watchdog"). Firefox
+**silently refused the value**: the profile's `prefs.js` came back with
+
+```
+user_pref("dom.max_script_run_time.require_critical_input", false);
+```
+
+and **no `dom.max_script_run_time` line at all** — while the second pref from
+the very same file landed perfectly. A value outside the pref's static range
+is refused outright, and that range starts at 1, so **`0` is not a value this
+pref will take**. The watchdog was never disabled, and the next run crashed
+at exactly the same place — the transition into fullscreen — which is what a
+watchdog that was still armed would do.
+
+The pref is now **3600 seconds**, and `prefs.js` confirms it landed:
+
+```
+user_pref("dom.max_script_run_time", 3600);
+user_pref("dom.max_script_run_time.require_critical_input", false);
+```
+
+So a ten-second main-thread block inside the engine should now PAUSE the game
+instead of killing it. **That is a profile pref on the PERF profile — not a
+code change, and not a change to the player's own browser.**
+
+### THE TRANSITION ITSELF COSTS A SECOND
+
+In run 2, the event-loop lag spiked to **1258 ms** on the sample where the
+canvas backing store changed to the fullscreen resolution
+(`1978x1048 -> 1920x1080`). Entering fullscreen is a **1.26-second freeze**
+of the main thread. On a 60 Hz panel with no VRR that is a stall the player
+feels, and it is the same resize whose re-application the client's 50 ms
+debounced watchdog performs — the re-application is fast; the STALL is
+somewhere else in that path and is not yet explained.
 
 ### THE CAVEATS
 
