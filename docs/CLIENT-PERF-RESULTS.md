@@ -550,15 +550,44 @@ same window state, with the gate never moving. That swing is what
 "it felt better for a while, then a few drops" was: the cost climbed
 from 1.76 ms to 6-10 ms as the scene got busier.
 
-### ONE REAL HITCH, AND THE INSTRUMENT THREW IT AWAY
+### THE REAL STALLS: THEY ARE AT THE LOAD, AND NOT BECAUSE OF FULLSCREEN
 
-**The session's worst event-loop lag was 318 ms.** A 318 ms stall on a
-60 Hz panel is a visible freeze, and it is the only thing in the whole
-session that looks like the "few drops".
+**The session's worst event-loop lag was 1415 ms.** A 1.4-second block
+of the main thread is a visible freeze. The watcher's own summary says
+`median 4.08 ms p95 9.46 ms max 1415.06 ms`, and the input latency
+reached **296.90 ms** across 4914 input events.
 
-**THE PER-ROW LAG MEDIAN COULD NOT SEE IT.** One 318 ms hitch among a
-second's worth of 4 ms lags has a median of 4 ms — so 767 rows reported
-"no lag over 50 ms" while the session contained a 318 ms stall. The
+**AND THE STALLS ARE AT THE GAME LOADING, NOT AT THE PLAYING.** The rows
+with the worst lag medians — 318, 294, 291, 279, 274, 271 ms — are all
+at t=91-97 s, and every one of them has **no engine** (`engine ?`) and
+**the landing page's tiny 300x150 canvas**. The engine came up at
+t=106 s. So the load blocked the main thread for several seconds, in
+274-318 ms slices, with one 1415 ms block inside it.
+
+**AND IT IS NOT THE WINDOW STATE.** The earlier sessions' loads were
+WINDOWED, and they show the same thing:
+
+- the long session — 318, 294, 291, 279, 274, 271 ms — DOM fullscreen
+- run 2 — 330, 246 ms — windowed
+- run 3 — 248, 311, 294 ms — windowed
+
+**THE LOAD IS THE EXPENSIVE PART OF THE GAME, AND IT IS THE SAME
+NEIGHBOURHOOD AS THE ENGINE DEATH.** The first Firefox death's stack
+was `WebAssembly.instantiate`, and the load is where the WASM is
+compiled and instantiated, where the textures are uploaded, and where
+Firefox's own log says:
+
+```
+WebGL warning: texSubImage: Texture has not been initialized prior to a
+partial upload, forcing the browser to clear it. This may be slow.
+```
+
+A main thread blocked for over a second, in the middle of a WASM
+instantiation, is a main thread that a watchdog can kill.
+
+**THE INSTRUMENT ALMOST THREW THIS AWAY.** One 318 ms hitch among a
+second's worth of 4 ms lags has a MEDIAN of 4 ms — so 767 rows reported
+"no lag over 50 ms" while the session contained a 1415 ms stall. The
 watcher now records the MAXIMUM lag per row, prints a marker the moment
 it happens, and keeps the worst one WITH ITS TIMESTAMP.
 
