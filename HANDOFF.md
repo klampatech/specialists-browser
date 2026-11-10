@@ -23,6 +23,67 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-09, LATEST — **A MATCH WAS PLAYED UNDER MEASUREMENT.
+THE PIXEL-COUNT STORY FOR FULLSCREEN IS OUT, AND FIREFOX WAS KILLING
+THE ENGINE.**
+
+For the first time, a match was played with the client being watched.
+It was in **Firefox** — the browser Kyle actually plays in — on the
+gaming PC, over the new BiDi watcher.
+
+**THE A/B, MEASURED (Firefox 159, the gaming PC, 60 Hz panel):**
+
+- **maximized window** — css 2560x1315, backing 2009x1032 (**2.07 MP**),
+  engine **3.69 ms**, browser 60.0 Hz, panel 60 Hz, lag 4.08 ms, late 0.0%
+- **fullscreen (F11)** — css 2560x1440, backing 1920x1080 (**2.07 MP**),
+  engine **4.45 ms**, browser 60.0 Hz, panel 60 Hz, lag 4.08 ms, late 0.0%
+
+**THE PIXEL-COUNT EXPLANATION FOR "FULLSCREEN IS SLOWER" IS OUT.** The
+fragment count is **identical in both phases** — 2.07 MP either way. The
+client forces the render resolution and RE-APPLIES it when the window
+grows (the 50 ms debounced watchdog in
+`webxash/src/services/fullscreen.ts`), so fullscreen upscales the same
+frame to a taller box instead of drawing more of it. The earlier figure
+("*fullscreen is 3.54 MP against 1.59 MP tiled — 2.2x the fragments*") was
+measured on a window whose backing store FOLLOWED the window; **with the
+forced resolution in force, it does not.**
+
+**THE +0.76 ms IS A LEAD, NOT A FINDING.** One sample per phase, and
+the engine's cost is scene-dominated (the same map measured 1.87 ms and
+9.12 ms a minute apart). The repo's rule is A, then B, then **A again** —
+the third run is the drift. **The A/B/A is the next run.**
+
+**FIREFOX WAS KILLING THE ENGINE, AND IT WAS NOT THE WINDOW BEING
+CLOSED.** The first Firefox session died mid-game with:
+
+```
+Script terminated by timeout at:
+_emscripten_glEnableVertexAttribArray@.../xash3d-....js
+@... > WebAssembly.instantiate:wasm-function[46]
+```
+
+**That is Firefox's script run-time watchdog** (`dom.max_script_run_time`,
+default 10 s) interrupting a main-thread call, and because the call was
+inside WebAssembly **the whole WASM execution died with it — the
+engine**, not the page. The client's rAF shim then threw every frame
+and the browser went down with it. **With `dom.max_script_run_time = 0`
+in the dedicated perf profile (`tools/perf/ff-profile-user.js`), the next
+session ran both phases with ZERO timeouts and ZERO JavaScript errors.**
+It is a profile pref on the PERF profile — not a code change, and not a
+change to the player's own browser.
+
+**AND THE PROBE IS NOW NON-INVASIVE BY DEFAULT.** `--no-raf-wrap`
+installs it without replacing `window.requestAnimationFrame`: it reads
+the client's own pacer, the canvas, the event-loop lag and the input
+latency, and leaves the browser's frame callback alone. The frame-
+interval distribution then comes from the client's pacer and the in-game
+Export log. The price is the p50/p95/p99 spacing; the reason is that a
+probe which can destabilise the pacer is not a probe, and that was not
+established either way.
+
+**THE RESULTS ARE IN `docs/CLIENT-PERF-RESULTS.md` § 5**, with the
+caveats stated.
+
 **As of:** 2026-11-09, LATEST — **FIREFOX CAN BE WATCHED NOW. A BiDi
 WATCHER, THE PROBE IT SHARES WITH THE CHROMIUM ONE, AND THE FOUR TRAPS
 THAT COST TO FIND.**

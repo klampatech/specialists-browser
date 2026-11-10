@@ -104,11 +104,29 @@ if [ "$READY" -ne 1 ]; then
   exit 1
 fi
 
+# THE rAF WRAP IS OPTIONAL, AND OFF BY DEFAULT FOR A FIREFOX SESSION.
+#
+# The client's frame-pacing shim wraps the engine's rAF callback. The
+# probe replacing `window.requestAnimationFrame` under it is not
+# neutral — and in Firefox the engine's WASM was TERMINATED by a
+# timeout during instantiation, with a per-frame error storm after it,
+# and whether the probe had anything to do with that was never
+# established.
+#
+# So the wrap is opt-in: `RAF_WRAP=on` puts it back for a run that
+# needs the external frame-interval distribution, and the default
+# leaves the browser's frame callback alone.
+RAF_WRAP="${RAF_WRAP:-off}"
+RAF_FLAG=""
+[ "$RAF_WRAP" = "on" ] || RAF_FLAG="--no-raf-wrap"
+
 echo "[watch] attached. watching for ${SECONDS_TO_WATCH}s -> ${OUT}"
+echo "[watch] rAF wrap: ${RAF_WRAP}"
 node "${HERE}/watch-client-bidi.cjs" \
   --bidi "ws://127.0.0.1:${LOCAL_PORT}/session" \
   --url-match bulletballet.dev \
   --seconds "$SECONDS_TO_WATCH" \
+  ${RAF_FLAG:+$RAF_FLAG} \
   --json "$OUT"
 STATUS=$?
 

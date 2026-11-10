@@ -48,7 +48,25 @@
  * printed alongside for comparison, because the two are instruments and
  * the reader is entitled to see both.
  */
-const installProbeFn = (cap) => {
+const installProbeFn = (cap, options) => {
+  // THE OPTIONS.
+  //
+  // `wrapRaf: false` installs the probe WITHOUT replacing
+  // `window.requestAnimationFrame` — it reads the pacer's own state,
+  // the canvas, the event-loop lag and the input latency, and leaves
+  // the browser's frame callback ALONE.
+  //
+  // WHY THAT MODE EXISTS
+  // -------------------
+  // The client's frame-pacing shim wraps the engine's rAF callback,
+  // and the engine's WASM in Firefox died with "Script terminated by
+  // timeout" during instantiation followed by a per-frame error
+  // storm. Whether the probe's rAF replacement had anything to do
+  // with that was not established, and a probe that can destabilise
+  // the thing it is measuring is not a probe. So there is now a mode
+  // that touches nothing, and the Firefox session runs in it until
+  // the question is settled by measurement instead of by argument.
+  const opts = Object.assign({ wrapRaf: true }, options || {});
     // A RING OF NUMBERS, WITH AN ABSOLUTE ID ON EACH, so the harness
     // can ask for "what is new since I last looked" without the
     // harness and the page having to agree on an index.
@@ -64,6 +82,7 @@ const installProbeFn = (cap) => {
 
     const probe = {
       cap,
+      rafWrapped: !!opts.wrapRaf,
       startedAt: performance.now(),
       frames: 0,
       requests: 0,
@@ -92,6 +111,7 @@ const installProbeFn = (cap) => {
     // count is the frame count — but the SPACING between callback
     // starts is the frame interval, which is the thing being measured.
     const native = window.requestAnimationFrame.bind(window);
+    if (opts.wrapRaf) {
     window.requestAnimationFrame = function (cb) {
       probe.requests++;
       return native(function (t) {
@@ -111,6 +131,7 @@ const installProbeFn = (cap) => {
         }
       });
     };
+    }
 
     // THE EVENT-LOOP LAG SAMPLER.
     //
@@ -230,6 +251,7 @@ const readSampleFn = () => {
 
       return {
         ok: true,
+        rafWrapped: p.rafWrapped !== false,
         now: performance.now(),
         frames: p.frames,
         requests: p.requests,

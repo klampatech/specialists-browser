@@ -265,3 +265,100 @@ settled reading confirms the gate"*.
 - **No resolution advice is included.** The engine is CPU-bound here (the cost
   moved with the scene, not with the pixel count), and the resolution
   investigation is a separate piece of work that this change does not bundle.
+
+## 5. THE GAMING PC, IN FIREFOX: THE FULLSCREEN QUESTION, MEASURED (2026-11-09)
+
+**Machine:** `cachyos-x8664` — Kyle's own gaming PC. CachyOS, Ryzen 7 8700G +
+Radeon RX 7700 XT, **niri on Wayland**, and an **Acer EB321HQU at 2560x1440 @
+59.951 Hz with variable refresh rate NOT SUPPORTED**. A 60 Hz panel with nothing
+to absorb a missed frame: the frame budget is 16.67 ms and an overrun is a
+visible hitch, full stop.
+
+**Browser:** **Firefox 159.0.1** — the browser Kyle actually plays in, which is
+the whole point. Until 2026-11-09 it was the one browser nobody could watch:
+Firefox removed CDP support in version 129 and Playwright's `connectOverCDP`
+does not speak to Firefox, so the CDP watcher could only see a Chromium that
+was installed *for the watcher*.
+
+**Instrument:** `tools/perf/watch-client-bidi.cjs` (WebDriver BiDi) over
+`tools/perf/watch-remote-ff.sh`, with the probe in **non-invasive mode**
+(`--no-raf-wrap`): it reads the client's own pacer, the canvas, the event-loop
+lag and the input latency, and **leaves `window.requestAnimationFrame` alone**.
+
+### THE TWO PHASES
+
+| | css box | canvas BACKING | megapixels | engine cost | browser | panel | lag | late |
+|---|---|---|---|---|---|---|---|---|
+| **maximized window** | 2560x1315 | 2009x1032 | **2.07** | **3.69 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
+| **fullscreen (F11)** | 2560x1440 | 1920x1080 | **2.07** | **4.45 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
+
+45 rows in the first phase, 57 in the second, one sample per second.
+
+### WHAT THIS SETTLES: THE PIXEL-COUNT STORY IS OUT
+
+**The fragment count is IDENTICAL in both phases — 2.07 MP either way.** The
+client forces the render resolution and RE-APPLIES it when the window grows
+(the 50 ms debounced watchdog in `webxash/src/services/fullscreen.ts`), so
+fullscreen does not cost more pixels: it upscales the same frame to a taller
+box.
+
+That contradicts the figure the earlier session worked from — *fullscreen is
+3.54 MP against 1.59 MP tiled, 2.2x the fragments* — and the contradiction is
+explained: that figure was measured on a window whose backing store FOLLOWED
+the window. **With the forced render resolution in force, the backing store does
+not follow the window.** So M2 (pixel count) is not the mechanism, and the
+"fullscreen is slower because more pixels" explanation does not survive
+contact with the instrument.
+
+### WHAT THIS DOES NOT SETTLE
+
+**The +0.76 ms (+21%) is a LEAD, not a finding.** The engine's per-frame cost
+is dominated by what is on screen — the repo's own measurements put the same
+map at **1.87 ms and 9.12 ms** a minute apart, a 4.9x spread from the spawn
+point alone — and this is ONE sample per phase with no drift control. The
+repo's own rule is A, then B, then **A again**: the third run is the drift, and
+a B-A difference smaller than the drift is not a result. The A/B/A is the next
+run.
+
+### THE CRASH, AND WHY THE SESSION AFTER IT WORKED
+
+The first Firefox session died mid-game. Its log:
+
+```
+JavaScript warning: .../xash3d-....js, line 8: Script terminated by timeout at:
+_emscripten_glEnableVertexAttribArray@.../xash3d-....js:8:106477
+@... line 1 > WebAssembly.Module:wasm-function[0]:0x0
+@... line 1 > WebAssembly.instantiate:wasm-function[72]:0x5254
+```
+
+**"Script terminated by timeout" is Firefox's script run-time watchdog**
+(`dom.max_script_run_time`, default 10 seconds): a main-thread call that runs
+longer than the budget is interrupted, and when the call is inside WebAssembly
+the whole WASM execution is killed with it — **the engine, not the page**. The
+client's rAF shim then threw on every frame, and the browser went down with
+the pointer-lock teardown errors.
+
+With `dom.max_script_run_time = 0` (and
+`dom.max_script_run_time.require_critical_input = false`) in the dedicated
+perf profile (`tools/perf/ff-profile-user.js`), the next session ran **both
+phases with zero "Script terminated by timeout" and zero JavaScript errors**,
+and Firefox stayed up. **This is a profile pref on the PERF profile, not a
+code change and not a change to the player's own browser.**
+
+### THE CAVEATS
+
+- **There is NO frame-interval distribution in these numbers.** The probe was
+  deliberately non-invasive (it does not replace `requestAnimationFrame`), so
+  the frame-interval histogram comes from the client's own pacer and from the
+  in-game **Export log** instead. The engine cost, the browser rate against
+  the panel rate, the late-frame fraction, the canvas backing store and the
+  event-loop lag are all measured; the p50/p95/p99 spacing is not.
+- **Firefox MASKS the WebGL renderer string** — it reports `Radeon R9 200
+  Series` for an RX 7700 XT. Chromium on the same box reports the truth
+  (`ANGLE (AMD, AMD Radeon RX 7800 XT (radeonsi navi32 ACO), OpenGL 4.6)`), so
+  the Firefox renderer line is NOT evidence about the GPU. It is evidence that
+  the rendering is hardware rather than SwiftShader.
+- **The panel is 60 Hz and the browser delivered 60.0 Hz in both phases**, so
+  no browser throttling is in play here and the budget is 16.67 ms throughout.
+- **A scene change invalidates a phase.** The A/B/A must be on ONE map: the
+  engine cost moved with the map, not with the window.

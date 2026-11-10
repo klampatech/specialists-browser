@@ -86,6 +86,23 @@ const INTERVAL_MS = Number(arg('interval', 1000));
 const FRAMES = Number(arg('frames', 6000));
 const JSON_OUT = arg('json', null);
 const LABEL = String(arg('label', 'live-firefox'));
+// NON-INVASIVE MODE.
+//
+// The client's frame-pacing shim wraps the engine's rAF callback, and
+// the engine's WASM in Firefox died with "Script terminated by timeout"
+// during instantiation, followed by a per-frame error storm. Whether
+// the probe's rAF replacement had anything to do with that was NOT
+// established, and a probe that can destabilise the thing it is
+// measuring is not a probe.
+//
+// So `--no-raf-wrap` installs the probe WITHOUT replacing
+// `window.requestAnimationFrame`: it reads the pacer's own state, the
+// canvas, the event-loop lag and the input latency, and leaves the
+// browser's frame callback alone. The cost is the frame-interval
+// distribution — that comes from the client's own pacer instead, and
+// from the in-game Export log.
+const WRAP_RAF = !argv.includes('--no-raf-wrap');
+const PROBE_OPTIONS = { wrapRaf: WRAP_RAF };
 
 const log = (...a) => console.log(...a);
 
@@ -219,6 +236,11 @@ async function findTab(client) {
   log(`tab:        ${matches[0].url}`);
   log(`watching:   ${SECONDS}s, sampled every ${INTERVAL_MS}ms`);
   log(`frame ring: ${FRAMES} records`);
+  log(
+    WRAP_RAF
+      ? 'raf wrap:   ON — the probe replaces window.requestAnimationFrame, so the frame-interval distribution is measured externally'
+      : 'raf wrap:   OFF — the probe leaves window.requestAnimationFrame alone (non-invasive). The frame-interval distribution comes from the client\'s own pacer and the in-game Export log.',
+  );
 
   // THE RENDERER, EARLY AND PROMINENTLY.
   //
@@ -232,7 +254,7 @@ async function findTab(client) {
   log(`vendor:     ${rend.vendor}`);
   log('');
 
-  const installed = await evaluate(client, contextId, installProbeFn, FRAMES).catch((e) => ({
+  const installed = await evaluate(client, contextId, installProbeFn, FRAMES, PROBE_OPTIONS).catch((e) => ({
     installed: false,
     error: String(e && e.message ? e.message : e).slice(0, 200),
   }));
@@ -304,7 +326,7 @@ async function findTab(client) {
         // "the game drew no frames" when the truth is "the probe was
         // gone".
         if (/no probe/i.test(s.reason || '')) {
-          const again = await evaluate(client, contextId, installProbeFn, FRAMES).catch(() => null);
+          const again = await evaluate(client, contextId, installProbeFn, FRAMES, PROBE_OPTIONS).catch(() => null);
           if (again && again.installed) {
             log(`${((Date.now() - started) / 1000).toFixed(1).padStart(6)}s  (the page reloaded; the probe was reinstalled)`);
             continue;
@@ -320,8 +342,12 @@ async function findTab(client) {
 
       // THE MEASURED FRAME RATE, FROM THE rAF COUNT — not from the
       // engine's own counter, which cannot see uneven spacing.
-      let fps = 0;
-      if (lastFrames !== null && s.now > lastNow) {
+      // WITHOUT THE rAF WRAP THE FRAME COUNT IS NOT OURS TO REPORT, AND
+      // A ZERO WOULD BE A LIE: zero says "the game drew no frames",
+      // and the truth is "this harness is not counting frames". So the
+      // column shows `?` instead.
+      let fps = s.rafWrapped === false ? null : 0;
+      if (lastFrames !== null && s.now > lastNow && s.rafWrapped !== false) {
         fps = ((s.frames - lastFrames) * 1000) / (s.now - lastNow);
       }
       lastFrames = s.frames;
@@ -380,14 +406,22 @@ async function findTab(client) {
   log(`browser:             Firefox (WebDriver BiDi)`);
   log(`tab:                 ${matches[0].url}`);
   log(`renderer:            ${rend.name}`);
-  log(`total frames:        ${sum.totalFrames}`);
-  if (!sum.totalFrames) {
+  log(`total frames:        ${sum.totalFrames}${WRAP_RAF ? '' : '   (not counted — the rAF wrap is off)'}`);
+  if (!sum.totalFrames && WRAP_RAF) {
     log('');
     log('  NO FRAMES AT ALL. The page ran no requestAnimationFrame loop');
     log('  while this harness was watching it — which is what a landing');
     log('  page does, and what the game does NOT. This harness measures');
     log('  the engine drawing, so it needs the game actually running in');
     log('  the tab it attached to.');
+  }
+  if (!WRAP_RAF) {
+    log('');
+    log('  THE FRAME COUNT IS NOT MEASURED IN THIS MODE. The probe left');
+    log('  window.requestAnimationFrame alone, so the frame-interval');
+    log('  distribution comes from the client\'s own pacer (the engine');
+    log('  cost, the browser rate against the panel rate, the late-frame');
+    log('  fraction) and from the in-game Export log.');
   }
   log(`mean fps:            ${sum.meanFps.toFixed(1)}   median fps: ${sum.medianFps.toFixed(1)}`);
   log(`frame intervals:     ${sum.gaps}`);
