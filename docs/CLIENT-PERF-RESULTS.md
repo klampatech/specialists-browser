@@ -302,12 +302,78 @@ transition, so the drift phase never ran):
 | **maximized window** | 2560x1315 | 2009x1032 | **2.07** | **2.44 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
 | **fullscreen (niri)** | 2560x1440 | 1920x1080 | **2.07** | **2.98 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
 
-**THE RELATIVE DIFFERENCE REPRODUCES; THE ABSOLUTE ONE DOES NOT.** Run 1:
-**+0.76 ms, +21%**. Run 2: **+0.54 ms, +22%**. The absolute cost of BOTH
-phases fell by about 1.25 ms between the runs (a different map, a different
-scene), and the absolute gap shrank with it — while the ratio held at ~21-22%.
-That is suggestive and NOT a finding: two runs on two maps, with no drift
-phase in either, cannot separate the window state from the scene.
+**THESE NUMBERS ARE NOT A FINDING, AND THE NEXT SECTION SAYS WHY.** They
+looked consistent — +21%, +22%, +12.5% — and they are all wrong as
+evidence about the window: the scene was changing under them the whole
+time. See § THE ANSWER, below.
+
+---
+
+## THE ANSWER: FULLSCREEN DOES NOT SLOW THE GAME DOWN
+
+**THE MEASUREMENT THAT SETTLED IT.** The harness drives the A/B/A
+itself: it presses PLAY, stands still, toggles fullscreen through NIRI
+(the same compositor-level fullscreen a player uses with a shortcut —
+NOT the DOM fullscreen API, which would change what is being measured),
+stands still, toggles back, and sends no movement and no keys into the
+game. The phases ALTERNATE — six windowed/fullscreen pairs, 24 seconds
+each — so every windowed phase sits beside a fullscreen phase a few
+seconds away, and the scene's drift cancels out of the differences.
+
+**Six pairs, each a windowed phase against the fullscreen phase beside
+it, compared on the reading that belongs to that phase:**
+
+- w1 → f1: 1.96 → 3.12 ms (**+1.16**)
+- w2 → f2: 3.78 → 3.26 ms (**-0.52**)
+- w3 → f3: 2.54 → 1.56 ms (**-0.98**)
+- w4 → f4: 2.02 → 1.94 ms (**-0.08**)
+- w5 → f5: 1.98 → 2.30 ms (**+0.32**)
+- w6 → f6: 3.22 → 2.37 ms (**-0.85**)
+
+**THE FULLSCREEN EFFECT, BY THE PAIRED MEDIAN: -0.30 ms, -9%.**
+
+**THERE IS NO FULLSCREEN PENALTY TO FIND.** The pair deltas scatter
+around zero in both directions, and the thing that moves the engine's
+cost is the SCENE: the player is dead, the client is spectating with a
+free chase-cam that FOLLOWS A BOT, and the engine's per-frame cost
+moves from 1.56 ms to 3.78 ms as that camera crosses a church full of
+chairs. That scene swing is ±1 ms and it swamps any window effect.
+
+**AND THE FOUR PLAY RUNS ABOVE WERE THE SCENE, NOT THE WINDOW.** They
+suggested +12% to +22% for fullscreen. The instrument that holds the
+scene still enough to compare says -9%. The play runs were right about
+the game and wrong about the cause.
+
+**WHAT FULLSCREEN ACTUALLY COSTS: THE SWITCH.** The event-loop lag
+spikes to **1258 ms** and **1247 ms** on the two measured transitions —
+a **1.25-second freeze** of the main thread, every time, in both
+directions. That is the fullscreen tax, and it is paid at the moment of
+switching, not while playing.
+
+**WHAT IT DOES NOT COST:**
+
+- **THE FRAME RATE.** 60.0 Hz browser against a 60 Hz panel, **0.0%
+  late frames**, in every phase of every run, in both window states.
+- **PIXELS.** The canvas is 2009x1032 windowed and 1920x1080
+  fullscreen — **2.07 megapixels either way**. The window is not
+  rendering more; it is rendering a different shape.
+- **THE ENGINE'S PER-FRAME COST.** No measurable change, at either
+  resolution, in either direction.
+
+**THE INSTRUMENT, AND WHAT IT TOOK TO BUILD IT:**
+
+- `tools/perf/autopilot-aba.cjs` — drives the run and owns the
+  measurement (Firefox's remote agent allows ONE BiDi session, so the
+  driver and the watcher cannot both be attached).
+- `tools/perf/aba-remote.sh` — the launcher: the SSH tunnel, the
+  watcher handover, the browser.
+- `tools/perf/read-aba.cjs` — reads a run back, phase by phase and
+  pair by pair, with each phase's own drift shown next to it.
+- The pacer reports the engine's cost as the MEDIAN of a window about
+  **twelve seconds** wide (measured: the value moves every 11.5-12.4 s),
+  so a phase shorter than that measures the phase before it. The phases
+  are 24 s — two whole windows — and the pairing uses the LAST reading
+  of each phase, which is the reading that belongs to that phase.
 
 ### WHAT THIS SETTLES: THE PIXEL-COUNT STORY IS OUT
 
