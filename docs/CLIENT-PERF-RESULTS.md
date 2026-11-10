@@ -479,3 +479,117 @@ somewhere else in that path and is not yet explained.
   no browser throttling is in play here and the budget is 16.67 ms throughout.
 - **A scene change invalidates a phase.** The A/B/A must be on ONE map: the
   engine cost moved with the map, not with the window.
+
+---
+
+## 6. THE LONG PLAY SESSION (2026-11-09, 20:37 — 20:51, 13.7 MINUTES)
+
+**This is the session where the tab did NOT die, and where the client's
+own state changes turned out to be the story.**
+
+### THE TAB DID NOT EXIT
+
+| | |
+|---|---|
+| the page reloaded once, at t=722 s | **the MATCH ENDED** — the client's `onExit()` does `window.location.reload()`, which is the normal end-of-match path back to the landing page |
+| "Script terminated by timeout" in the browser's stdout | **zero** — the engine never died |
+| the browser's exit status | **`EXIT=0`** — a CLEAN exit, when Kyle closed the window |
+| long tasks | **zero** |
+| the frame gate | **1-in-1 for the whole session** — the pacer never sacrificed a frame rate |
+| late frames | **0 of 587 samples** |
+
+**So the three earlier deaths did not reproduce in 13.7 minutes of play,
+and the trigger is INTERMITTENT, not deterministic.** The exit status
+instrument is now the thing that tells them apart, and it says `0` when
+the browser is closed and something else when the engine takes it down.
+
+### THE WINDOW STATES WERE NOT THE TWO WE THOUGHT
+
+Kyle launched the game **fullscreen from the web UI** (the client's own
+`requestFullscreen()`), and then used niri's shortcut on top of it. The
+rows keep both flags separately, and they say:
+
+- **t=106 s → 418 s: DOM fullscreen** (`document.fullscreenElement` set,
+  the viewport 2560x1440, the canvas backing 1920x1080).
+- **t=420 s → 707 s: windowed** (the window maximized, css 2560x1315,
+  the canvas backing 2009x1032).
+- **there is no niri-fullscreen state at all.** The page was already in
+  DOM fullscreen, so the compositor's toggle had nothing to change from
+  the page's point of view.
+
+**AND THE NIRI TOGGLE COST A SECOND OF EXTRA PIXELS.** At t=222.1 s the
+canvas backing was **2560x1440 — 3.69 megapixels** — for exactly one
+sample, before the client's forced render resolution (1920x1080,
+2.07 MP) was re-applied. The resize path lets the canvas be the WINDOW's
+full size for a second, and during that second the engine renders **78%
+more pixels than the forced resolution it is supposed to be locked to.**
+That is a real, fixable inefficiency in the client's resize handling, and
+it is on the path of every window change.
+
+### WHAT THE PLAYER FELT, AND WHAT THE MACHINE SAW
+
+| | DOM fullscreen | windowed |
+|---|---|---|
+| samples | 303 | 284 |
+| engine cost, median | 6.28 ms | 3.94 ms |
+| engine cost, min — max | 1.68 — 9.88 ms | 2.02 — 11.85 ms |
+| late frames | 0.0% | 0.0% |
+| the frame gate | 1-in-1 | 1-in-1 |
+| event-loop lag, median | 4.08 ms | 4.08 ms |
+
+**The engine's cost was HIGHER in fullscreen — and it still felt better.**
+The two phases are different scenes, so the medians say nothing about
+the window; what they do say is that the feel is not the frame budget,
+because the frame budget was identical in both (60.0 Hz, 0.0% late, the
+gate never moved, the engine never once exceeded the 16.67 ms budget —
+its worst was 11.85 ms, 71% of it).
+
+**THE ENGINE'S COST IS THE SCENE, AND IT IS THE THING A PLAYER FEELS.**
+It swung from 1.68 ms to 9.88 ms WITHIN the fullscreen phase, in the
+same window state, with the gate never moving. That swing is what
+"it felt better for a while, then a few drops" was: the cost climbed
+from 1.76 ms to 6-10 ms as the scene got busier.
+
+### ONE REAL HITCH, AND THE INSTRUMENT THREW IT AWAY
+
+**The session's worst event-loop lag was 318 ms.** A 318 ms stall on a
+60 Hz panel is a visible freeze, and it is the only thing in the whole
+session that looks like the "few drops".
+
+**THE PER-ROW LAG MEDIAN COULD NOT SEE IT.** One 318 ms hitch among a
+second's worth of 4 ms lags has a median of 4 ms — so 767 rows reported
+"no lag over 50 ms" while the session contained a 318 ms stall. The
+watcher now records the MAXIMUM lag per row, prints a marker the moment
+it happens, and keeps the worst one WITH ITS TIMESTAMP.
+
+### TWO DEPRECATION WARNINGS THE CLIENT PRODUCES ON EVERY LOAD IN FIREFOX
+
+Straight out of the browser's own stdout:
+
+```
+JavaScript warning: .../index-BAn7AKN2.js, line 27: WEBGL_debug_renderer_info is
+  deprecated in Firefox and will be removed. Please use RENDERER.
+JavaScript warning: , line 0: The WebAssembly exception handling 'try' instruction is
+  deprecated and should no longer be used. Please recompile to use the 'try_table'
+  instruction instead.
+```
+
+The first is the client reaching for a Firefox extension that is on its
+way out. The second is the ENGINE'S WASM BINARY being built with a
+toolchain that emits an instruction Firefox now warns about — and it
+warns on every single load.
+
+### AND THE ENGINE HITS FIREFOX'S SLOW TEXTURE PATH AT LOAD
+
+```
+JavaScript warning: , line 0: WebGL warning: texSubImage: Texture has not been
+  initialized prior to a partial upload, forcing the browser to clear it. This may be slow.
+JavaScript warning: , line 0: WebGL warning: texSubImage: Tex image TEXTURE_2D level 0
+  is incurring lazy initialization.
+```
+
+Firefox is telling us, in its own words, that the engine's texture
+uploads land on a slow path: the browser has to CLEAR the texture and
+lazily initialise it, because the engine partially uploads a texture it
+never initialised. That is a startup cost on every load, and it is in
+the engine's texture code.

@@ -361,6 +361,7 @@ async function findTab(client) {
     allDurations: [],
     allLags: [],
     allInputs: [],
+    worstLag: null,
     longtasks: [],
     longtaskSupported: false,
     longtaskError: '',
@@ -444,6 +445,36 @@ async function findTab(client) {
       const st = windowStats(gaps);
       const lagMedian = median(s.lags.map((l) => l.lag));
 
+      // THE WORST LAG IN THIS SAMPLE, AND WHEN IT HAPPENED.
+      //
+      // The MEDIAN of the event-loop lag cannot see a single stall: one
+      // 318 ms hitch among a second's worth of 4 ms lags has a median
+      // of 4 ms, and a run of 767 rows reported "no lag over 50 ms"
+      // while the session's worst lag was 318 ms. The hitch was REAL
+      // and it was the only thing in the whole session that looked
+      // like a player-visible stall — and the instrument threw it away.
+      //
+      // So: the row carries the MAXIMUM as well as the median, and the
+      // run remembers the worst one and WHEN it happened.
+      let lagMax = null;
+      let lagWorst = null;
+      for (const l of s.lags) {
+        if (lagMax === null || l.lag > lagMax) {
+          lagMax = l.lag;
+          lagWorst = l;
+        }
+      }
+      if (lagMax !== null && (!run.worstLag || lagMax > run.worstLag.lag)) {
+        run.worstLag = {
+          lag: lagMax,
+          at: lagWorst.at,
+          wall: new Date().toISOString(),
+          t: (Date.now() - started) / 1000,
+          canvas: s.canvas,
+          state: s.canvas && (s.canvas.fullscreen || s.canvas.fillsTheScreen) ? 'fullscreen' : 'windowed',
+        };
+      }
+
       // THE MEASURED FRAME RATE, FROM THE rAF COUNT — not from the
       // engine's own counter, which cannot see uneven spacing.
       // WITHOUT THE rAF WRAP THE FRAME COUNT IS NOT OURS TO REPORT, AND
@@ -486,6 +517,7 @@ async function findTab(client) {
         browserHz: s.pacing ? s.pacing.browserHz : null,
         panelHz: s.pacing ? s.pacing.panelHz : null,
         lagMedian,
+        lagMax,
         longtasks: s.longtasks.length,
         canvas: s.canvas,
         pacing: s.pacing,
@@ -494,6 +526,16 @@ async function findTab(client) {
 
       const shown = st.n ? st : { fps, p50: null, p95: null, p99: null, late: null };
       log(formatLine(row.t, shown, fps, s.pacing, lagMedian, s.longtasks.length, s.canvas));
+
+      // A STALL, SAY SO WHILE IT HAPPENS. The row's lag column is the
+      // MEDIAN, so a single hitch is invisible in it — this is the line
+      // that says "the main thread was blocked for N ms, HERE".
+      if (lagMax !== null && lagMax > 50) {
+        log(
+          `  (!!) the main thread was blocked for ${lagMax.toFixed(0)} ms at ${new Date().toISOString()}` +
+            ` — t=${row.t.toFixed(1)}s, ${row.canvas && (row.canvas.fullscreen || row.canvas.fillsTheScreen) ? 'fullscreen' : 'windowed'}`,
+        );
+      }
     }
   }
 
@@ -570,6 +612,14 @@ async function findTab(client) {
     log(`  ${sum.longtaskCount} long task(s), ${sum.longtaskTotalMs.toFixed(1)} ms in total`);
   }
   log('');
+  log('--- the worst event-loop lag, and WHEN ---');
+  if (run.worstLag) {
+    log(
+      `  ${run.worstLag.lag.toFixed(2)} ms at ${run.worstLag.wall} (t=${run.worstLag.t.toFixed(1)}s, ${run.worstLag.state})`,
+    );
+  } else {
+    log('  (no lag samples)');
+  }
   log('--- event-loop lag ---');
   log(`  median ${ms(sum.lagMedian)} ms   p95 ${ms(sum.lagP95)} ms   max ${ms(sum.lagMax)} ms`);
   log('--- input latency (event timestamp -> handler time) ---');

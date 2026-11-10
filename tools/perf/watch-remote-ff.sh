@@ -68,9 +68,46 @@ cleanup() {
     kill "$TUNNEL" 2>/dev/null || true
     wait "$TUNNEL" 2>/dev/null || true
   fi
+  if [ -n "${WATCHDOG_PID:-}" ] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+  fi
   rm -f "$LOG"
 }
 trap cleanup EXIT INT TERM
+
+# THE BROWSER WATCHDOG.
+#
+# The browser on the box can DIE mid-session — the engine's WASM has
+# been terminated inside Firefox, and the browser has gone down with it
+# — and a long capture that ends when the browser dies is a long
+# capture that captured nothing.
+#
+# So the browser is brought BACK, and the run keeps going. The watcher
+# re-attaches by itself (new socket, new session, the tab found again,
+# the probe reinstalled), so all it takes is for the browser to exist
+# again.
+#
+# The check is the same BiDi ping the readiness check uses: if the agent
+# stops answering, the browser is gone. The launcher is only run when
+# the agent is SILENT, because it kills any browser on that profile
+# before it starts its own — running it against a healthy browser would
+# kill the very session it is meant to protect.
+if [ "${FF_WATCHDOG:-on}" = "on" ]; then
+  (
+    while true; do
+      sleep 10
+      # The tunnel gone means the watcher is gone; nothing to protect.
+      kill -0 "$TUNNEL" 2>/dev/null || break
+      if node "${HERE}/lib/bidi-ping.cjs" "ws://127.0.0.1:${LOCAL_PORT}/session" >/dev/null 2>&1; then
+        continue
+      fi
+      echo "[watch] the browser on ${HOST} is not answering — bringing it back"
+      ssh "$HOST" 'bash /home/kyle/opt/ff-launch.sh windowed' >/dev/null 2>&1 || true
+      sleep 15
+    done
+  ) &
+  WATCHDOG_PID=$!
+fi
 
 # THE WAIT.
 #
