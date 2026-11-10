@@ -41,3 +41,24 @@
 // profile.
 user_pref("dom.max_script_run_time", 3600);
 user_pref("dom.max_script_run_time.require_critical_input", false);
+
+
+# THE MICROPHONE IS BLOCKED, AND THAT IS A DELIBERATE CHOICE.
+#
+# The client calls `navigator.mediaDevices.getUserMedia({audio: true})`
+# on the WebRTC peer-to-peer path, and Firefox then asks the PLAYER with
+# a modal prompt that sits on top of the game and can swallow a click.
+# A measurement run that cannot be sure its clicks land is not a
+# measurement run.
+#
+# THE VALUE MATTERS: Firefox's `permissions.default.*` prefs use
+#   1 = allow, 2 = block, 3 = ask (the default)
+# — NOT 0. Setting 0 is invalid, so the pref was ignored and the
+# prompt kept coming back, which is exactly what happened the first
+# time this was written.
+#
+# Block, not allow: this profile runs on a machine with a real
+# microphone in a real room, and a measurement client has no business
+# opening it. The game does not need it — it plays fine with the
+# permission unanswered.
+user_pref("permissions.default.microphone", 2);
