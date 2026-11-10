@@ -23,7 +23,81 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
-**As of:** 2026-11-09, LATEST — **THE READOUT SAYS WHAT TO DO, THE GAMING PC
+**As of:** 2026-11-09, LATEST — **FIREFOX CAN BE WATCHED NOW. A BiDi
+WATCHER, THE PROBE IT SHARES WITH THE CHROMIUM ONE, AND THE FOUR TRAPS
+THAT COST TO FIND.**
+
+The measurement session was still open because **the browser Kyle
+plays in was the one browser nobody could watch**. Firefox removed CDP
+support in version 129, and Playwright's `connectOverCDP` does not
+speak to Firefox at all — so the CDP watcher could only ever watch the
+Chromium that was installed *for the watcher*, while the session that
+was actually being asked about happened in Firefox.
+
+**WHAT SHIPPED** (`tools/perf/`):
+
+1. **`watch-client-bidi.cjs` — THE SAME WATCHER, OVER WebDriver BiDi.**
+   Firefox's Remote Agent speaks BiDi (JSON over a WebSocket), and
+   `script.evaluate` runs in the page's own realm, which is all the
+   probe needs. It prints the SAME columns, computes the SAME
+   statistics and answers the SAME question as the CDP watcher.
+2. **`watch-remote-ff.sh` — THE TUNNEL**, with the port trap below
+   baked into it.
+3. **THE PROBE IS NOW ONE DEFINITION.** `lib/watch-probe.cjs` and
+   `lib/watch-stats.cjs` hold the probe and the arithmetic, and
+   `watch-client.cjs` imports them. **The probe bodies were moved
+   VERBATIM** (verified against the committed file, byte for byte),
+   so the Chromium watcher's numbers did not change — and a Firefox
+   number and a Chromium number are only comparable if they came out
+   of the same instrument. Two copies of a probe drift; two numbers
+   that look alike but are not is worse than one number.
+
+**THE FOUR TRAPS, ALL MEASURED, ALL FIXED:**
+
+1. **THE REMOTE AGENT CHECKS THE HOST HEADER, PORT INCLUDED.** A
+   tunnel that forwards `127.0.0.1:19224` to the browser's
+   `127.0.0.1:9224` is refused with **`400 Bad Request`**; the same
+   request direct, or through a tunnel that uses **the same port on
+   both ends**, answers `101 Switching Protocols`. So
+   `watch-remote-ff.sh` uses matching ports, and says why.
+2. **THERE IS ONE SESSION AT A TIME, THE REGISTRY IS GLOBAL, AND A
+   LEAKED SESSION IS PERMANENT.** `session.new` answers *"Maximum
+   number of active sessions"* when an earlier run leaked one — and
+   the leak cannot be cleared from outside: `session.end` answers
+   *"invalid session id"* (the session belongs to a dead socket), and
+   only **a browser restart** frees the slot. So the watcher now
+   ends its session, **closes the socket GRACEFULLY** (`closeGracefully`
+   waits for the close event — a socket that dies with the process
+   leaks the session), and when it finds the stuck state it prints the
+   command that clears it instead of an error that names the cause
+   but not the cure.
+3. **`session.status` IS NOT A READINESS CHECK.** It answers *"is a
+   session active right now?"* — globally — so it returns
+   `ready:false, "Session already started"` the MOMENT your own
+   `session.new` succeeds. Read it after `session.new` and it
+   condemns you for your own session. The watcher prints it and does
+   not act on it.
+4. **FIREFOX MASKS THE WEBGL RENDERER STRING.** Firefox reports
+   `Radeon R9 200 Series` for an RX 7700 XT — a family mask, not the
+   chip. Chromium on the same box reports the truth
+   (`ANGLE (AMD, AMD Radeon RX 7800 XT (radeonsi navi32 ACO),
+   OpenGL 4.6)`). **So the renderer line from Firefox is not
+   evidence about the GPU** — the Chromium one is, on the same
+   machine. Firefox's string is still evidence that the rendering is
+   hardware, not SwiftShader.
+
+**WHAT IS LIVE ON THE GAMING PC.** `~/opt/ff-launch.sh` launches
+Firefox with the remote agent on port 9224 and a dedicated profile
+(`~/opt/bb-ff`), lifting `WAYLAND_DISPLAY` out of `/run/user/<uid>`
+because niri does not export its own environment. Both watchers are
+verified against it: the Firefox one over BiDi and the Chromium one
+over CDP, each printing its honest *"NO FRAMES AT ALL"* on the
+landing page, which runs no `requestAnimationFrame` loop.
+
+**THE MEASUREMENT SESSION IS STILL OPEN** — the instruments are ready,
+and a match has still not been played under measurement.
+
+**As of:** 2026-11-09, EARLIER — **THE READOUT SAYS WHAT TO DO, THE GAMING PC
 IS REACHABLE, AND IT IS A 60 Hz PANEL — WHICH IS THE WHOLE OF "FULLSCREEN
 IS SLOWER".**
 

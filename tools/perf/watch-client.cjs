@@ -128,6 +128,14 @@ const { loadPlaywright } = require(path.join(REPO, 'tools', 'deploy', 'lib', 'br
 const { chromium } = loadPlaywright();
 const { ensureAtLeastOnePage } = require(path.join(REPO, 'tools', 'perf', 'lib', 'cdp-targets.cjs'));
 const { num, ms } = require(path.join(REPO, 'tools', 'perf', 'lib', 'format.cjs'));
+// THE SHARED INSTRUMENT. The probe (what is installed in the page) and
+// the statistics (what the numbers mean) live in `lib/` because the
+// FIREFOX watcher — `watch-client-bidi.cjs`, over WebDriver BiDi —
+// answers the same question and has to use the SAME probe and the SAME
+// arithmetic. Two copies of either would drift, and two numbers that
+// look alike but are not is worse than one number.
+const { installProbeFn, readSampleFn, rendererInfoFn } = require(path.join(REPO, 'tools', 'perf', 'lib', 'watch-probe.cjs'));
+const { median, percentile, windowStats, formatLine, summarise } = require(path.join(REPO, 'tools', 'perf', 'lib', 'watch-stats.cjs'));
 
 const argv = process.argv.slice(2);
 const arg = (name, fallback) => {
@@ -151,59 +159,6 @@ const AB_SECONDS = Number(arg('ab-seconds', 15));
 const log = (...a) => console.log(...a);
 
 /**
- * THE MEDIAN OF A LIST OF NUMBERS.
- *
- * A failure path has to report, not crash: an empty list has no
- * median, and `median([]).toFixed()` is a TypeError in the middle of
- * a measurement.
- */
-function median(values) {
-  if (!values || !values.length) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = sorted.length >> 1;
-  return sorted[mid];
-}
-
-/**
- * A PERCENTILE OF AN ALREADY-SORTED LIST.
- *
- * Nearest-rank, the same way the sibling harnesses do it: the
- * smallest value at or above the requested fraction of the list.
- */
-function percentile(sorted, q) {
-  if (!sorted || !sorted.length) return 0;
-  const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * q));
-  return sorted[idx];
-}
-
-/**
- * THE STATISTICS OF ONE SAMPLE WINDOW.
- *
- * The late fraction is RELATIVE — a frame is late when its gap is
- * more than 1.5x the median gap of the same window — because a
- * constant threshold would mean something different on a 60 Hz
- * panel than on a 144 Hz one.
- */
-function windowStats(gaps) {
-  if (!gaps.length) {
-    return { n: 0, fps: 0, p50: 0, p95: 0, p99: 0, late: 0, max: 0, mean: 0 };
-  }
-  const sorted = [...gaps].sort((a, b) => a - b);
-  const med = percentile(sorted, 0.5);
-  const late = sorted.filter((v) => v > med * 1.5).length;
-  return {
-    n: gaps.length,
-    fps: med > 0 ? 1000 / med : 0,
-    p50: med,
-    p95: percentile(sorted, 0.95),
-    p99: percentile(sorted, 0.99),
-    late: late / gaps.length,
-    max: sorted[sorted.length - 1],
-    mean: gaps.reduce((a, b) => a + b, 0) / gaps.length,
-  };
-}
-
-/**
  * THE PROBE, INSTALLED ONCE IN THE PAGE.
  *
  * Everything is a RING: the page is left running for however long
@@ -216,127 +171,7 @@ function windowStats(gaps) {
  * instruments and the reader is entitled to see both.
  */
 async function installProbe(page, cap) {
-  return page.evaluate((cap) => {
-    // A RING OF NUMBERS, WITH AN ABSOLUTE ID ON EACH, so the harness
-    // can ask for "what is new since I last looked" without the
-    // harness and the page having to agree on an index.
-    const makeRing = (n) => ({ cap: n, items: [], dropped: 0 });
-    const push = (ring, item) => {
-      ring.items.push(item);
-      while (ring.items.length > ring.cap) {
-        ring.items.shift();
-        ring.dropped++;
-      }
-      return item;
-    };
-
-    const probe = {
-      cap,
-      startedAt: performance.now(),
-      frames: 0,
-      requests: 0,
-      intervals: makeRing(cap),
-      durations: makeRing(cap),
-      lags: makeRing(cap),
-      inputs: makeRing(cap),
-      longtasks: [],
-      longtaskSupported: false,
-      longtaskError: '',
-      lastStart: null,
-      lastSampledIntervalId: 0,
-      lastSampledLagId: 0,
-      lastSampledDurationId: 0,
-      lastSampledInputId: 0,
-      nextId: 0,
-    };
-    window.__watchProbe = probe;
-
-    // THE rAF WRAPPER.
-    //
-    // The callback is wrapped, not just the request, because the
-    // CALLBACK is where the frame happens: its start is the frame's
-    // start and its duration is the frame's cost. The engine asks for
-    // its next frame from inside the frame it drew, so the request
-    // count is the frame count — but the SPACING between callback
-    // starts is the frame interval, which is the thing being measured.
-    const native = window.requestAnimationFrame.bind(window);
-    window.requestAnimationFrame = function (cb) {
-      probe.requests++;
-      return native(function (t) {
-        const s = performance.now();
-        const id = ++probe.nextId;
-        if (probe.lastStart !== null) {
-          push(probe.intervals, { id, gap: s - probe.lastStart, at: s });
-        }
-        probe.lastStart = s;
-        probe.frames++;
-        try {
-          cb(t);
-        } finally {
-          // A THROWING callback must still record its duration, and
-          // must not take the probe down with it.
-          push(probe.durations, { id, d: performance.now() - s, at: s });
-        }
-      });
-    };
-
-    // THE EVENT-LOOP LAG SAMPLER.
-    //
-    // setTimeout(0) is asked for and the lateness is recorded: how
-    // much later than it was asked for did it actually fire. This is
-    // the number that says "the main thread was busy", and it is the
-    // one the 2026-10-28 work found to be 235 ms on SwiftShader.
-    const tick = () => {
-      const asked = performance.now();
-      setTimeout(() => {
-        const now = performance.now();
-        push(probe.lags, { id: ++probe.nextId, lag: now - asked, at: now });
-        tick();
-      }, 0);
-    };
-    tick();
-
-    // THE LONG-TASK OBSERVER.
-    //
-    // 'longtask' is NOT supported everywhere (Firefox has no
-    // PerformanceObserver longtask entries at all), and the failure
-    // mode of observe() with an unknown type is to THROW. So it is
-    // guarded, and the harness REPORTS that long tasks are
-    // unsupported rather than pretending there were none.
-    try {
-      const observer = new PerformanceObserver((list) => {
-        for (const entry of list.getEntries()) {
-          probe.longtasks.push({ start: entry.startTime, duration: entry.duration });
-          while (probe.longtasks.length > 1000) probe.longtasks.shift();
-        }
-      });
-      observer.observe({ type: 'longtask', buffered: true });
-      probe.longtaskSupported = true;
-      probe.longtaskObserver = observer;
-    } catch (e) {
-      probe.longtaskSupported = false;
-      probe.longtaskError = String((e && e.message) || e);
-    }
-
-    // THE INPUT LATENCY RECORDER.
-    //
-    // The event's OWN timestamp against performance.now() at handler
-    // time: the difference is how long the input waited in the
-    // queue. Both are on the same clock — event.timeStamp is on the
-    // performance timeline in every engine that matters — so the
-    // difference is a real queueing delay and not a clock skew.
-    const onInput = (e) => {
-      const now = performance.now();
-      const ts = Number(e.timeStamp);
-      if (!Number.isFinite(ts) || ts <= 0 || ts > now) return;
-      push(probe.inputs, { id: ++probe.nextId, lat: now - ts, at: now });
-    };
-    window.addEventListener('pointermove', onInput, { passive: true });
-    window.addEventListener('mousedown', onInput, { passive: true });
-    window.addEventListener('keydown', onInput, { passive: true });
-
-    return { installed: true, cap, at: performance.now() };
-  }, cap);
+  return page.evaluate(installProbeFn, cap);
 }
 
 /**
@@ -349,117 +184,7 @@ async function installProbe(page, cap) {
  */
 async function readSample(page) {
   return page
-    .evaluate(() => {
-      const p = window.__watchProbe;
-      if (!p) return { ok: false, reason: 'no probe (the page navigated, or the probe was never installed)' };
-
-      const takeNew = (ring, sinceId) => {
-        const out = [];
-        for (const item of ring.items) if (item.id > sinceId) out.push(item);
-        return out;
-      };
-
-      const intervals = takeNew(p.intervals, p.lastSampledIntervalId);
-      const durations = takeNew(p.durations, p.lastSampledDurationId);
-      const lags = takeNew(p.lags, p.lastSampledLagId);
-      const inputs = takeNew(p.inputs, p.lastSampledInputId);
-      if (intervals.length) p.lastSampledIntervalId = intervals[intervals.length - 1].id;
-      if (durations.length) p.lastSampledDurationId = durations[durations.length - 1].id;
-      if (lags.length) p.lastSampledLagId = lags[lags.length - 1].id;
-      if (inputs.length) p.lastSampledInputId = inputs[inputs.length - 1].id;
-
-      // THE PACER'S OWN STATE, IF THE PAGE HAS IT.
-      let pacing = null;
-      try {
-        if (typeof window.__xashPacing === 'function') {
-          const raw = window.__xashPacing() || {};
-          pacing = {
-            engineWorkMs: Number(raw.engineWorkMs || 0),
-            engineFps: Number(raw.engineFps || 0),
-            browserHz: Number(raw.browserHz || raw.displayHz || 0),
-            panelHz: Number(raw.panelHz || 0),
-            everyNth: Number(raw.everyNth || 1),
-            capFps: Number(raw.capFps || 0),
-            lateFraction: Number(raw.lateFraction || 0),
-            settled: raw.settled === true,
-            provisional: raw.provisional === true,
-            reason: String(raw.reason || ''),
-          };
-        }
-      } catch (e) {
-        pacing = null;
-      }
-
-      // THE CANVAS. Its SIZE is read off the element; its CONTEXT is
-      // never touched — see the trap in the header.
-      const canvas = document.getElementById('canvas');
-      const rect = canvas ? canvas.getBoundingClientRect() : null;
-
-      return {
-        ok: true,
-        now: performance.now(),
-        frames: p.frames,
-        requests: p.requests,
-        intervals,
-        durations,
-        lags,
-        inputs,
-        longtasks: p.longtasks.slice(),
-        longtaskSupported: p.longtaskSupported,
-        longtaskError: p.longtaskError,
-        // HOW MANY INTERVAL RECORDS THE RING OVERWROTE BEFORE THE
-        // HARNESS READ THEM. Non-zero means the percentiles are over
-        // a sample that is missing its oldest records.
-        droppedIntervals: p.intervals.dropped,
-        pacing,
-        canvas: {
-          backingW: canvas ? canvas.width : 0,
-          backingH: canvas ? canvas.height : 0,
-          cssW: rect ? Math.round(rect.width) : 0,
-          cssH: rect ? Math.round(rect.height) : 0,
-          dpr: window.devicePixelRatio,
-          innerW: window.innerWidth,
-          innerH: window.innerHeight,
-          // WHETHER THE PAGE IS FULLSCREEN — AND WHICH QUESTION THAT
-          // IS.
-          //
-          // `document.fullscreenElement` is only set when the PAGE asked
-          // for fullscreen through the DOM API. It is NULL for the
-          // browser's own fullscreen (F11, or `--start-fullscreen`),
-          // which is how almost every player plays. A harness that
-          // reports that as "not fullscreen" labels a fullscreen run as
-          // windowed, and the A/B compares two identical states and
-          // reports "no difference" — worse than no answer.
-          //
-          // So both questions are asked and both are kept:
-          //   `fullscreen`      — the DOM's answer, as before
-          //   `fillsTheScreen`  — the canvas's size against the screen's
-          //
-          // And the `fs` column prints Y when EITHER says yes.
-          fullscreen: !!document.fullscreenElement,
-          fillsTheScreen: (() => {
-            try {
-              if (!rect || !window.screen) return false;
-              const sw = window.screen.width;
-              const sh = window.screen.height;
-              if (!sw || !sh) return false;
-              return rect.width >= sw * 0.95 && rect.height >= sh * 0.95;
-            } catch (e) {
-              return false;
-            }
-          })(),
-          // WHETHER THE PAGE IS VISIBLE AT ALL.
-          //
-          // A HIDDEN TAB REPORTS NO LONG TASKS, EVER — the browser
-          // does not run the long-task machinery for a page nobody is
-          // looking at. So a run against a background tab would report
-          // "0 long tasks" as a fact about the harness rather than
-          // about the machine, and the reader has to be told which it
-          // is.
-          visible: document.visibilityState === 'visible',
-        },
-      };
-    })
+    .evaluate(readSampleFn)
     .catch((e) => ({ ok: false, reason: 'the page went away: ' + String(e).slice(0, 160) }));
 }
 
@@ -472,20 +197,7 @@ async function readSample(page) {
  */
 async function rendererInfo(page) {
   return page
-    .evaluate(() => {
-      try {
-        const c = document.createElement('canvas');
-        const gl = c.getContext('webgl2') || c.getContext('webgl');
-        if (!gl) return { name: 'no webgl context', vendor: 'unknown' };
-        const d = gl.getExtension('WEBGL_debug_renderer_info');
-        return {
-          name: d ? String(gl.getParameter(d.UNMASKED_RENDERER_WEBGL)) : 'unknown',
-          vendor: d ? String(gl.getParameter(d.UNMASKED_VENDOR_WEBGL)) : 'unknown',
-        };
-      } catch (e) {
-        return { name: 'renderer unavailable: ' + String(e).slice(0, 120), vendor: 'unknown' };
-      }
-    })
+    .evaluate(rendererInfoFn)
     .catch(() => ({ name: 'renderer unavailable (the page went away)', vendor: 'unknown' }));
 }
 
@@ -523,101 +235,6 @@ async function setWindowState(page, state) {
   } finally {
     if (cdp) await cdp.detach().catch(() => {});
   }
-}
-
-/**
- * ONE LINE PER SAMPLE, ALIGNED.
- *
- * The percentiles are computed from the FRAME INTERVALS of this
- * window, not from the engine's counter — the engine's counter says
- * how many frames it drew and nothing about how evenly they were
- * spaced, and the spacing is the whole question.
- */
-function formatLine(t, st, measuredFps, pacing, lagMedian, longtaskCount, canvas) {
-  const cell = (v, width, digits = 1) => (v === null || !Number.isFinite(v) ? '?'.padStart(width) : v.toFixed(digits).padStart(width));
-  return [
-    `${t.toFixed(1).padStart(6)}s`,
-    // THE FRAME RATE, FROM THE rAF COUNT over this window — not the
-    // engine's counter, and not 1000/median (which is the same
-    // number the percentiles are built from).
-    `fps ${cell(measuredFps, 6)}`,
-    `p50 ${cell(st.p50, 6, 2)}`,
-    `p95 ${cell(st.p95, 6, 2)}`,
-    `p99 ${cell(st.p99, 6, 2)}`,
-    `late ${cell(st.late * 100, 6)}%`,
-    `engine ${cell(pacing ? pacing.engineWorkMs : null, 6, 2)}ms`,
-    `brHz ${cell(pacing ? pacing.browserHz : null, 5)}`,
-    `panel ${cell(pacing ? pacing.panelHz : null, 5)}`,
-    `lag ${cell(lagMedian, 6, 2)}ms`,
-    `lt ${String(longtaskCount).padStart(4)}`,
-    // "fs" IS Y WHEN THE PAGE FILLS THE SCREEN, WHICHEVER WAY IT GOT
-    // THERE — the DOM's fullscreen OR the browser's own (F11). See the
-    // note where `fillsTheScreen` is computed.
-    `fs ${canvas.fullscreen || canvas.fillsTheScreen ? 'Y' : 'N'}`,
-    `canvas ${String(canvas.backingW).padStart(5)}x${String(canvas.backingH).padEnd(5)}`,
-    `css ${String(canvas.cssW).padStart(5)}x${String(canvas.cssH).padEnd(5)}`,
-  ].join('  ');
-}
-
-/**
- * THE SUMMARY OF A WHOLE RUN.
- *
- * The frame-interval HISTOGRAM is here because the repo's own
- * research says it is the clearest single signal of uneven pacing:
- * a smooth run has one fat bucket, and a juddering run has a comb.
- */
-function summarise(run) {
-  const gaps = run.allGaps.map((g) => g.gap);
-  const sorted = [...gaps].sort((a, b) => a - b);
-  const st = windowStats(gaps);
-  const elapsed = run.elapsedMs > 0 ? run.elapsedMs : 1;
-
-  const worst = [...run.allGaps].sort((a, b) => b.gap - a.gap).slice(0, 5);
-
-  const buckets = new Map();
-  for (const g of gaps) {
-    const key = (Math.round(g * 10) / 10).toFixed(1);
-    buckets.set(key, (buckets.get(key) || 0) + 1);
-  }
-  const topBuckets = [...buckets.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10);
-
-  const lagValues = run.allLags.map((l) => l.lag).sort((a, b) => a - b);
-  const inputValues = run.allInputs.map((i) => i.lat).sort((a, b) => a - b);
-  const longtasks = run.longtasks;
-
-  const durations = run.allDurations.map((d) => d.d).sort((a, b) => a - b);
-
-  return {
-    totalFrames: run.totalFrames,
-    elapsedMs: run.elapsedMs,
-    meanFps: (run.totalFrames * 1000) / elapsed,
-    medianFps: st.fps,
-    gaps: st.n,
-    p50: st.p50,
-    p90: percentile(sorted, 0.9),
-    p95: st.p95,
-    p99: st.p99,
-    max: st.max,
-    mean: st.mean,
-    lateFraction: st.late,
-    worstIntervals: worst,
-    longtaskCount: longtasks.length,
-    longtaskTotalMs: longtasks.reduce((a, l) => a + l.duration, 0),
-    longtaskSupported: run.longtaskSupported,
-    longtaskError: run.longtaskError,
-    visible: run.lastCanvas ? run.lastCanvas.visible !== false : true,
-    droppedIntervals: run.droppedIntervals,
-    lagMedian: percentile(lagValues, 0.5),
-    lagP95: percentile(lagValues, 0.95),
-    lagMax: lagValues.length ? lagValues[lagValues.length - 1] : 0,
-    inputMedian: percentile(inputValues, 0.5),
-    inputMax: inputValues.length ? inputValues[inputValues.length - 1] : 0,
-    inputCount: inputValues.length,
-    engineCallbackMedian: percentile(durations, 0.5),
-    engineCallbackP95: percentile(durations, 0.95),
-    buckets: topBuckets,
-    pacing: run.lastPacing,
-  };
 }
 
 (async () => {
