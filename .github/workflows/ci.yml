@@ -262,15 +262,44 @@ jobs:
           key: port-cargo-${{ hashFiles('tools/port/tsp-rs/Cargo.lock') }}
           restore-keys: port-cargo-
 
+      - name: Cache the libclang
+        # The library is a few tens of megabytes and it is the same
+        # every time, so it is cached. THE CACHE IS ALSO THE POINT:
+        # with the library already in the cache, this job needs no
+        # network at all to reach the tests.
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/cache/libclang-dl
+          key: libclang-19-${{ runner.os }}-${{ runner.arch }}
+
       - name: libclang
         # crates/goldsrc-sys's build script runs bindgen, which needs
         # libclang. Without it the port does not compile, and the error
         # says "Unable to find libclang" whether or not the files are
-        # there. scripts/test.sh finds this copy under /usr/lib/llvm-*/lib.
+        # there. scripts/test.sh finds this copy under /usr/lib/llvm-*/lib
+        # and under $HOME/.local/lib, and the installer below puts it in
+        # the second place.
+        #
+        # IT DOES NOT USE APT, AND THAT IS THE POINT.
+        #
+        # On 2026-11-11 the hosted runners could not resolve the Ubuntu
+        # mirrors at all — "Temporary failure resolving
+        # 'security.ubuntu.com'" — so this step died in the INSTALL,
+        # before a single test ran. Five attempts across two workflows
+        # over twenty minutes, the same failure every time, and the
+        # port's 1,624 tests were never reached.
+        #
+        # So the library is fetched DIRECTLY, as a .deb from the Debian
+        # pool: a different host than the Ubuntu mirrors, no root, no
+        # apt. apt is still here as a fallback, because a fallback
+        # costs nothing and a second way to succeed is worth having.
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libclang-dev
+          if ! tools/port/tsp-rs/scripts/install-libclang.sh; then
+            echo "::warning::the direct libclang download failed — falling back to apt"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libclang-dev
+          fi
 
       - name: The engine headers
         # crates/goldsrc-sys's build script needs the xash3d-fwgs headers

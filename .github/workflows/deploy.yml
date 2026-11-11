@@ -467,10 +467,36 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Cache the browser
+        # 493 MB, downloaded fresh on every deploy, for a binary that
+        # does not change between runs. Cached, it is a cache hit — and
+        # one less thing the deploy needs the network for.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}
+
       - name: Install Playwright
         run: |
+          set -euo pipefail
           npm install --no-save playwright@latest
-          npx playwright install --with-deps chromium
+          # THE DEPENDENCY STEP IS A CONVENIENCE, NOT THE ASSERTION.
+          #
+          # `install-deps` apt-installs Chromium's shared libraries and
+          # fonts. On 2026-11-11 the hosted runners could not resolve
+          # the Ubuntu mirrors, and this job died in that call — so the
+          # browser verification never ran, and the deploy was reported
+          # as failed while the site it deployed was perfectly fine.
+          #
+          # The runner image already carries most of what Chromium
+          # needs, and if something is genuinely missing then the E2E
+          # below fails with a REAL error — a browser that will not
+          # launch — instead of a DNS error about a font. So a failure
+          # here warns and carries on, and the browser itself is still
+          # installed and still tested.
+          npx playwright install-deps chromium || \
+            echo "::warning::could not install Chromium's system dependencies — the runner image may already have them"
+          npx playwright install chromium
 
       # ── the CI environment ──────────────────────────────────────────
       - name: Set up SSH
