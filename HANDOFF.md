@@ -23,7 +23,172 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
-**As of:** 2026-11-09, LATEST — **THE READOUT SAYS WHAT TO DO, THE GAMING PC
+**As of:** 2026-11-09, LATEST — **A MATCH WAS PLAYED UNDER MEASUREMENT.
+THE PIXEL-COUNT STORY FOR FULLSCREEN IS OUT, AND FIREFOX WAS KILLING
+THE ENGINE.**
+
+For the first time, a match was played with the client being watched.
+It was in **Firefox** — the browser Kyle actually plays in — on the
+gaming PC, over the new BiDi watcher.
+
+**THE A/B, MEASURED (Firefox 159, the gaming PC, 60 Hz panel):**
+
+- **maximized window** — css 2560x1315, backing 2009x1032 (**2.07 MP**),
+  engine **3.69 ms**, browser 60.0 Hz, panel 60 Hz, lag 4.08 ms, late 0.0%
+- **fullscreen (F11)** — css 2560x1440, backing 1920x1080 (**2.07 MP**),
+  engine **4.45 ms**, browser 60.0 Hz, panel 60 Hz, lag 4.08 ms, late 0.0%
+
+**THE PIXEL-COUNT EXPLANATION FOR "FULLSCREEN IS SLOWER" IS OUT.** The
+fragment count is **identical in both phases** — 2.07 MP either way. The
+client forces the render resolution and RE-APPLIES it when the window
+grows (the 50 ms debounced watchdog in
+`webxash/src/services/fullscreen.ts`), so fullscreen upscales the same
+frame to a taller box instead of drawing more of it. The earlier figure
+("*fullscreen is 3.54 MP against 1.59 MP tiled — 2.2x the fragments*") was
+measured on a window whose backing store FOLLOWED the window; **with the
+forced resolution in force, it does not.**
+
+**THE +0.76 ms IS A LEAD, NOT A FINDING.** One sample per phase, and
+the engine's cost is scene-dominated (the same map measured 1.87 ms and
+9.12 ms a minute apart). The repo's rule is A, then B, then **A again** —
+the third run is the drift. **The A/B/A is the next run.**
+
+**FIREFOX WAS KILLING THE ENGINE, AND IT WAS NOT THE WINDOW BEING
+CLOSED.** A Firefox session dies with:
+
+```
+Script terminated by timeout at: <the client bundle>
+```
+
+**That is Firefox's script run-time watchdog** (`dom.max_script_run_time`,
+default 10 s) interrupting a main-thread call, and because the call was
+inside WebAssembly **the whole WASM execution died with it — the
+engine**, not the page. The client's rAF shim then threw every frame
+and the browser went down with it. **The crash lands on the transition
+into fullscreen**, where the event-loop lag spikes to **1258 ms** — a
+1.26-second freeze of the main thread, which is what the watchdog
+kills.
+
+**THE FIRST FIX WAS A NO-OP, AND `prefs.js` IS THE PROOF.** The pref was
+written as `dom.max_script_run_time = 0` ("disable the watchdog").
+Firefox **silently refused the value**: the profile's `prefs.js` came
+back with `dom.max_script_run_time.require_critical_input` applied and
+**no `dom.max_script_run_time` line at all**, while the second pref
+from the same file landed perfectly. **A value outside the pref's static
+range is refused, and that range starts at 1 — so `0` is not a value
+this pref will take.** The watchdog was never disabled, and the next run
+crashed in exactly the same place. The pref is now **3600 seconds** and
+`prefs.js` confirms it landed: a ten-second block inside the engine
+should now pause the game instead of killing it.
+
+It is a profile pref on the PERF profile — not a code change, and not a
+change to the player's own browser.
+
+**THE TWO RUNS, ON TWO MAPS:**
+
+- run 1 — maximized **3.69 ms**, fullscreen **4.45 ms** → **+0.76 ms,
+  +21%**
+- run 2 — maximized **2.44 ms**, fullscreen **2.98 ms** → **+0.54 ms,
+  +22%**
+
+Both runs: **2.07 MP in both phases**, browser 60.0 Hz against a 60 Hz
+panel, lag 4.08 ms, late 0.0%. **The ratio reproduces and the absolute
+gap does not** — the whole scene got 1.25 ms cheaper between the runs
+and the gap shrank with it. **Two runs, two maps, no drift phase: that
+is suggestive, not a finding.** The A/B/A is still owed.
+
+**THE WATCHER NOW SURVIVES A BROWSER DEATH** — it re-attaches (new
+socket, new session, tab found again, probe reinstalled) and keeps the
+run going. And a SIGTERM now asks the run to STOP rather than killing
+it, so the rows of a stopped run are written instead of lost.
+
+**AND THE PROBE IS NOW NON-INVASIVE BY DEFAULT.** `--no-raf-wrap`
+installs it without replacing `window.requestAnimationFrame`: it reads
+the client's own pacer, the canvas, the event-loop lag and the input
+latency, and leaves the browser's frame callback alone. The frame-
+interval distribution then comes from the client's pacer and the in-game
+Export log. The price is the p50/p95/p99 spacing; the reason is that a
+probe which can destabilise the pacer is not a probe, and that was not
+established either way.
+
+**THE RESULTS ARE IN `docs/CLIENT-PERF-RESULTS.md` § 5**, with the
+caveats stated.
+
+**As of:** 2026-11-09, LATEST — **FIREFOX CAN BE WATCHED NOW. A BiDi
+WATCHER, THE PROBE IT SHARES WITH THE CHROMIUM ONE, AND THE FOUR TRAPS
+THAT COST TO FIND.**
+
+The measurement session was still open because **the browser Kyle
+plays in was the one browser nobody could watch**. Firefox removed CDP
+support in version 129, and Playwright's `connectOverCDP` does not
+speak to Firefox at all — so the CDP watcher could only ever watch the
+Chromium that was installed *for the watcher*, while the session that
+was actually being asked about happened in Firefox.
+
+**WHAT SHIPPED** (`tools/perf/`):
+
+1. **`watch-client-bidi.cjs` — THE SAME WATCHER, OVER WebDriver BiDi.**
+   Firefox's Remote Agent speaks BiDi (JSON over a WebSocket), and
+   `script.evaluate` runs in the page's own realm, which is all the
+   probe needs. It prints the SAME columns, computes the SAME
+   statistics and answers the SAME question as the CDP watcher.
+2. **`watch-remote-ff.sh` — THE TUNNEL**, with the port trap below
+   baked into it.
+3. **THE PROBE IS NOW ONE DEFINITION.** `lib/watch-probe.cjs` and
+   `lib/watch-stats.cjs` hold the probe and the arithmetic, and
+   `watch-client.cjs` imports them. **The probe bodies were moved
+   VERBATIM** (verified against the committed file, byte for byte),
+   so the Chromium watcher's numbers did not change — and a Firefox
+   number and a Chromium number are only comparable if they came out
+   of the same instrument. Two copies of a probe drift; two numbers
+   that look alike but are not is worse than one number.
+
+**THE FOUR TRAPS, ALL MEASURED, ALL FIXED:**
+
+1. **THE REMOTE AGENT CHECKS THE HOST HEADER, PORT INCLUDED.** A
+   tunnel that forwards `127.0.0.1:19224` to the browser's
+   `127.0.0.1:9224` is refused with **`400 Bad Request`**; the same
+   request direct, or through a tunnel that uses **the same port on
+   both ends**, answers `101 Switching Protocols`. So
+   `watch-remote-ff.sh` uses matching ports, and says why.
+2. **THERE IS ONE SESSION AT A TIME, THE REGISTRY IS GLOBAL, AND A
+   LEAKED SESSION IS PERMANENT.** `session.new` answers *"Maximum
+   number of active sessions"* when an earlier run leaked one — and
+   the leak cannot be cleared from outside: `session.end` answers
+   *"invalid session id"* (the session belongs to a dead socket), and
+   only **a browser restart** frees the slot. So the watcher now
+   ends its session, **closes the socket GRACEFULLY** (`closeGracefully`
+   waits for the close event — a socket that dies with the process
+   leaks the session), and when it finds the stuck state it prints the
+   command that clears it instead of an error that names the cause
+   but not the cure.
+3. **`session.status` IS NOT A READINESS CHECK.** It answers *"is a
+   session active right now?"* — globally — so it returns
+   `ready:false, "Session already started"` the MOMENT your own
+   `session.new` succeeds. Read it after `session.new` and it
+   condemns you for your own session. The watcher prints it and does
+   not act on it.
+4. **FIREFOX MASKS THE WEBGL RENDERER STRING.** Firefox reports
+   `Radeon R9 200 Series, or similar` for an RX 7800 XT — a family mask, not the
+   chip. Chromium on the same box reports the truth
+   (`ANGLE (AMD, AMD Radeon RX 7800 XT (radeonsi navi32 ACO),
+   OpenGL 4.6)`). **So the renderer line from Firefox is not
+   evidence about the GPU** — the Chromium one is, on the same
+   machine. Firefox's string is still evidence that the rendering is
+   hardware, not SwiftShader.
+
+**WHAT IS LIVE ON THE GAMING PC.** `~/opt/ff-launch.sh` launches
+Firefox with the remote agent on port 9224 and a dedicated profile
+(`~/opt/bb-ff`), lifting `WAYLAND_DISPLAY` out of `/run/user/<uid>`
+because niri does not export its own environment. Both watchers are
+verified against it: the Firefox one over BiDi and the Chromium one
+over CDP, each printing its honest *"NO FRAMES AT ALL"* on the
+landing page, which runs no `requestAnimationFrame` loop.
+
+**THE MEASUREMENT SESSION IS STILL OPEN** — the instruments are ready,
+and a match has still not been played under measurement.
+
+**As of:** 2026-11-09, EARLIER — **THE READOUT SAYS WHAT TO DO, THE GAMING PC
 IS REACHABLE, AND IT IS A 60 Hz PANEL — WHICH IS THE WHOLE OF "FULLSCREEN
 IS SLOWER".**
 
@@ -95,7 +260,7 @@ advice — wrong answers):
 
 **THE GAMING PC IS NOW REACHABLE, AND WHAT IT SAYS IS THE HEADLINE.**
 `cachyos-x8664` joined the tailnet (100.121.0.20). It is **CachyOS**,
-kernel 7.3.1, **AMD Ryzen 7 8700G + Radeon RX 7700 XT** (Navi 32,
+kernel 7.3.1, **AMD Ryzen 7 8700G + Radeon RX 7800 XT** (Navi 32,
 amdgpu), 32 GB, and its desktop is **niri** on Wayland. Port 22 there is
 **Tailscale SSH** — `tailscaled` intercepts it and authenticates by
 *tailnet identity*, so there is no `authorized_keys` and the tailnet ACL
@@ -6021,7 +6186,7 @@ the parts that are known traps.
 >   loop. The harness needs a match actually running.
 > - **THE FAMILY BOX IS A DIFFERENT MACHINE.** `cachyos-x8664-family`
 >   (NVIDIA GTX 980, gamescope, user `family`) vs `cachyos-x8664`
->   (AMD RX 7700 XT, niri, user `kyle`). The tunnel's default host was
+>   (AMD RX 7800 XT, niri, user `kyle`). The tunnel's default host was
 >   changed to the right one on 2026-11-09; do not probe the other.
 > - **THE LOGIN SHELL IS `fish`.** Inline heredocs get mangled — scp a
 >   script and run it with `bash`.

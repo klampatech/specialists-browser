@@ -265,3 +265,360 @@ settled reading confirms the gate"*.
 - **No resolution advice is included.** The engine is CPU-bound here (the cost
   moved with the scene, not with the pixel count), and the resolution
   investigation is a separate piece of work that this change does not bundle.
+
+## 5. THE GAMING PC, IN FIREFOX: THE FULLSCREEN QUESTION, MEASURED (2026-11-09)
+
+**Machine:** `cachyos-x8664` — Kyle's own gaming PC. CachyOS, Ryzen 7 8700G +
+Radeon RX 7800 XT, **niri on Wayland**, and an **Acer EB321HQU at 2560x1440 @
+59.951 Hz with variable refresh rate NOT SUPPORTED**. A 60 Hz panel with nothing
+to absorb a missed frame: the frame budget is 16.67 ms and an overrun is a
+visible hitch, full stop.
+
+**Browser:** **Firefox 159.0.1** — the browser Kyle actually plays in, which is
+the whole point. Until 2026-11-09 it was the one browser nobody could watch:
+Firefox removed CDP support in version 129 and Playwright's `connectOverCDP`
+does not speak to Firefox, so the CDP watcher could only see a Chromium that
+was installed *for the watcher*.
+
+**Instrument:** `tools/perf/watch-client-bidi.cjs` (WebDriver BiDi) over
+`tools/perf/watch-remote-ff.sh`, with the probe in **non-invasive mode**
+(`--no-raf-wrap`): it reads the client's own pacer, the canvas, the event-loop
+lag and the input latency, and **leaves `window.requestAnimationFrame` alone**.
+
+### THE TWO PHASES — AND THE SECOND RUN
+
+**Run 1** (45 rows maximized, 57 fullscreen):
+
+| | css box | canvas BACKING | megapixels | engine cost | browser | panel | lag | late |
+|---|---|---|---|---|---|---|---|---|
+| **maximized window** | 2560x1315 | 2009x1032 | **2.07** | **3.69 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
+| **fullscreen (niri)** | 2560x1440 | 1920x1080 | **2.07** | **4.45 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
+
+**Run 2** (52 rows maximized, 14 fullscreen — the browser died at the
+transition, so the drift phase never ran):
+
+| | css box | canvas BACKING | megapixels | engine cost | browser | panel | lag | late |
+|---|---|---|---|---|---|---|---|---|
+| **maximized window** | 2560x1315 | 2009x1032 | **2.07** | **2.44 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
+| **fullscreen (niri)** | 2560x1440 | 1920x1080 | **2.07** | **2.98 ms** | 60.0 Hz | 60 Hz | 4.08 ms | 0.0% |
+
+**THESE NUMBERS ARE NOT A FINDING, AND THE NEXT SECTION SAYS WHY.** They
+looked consistent — +21%, +22%, +12.5% — and they are all wrong as
+evidence about the window: the scene was changing under them the whole
+time. See § THE ANSWER, below.
+
+---
+
+## THE ANSWER: FULLSCREEN DOES NOT SLOW THE GAME DOWN
+
+**THE MEASUREMENT THAT SETTLED IT.** The harness drives the A/B/A
+itself: it presses PLAY, stands still, toggles fullscreen through NIRI
+(the same compositor-level fullscreen a player uses with a shortcut —
+NOT the DOM fullscreen API, which would change what is being measured),
+stands still, toggles back, and sends no movement and no keys into the
+game. The phases ALTERNATE — six windowed/fullscreen pairs, 24 seconds
+each — so every windowed phase sits beside a fullscreen phase a few
+seconds away, and the scene's drift cancels out of the differences.
+
+**Six pairs, each a windowed phase against the fullscreen phase beside
+it, compared on the reading that belongs to that phase:**
+
+- w1 → f1: 1.96 → 3.12 ms (**+1.16**)
+- w2 → f2: 3.78 → 3.26 ms (**-0.52**)
+- w3 → f3: 2.54 → 1.56 ms (**-0.98**)
+- w4 → f4: 2.02 → 1.94 ms (**-0.08**)
+- w5 → f5: 1.98 → 2.30 ms (**+0.32**)
+- w6 → f6: 3.22 → 2.37 ms (**-0.85**)
+
+**THE FULLSCREEN EFFECT, BY THE PAIRED MEDIAN: -0.30 ms, -9%.**
+
+**THERE IS NO FULLSCREEN PENALTY TO FIND.** The pair deltas scatter
+around zero in both directions, and the thing that moves the engine's
+cost is the SCENE: the player is dead, the client is spectating with a
+free chase-cam that FOLLOWS A BOT, and the engine's per-frame cost
+moves from 1.56 ms to 3.78 ms as that camera crosses a church full of
+chairs. That scene swing is ±1 ms and it swamps any window effect.
+
+**AND THE FOUR PLAY RUNS ABOVE WERE THE SCENE, NOT THE WINDOW.** They
+suggested +12% to +22% for fullscreen. The instrument that holds the
+scene still enough to compare says -9%. The play runs were right about
+the game and wrong about the cause.
+
+**WHAT FULLSCREEN ACTUALLY COSTS: THE SWITCH.** The event-loop lag
+spikes to **1258 ms** and **1247 ms** on the two measured transitions —
+a **1.25-second freeze** of the main thread, every time, in both
+directions. That is the fullscreen tax, and it is paid at the moment of
+switching, not while playing.
+
+**WHAT IT DOES NOT COST:**
+
+- **THE FRAME RATE.** 60.0 Hz browser against a 60 Hz panel, **0.0%
+  late frames**, in every phase of every run, in both window states.
+- **PIXELS.** The canvas is 2009x1032 windowed and 1920x1080
+  fullscreen — **2.07 megapixels either way**. The window is not
+  rendering more; it is rendering a different shape.
+- **THE ENGINE'S PER-FRAME COST.** No measurable change, at either
+  resolution, in either direction.
+
+**THE INSTRUMENT, AND WHAT IT TOOK TO BUILD IT:**
+
+- `tools/perf/autopilot-aba.cjs` — drives the run and owns the
+  measurement (Firefox's remote agent allows ONE BiDi session, so the
+  driver and the watcher cannot both be attached).
+- `tools/perf/aba-remote.sh` — the launcher: the SSH tunnel, the
+  watcher handover, the browser.
+- `tools/perf/read-aba.cjs` — reads a run back, phase by phase and
+  pair by pair, with each phase's own drift shown next to it.
+- The pacer reports the engine's cost as the MEDIAN of a window about
+  **twelve seconds** wide (measured: the value moves every 11.5-12.4 s),
+  so a phase shorter than that measures the phase before it. The phases
+  are 24 s — two whole windows — and the pairing uses the LAST reading
+  of each phase, which is the reading that belongs to that phase.
+
+### WHAT THIS SETTLES: THE PIXEL-COUNT STORY IS OUT
+
+**The fragment count is IDENTICAL in both phases — 2.07 MP either way.** The
+client forces the render resolution and RE-APPLIES it when the window grows
+(the 50 ms debounced watchdog in `webxash/src/services/fullscreen.ts`), so
+fullscreen does not cost more pixels: it upscales the same frame to a taller
+box.
+
+That contradicts the figure the earlier session worked from — *fullscreen is
+3.54 MP against 1.59 MP tiled, 2.2x the fragments* — and the contradiction is
+explained: that figure was measured on a window whose backing store FOLLOWED
+the window. **With the forced render resolution in force, the backing store does
+not follow the window.** So M2 (pixel count) is not the mechanism, and the
+"fullscreen is slower because more pixels" explanation does not survive
+contact with the instrument.
+
+### WHAT THIS DOES NOT SETTLE
+
+**The +0.76 ms (+21%) is a LEAD, not a finding.** The engine's per-frame cost
+is dominated by what is on screen — the repo's own measurements put the same
+map at **1.87 ms and 9.12 ms** a minute apart, a 4.9x spread from the spawn
+point alone — and this is ONE sample per phase with no drift control. The
+repo's own rule is A, then B, then **A again**: the third run is the drift, and
+a B-A difference smaller than the drift is not a result. The A/B/A is the next
+run.
+
+### THE CRASH, AND WHY THE SESSION AFTER IT WORKED
+
+The first Firefox session died mid-game. Its log:
+
+```
+JavaScript warning: .../xash3d-....js, line 8: Script terminated by timeout at:
+_emscripten_glEnableVertexAttribArray@.../xash3d-....js:8:106477
+@... line 1 > WebAssembly.Module:wasm-function[0]:0x0
+@... line 1 > WebAssembly.instantiate:wasm-function[72]:0x5254
+```
+
+**"Script terminated by timeout" is Firefox's script run-time watchdog**
+(`dom.max_script_run_time`, default 10 seconds): a main-thread call that runs
+longer than the budget is interrupted, and when the call is inside WebAssembly
+the whole WASM execution is killed with it — **the engine, not the page**. The
+client's rAF shim then threw on every frame, and the browser went down with
+the pointer-lock teardown errors.
+
+**THE FIRST FIX WAS A NO-OP, AND THE PROFILE PROVES IT.** The pref was
+written as `dom.max_script_run_time = 0` ("disable the watchdog"). Firefox
+**silently refused the value**: the profile's `prefs.js` came back with
+
+```
+user_pref("dom.max_script_run_time.require_critical_input", false);
+```
+
+and **no `dom.max_script_run_time` line at all** — while the second pref from
+the very same file landed perfectly. A value outside the pref's static range
+is refused outright, and that range starts at 1, so **`0` is not a value this
+pref will take**. The watchdog was never disabled, and the next run crashed
+at exactly the same place — the transition into fullscreen — which is what a
+watchdog that was still armed would do.
+
+The pref is now **3600 seconds**, and `prefs.js` confirms it landed:
+
+```
+user_pref("dom.max_script_run_time", 3600);
+user_pref("dom.max_script_run_time.require_critical_input", false);
+```
+
+So a ten-second main-thread block inside the engine should now PAUSE the game
+instead of killing it. **That is a profile pref on the PERF profile — not a
+code change, and not a change to the player's own browser.**
+
+### THE TRANSITION ITSELF COSTS A SECOND
+
+In run 2, the event-loop lag spiked to **1258 ms** on the sample where the
+canvas backing store changed to the fullscreen resolution
+(`1978x1048 -> 1920x1080`). Entering fullscreen is a **1.26-second freeze**
+of the main thread. On a 60 Hz panel with no VRR that is a stall the player
+feels, and it is the same resize whose re-application the client's 50 ms
+debounced watchdog performs — the re-application is fast; the STALL is
+somewhere else in that path and is not yet explained.
+
+### THE CAVEATS
+
+- **There is NO frame-interval distribution in these numbers.** The probe was
+  deliberately non-invasive (it does not replace `requestAnimationFrame`), so
+  the frame-interval histogram comes from the client's own pacer and from the
+  in-game **Export log** instead. The engine cost, the browser rate against
+  the panel rate, the late-frame fraction, the canvas backing store and the
+  event-loop lag are all measured; the p50/p95/p99 spacing is not.
+- **Firefox MASKS the WebGL renderer string** — it reports `Radeon R9 200
+  Series, or similar` for an RX 7800 XT. Chromium on the same box reports the
+  truth (`ANGLE (AMD, AMD Radeon RX 7800 XT (radeonsi navi32 ACO), OpenGL
+  4.6)`), so the Firefox renderer line is NOT evidence about the GPU. It is
+  evidence that the rendering is hardware rather than SwiftShader.
+  **The mask survived `webgl.enable-renderer-query = true` AND
+  `privacy.fingerprintingProtection = false` together**, in the perf profile
+  and in a fresh browser — so it is not a pref left unset.
+  **AND IT MATTERS FOR THE PRODUCT: the client's own Export log reads the
+  renderer the same way, so on Firefox the in-game readout names a GPU that
+  is not the player's.** On Chromium it names the real card. The readout
+  should say "masked by the browser" rather than name a fake card.
+- **The panel is 60 Hz and the browser delivered 60.0 Hz in both phases**, so
+  no browser throttling is in play here and the budget is 16.67 ms throughout.
+- **A scene change invalidates a phase.** The A/B/A must be on ONE map: the
+  engine cost moved with the map, not with the window.
+
+---
+
+## 6. THE LONG PLAY SESSION (2026-11-09, 20:37 — 20:51, 13.7 MINUTES)
+
+**This is the session where the tab did NOT die, and where the client's
+own state changes turned out to be the story.**
+
+### THE TAB DID NOT EXIT
+
+| | |
+|---|---|
+| the page reloaded once, at t=722 s | **the MATCH ENDED** — the client's `onExit()` does `window.location.reload()`, which is the normal end-of-match path back to the landing page |
+| "Script terminated by timeout" in the browser's stdout | **zero** — the engine never died |
+| the browser's exit status | **`EXIT=0`** — a CLEAN exit, when Kyle closed the window |
+| long tasks | **zero** |
+| the frame gate | **1-in-1 for the whole session** — the pacer never sacrificed a frame rate |
+| late frames | **0 of 587 samples** |
+
+**So the three earlier deaths did not reproduce in 13.7 minutes of play,
+and the trigger is INTERMITTENT, not deterministic.** The exit status
+instrument is now the thing that tells them apart, and it says `0` when
+the browser is closed and something else when the engine takes it down.
+
+### THE WINDOW STATES WERE NOT THE TWO WE THOUGHT
+
+Kyle launched the game **fullscreen from the web UI** (the client's own
+`requestFullscreen()`), and then used niri's shortcut on top of it. The
+rows keep both flags separately, and they say:
+
+- **t=106 s → 418 s: DOM fullscreen** (`document.fullscreenElement` set,
+  the viewport 2560x1440, the canvas backing 1920x1080).
+- **t=420 s → 707 s: windowed** (the window maximized, css 2560x1315,
+  the canvas backing 2009x1032).
+- **there is no niri-fullscreen state at all.** The page was already in
+  DOM fullscreen, so the compositor's toggle had nothing to change from
+  the page's point of view.
+
+**AND THE NIRI TOGGLE COST A SECOND OF EXTRA PIXELS.** At t=222.1 s the
+canvas backing was **2560x1440 — 3.69 megapixels** — for exactly one
+sample, before the client's forced render resolution (1920x1080,
+2.07 MP) was re-applied. The resize path lets the canvas be the WINDOW's
+full size for a second, and during that second the engine renders **78%
+more pixels than the forced resolution it is supposed to be locked to.**
+That is a real, fixable inefficiency in the client's resize handling, and
+it is on the path of every window change.
+
+### WHAT THE PLAYER FELT, AND WHAT THE MACHINE SAW
+
+| | DOM fullscreen | windowed |
+|---|---|---|
+| samples | 303 | 284 |
+| engine cost, median | 6.28 ms | 3.94 ms |
+| engine cost, min — max | 1.68 — 9.88 ms | 2.02 — 11.85 ms |
+| late frames | 0.0% | 0.0% |
+| the frame gate | 1-in-1 | 1-in-1 |
+| event-loop lag, median | 4.08 ms | 4.08 ms |
+
+**The engine's cost was HIGHER in fullscreen — and it still felt better.**
+The two phases are different scenes, so the medians say nothing about
+the window; what they do say is that the feel is not the frame budget,
+because the frame budget was identical in both (60.0 Hz, 0.0% late, the
+gate never moved, the engine never once exceeded the 16.67 ms budget —
+its worst was 11.85 ms, 71% of it).
+
+**THE ENGINE'S COST IS THE SCENE, AND IT IS THE THING A PLAYER FEELS.**
+It swung from 1.68 ms to 9.88 ms WITHIN the fullscreen phase, in the
+same window state, with the gate never moving. That swing is what
+"it felt better for a while, then a few drops" was: the cost climbed
+from 1.76 ms to 6-10 ms as the scene got busier.
+
+### THE REAL STALLS: THEY ARE AT THE LOAD, AND NOT BECAUSE OF FULLSCREEN
+
+**The session's worst event-loop lag was 1415 ms.** A 1.4-second block
+of the main thread is a visible freeze. The watcher's own summary says
+`median 4.08 ms p95 9.46 ms max 1415.06 ms`, and the input latency
+reached **296.90 ms** across 4914 input events.
+
+**AND THE STALLS ARE AT THE GAME LOADING, NOT AT THE PLAYING.** The rows
+with the worst lag medians — 318, 294, 291, 279, 274, 271 ms — are all
+at t=91-97 s, and every one of them has **no engine** (`engine ?`) and
+**the landing page's tiny 300x150 canvas**. The engine came up at
+t=106 s. So the load blocked the main thread for several seconds, in
+274-318 ms slices, with one 1415 ms block inside it.
+
+**AND IT IS NOT THE WINDOW STATE.** The earlier sessions' loads were
+WINDOWED, and they show the same thing:
+
+- the long session — 318, 294, 291, 279, 274, 271 ms — DOM fullscreen
+- run 2 — 330, 246 ms — windowed
+- run 3 — 248, 311, 294 ms — windowed
+
+**THE LOAD IS THE EXPENSIVE PART OF THE GAME, AND IT IS THE SAME
+NEIGHBOURHOOD AS THE ENGINE DEATH.** The first Firefox death's stack
+was `WebAssembly.instantiate`, and the load is where the WASM is
+compiled and instantiated, where the textures are uploaded, and where
+Firefox's own log says:
+
+```
+WebGL warning: texSubImage: Texture has not been initialized prior to a
+partial upload, forcing the browser to clear it. This may be slow.
+```
+
+A main thread blocked for over a second, in the middle of a WASM
+instantiation, is a main thread that a watchdog can kill.
+
+**THE INSTRUMENT ALMOST THREW THIS AWAY.** One 318 ms hitch among a
+second's worth of 4 ms lags has a MEDIAN of 4 ms — so 767 rows reported
+"no lag over 50 ms" while the session contained a 1415 ms stall. The
+watcher now records the MAXIMUM lag per row, prints a marker the moment
+it happens, and keeps the worst one WITH ITS TIMESTAMP.
+
+### TWO DEPRECATION WARNINGS THE CLIENT PRODUCES ON EVERY LOAD IN FIREFOX
+
+Straight out of the browser's own stdout:
+
+```
+JavaScript warning: .../index-BAn7AKN2.js, line 27: WEBGL_debug_renderer_info is
+  deprecated in Firefox and will be removed. Please use RENDERER.
+JavaScript warning: , line 0: The WebAssembly exception handling 'try' instruction is
+  deprecated and should no longer be used. Please recompile to use the 'try_table'
+  instruction instead.
+```
+
+The first is the client reaching for a Firefox extension that is on its
+way out. The second is the ENGINE'S WASM BINARY being built with a
+toolchain that emits an instruction Firefox now warns about — and it
+warns on every single load.
+
+### AND THE ENGINE HITS FIREFOX'S SLOW TEXTURE PATH AT LOAD
+
+```
+JavaScript warning: , line 0: WebGL warning: texSubImage: Texture has not been
+  initialized prior to a partial upload, forcing the browser to clear it. This may be slow.
+JavaScript warning: , line 0: WebGL warning: texSubImage: Tex image TEXTURE_2D level 0
+  is incurring lazy initialization.
+```
+
+Firefox is telling us, in its own words, that the engine's texture
+uploads land on a slow path: the browser has to CLEAR the texture and
+lazily initialise it, because the engine partially uploads a texture it
+never initialised. That is a startup cost on every load, and it is in
+the engine's texture code.
