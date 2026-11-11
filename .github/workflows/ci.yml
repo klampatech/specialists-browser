@@ -289,14 +289,20 @@ jobs:
         # over twenty minutes, the same failure every time, and the
         # port's 1,624 tests were never reached.
         #
-        # So the library is fetched DIRECTLY, as a .deb from the Debian
-        # pool: a different host than the Ubuntu mirrors, no root, no
-        # apt. apt is still here as a fallback, because a fallback
-        # costs nothing and a second way to succeed is worth having.
+        # So the library comes from somewhere that is NOT the Ubuntu
+        # mirrors: the installer tries the PyPI `libclang` wheel first —
+        # it ships a native libclang with LLVM linked in statically, so
+        # it depends on libc and nothing else — and falls back to the
+        # Debian pool. Both are VERIFIED BY LOADING THE RESULT, because
+        # a library that is present and unloadable is worse than one
+        # that is absent.
+        #
+        # apt is still here as a last resort, because a fallback costs
+        # nothing and a second way to succeed is worth having.
         run: |
           set -euo pipefail
           if ! tools/port/tsp-rs/scripts/install-libclang.sh; then
-            echo "::warning::the direct libclang download failed — falling back to apt"
+            echo "::warning::the direct libclang install failed — falling back to apt"
             sudo apt-get update -qq
             sudo apt-get install -y -qq libclang-dev
           fi
