@@ -38,6 +38,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { classifyChanges } from '../../tools/deploy/changed-paths.cjs';
@@ -55,6 +56,11 @@ const deployYml = readFileSync(
   join(ROOT, '.github', 'workflows', 'deploy.yml'),
   'utf8',
 );
+const entrypoint = readFileSync(
+  join(ROOT, 'tools', 'deploy', 'entrypoint.sh'),
+  'utf8',
+);
+const botSay = readFileSync(join(ROOT, 'tools', 'deploy', 'config', 'bot_say.txt'));
 
 test('the game server gets its config as a volume', () => {
   assert.match(
@@ -85,7 +91,12 @@ test('the config volume is checked before the container is created', () => {
 });
 
 test('the deploy SHIPS the game server config', () => {
-  for (const cfg of ['server.cfg', 'gameinfo.txt', 'mapcycle.txt']) {
+  for (const cfg of [
+    'server.cfg',
+    'gameinfo.txt',
+    'mapcycle.txt',
+    'bot_say.txt',
+  ]) {
     assert.match(
       deployYml,
       new RegExp(`scp[^\\n]*config/${cfg}[^\\n]*prod:`),
@@ -118,6 +129,7 @@ test('a change to the game server config triggers the services deploy', () => {
     'tools/deploy/config/server.cfg',
     'tools/deploy/config/gameinfo.txt',
     'tools/deploy/config/mapcycle.txt',
+    'tools/deploy/config/bot_say.txt',
   ]) {
     const r = classifyChanges({ parentPaths: [p] });
     assert.equal(
@@ -143,6 +155,139 @@ test('the deploy can create the leaderboard directory', () => {
     deployServices,
     /^mkdir -p "\$LEADERBOARD_DIR"/m,
     'the leaderboard directory must NOT be created without sudo',
+  );
+});
+
+test('the entrypoint installs OUR bot chat file over the stock one', () => {
+  // The asset tree ships The Specialists' own bot_say.txt, and it is
+  // profane in twenty of its lines. The banter is the charm; the
+  // profanity is the noise — so ours replaces it in the game directory
+  // and the asset tree keeps its copy (that tree is the operator's
+  // pristine game install, and it is read-only).
+  //
+  // The order is the whole trick, and there are two ways to get it
+  // wrong:
+  //
+  //   - cp BEFORE rm: the copy writes THROUGH the symlink into the
+  //     read-only asset volume, and the boot dies with "Read-only
+  //     file system".
+  //   - cp BEFORE the asset symlink loop: the loop's `ln -sfn` puts
+  //     the stock file straight back over ours.
+  const rm = entrypoint.indexOf('rm -f "$GAME_TS/bot_say.txt"');
+  const cp = entrypoint.indexOf(
+    'cp "$CONFIG/bot_say.txt" "$GAME_TS/bot_say.txt"',
+  );
+  const loop = entrypoint.indexOf('ln -sfn "$entry" "$GAME_TS/$name"');
+
+  assert.ok(rm > -1, 'the entrypoint must remove the stock symlink');
+  assert.ok(cp > -1, 'the entrypoint must copy our bot_say.txt in');
+  assert.ok(
+    rm < cp,
+    'the symlink must be removed BEFORE the copy — otherwise the copy ' +
+      'writes through it into the read-only asset volume and the boot aborts',
+  );
+  assert.ok(
+    loop < cp,
+    'our copy must come AFTER the asset symlink loop — the loop ' +
+      'symlinks the stock file, and `ln -sfn` over our copy would put it back',
+  );
+});
+
+test('a missing bot chat file cannot take the game server down', () => {
+  // The file is OPTIONAL: the bots fall back to the stock one, and a
+  // config volume that is one deploy behind must not stop an instance
+  // from starting. So the copy is guarded, and the guard has an arm
+  // that says what happened.
+  const guard = entrypoint.indexOf('if [ -f "$CONFIG/bot_say.txt" ]; then');
+  const cp = entrypoint.indexOf(
+    'cp "$CONFIG/bot_say.txt" "$GAME_TS/bot_say.txt"',
+  );
+  const fi = entrypoint.indexOf('fi', guard);
+
+  assert.ok(guard > -1, 'the copy must be guarded by a test for the file');
+  assert.ok(
+    guard < cp && cp < fi,
+    'the copy must be INSIDE the guard — an unguarded copy of a file ' +
+      'that may not be there takes the instance down',
+  );
+  assert.match(
+    entrypoint,
+    /no bot_say\.txt in the config volume/,
+    'the else arm must say that the bots will be silent, so the log ' +
+      'names the cause instead of showing a silent server',
+  );
+});
+
+test('the shipped bot chat file is the reviewed artifact, byte for byte', () => {
+  // The artifact was reviewed as 2215 bytes of CRLF with a known
+  // sha256. `core.autocrlf=input` normalises CRLF to LF when a file
+  // is added, and that would silently make the repository's copy a
+  // DIFFERENT file from the one that was reviewed — which is how the
+  // two vendored TS 2.1 files drifted (see .gitattributes).
+  //
+  // The hash is here so that a change to the file is a DELIBERATE
+  // one: it has to be made in the same commit as the new hash, and
+  // the diff says so.
+  assert.equal(
+    createHash('sha256').update(botSay).digest('hex'),
+    '953b0f8f46a13e7e3c6323064f4e470dff4066b953b5bab4382281c8dd9a7fa5',
+    'the shipped bot_say.txt must be the reviewed artifact — if it ' +
+      'changed on purpose, update this hash in the same commit',
+  );
+  assert.equal(botSay.length, 2215, 'the artifact is 2215 bytes');
+
+  const text = botSay.toString('latin1');
+  const lf = (text.match(/\n/g) || []).length;
+  const crlf = (text.match(/\r\n/g) || []).length;
+  assert.equal(
+    lf,
+    crlf,
+    'every newline must be a CRLF — the artifact is a Windows file',
+  );
+});
+
+test('the shipped bot chat file has the shape the port\'s parser expects', () => {
+  // The port reads this file in three sections, and its own test
+  // asserts the shipped counts are [25, 29, 42]. Ours has to keep
+  // that shape: the parser substitutes the other player's name into
+  // the FIRST `%s` only, and a line that is longer than the 63-byte
+  // slot overflows into the next one.
+  const lines = botSay
+    .toString('latin1')
+    .split('\r\n')
+    .filter((l, i, a) => !(i === a.length - 1 && l === ''));
+
+  const counts = {};
+  let section = null;
+  for (const line of lines) {
+    const s = line.trim();
+    if (s === 'offense' || s === 'freetime' || s === 'killed') {
+      section = s;
+      counts[section] = 0;
+      continue;
+    }
+    if (section !== null && s !== '') counts[section] += 1;
+  }
+  assert.deepEqual(
+    counts,
+    { offense: 25, freetime: 29, killed: 42 },
+    'the section counts must be the ones the port expects',
+  );
+
+  // The one long line is the KNOWN TS quirk: the shipped file's line
+  // 29 is 65 bytes, one too many for the char[64] slot, and it
+  // overflows into the next one. The port truncates it at 63. It is
+  // kept byte-identical on purpose, so the port behaves exactly as it
+  // does with the stock file.
+  const long = lines
+    .map((l, i) => [i + 1, l.length])
+    .filter(([, n]) => n > 63);
+  assert.deepEqual(
+    long,
+    [[29, 65]],
+    'exactly one line may exceed 63 bytes, and it is the known quirk ' +
+      'at line 29 — do not "fix" it, that is what keeps the port ' +
+      'identical to stock',
   );
 });
 

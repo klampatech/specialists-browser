@@ -332,6 +332,10 @@ jobs:
           scp -F ~/.ssh/config tools/deploy/config/server.cfg prod:/home/ubuntu/server.cfg
           scp -F ~/.ssh/config tools/deploy/config/gameinfo.txt prod:/home/ubuntu/gameinfo.txt
           scp -F ~/.ssh/config tools/deploy/config/mapcycle.txt prod:/home/ubuntu/mapcycle.txt
+          # The bot chat file, for the same reason: ours replaces the
+          # stock The Specialists one, which is profane in twenty of its
+          # lines. The banter is the charm; the profanity is the noise.
+          scp -F ~/.ssh/config tools/deploy/config/bot_say.txt prod:/home/ubuntu/bot_say.txt
           # `adminctl`, for the same reason: the administrator's password
           # record is written ON THE HOST, by a human, as the uid the
           # console runs as -- and the console's image carries the CLI, but
@@ -346,6 +350,7 @@ jobs:
             sudo cp /home/ubuntu/server.cfg /srv/ts-config/server.cfg
             sudo cp /home/ubuntu/gameinfo.txt /srv/ts-config/gameinfo.txt
             sudo cp /home/ubuntu/mapcycle.txt /srv/ts-config/mapcycle.txt
+            sudo cp /home/ubuntu/bot_say.txt /srv/ts-config/bot_say.txt
             sudo chown 10001:10001 /srv/ts-config/* && sudo chmod 0644 /srv/ts-config/*
           '
           ssh -F ~/.ssh/config prod '

@@ -174,6 +174,33 @@ for entry in "$ASSETS/valve"/*; do
   ln -sfn "$entry" "$GAME_VALVE/$(basename "$entry")"
 done
 
+# ── ours: the bot chat file ─────────────────────────────────────────────────
+# OUR BOT CHAT FILE.
+#
+# The stock `bot_say.txt` in the asset tree is The Specialists' own, and
+# it is profane in twenty of its lines. The banter is the charm; the
+# profanity is the noise. So ours replaces it and the asset tree keeps
+# its copy (the tree is the operator's pristine game install).
+#
+# `rm -f` removes the SYMLINK, never the target: the asset volume is
+# read-only and writing through the link would abort the boot with
+# "Read-only file system" (the same trap as motd.txt below).
+#
+# IT RUNS AFTER THE SYMLINK LOOP ON PURPOSE. The loop symlinks the
+# stock file into the game dir, and `ln -sfn` over our copy would put
+# the stock file straight back.
+#
+# The copy is CONDITIONAL on purpose: a missing optional file must
+# never take the game server down. No file in the config volume means
+# no bot_say.txt in the game dir, which the port reads as "no chat" —
+# the bots are silent, and nothing crashes.
+if [ -f "$CONFIG/bot_say.txt" ]; then
+  rm -f "$GAME_TS/bot_say.txt"
+  cp "$CONFIG/bot_say.txt" "$GAME_TS/bot_say.txt"
+else
+  echo "entrypoint: no bot_say.txt in the config volume — the bots will be silent" >&2
+fi
+
 # ── instance identity ────────────────────────────────────────────────────────
 # Port is TS_PORT_BASE + instance so N containers can share one host without
 # colliding. Kept here rather than only in run-instance.sh so that running the
