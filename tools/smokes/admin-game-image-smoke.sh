@@ -31,10 +31,12 @@
 # so the orchestrator never manages them. ts-0 is never touched.
 #
 # Usage:  bash tools/smokes/admin-game-image-smoke.sh [image-tag]
-#         (default image-tag: ts-server:0.28)
+#         (default image-tag: ts-server:0.29 — the CURRENT one; the
+#          probe compares it against ts-server:0.27, which predates the
+#          RCON-secret entrypoint and must keep refusing)
 set -uo pipefail
 
-IMAGE="${1:-ts-server:0.28}"
+IMAGE="${1:-ts-server:0.29}"
 SECRET=/srv/ts-admin/rcon_password
 ASSETS="${TS_ASSETS:-/srv/ts-data}"
 CONFIG="${TS_CONFIG:-/srv/ts-config}"
