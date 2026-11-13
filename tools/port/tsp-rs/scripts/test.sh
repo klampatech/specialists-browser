@@ -55,6 +55,27 @@ if ! LIBCLANG_DIR="$(find_libclang)"; then
 fi
 export LIBCLANG_PATH="$LIBCLANG_DIR"
 
+# THE LOADER NEEDS THE LLVM RUNTIME TOO — SOMETIMES.
+#
+# libclang-19.so.19 (the Debian pool build) has a DT_NEEDED on
+# libLLVM.so.19.1, and that file lives in a DIFFERENT package
+# (libllvm19) — not in the one the libclang comes from. On a machine
+# with LLVM installed system-wide the library loads and nobody notices;
+# on a clean runner it does not, and bindgen says:
+#
+#   Unable to find libclang: "the `libclang` shared library at
+#   /home/runner/.local/lib/libclang-19.so.19 could not be opened:
+#   libLLVM.so.19.1: cannot open shared object file"
+#
+# which reads like a missing libclang when the libclang is plainly
+# there. So the directory that holds the libclang goes on the LOADER's
+# path as well, and install-libclang.sh puts the runtime in it when the
+# machine has none of its own.
+#
+# (The PyPI wheel's libclang has LLVM linked in statically and does not
+# need any of this. The export is harmless for it.)
+export LD_LIBRARY_PATH="$LIBCLANG_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
 # --------------------------------------------------------------- FWGS_DIR
 # The xash3d-fwgs headers. fetch-engine.sh puts a copy in /tmp; a checkout
 # beside the port works too.
