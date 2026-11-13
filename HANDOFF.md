@@ -23,7 +23,64 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
-**As of:** 2026-11-09, LATEST — **A MATCH WAS PLAYED UNDER MEASUREMENT.
+**As of:** 2026-11-13, LATEST — **THE BOTS KEEP THE BANTER AND LOSE THE
+PROFANITY. IT IS LIVE IN PRODUCTION, MEASURED ON THE SERVER THAT
+SERVES IT.**
+
+Ernie's task (approved by Kyle, spec in
+`~/projects/bulletballet-bot-chat-sanitization-spec.md`, reviewed
+artifact in `~/projects/bulletballet-bot_say-clean.txt`) is DONE —
+PR #156, squash `291b090`, and then rolled to production by hand,
+because the game-server image is built outside the pipeline.
+
+**WHAT SHIPPED.** The stock `bot_say.txt` in the asset volume has
+twenty profane lines. The whole change is a **config-volume copy**:
+`tools/deploy/config/bot_say.txt` (byte-exact, 2215 B, 101 lines,
+CRLF, sha256 `953b0f8f…7fa5`) is shipped by the deploy alongside the
+other config files, and the entrypoint copies it OVER the stock
+symlink **in the game directory only**, after the asset symlink loop:
+
+    rm -f "$GAME_TS/bot_say.txt"     # removes the SYMLINK, never the target
+    cp  "$CONFIG/bot_say.txt" "$GAME_TS/bot_say.txt"
+
+Both steps are **conditional**: a missing optional file must never
+take the server down. The asset volume stays pristine — the operator's
+own copy is still the stock file, still dated 2020-04-05.
+
+**PROVEN IN PRODUCTION, on `ts-0`, 2026-11-13 17:04:45:**
+
+    [17:04:45] [ts] bots: 64 names, chat lines [25, 29, 42], 345 nodes
+
+`/srv/ts/bot_say.txt` inside the container is a **regular file** (not
+a symlink into the asset mount) with sha256 `953b0f8f…7fa5`, and the
+server is healthy: 15 bots + 1 human, tickrate 100, metricsOk true.
+The section counts are **25 / 29 / 42** — the shape the port's parser
+expects, unchanged. The "noob/nub" jabs were kept deliberately (era,
+not profanity).
+
+**THE ROLL.** The game-server image is built by hand on the host, so
+the deploy could not do this part:
+
+    rsync tools/deploy/entrypoint.sh bb-prod:/home/ubuntu/build/entrypoint.sh
+    rsync tools/deploy/config/bot_say.txt bb-prod:/home/ubuntu/build/config/bot_say.txt
+    ssh bb-prod 'cd ~/build && docker build -f Dockerfile.ts-server -t ts-server:0.29 .'
+    ssh bb-prod 'TS_IMAGE=ts-server:0.29 bash /home/ubuntu/run-instance.sh 0'
+
+**THE TAG DEFAULT NOW TRACKS 0.29** in `run-instance.sh`, and that is
+load-bearing: an instance recreated without `TS_IMAGE` gets the image
+the script names. Leaving it at 0.28 would have put the OLD entrypoint
+— the one without the copy — back on the next recreation, and the
+profanity with it. **Rollback is one env var: `TS_IMAGE=ts-server:0.28`.**
+
+**DELIBERATELY NOT DONE.** No Rust change (the port reads the file as
+it always did). No client-side filter — that is a separate ticket and
+its own decision; this fix is at the source, where the words are
+written. The interim stopgap (`bottalk 0`) was **not** needed: the
+file went in directly.
+
+---
+
+**As of:** 2026-11-09, EARLIER — **A MATCH WAS PLAYED UNDER MEASUREMENT.
 THE PIXEL-COUNT STORY FOR FULLSCREEN IS OUT, AND FIREFOX WAS KILLING
 THE ENGINE.**
 
@@ -114,7 +171,7 @@ established either way.
 **THE RESULTS ARE IN `docs/CLIENT-PERF-RESULTS.md` § 5**, with the
 caveats stated.
 
-**As of:** 2026-11-09, LATEST — **FIREFOX CAN BE WATCHED NOW. A BiDi
+**As of:** 2026-11-09, EARLIER — **FIREFOX CAN BE WATCHED NOW. A BiDi
 WATCHER, THE PROBE IT SHARES WITH THE CHROMIUM ONE, AND THE FOUR TRAPS
 THAT COST TO FIND.**
 
@@ -418,7 +475,7 @@ seventeenth character.**
 first (Kyle's approval, then the squash), and the parent after, with
 the pointer at the squash — never at the branch tip.
 
-**As of:** 2026-11-09, LATEST — **THE PACER'S HYSTERESIS IS REBUILT, AND
+**As of:** 2026-11-09, EARLIER — **THE PACER'S HYSTERESIS IS REBUILT, AND
 webXash #50 IS APPROVED AND MERGED. THE PARENT POINTER LANDS WITH THIS
 COMMIT.**
 
@@ -554,7 +611,7 @@ the policy leaves it alone"*, *"in a row have asked for it"* — and none of
 the old band's identifiers (`COST_DEADBAND`, `currentBasisFps`). That is the
 policy that is live, not the one that was reviewed.
 
-**As of:** 2026-11-08, LATEST — **THE PACER MEASURES THE ENGINE WARM, AND
+**As of:** 2026-11-08, EARLIER — **THE PACER MEASURES THE ENGINE WARM, AND
 KEEPS MEASURING. THE READOUT STOPS BLAMING THE BROWSER.**
 
 Kyle looked at the "Your Client" tab after a game and asked two questions:
@@ -808,7 +865,7 @@ WebSocket to the page's own host, so without it the local build talks to the
 PRODUCTION bridge and the test player lands in the public leaderboard. The rig's
 `/api/servers` must answer with `ts-ci-0`, never the production fleet.
 
-**As of:** 2026-11-07, LATEST — **THE READOUT GETS ITS OWN TAB, AND THE
+**As of:** 2026-11-07, EARLIER — **THE READOUT GETS ITS OWN TAB, AND THE
 WEB UI'S READOUT SURVIVES THE QUIT.** Kyle asked for two changes to the client
 readout, and **NEITHER IS IMPLEMENTED YET — both trees are clean and this is a
 fresh task.** Read this whole block before

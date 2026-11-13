@@ -59,9 +59,31 @@ NAME="${TS_INSTANCE_NAME:-ts-$N}"
 # 12. After it: 12 of 12 answered, in 32-269ms. 0.27 -> 0.28 for the
 # RCON SECRET: the entrypoint appends the mounted password to the
 # COPIED server.cfg, so the engine has it from the first second of its
-# life instead of only after somebody types it into the console. The
-# OLD tag stays on the host so a rollback is one env var:
-# TS_IMAGE=ts-server:0.27.
+# life instead of only after somebody types it into the console.
+# 0.28 -> 0.29 for the BOT CHAT FILE: the entrypoint copies OUR
+# sanitized bot_say.txt over the stock one, so the banter stays and the
+# profanity in twenty of its lines goes. The OLD tag stays on the host
+# so a rollback is one env var: TS_IMAGE=ts-server:0.28.
+#
+# Measured on production, 2026-11-13, on ts-0:
+#
+#   [17:04:45] [ts] bots: 64 names, chat lines [25, 29, 42], 345 nodes
+#
+# and the file in the game directory is a REGULAR FILE (not a symlink
+# into the asset volume) whose sha256 is the reviewed artifact's:
+#
+#   953b0f8f46a13e7e3c6323064f4e470dff4066b953b5bab4382281c8dd9a7fa5
+#
+# The operator's own copy in /srv/assets/ts is untouched, still dated
+# 2020-04-05, still the stock file. That is the point of the config
+# volume: ours wins in the game directory and the pristine tree keeps
+# its copy.
+#
+# THE DEFAULT BELOW TRACKS THE CURRENT TAG, and that is load-bearing:
+# an instance recreated without TS_IMAGE gets the image this script
+# names. Leaving it at 0.28 would have put the OLD entrypoint — the
+# one without the bot-chat copy — back on the next recreation, and the
+# profanity with it.
 #
 # WHY THE ROTATION NEEDS AN IMAGE
 # -------------------------------
@@ -92,20 +114,29 @@ NAME="${TS_INSTANCE_NAME:-ts-$N}"
 # host, with the payload staged in ~/build.
 #
 #   rsync tools/deploy/entrypoint.sh bb-prod:/home/ubuntu/build/entrypoint.sh
-#   ssh bb-prod 'cd ~/build && docker build -f Dockerfile.ts-server -t ts-server:0.28 .'
+#   ssh bb-prod 'cd ~/build && docker build -f Dockerfile.ts-server -t ts-server:0.29 .'
 #
-# The only thing that changed since 0.27 is the entrypoint: the RCON
-# secret block, and the paths becoming overridable with the SAME
-# defaults so the entrypoint can be exercised by a test without a
-# container. The payload is byte-for-byte the same.
+# THE IMAGE IS BUILT BY HAND, AND THE PIPELINE DOES NOT BUILD IT.
+# `tools/deploy/Dockerfile.ts-server` is FROM debian:bookworm-slim and
+# carries two things that matter here: the entrypoint (COPY
+# entrypoint.sh, then chmod) and the compiled Rust server DLL
+# (server/ts_amd64_amd64.so) — a build artifact, deliberately not
+# committed. So the tag moves the way it has always moved: on the
+# host, with the payload staged in ~/build.
 #
-# (An overlay on 0.27 — FROM ts-server:0.27, COPY the entrypoint,
-# chmod it — was tried first and works too, but it needs `USER root`
-# around the chmod, because the base image runs as gameserver and the
-# COPY lands root-owned. The canonical build has no such trap: the
-# same two lines run BEFORE the "USER gameserver" switch in
-# tools/deploy/Dockerfile.ts-server.)
-IMAGE="${TS_IMAGE:-ts-server:0.28}"
+# SINCE 0.27 THE ONLY THING THAT CHANGES IS THE ENTRYPOINT: the RCON
+# secret block for 0.28, and the bot-chat copy for 0.29 (ours over the
+# stock file, in the game directory only). The payload is byte-for-byte
+# the same every time.
+#
+# (An overlay on the previous tag — FROM ts-server:0.27, COPY the
+# entrypoint, chmod it — was tried first for 0.28 and works too, but
+# it needs `USER root` around the chmod, because the base image runs
+# as gameserver and the COPY lands root-owned. The canonical build has
+# no such trap: the same two lines run BEFORE the "USER gameserver"
+# switch in tools/deploy/Dockerfile.ts-server. 0.29 was built the
+# canonical way.)
+IMAGE="${TS_IMAGE:-ts-server:0.29}"
 ASSETS="${TS_ASSETS:-/srv/ts-data}"
 MAXPLAYERS="${TS_MAXPLAYERS:-32}"
 MAP="${TS_MAP:-ts_casa}"
