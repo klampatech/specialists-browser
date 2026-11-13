@@ -168,6 +168,17 @@ make_ci_config() {
   # "no items" means "do not cycle"
   # (`crates/server/src/rules/mapcycle.rs`, `do_cycle = false`).
   sudo truncate -s 0 "$CI_CONFIG_DIR/mapcycle.txt"
+  # The bot chat file, so the CI instance exercises the SAME file the
+  # fleet does — a change to it is then caught in CI and not in
+  # production.
+  #
+  # It is an `if` and not a `[ -f ... ] && cp` one-liner because this
+  # script runs under `set -e`: a failed test at the end of a `&&` list
+  # is a non-zero statement, and that aborts the whole script. The
+  # file is optional — the bots fall back to the stock one.
+  if [ -f "$CI_CONFIG_SRC/bot_say.txt" ]; then
+    sudo cp "$CI_CONFIG_SRC/bot_say.txt" "$CI_CONFIG_DIR/bot_say.txt"
+  fi
   # The CI instance also gets sv_cheats 1, and ONLY the CI instance:
   # the perf fixture needs the server's `ts_tp` to put the player in
   # the same spot on every run, and `ts_tp` refuses to run without it.

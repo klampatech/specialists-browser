@@ -1,0 +1,101 @@
+offense 
+You all suck, especially %s! 
+I eat %s's for breakfast! 
+Learn to play, %s! 
+Hey, %s, are you a bot? 
+%s, you bore me...  
+Hahahaha %s, nice try. 
+:) 
+:P 
+:D 
+%s is such a show-off! 
+Get a life %s you geek! 
+'ave it, you lot! 
+%s, back off! 
+...and stay down! 
+You must be Finnish, %s... 
+Noob gun, %s! 
+FFS! The reg on here is terrible :(
+%s, you lucker... 
+You got rolled on, %s! 
+That is the lamest weapon loadout I have EVER seen %s... 
+How appropriate, you fight like a cow! 
+If it bleeds, we can kill it! 
+LOL! Go back to WoW, %s
+ciao %s, arrivederci!
+THIS IS SPARTAAAAAA!
+
+freetime 
+I came here to kick ass and chew bubblegum, and I all outta gum! 
+Kung-Fu only? Anyone?! 
+How do you flip and land on your feet? 
+How do you do matrix? 
+There is no spoon... 
+Man walks into a bar... ouch! 
+I gotta go here, one last round... 
+Where you guys from? 
+Who is hogging all the Powerups!? 
+This map sucks... 
+hehehe :D 
+Lasersight si fro nubs!!11 
+zzzZZzzZzz... 
+booooooooooring... 
+OMG! Missed me nubbins! 
+Any admins here? 
+/usedoor 
+/handcuff 
+Man, you guys can't hit anything! 
+Too many sploiters here man, I'm gone... 
+Anybody playing windowed? 
+Any of you guys using 3rd person? 
+What rate should I use guys? 
+Any of you guys work for Crytek? 
+What is that? Italian? 
+Laggggg! 
+Was that the server or me that just lagged out? 
+I using cl_realhud 1 you newbies! 
+the devs ruined TS..
+
+killed 
+I hit you like 5 times, %s! 
+DIE when I shoot you, %s FFS! 
+ZOMG! Kevlar Noob, %s! 
+Argh, %s! 
+WTF, %s? 
+hp, %s? 
+Nice frag, %s! 
+Lucky shot, %s.. 
+lucker... 
+Holy! Did you see that guy? 
+:( 
+%s is a cheater! 
+Ugh! 
+Pancakes! 
+Wow... 
+Please ban %s! 
+'rcon banid %s 
+Oops! 
+Oh, arse biscuits... 
+Oh, come on... 
+%s, you jackass! 
+Lucky headshot, %s... 
+Good kill, %s! 
+Ah! Well played, %s! 
+gg 
+n1 %s 
+Kevlar, %s? 
+%s, behind you! 
+What the heck? 
+Sprayer!! 
+camper noob... 
+Lag... 
+FFS! I was typing... 
+Ganked again! 
+I was reloadin you IDIOT! 
+You lack honor %s... 
+Gameover man! GAMEOVER! 
+WINCHESTER! 
+Arrivederci.. 
+disarming doesnt work!!
+acc kick..
+TS is not fun anymore, I'm going to play some CS..

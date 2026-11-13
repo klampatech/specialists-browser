@@ -13,3 +13,14 @@
 # repository are the bytes in every checkout, on every platform.
 tools/port/tsp-rs/crates/ts21/data/bots21.txt -text
 tools/port/tsp-rs/crates/ts21/data/bot_say21.txt -text
+
+# Our own bot chat file is a CRLF file too: it is the sanitized form of
+# the TS one, which is a Windows file, and the reviewed artifact is
+# 2215 bytes of CRLF with a known sha256.
+#
+# Without this, `git add` normalises the CRLF to LF ("CRLF will be
+# replaced by LF the next time Git touches it") and the blob in the
+# repository is NOT the file that was reviewed — the same drift the
+# vendored files above were caught in, and the unit test that pins the
+# artifact's sha256 would then fail on every machine except this one.
+tools/deploy/config/bot_say.txt -text
