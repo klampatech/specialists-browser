@@ -168,6 +168,41 @@ pub fn init() {
     with(|s| *s = Spectator::default());
     crate::gameplay::current().hltv_reset(true);
     engine().add_command(c"specmode", cmd_specmode);
+    engine().add_command(c"ts_specmode", cmd_ts_specmode);
+}
+
+/// `ts_specmode <n>`: the mode selector `specmode` performs, without the HLTV-only gate.
+///
+/// WHY THIS EXISTS
+/// ---------------
+/// `specmode` refuses to do anything unless the engine says the client is
+/// spectate-only (`IsSpectateOnly`), and the engine only sets that when the
+/// SERVER sends it an HLTV_ACTIVE message. A client that is an OBSERVER —
+/// which is what a client becomes when it joins the spectator team — is
+/// not spectate-only, so it cannot pick a camera mode at all.
+///
+/// That is right for a player and wrong for a camera: a headless camera
+/// client has to be able to choose the roaming camera (3) or the in-eye
+/// camera (5) on its own, exactly the way `ts_join_team` and `ts_respawn`
+/// already let an automated client drive the menus a key would drive.
+///
+/// It is gated on the same dev scripted-input switch as the other `ts_*`
+/// commands, so it does nothing in an ordinary session.
+extern "C" fn cmd_ts_specmode() {
+    let e = engine();
+    if !crate::input::dev_script_input_enabled() {
+        e.print("ts_specmode: needs ts_dev_scriptinput 1\n");
+        return;
+    }
+    if e.cmd_argc() < 2 {
+        e.print("usage:  ts_specmode < modenumber >\n");
+        return;
+    }
+    let mode = e.cmd_argv(1).to_str().ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+    // The same request numbering `specmode` uses: 2 is the director's
+    // locked view, 3 is the roaming camera, 5 is in-eye.
+    set_modes(mode, 0);
+    e.print(&format!("ts_specmode: mode {mode}\n"));
 }
 
 /// `CHudSpectator::VidInit` (`0x10022fe0`): the overview sprites and the crosshair. It also
