@@ -846,6 +846,81 @@ with a debugging port, and Chrome since 136 ignores that flag on the
 default profile — so it needs a separate `--user-data-dir`, and a
 separate profile is a different browser configuration.
 
+### `verify-readout-truth.cjs` — is the READOUT telling the truth?
+
+**THE QUESTION IT EXISTS TO ANSWER:** "are the numbers on the 'Your Client'
+tab true?" — and the answer cannot come from the client, because the
+client is the thing being questioned.
+
+**THE PANEL'S NUMBERS COME FROM ONE INSTRUMENT.** The pacer measures, the
+policy words it, the panel prints it. So the panel is internally
+consistent BY CONSTRUCTION: if the pacer is wrong, every number on the
+screen agrees with every other number and all of them are wrong. That is
+exactly what Kyle's screenshot showed — a panel that agreed with itself
+and was wrong four times.
+
+So this gate brings a second instrument:
+
+- **the display's rate** is measured by the harness, on the idle landing
+  page, with its own `requestAnimationFrame` loop — the same quantity the
+  client measures for itself, measured by different code;
+- **the engine's frame cost and frame rate** are measured by wrapping the
+  browser's `requestAnimationFrame` BEFORE the client's frame-pacing shim
+  installs itself, so every tick is timed, including the ticks the engine
+  drew a frame on;
+- **the canvas's size** and **the GPU** are read straight off the page.
+
+Then it reads the panel's DISPLAYED TEXT — the strings the player reads,
+not the report object — and asks, claim by claim, whether it survives.
+
+```sh
+# the CI stack, a local build with the CI bridge, and a browser:
+ssh bb-prod 'bash /home/ubuntu/ci-stack.sh up'
+cd webxash && VITE_BRIDGE_ADDRESS=ci.bulletballet.dev:443 npm run build
+node tools/perf/serve-local-build.cjs --proxy https://ci.bulletballet.dev &
+bash tools/perf/readout-truth-rig.sh &        # the browser, with its DevTools port
+node tools/perf/verify-readout-truth.cjs
+ssh bb-prod 'bash /home/ubuntu/ci-stack.sh down'
+```
+
+**THE COMPARISON IS PURE, SO IT IS TESTABLE WITHOUT A RIG.** The reading
+and the judging live in `tools/perf/lib/readout-truth.cjs`, and
+`tests/unit/readout-truth.test.mjs` exercises every claim shape —
+including the ones that only happen on a bad day — with no browser, no
+game and no server. A gate that can only be run with a rig is a gate that
+runs twice a year.
+
+**THE NEGATIVE CONTROL RUNS EVERY TIME.** The gate multiplies the panel's
+frame cost and doubles its frame rate IN THE DOM and checks that the lie
+is caught. A gate that has never failed is a gate of unknown value.
+
+**WHAT IT FOUND, on its first run (2026-11-16):**
+
+1. **The in-game panel was STALE.** The overlay built its report once and
+   refreshed it only when the player pressed "Re-measure" — so a player
+   who opened ESC a minute into a match saw a report from before the
+   engine had measured anything: no frame cost, no frame rate, and a
+   verdict line saying the client was not set up for the game.
+2. **"worst 31.5 ms" was the LAST gap, not the largest.** `summarizeSpacing`
+   took `gaps[gaps.length - 1]` from a chronologically-ordered array, so
+   the "worst" gap was the last thing that happened. On a well-paced game
+   it is the SMALLEST number in the set: the panel printed "33.5 ms apart
+   · worst 31.5 ms", a contradiction the reader cannot make sense of.
+
+**HEADLESS, ON PURPOSE.** On this box a headful Chrome starts, its GPU
+process dies in a loop, and it never opens its DevTools port (measured:
+seven flag sets, including `--disable-gpu`, `--in-process-gpu` and
+`--single-process`). The headless build opens the port first time, and
+the gate needs no native chrome: the options overlay opens on the Escape
+key, and a headless page has no browser UI to swallow it.
+
+**THE WORDING HAS ITS OWN LINT.** `tests/unit/readout-claims.test.mjs`
+reads the policy and fails on a sentence that blames something the page
+cannot see — "not the game being slow", "is usually this", "half the
+refreshes it should be". The rule needs BOTH a cause and a symptom in
+the same sentence, so a general fact about how a browser setting works is
+still allowed.
+
 ---
 
 ## 5. TRAPS
