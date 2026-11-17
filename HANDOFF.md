@@ -23,7 +23,70 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
-**As of:** 2026-11-13, LATEST — **THE BOTS KEEP THE BANTER AND LOSE THE
+**As of:** 2026-11-16, LATEST — **THE "YOUR CLIENT" PANEL IS NOW
+CHECKED AGAINST A SECOND INSTRUMENT, AND IT WAS WRONG FOUR TIMES.**
+
+Kyle asked whether there is any way to verify that everything on the
+"Your Client" tab is accurate, and the honest answer was: **no**. The
+pacer measures, the policy words it, the panel prints it — so the panel
+is internally consistent BY CONSTRUCTION. If the pacer is wrong, every
+number on the screen agrees with every other number and all of them are
+wrong. That is exactly what his screenshot showed: a readout that
+agreed with itself and was wrong four times.
+
+**WHAT EXISTS NOW.** `tools/perf/verify-readout-truth.cjs` measures the
+same quantities with a SECOND instrument — the display's rate on the
+idle landing page with its own rAF loop, the engine's frame cost and
+rate by wrapping rAF BEFORE the client's shim installs itself, the
+canvas's backing store, the renderer string — then reads the panel's
+DISPLAYED TEXT (the strings the player reads, not the report object)
+and asks, claim by claim, whether it survives. It runs against the CI
+stack, never production, and it exits non-zero on a mismatch.
+
+The comparison is PURE (`tools/perf/lib/readout-truth.cjs`), so
+`tests/unit/readout-truth.test.mjs` exercises every claim shape — the
+ones that only happen on a bad day — with no browser, no game and no
+server. A gate that can only be run with a rig is a gate that runs
+twice a year. The negative control runs every time: the gate lies to
+the panel on purpose and checks that the lie is caught.
+
+**WHAT IT CAUGHT, ALL FIXED IN webXash (PR on `fix/readout-truthful-numbers`):**
+
+1. **The in-game panel was STALE.** The report was built once, when the
+   Performance page was selected, and refreshed only on "Re-measure" —
+   so a player who opened ESC a minute into a match read a report from
+   before the engine had measured anything: no frame cost, no frame
+   rate, and a verdict line saying the client was not set up for this
+   game. It now keeps itself current while it is open.
+2. **"worst 31.5 ms" was the LAST gap, not the largest.** The panel
+   printed "33.5 ms apart · worst 31.5 ms" — a contradiction no reader
+   could make sense of. It is now the largest gap.
+3. **Three sentences claimed more than the page can see.** "Not the game
+   being slow" (the readout cannot tell a machine being interrupted
+   from an engine missing its deadline); "is usually this" (a statistic
+   about how often a browser setting causes a stutter is not something a
+   page can know); "half the refreshes it should be" (half is not a
+   fixed fraction — measured on a 120 Hz laptop it took 22 of them).
+   `tests/unit/readout-claims.test.mjs` now fails on that class of
+   sentence — and it has a test that says a general fact about how a
+   setting works is still allowed, because a lint that only deletes
+   things is a way to make the panel say nothing at all.
+4. **"That is the engine's own limit" on a software renderer.** The
+   frame-cost row measures the engine's JavaScript work and nothing
+   else; on a software rasteriser the limit is the rasteriser.
+
+**THE GATE IS GREEN** against the fixed client: 26 pass, 0 fail, 0
+unverifiable, with the negative control catching its injected lie.
+
+**STILL OPEN, FOR A HUMAN TO JUDGE:** on a software renderer the panel
+shows "Frame cost: 3.5 ms vs 16.67 ms budget" — the engine's JavaScript
+work — while the game runs at a fifth of the display's rate, because
+the pixels are the expensive part and they are not in that number. The
+numbers are true and the story they tell is not. The wording of the
+budget row on a software renderer is a judgement call, and it has not
+been changed.
+
+**As of:** 2026-11-13 — **THE BOTS KEEP THE BANTER AND LOSE THE
 PROFANITY. IT IS LIVE IN PRODUCTION, MEASURED ON THE SERVER THAT
 SERVES IT.**
 
