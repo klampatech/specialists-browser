@@ -78,6 +78,14 @@ the panel on purpose and checks that the lie is caught.
 **THE GATE IS GREEN** against the fixed client: 26 pass, 0 fail, 0
 unverifiable, with the negative control catching its injected lie.
 
+**SHIPPED.** Kyle approved both PRs; webXash **#55** (squash `8a9eebe`)
+merged first and specialists-browser **#159** (squash `6f2229c`) second,
+so the submodule pointer is the merged client commit and not a branch
+tip. The deploy ran green — "Deploy to production" and "Verify in a
+real browser" both success — and the bundle production serves
+(`assets/index-DtUUB5w0.js`) carries the new wording with the old
+over-claims gone.
+
 **STILL OPEN, FOR A HUMAN TO JUDGE:** on a software renderer the panel
 shows "Frame cost: 3.5 ms vs 16.67 ms budget" — the engine's JavaScript
 work — while the game runs at a fifth of the display's rate, because
