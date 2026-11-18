@@ -424,6 +424,91 @@ rig:
    per browser; a leftover tab holds it and the new page connects to
    nothing, with no error anywhere.
 
+## 5d. THE DRAW-CALL SIGNATURE — MEASURED, AND IT POINTS AT THE TRIANGLES
+
+The probe works now (it hooks `HTMLCanvasElement.prototype.getContext` and
+wraps the CONTEXT INSTANCE, not the built-in prototype — patching the
+prototype broke the engine's `instanceof` checks and stopped the render,
+which is why the first probe measured 0.02 ms of nothing).
+
+`ts_lobbyduel`, 17 bots, the rig's Chromium, the camera held on a
+nav-node viewpoint:
+
+| view | GL calls | draws | `bufferData` | `vertexAttribPointer` | `drawArrays` | `bindTexture` | JS-side ms |
+|---|---|---|---|---|---|---|---|
+| 1 | 8,139 | 1,683 | 3,061 | 3,061 | 1,641 | 312 | 0.004 |
+| 2 | 2,104 | 554 | 758 | 758 | 553 | 22 | 0.001 |
+| 3 | 4,210 | 947 | 1,573 | 1,573 | 919 | 90 | 0.002 |
+
+**WHAT THIS SAYS, EXACTLY:**
+
+1. **The frame is thousands of GL calls, not one slow thing.** 2,100–8,100
+   calls a frame, of which 550–1,680 are actual draws.
+2. **The vertex data is re-uploaded every frame.** `bufferData` runs
+   about twice per draw, and `vertexAttribPointer` once per draw — the
+   vertex layout is re-specified and the buffer re-uploaded for every
+   batch, every frame. Nothing is cached.
+3. **The JavaScript-side submission time is essentially ZERO** — 0.004 ms
+   for 8,139 calls. The browser queues the commands cheaply; the main
+   thread is not waiting on the GL boundary. **So the boundary is NOT
+   where the frame's time goes** — the engine's own WASM work is.
+4. **The multiplier is the number of triangles.** A quad is one draw plus
+   two buffer uploads plus one attribute pointer. 1,641 draws is 1,641
+   quads' worth of geometry submitted per frame, and the port emits its
+   particles, HUD, viewmodel and gore through the engine's triangle API.
+
+**⇒ The port's triangle count is the multiplier, and the upstream engine
+turns each one into its own GL batch.** That is the root cause to chase,
+and it is a port-side lever: fewer triangles, or a path that batches
+them.
+
+The port already has `FX_AdaptQuality` — but it is faithful to TS 3.0
+(the tests pin its exact bit patterns), and at a 16 ms frame it scales
+almost nothing: the quality factor is ~0.96 at 25 ms and only saturates
+at 50 ms.
+
+## 5e. WHERE THE DRAWS COME FROM — THE ATTRIBUTION
+
+One command at a time, on the same map, the camera held on the same
+viewpoint, the probe counting. **The draw count is the signal** — it
+moves ~1% between runs of the same scene, where the frame cost moves by
+2x (the cost column below is unreadable for exactly that reason, and is
+in the table only so nobody has to wonder).
+
+| setting | calls | draws | drawArrays | bufferData | cost ms | change in draws |
+|---|---|---|---|---|---|---|
+| baseline | 7,721 | 1,633 | 1,613 | 2,951 | 8.31 | — |
+| `r_drawentities 0` | 5,025 | 1,135 | 1,134 | 1,920 | 16.86 | **-30.5%** |
+| `r_decals 0` | 6,208 | 1,348 | 1,329 | 2,366 | 7.59 | **-17.5%** |
+| `cl_gore 0` | 6,547 | 1,391 | 1,337 | 2,489 | 26.29 | **-14.8%** |
+| `r_drawviewmodel 0` | 6,871 | 1,461 | 1,425 | 2,609 | 6.42 | **-10.5%** |
+| `cl_fx 0` | 7,066 | 1,495 | 1,455 | 2,691 | 19.20 | -8.5% |
+| `cl_updaterate 20` | 7,778 | 1,624 | 1,587 | 2,962 | 25.24 | -0.6% |
+
+**WHAT IT SAYS:**
+
+- **The entities are the biggest chunk: 30%.** Sixteen bots' models.
+- **The decals are 17.5%** — and the cap in force is `r_decals 999`.
+- **The gore is 15%** (the blood and the gibs).
+- **The viewmodel is 10.5%** — the weapon in your hands, drawn every
+  frame.
+- **The particles are 8.5%** — the smallest, because `FX_AdaptQuality`
+  already scales them.
+- **The network is not a draw multiplier at all** (-0.6%). Whatever the
+  update rate costs, it is not geometry.
+
+**⇒ THE PORT-SIDE LEVERS, IN ORDER:** the decal cap (999 is not a
+sensible default for a browser), the gore level, the viewmodel, and the
+entities' model detail. Every one of them is a cvar the port or the
+engine already has.
+
+**THE COST COLUMN IS THE SCENE MOVING.** `r_drawentities 0` cost 16.86
+ms and `cl_gore 0` cost 26.29 ms — because the bots were fighting
+differently in those runs. A setting that removes work can read as
+"more expensive" if the fight got worse. That is why the draw count is
+the instrument here, and why every earlier cost-based sweep of the same
+kind was noise.
+
 ## 6. THE ORDER OF WORK
 
 The cheap, certain ones first, because they are the ones that make

@@ -77,6 +77,9 @@ const SIZE = (() => {
 // viewpoints are how it covers the map. Turn it on only when you want
 // the drift, and read the fixture column.
 const MOVE = arg('move', false) !== false;
+// THE ATTRIBUTION COMMAND: ONE ENGINE COMMAND, APPLIED ON THE FIXTURE
+// BEFORE THE MEASUREMENT, SO A ROW SAYS WHAT IT CHANGED.
+const CVAR = arg('cvar', '') && arg('cvar', '') !== true ? String(arg('cvar', '')) : '';
 
 /**
  * THE VIEWPORT THE TOUR RUNS AT.
@@ -382,6 +385,24 @@ const READ_STATE = () => {
       }
       await sleep(1200);
 
+      //
+      // AN ATTRIBUTION SWEEP.
+      //
+      // One command, applied AFTER the camera is on the fixture and
+      // BEFORE the measurement, so the row says what the command
+      // changed and nothing else did. The draw count is the signal
+      // here: it moves by 5% between runs of the same scene, where the
+      // frame cost moves by 2x, so it can carry the comparison.
+      if (CVAR) {
+        const applied = await page
+          .evaluate((c) => window.__xash?.Cmd_ExecuteString(c), CVAR)
+          .catch((e) => `FAILED: ${e.message}`);
+        log(`the command: ${CVAR}${applied ? ` (${applied})` : ''}`);
+        // The engine needs a moment to act on it: a cvar that changes
+        // what is drawn changes the NEXT frame, not this one.
+        await sleep(3000);
+      }
+
       const samples = [];
       const end = Date.now() + SECONDS * 1000;
       let moved = false;
@@ -456,12 +477,19 @@ const READ_STATE = () => {
             drawMs: p.lastFrameDrawMs,
             peakCalls: p.peakCalls,
             peakMs: p.peakMs,
+            // THE BREAKDOWN: WHICH CALLS, AND HOW MANY, IN THE LAST
+            // FRAME. A thousand draws is a thousand things the engine
+            // is submitting, and the method names say what they are.
+            byMethod: p.samples && p.samples.length ? p.samples[p.samples.length - 1].byMethod : null,
+            totals: p.byMethod || null,
+            frames: p.frames || 0,
           };
         })
         .catch(() => null);
 
       row = {
         view: i + 1,
+        cvar: CVAR || null,
         yaw,
         at: [nx, ny, nz],
         canvas: canvasBox,
