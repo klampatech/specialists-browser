@@ -81,7 +81,39 @@ with the map name on every window.
 | The pacer's state in the export | zeroes | the session's state |
 | The report's source | `live` | `last-session` |
 
-## 3. THE VECTOR LIST
+## 3. THE FIXTURE WAS NOT THE FIXTURE
+
+**THE MEASUREMENT WAS TAKEN AT A BOT'S POSITION, NOT AT THE VIEWPOINT.**
+
+The perf client joins as an **observer**, and an observer's camera
+follows a living player. With no bots on the server there was nobody to
+follow, so `ts_tp` put the camera on the fixture and it stayed there.
+With bots on the map the camera tracked **a bot** -- and the measurement
+was taken at wherever that bot happened to be.
+
+That is the worst kind of bug in a measurement: it does not fail, it
+produces numbers. The 8-bot run looked like the discovery of the day
+("the bots triple the engine's cost") while the camera was flying around
+the map at 400 units a second.
+
+| What | Before | After |
+|---|---|---|
+| The camera | follows a living player | **roaming** (`ts_observe <player#> 3`): it stays where it is put |
+| The "walk forward while it measures" | on | **off**: the camera is a free-flying observer, so walking moves it hundreds of units |
+| A reading's fixture | assumed | **checked** against the server's own status, and re-measured if it drifted |
+| The output | a cost | a cost **and how far the camera ended up from the fixture** |
+
+**THE LESSON IS GENERAL: A FIXTURE IS AN ASSERTION, AND NOTHING CHECKS IT
+FOR YOU.** `ts_tp` says it moved the player. It does not say the camera
+stayed there afterwards, and it cannot -- the camera is the client's.
+So the harness has to read back where the player ended up (the server's
+own status is the truth about the player) and put the drift in the
+output next to the number.
+
+A cost measured somewhere else is not a number about the map. It is a
+number about the map, at a place nobody chose, wearing the map's name.
+
+## 4. THE VECTOR LIST
 
 | # | Vector | How it is measured | Verdict | Evidence |
 |---|---|---|---|---|
@@ -104,10 +136,10 @@ with the map name on every window.
 | 17 | **Detailed player models** | `cl_himodels 0/1` A/B at 16 bots | **UNMEASURED** | the client ships `cl_himodels 1`, and production runs 16 bots |
 | 18 | **Heap and GL-texture retention across rotations** | the WASM heap and the GL object count, sampled across three rotations | **UNMEASURED** | the match rotated three times, and a map load costs **274-1415 ms**; whether the previous map's textures are released is not known |
 | 19 | **The browser** | the same measurement in Vivaldi and in Chrome | **UNMEASURED** | the failing session was **Vivaldi** (UA `Chrome/152`); every controlled measurement was **Chrome 157** |
-| 20 | **What was on screen** | the fixture | **RULED OUT as a MAP property, live as a WINDOW property** | the engine's cost is **3-5x** different depending on the view; the failing window's view is not known, and the timeline now records the map so it can be found |
+| 20 | **What was on screen** | the fixture, checked against the server's own status | **THE FIXTURE WAS NOT THE FIXTURE** (section 3) | the engine's cost is **3-5x** different depending on the view; the failing window's view is not known, and the timeline now records the map so it can be found |
 | 21 | `r_lockpvs` | an A/B | **RULED OUT as a fix** | it HURT: the rAF rate fell by **5.7** at 1080p. It is a knob to leave alone |
 
-## 4. THE ORDER OF WORK
+## 5. THE ORDER OF WORK
 
 The cheap, certain ones first, because they are the ones that make
 every later measurement trustworthy:
@@ -132,7 +164,7 @@ every later measurement trustworthy:
    vector that cannot be measured on the rig, because the rig's
    browser is not the player's browser.
 
-## 5. WHAT WOULD SETTLE THE 41.94 ms WINDOW TODAY
+## 6. WHAT WOULD SETTLE THE 41.94 ms WINDOW TODAY
 
 The export button now carries the match's timeline with the map name
 on every window. One export from a bad session answers most of it:
