@@ -15,13 +15,13 @@ nobody has looked at yet, and that is the point of writing them down.
 
 A buttery smooth 60 fps on a twenty-year-old game on modern hardware.
 The engine has to fit inside a 16.67 ms frame at 60 fps, and inside
-8.33 ms if it is to run at the 120 Hz the player's display offers. On
-Kyle's M3 Pro the engine's steady-state cost was **8.20-10.12 ms**
-(measured on the rig, `ts_lobbyduel`, pinned fixture, 2026-11). That is
-inside the 60 fps budget with room to spare. The 41.94 ms window was
-**four times worse than the worst controlled reading of the same map**,
-so the question is not "how do we make the engine faster" -- it is
-"what made it four times worse for a couple of seconds".
+8.33 ms if it is to run at the 120 Hz the player's display offers. The
+worst reading the whole bot x map matrix can produce -- the heavier map,
+the production bot count, the worst viewpoint -- is **15.63 ms**, and
+that is inside the 60 fps budget. The 41.94 ms window was **2.7x worse
+than that**, so the question is not "how do we make the engine faster" --
+it is "what made it 2.7x worse than its worst steady state, for a couple
+of seconds".
 
 **HOW TO READ THE VERDICTS**
 
@@ -113,7 +113,50 @@ output next to the number.
 A cost measured somewhere else is not a number about the map. It is a
 number about the map, at a place nobody chose, wearing the map's name.
 
-## 4. THE VECTOR LIST
+## 4. THE BOT x MAP MATRIX
+
+**MEASURED. 2026-11-17, on the CI rig, with a fixture that holds.**
+
+Six runs: two maps, three bot counts, the same six viewpoints, the same
+pinned fixture — **6/6 viewpoints held in every run, drift 0** — ten
+seconds per viewpoint. The rig's bot target is `TS_BOT_TARGET`, and the
+registry keeps `TARGET - humans` bots, so the tour's own player is
+counted out.
+
+| Map | Bots | Engine cost, median | Engine cost, worst | Late frames | Gate |
+|---|---|---|---|---|---|
+| `ts_lobbyduel` | 0 | **4.17 ms** | 8.58 ms | 0.0% | open |
+| `ts_lobbyduel` | 8 | **4.91 ms** | 14.15 ms | 2.5% | open |
+| `ts_lobbyduel` | 16 | **5.94 ms** | **15.63 ms** | 6.8% | **30 fps at the heavy views** |
+| `ts_casa` | 0 | **2.85 ms** | 6.44 ms | 0.0% | open |
+| `ts_casa` | 8 | **3.29 ms** | 8.10 ms | 0.0% | open |
+| `ts_casa` | 16 | **3.24 ms** | 6.49 ms | 0.0% | open |
+
+**THE MAP IS THE HEAVIER ONE, BUT NOT BY MUCH.** `ts_lobbyduel` costs
+**1.46x** `ts_casa`'s median at the same bot count (4.17 vs 2.85 ms), and
+`ts_casa` has **3.4x** the entities and **4x** the faces. So Kyle's
+instinct was right — the level IS the heavier one — and the static
+content is not what makes it heavy.
+
+**THE BOTS COST TWICE AS MUCH ON THE SMALL MAP.** On `ts_lobbyduel`,
+sixteen bots add **+5.7 ms** at the heavy viewpoint (8.58 -> 14.24 ms)
+and take the late fraction from 0% to **6.8%** — and that is what made
+the pacer engage its 30 fps cap. On `ts_casa`, sixteen bots add **+0.4
+ms** (2.85 -> 3.24 ms). The bots are spread over a big map and few of
+them are visible; `ts_lobbyduel` is a small arena and they are all in
+shot. **The bot count's cost is a function of how many bots are VISIBLE,
+which is a function of the map.**
+
+**AND THE WHOLE MATRIX IS STILL 2.7x SHORT OF THE 41.94 ms.** The worst
+number the matrix can produce — the heavier map, the production bot
+count, the worst viewpoint — is **15.63 ms**. Kyle's bad window was
+**41.94 ms**. The map and the bots together do not explain it.
+
+So the map vector is MEASURED (a real one: 1.46x), the bot vector is
+MEASURED (the bigger of the two on this map: +5.7 ms), and **neither of
+them reaches 42 ms.**
+
+## 5. THE VECTOR LIST
 
 | # | Vector | How it is measured | Verdict | Evidence |
 |---|---|---|---|---|
@@ -124,11 +167,11 @@ number about the map, at a place nobody chose, wearing the map's name.
 | 5 | A leak in the pacer's arrays | the source | **RULED OUT** | samples are trimmed at 240 and the history at 900 |
 | 6 | A browser that is throttling | the idle panel rate vs the live tick rate | **RULED OUT** | the browser was delivering 120 refreshes a second |
 | 7 | `glGetError` round trips | `measure-geterror-ab.cjs` | **RULED OUT** (fixed earlier) | **8.89 ms -> 1.91 ms**; the patch is live |
-| 8 | Static map content | BSP lumps, parsed | **RULED OUT** | `ts_lobbyduel` has **161 entities, 4095 faces, 29 KB of PVS, 3 lights** -- the second-lightest of the twenty maps with nav data. `ts_casa` has **3.4x** the entities and **4x** the faces and measured **CHEAPER** (4.31-4.52 ms vs 8.20-10.12 ms) |
+| 8 | Static map content | BSP lumps, parsed | **RULED OUT** (the map is still 1.46x the median) | `ts_lobbyduel` has **161 entities, 4095 faces, 29 KB of PVS, 3 lights** -- the second-lightest of the twenty maps with nav data. `ts_casa` has **3.4x** the entities and **4x** the faces and measured **CHEAPER** (4.31-4.52 ms vs 8.20-10.12 ms) |
 | 9 | Slow drift over a long session | a 13.7-minute session, 2026-11-09 | **RULED OUT** (for that session) | it stayed at or below **11.85 ms** with **0% late frames** |
 | 10 | The warm-up anchor | the map's load line on stdout | **THE FIX** (section 1) | the readout called a post-rotation window "settled"; a map load costs **274-1415 ms** |
 | 11 | The empty export | the exported file | **THE FIX** (section 2) | `timeline: []` on the landing page, by construction |
-| 12 | **The bot count** | the rig, 0 / 8 / 16 bots, same fixture | **MEASURING** | production runs **16 bots**; every controlled reading so far used **0 or 8** |
+| 12 | **The bot count** | the rig, 0 / 8 / 16 bots, same fixture, fixture verified | **MEASURED** | 16 bots add **+5.7 ms** at the heavy view on `ts_lobbyduel` and **+0.4 ms** on `ts_casa`; the late fraction goes 0% -> **6.8%** and the pacer engages (section 4) |
 | 13 | **TS 3.0 debris on breakables** | a long run with the entity and particle counters sampled over time, and a controlled "break 20 columns" run | **PRIME SUSPECT** | TS 3.0 has `break_debris_from_hit()` on and `debris_count_by_quality` on; every breakable that is shot makes debris, and nobody has ever counted the debris |
 | 14 | **Decals** | `r_decals` / `mp_decals` sweep, with the decal count read back | **UNMEASURED** | the client ships `mp_decals 300` against the engine's `r_decals` default of **4096**, and TS is effect-heavy |
 | 15 | **HUD scale** | `hud_scale` A/B on the failing machine | **UNMEASURED** | the client ships `hud_scale 2.5`; an earlier 4K sweep saw `hud_scale 1.0` save **8.6 ms** |
@@ -139,17 +182,18 @@ number about the map, at a place nobody chose, wearing the map's name.
 | 20 | **What was on screen** | the fixture, checked against the server's own status | **THE FIXTURE WAS NOT THE FIXTURE** (section 3) | the engine's cost is **3-5x** different depending on the view; the failing window's view is not known, and the timeline now records the map so it can be found |
 | 21 | `r_lockpvs` | an A/B | **RULED OUT as a fix** | it HURT: the rAF rate fell by **5.7** at 1080p. It is a knob to leave alone |
 
-## 5. THE ORDER OF WORK
+## 6. THE ORDER OF WORK
 
 The cheap, certain ones first, because they are the ones that make
 every later measurement trustworthy:
 
 1. **The readout tells the truth** (sections 1 and 2). Done. Without
    it, every future report is a report about a window nobody can find.
-2. **The bot count** (12). The rig matrix, 0 / 8 / 16 bots on
-   `ts_lobbyduel` and on `ts_casa`, same fixture, same viewpoints.
-   This is the one production difference that every controlled reading
-   has been missing.
+2. **The bot count** (12). **DONE** — the rig matrix, 0 / 8 / 16 bots
+   on `ts_lobbyduel` and on `ts_casa`, same fixture, same viewpoints
+   (section 4). The bots cost **+5.7 ms** on the small map and **+0.4
+   ms** on the big one, and the map costs **1.46x**. Neither reaches
+   42 ms.
 3. **The long run** (13, 18). One 15-minute session on one map, with
    the engine's entity count, particle count, decal count, WASM heap
    and frame cost sampled every 10 seconds, and 20 breakables
@@ -164,7 +208,7 @@ every later measurement trustworthy:
    vector that cannot be measured on the rig, because the rig's
    browser is not the player's browser.
 
-## 6. WHAT WOULD SETTLE THE 41.94 ms WINDOW TODAY
+## 7. WHAT WOULD SETTLE THE 41.94 ms WINDOW TODAY
 
 The export button now carries the match's timeline with the map name
 on every window. One export from a bad session answers most of it:
