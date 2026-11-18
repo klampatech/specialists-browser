@@ -180,6 +180,22 @@ make_ci_config() {
   # An empty cycle file disables the rotation: the server reads it, and
   # "no items" means "do not cycle"
   # (`crates/server/src/rules/mapcycle.rs`, `do_cycle = false`).
+  #
+  # BUT THE ROUND MUST ALSO NOT END.
+  #
+  # The round ending is what changes the map: the intermission calls
+  # `change_level`, and with an empty cycle the fallback map is
+  # "hldm1" -- the Half-Life default, which is what the original
+  # engine's `szFirstMapInList` holds when no cycle is loaded. So the
+  # server left `ts_lobbyduel` for `hldm1` fifteen minutes into the
+  # run, the intermission had nowhere to go from there, and the server
+  # sat in it -- the client could not settle, and a measurement of the
+  # engine's frame cost measured an idle engine.
+  #
+  # `mp_timelimit 0` is the engine's own "no limit" (`time_limit`:
+  # a limit of zero is never over), so the round runs until the rig is
+  # torn down. There is no frag limit to end it either: the stock
+  # config has none.
   sudo truncate -s 0 "$CI_CONFIG_DIR/mapcycle.txt"
   # The bot chat file, so the CI instance exercises the SAME file the
   # fleet does — a change to it is then caught in CI and not in
@@ -197,8 +213,12 @@ make_ci_config() {
   # the same spot on every run, and `ts_tp` refuses to run without it.
   # Production's own server.cfg keeps `sv_cheats 0` — this is a derived
   # CI copy, so the source file is never changed.
+  # `mp_timelimit 0` is the same idea as the empty map cycle: the
+  # fixture holds the same map for the whole measurement, and a round
+  # that ended would change it.
   sudo sed -e 's/^ts_bot_quota .*/ts_bot_quota 0/' \
-         -e 's/^sv_cheats .*/sv_cheats 1/' "$CI_CONFIG_SRC/server.cfg" \
+         -e 's/^sv_cheats .*/sv_cheats 1/' \
+         -e 's/^mp_timelimit .*/mp_timelimit 0/' "$CI_CONFIG_SRC/server.cfg" \
     | sudo tee "$CI_CONFIG_DIR/server.cfg" >/dev/null
   # The container reads the config as uid 10001 (gameserver), the same
   # uid production's config is owned by.
@@ -208,6 +228,8 @@ make_ci_config() {
     || die "the derived CI config does not zero the bot quota"
   grep -q "^sv_cheats 1$" "$CI_CONFIG_DIR/server.cfg" \
     || die "the derived CI config does not enable cheats (the perf fixture needs ts_tp)"
+  grep -q "^mp_timelimit 0$" "$CI_CONFIG_DIR/server.cfg" \
+    || die "the derived CI config has a time limit (the round must not end under a perf run)"
   [ ! -s "$CI_CONFIG_DIR/mapcycle.txt" ] \
     || die "the derived CI config has a map cycle (the map must not rotate under a perf run)"
 }

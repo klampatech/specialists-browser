@@ -91,6 +91,10 @@ const MOVE = arg('move', false) !== false;
  * 2x display is a 1920x1080 backing store: exactly what the fixed
  * resolution policy hands a 2x display.
  */
+const INIT_SCRIPT = (() => {
+  const i = process.argv.indexOf('--init');
+  return i > -1 && process.argv[i + 1] ? process.argv[i + 1] : '';
+})();
 const VIEWPORT = (() => {
   const raw = arg('viewport', '');
   const m = /^(\d+)x(\d+)$/.exec(String(raw));
@@ -145,6 +149,25 @@ const READ_STATE = () => {
   const browser = await chromium.connectOverCDP(CDP_URL);
   const ctx = browser.contexts()[0];
   const page = ctx.pages()[0] || (await ctx.newPage());
+
+  //
+  // THE PROBE, IF ONE WAS ASKED FOR.
+  //
+  // `--init <file>` installs a script before any page script runs.
+  // The point of that is the WebGL call counter: the port renders
+  // through WebGL's JavaScript API, one call at a time, and the
+  // question of how many calls a frame makes is a question about the
+  // boundary between the engine and the browser -- the boundary the
+  // port added and the original engine did not have.
+  //
+  // It has to be installed HERE, before the first navigation, because
+  // a script installed after the engine has booted misses everything
+  // the engine did at startup.
+  if (INIT_SCRIPT) {
+    const source = require('node:fs').readFileSync(INIT_SCRIPT, 'utf8');
+    await page.addInitScript({ content: source });
+    log(`the probe is installed: ${INIT_SCRIPT}`);
+  }
 
   // ── THE CI GUARD ───────────────────────────────────────────────────
   //
@@ -416,11 +439,33 @@ const READ_STATE = () => {
         })
         .catch(() => null);
 
+      //
+      // THE WEBGL CALLS, WHEN A PROBE IS CARRYING THEM.
+      //
+      // The per-frame call count and the JavaScript-side time it took
+      // to submit them: the boundary cost the port added, measured
+      // from the outside with the engine untouched.
+      const gl = await page
+        .evaluate(() => {
+          const p = window.__glProbe;
+          if (!p) return null;
+          return {
+            calls: p.lastFrameCalls,
+            ms: p.lastFrameMs,
+            draws: p.lastFrameDraws,
+            drawMs: p.lastFrameDrawMs,
+            peakCalls: p.peakCalls,
+            peakMs: p.peakMs,
+          };
+        })
+        .catch(() => null);
+
       row = {
         view: i + 1,
         yaw,
         at: [nx, ny, nz],
         canvas: canvasBox,
+        gl,
         engineFpsMed: median(fps),
         engineFpsMin: fps.length ? Math.min(...fps) : 0,
         costMed: median(cost),
@@ -450,7 +495,12 @@ const READ_STATE = () => {
         `engine ${row.engineFpsMed.toFixed(1).padStart(6)} fps (min ${row.engineFpsMin.toFixed(1)})  ` +
         `cost ${row.costMed.toFixed(2).padStart(6)} ms (max ${row.costMax.toFixed(2)})  ` +
         `late ${(row.lateMax * 100).toFixed(1).padStart(5)}%  ` +
-        `cap ${row.caps}  drift ${row.fixtureDrift}u  ${row.at2}`,
+        `cap ${row.caps}  drift ${row.fixtureDrift}u` +
+        (row.gl
+          ? `  gl ${String(row.gl.calls).padStart(5)} calls (${row.gl.ms.toFixed(2).padStart(5)} ms)  ` +
+            `draws ${String(row.gl.draws).padStart(4)} (${row.gl.drawMs.toFixed(2).padStart(5)} ms)`
+          : '') +
+        `  ${row.at2}`,
     );
   }
 
