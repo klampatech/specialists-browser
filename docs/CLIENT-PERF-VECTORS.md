@@ -368,6 +368,62 @@ them reaches 42 ms.**
 | 21 | **The map rotation's frequency** | the production's own logs | **CORRECTED** | the rotation is every **~15 minutes** (`ts-0`: 00:36 -> 00:51 -> 01:06), not every 3 minutes: `roundtime` is **INERT in FFA**, so the round does not end on a timer. So the 41.94 ms window at 513 s into a match was probably **not** next to a rotation |
 | 22 | `r_lockpvs` | an A/B | **RULED OUT as a fix** | it HURT: the rAF rate fell by **5.7** at 1080p. It is a knob to leave alone |
 
+## 5b. THE BUILD FLAGS ARE NOT THE LEVER (measured 2026-11-18)
+
+Two client DLLs, the same camera, the same scene, interleaved, three
+rounds each:
+
+- **A** -- the shipping build: rustc `opt-level = "z"`, `wasm-opt -Oz`.
+- **B** -- `opt-level = 3`, `+simd128`, `wasm-opt -O3`. About 35% larger.
+
+| view | A (ms) | B (ms) | change |
+|---|---|---|---|
+| 1 | 4.15 / 5.13 / 8.05 | 5.06 / 5.96 / 4.98 | -1.4% |
+| 2 | 6.49 / 7.81 / 7.34 | 8.68 / 7.00 / 7.18 | -2.2% |
+| 3 | 3.45 / 2.87 / 2.69 | 2.50 / 2.71 / 2.48 | -12.9% |
+
+All nine readings: A median 5.13 ms, B median 5.06 ms, **-1.4%** -- inside
+the noise.
+
+The decisive number is A's own spread at view 1: **4.15 ms and 8.05 ms
+for the same build, at the same camera, in the same session.** The scene
+moves the cost by 2x; the compiler flags move it by 1-2%.
+
+**So the size-optimized, no-SIMD build of the Rust client is NOT the
+cause of the 41.94 ms frame.** The faster build is worth shipping
+because it is free to do so, not because it fixes anything.
+
+The SIMD build loads and renders correctly: the engine's WASM runtime
+accepts the module, and the measured scene is unchanged.
+
+## 5c. TESTING A DIFFERENT CLIENT BUILD WITHOUT TOUCHING PRODUCTION
+
+The rig serves the same bundle production serves, so a new WASM cannot
+be tried there. The recipe that works, all of it on the disposable
+rig:
+
+1. Build the bundle with a **relative asset base** (no
+   `VITE_ASSET_BASE`), so the client asks for `/hl/ts/manifest.json`
+   on its own origin.
+2. Serve `webxash/dist` from a local HTTP server that also proxies:
+   - `/api/*` to the rig (the registry);
+   - `/bridge` as a WebSocket relay to the rig's bridge;
+   - **anything not in the bundle** to `https://assets.bulletballet.dev`
+   -- the asset host sends no CORS headers, so a page on another origin
+   cannot fetch the game files at all.
+3. Send **`Cross-Origin-Embedder-Policy: credentialless`**, the same as
+   production. `require-corp` blocks the asset host's files and the
+   engine never boots.
+4. Build with **`VITE_BRIDGE_ADDRESS=localhost:8090`**, or the client
+   connects to the fleet's public bridge and the page's cross-origin
+   isolation breaks.
+5. **Relay the WebSocket's query string.** It carries
+   `?address=<ip:port>`, and the bridge refuses anything it does not
+   recognise.
+6. **Close the stale tab first.** The client allows one game instance
+   per browser; a leftover tab holds it and the new page connects to
+   nothing, with no error anywhere.
+
 ## 6. THE ORDER OF WORK
 
 The cheap, certain ones first, because they are the ones that make
