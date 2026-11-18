@@ -35,7 +35,7 @@ const { loadPlaywright } = require(path.join(__dirname, '..', '..', 'tools', 'de
 const { confirmIdentity } = require(path.join(__dirname, '..', '..', 'tools', 'deploy', 'lib', 'identity-modal.cjs'));
 const { serverCommand, findPlayer, ssh } = require(path.join(__dirname, 'lib', 'server-console.cjs'));
 const { readNavNodes } = require(path.join(__dirname, 'lib', 'nav-node.cjs'));
-const { pinView, waitForArrival, readViewpoint, describeViewpoint } = require(
+const { pinView, waitForArrival, readViewpoint, describeViewpoint, fixtureHeld } = require(
   path.join(__dirname, 'lib', 'viewpoint.cjs'),
 );
 
@@ -286,7 +286,20 @@ const READ_STATE = () => {
       await pinView(page, 0, yaw);
       // The server moves the player instantly; the client interpolates.
       // Measuring during the transit measures the wrong place.
-      await waitForArrival(page, [nx, ny, nz], { tolerance: 12, timeoutMs: 20_000 }).catch(() => {});
+      const arrival = await waitForArrival(page, [nx, ny, nz], {
+        tolerance: 12,
+        timeoutMs: 20_000,
+      }).catch(() => ({ arrived: false, view: null }));
+      if (!arrival.arrived) {
+        // THE CLIENT NEVER GOT THERE.
+        //
+        // The server says the player is at the fixture; the client says
+        // its own camera is somewhere else. The engine draws what the
+        // client sees, so this reading would be about that somewhere
+        // else -- and it would look like a perfectly good number.
+        log(`viewpoint ${i + 1}: the client's camera never arrived (${arrival.waitedMs ?? '?'} ms)`);
+        break;
+      }
       await sleep(1200);
 
       const samples = [];
@@ -306,9 +319,19 @@ const READ_STATE = () => {
 
       // WHERE DID THE MEASUREMENT HAPPEN?
       //
-      // The SERVER's own status, not the client's: the server knows
-      // where the player is, and the client's camera is what the engine
-      // actually drew. If they disagree, the reading is about neither.
+      // TWO CHECKS, BOTH NEEDED.
+      //
+      // The SERVER's status says where the player is -- that catches the
+      // player dying, respawning or being carried off by a bot.
+      //
+      // The CLIENT's own view says where the CAMERA is, and which way
+      // it is looking -- and the camera is what the engine drew. The
+      // server goes on believing the player is at the fixture while the
+      // client is somewhere else entirely, and that is how the same
+      // fixture produced 16.63 ms in one run and 2.19 ms in another
+      // with nothing said about it.
+      // THE CLIENT'S VIEW OF ITSELF, RIGHT NOW.
+      const view = await readViewpoint(page).catch(() => null);
       const where = await serverCommand('ts_status', {
         expect: /\[ts\]\s+#\d+/,
         timeoutMs: 8000,
@@ -317,9 +340,9 @@ const READ_STATE = () => {
       const drift = at
         ? Math.max(Math.abs(at.origin[0] - nx), Math.abs(at.origin[1] - ny))
         : Infinity;
-      const held = drift <= FIXTURE_TOLERANCE;
+      const camera = fixtureHeld(view, [nx, ny, nz], yaw, { tolerance: FIXTURE_TOLERANCE });
+      const held = drift <= FIXTURE_TOLERANCE && camera.held;
 
-      const view = await readViewpoint(page).catch(() => null);
       const fps = samples.map((s) => s.engineFps).filter((v) => v > 0);
       const cost = samples.map((s) => s.engineWorkMs).filter((v) => v > 0);
       const late = samples.map((s) => s.lateFraction);
@@ -339,11 +362,13 @@ const READ_STATE = () => {
         // THE FIXTURE'S HONESTY, RECORDED WITH THE READING.
         fixtureHeld: held,
         fixtureDrift: Number.isFinite(drift) ? Math.round(drift) : -1,
+        camera: camera.held ? 'at the fixture' : camera.why,
       };
       if (held) break;
       log(
-        `viewpoint ${i + 1}: the camera drifted ${row.fixtureDrift} units off the fixture` +
-          (attempt < 2 ? ' -- measuring it again' : ' -- the reading is NOT this viewpoint'),
+        `viewpoint ${i + 1}: the reading is not this viewpoint -- ` +
+          `${camera.held ? `the camera drifted ${row.fixtureDrift} units` : camera.why}` +
+          (attempt < 2 ? ' -- measuring it again' : ''),
       );
       row = null;
     }

@@ -113,6 +113,37 @@ output next to the number.
 A cost measured somewhere else is not a number about the map. It is a
 number about the map, at a place nobody chose, wearing the map's name.
 
+**AND THE SERVER'S IDEA OF THE PLAYER IS NOT THE CAMERA.** The server
+goes on believing the player is where it put it while the client
+interpolates somewhere else -- and then the client arrives and the
+camera is somewhere else AGAIN, because the client owns the camera.
+Measured: the same fixture, the same bot count, **16.63 ms** with the
+camera at the fixture and **2.19 ms** with the camera somewhere else,
+with nothing in the output saying so.
+
+So the harness now checks the CLIENT's own view -- the position AND the
+yaw -- and a reading whose camera left the fixture is discarded and
+re-measured instead of being reported as that viewpoint.
+
+**WHAT IS LEFT IS THE SCENE, AND IT IS NOT SMALL.** With the camera
+verified, three runs of the same six viewpoints, sixteen bots, the same
+rig:
+
+| Viewpoint | run 1 | run 2 | run 3 | spread |
+|---|---|---|---|---|
+| 1 | 9.01 ms | 4.35 ms | 8.33 ms | **2.3x** |
+| 2 | 5.53 ms | 9.04 ms | 6.97 ms | 1.6x |
+| 3 | 5.42 ms | 5.07 ms | 5.33 ms | 1.1x |
+| 4 | 3.07 ms | 2.57 ms | 2.34 ms | 1.3x |
+| 5 | **16.63 ms** | **17.35 ms** | **17.19 ms** | **1.1x** |
+| 6 | 2.20 ms | 3.55 ms | 3.93 ms | 1.8x |
+
+The heavy viewpoint is stable to 6%, and the mid-cost ones swing by 2x.
+**The engine's cost follows what is IN SHOT**, and how many of the
+sixteen bots are in shot of a given viewpoint is not a thing the
+fixture controls. So the matrix's heavy-viewpoint numbers are solid, and
+its mid-range numbers are single samples of a scene.
+
 ## 4. THE BOT x MAP MATRIX
 
 **MEASURED. 2026-11-17, on the CI rig, with a fixture that holds.**
@@ -160,7 +191,7 @@ them reaches 42 ms.**
 
 | # | Vector | How it is measured | Verdict | Evidence |
 |---|---|---|---|---|
-| 1 | Resolution / pixel count | a resolution sweep, and `gl.finish` for the GPU's backlog | **RULED OUT** | cost was flat across an **8.4x** sweep; `gl.finish` **0.00 ms**; a 6.11 MP tour canvas ran the engine at **1-11 ms** (`CLIENT-PERF-RESULTS.md`) |
+| 1 | Resolution / pixel count | a resolution sweep, and `gl.finish` for the GPU's backlog | **RULED OUT for the ENGINE's cost** (but the rig's canvas is **0.48 MP** against the player's **6.7 MP** -- see section 7) | cost was flat across an **8.4x** sweep; `gl.finish` **0.00 ms**; a 6.11 MP tour canvas ran the engine at **1-11 ms** (`CLIENT-PERF-RESULTS.md`) |
 | 2 | GPU fill / rasterisation | `gl.finish` in the same window | **RULED OUT** | the backlog was ~0, so the cost is CPU; the client was hardware accelerated (ANGLE Metal, M3 Pro) |
 | 3 | The frame cap | the pacer's own state | **RULED OUT** | 22 fps is the engine's UNCAPPED rate (1 / 0.04194 = 23.8 fps); no cap was in force |
 | 4 | The pacer's own wait | the callback's boundaries | **RULED OUT** | the deliberate alignment wait is OUTSIDE the timed callback, so it cannot inflate the frame cost |
@@ -179,7 +210,7 @@ them reaches 42 ms.**
 | 17 | **Detailed player models** | `cl_himodels 0/1` A/B at 16 bots | **UNMEASURED** | the client ships `cl_himodels 1`, and production runs 16 bots |
 | 18 | **Heap and GL-texture retention across rotations** | the WASM heap and the GL object count, sampled across three rotations | **UNMEASURED** | the match rotated three times, and a map load costs **274-1415 ms**; whether the previous map's textures are released is not known |
 | 19 | **The browser** | the same measurement in Vivaldi and in Chrome | **UNMEASURED** | the failing session was **Vivaldi** (UA `Chrome/152`); every controlled measurement was **Chrome 157** |
-| 20 | **What was on screen** | the fixture, checked against the server's own status | **THE FIXTURE WAS NOT THE FIXTURE** (section 3) | the engine's cost is **3-5x** different depending on the view; the failing window's view is not known, and the timeline now records the map so it can be found |
+| 20 | **What was on screen** | the fixture, checked against the CLIENT's own view -- position and yaw | **THE FIXTURE WAS NOT THE FIXTURE, AND THE SCENE IS STILL LOOSE** (section 3) | the engine's cost is **3-5x** different depending on the view; the failing window's view is not known, and the timeline now records the map so it can be found |
 | 21 | **The map rotation's frequency** | the production's own logs | **CORRECTED** | the rotation is every **~15 minutes** (`ts-0`: 00:36 -> 00:51 -> 01:06), not every 3 minutes: `roundtime` is **INERT in FFA**, so the round does not end on a timer. So the 41.94 ms window at 513 s into a match was probably **not** next to a rotation |
 | 22 | `r_lockpvs` | an A/B | **RULED OUT as a fix** | it HURT: the rAF rate fell by **5.7** at 1080p. It is a knob to leave alone |
 

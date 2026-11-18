@@ -178,6 +178,60 @@ async function waitForArrival(page, target, opts = {}) {
 /**
  * A one-line description of the viewpoint, for a results table.
  */
+/**
+ * DID THE CAMERA ACTUALLY GET TO THE FIXTURE?
+ *
+ * The server's `ts_tp` says where it put the PLAYER. The engine draws
+ * what the CLIENT's camera sees, and the client interpolates: the
+ * server said the player was at the fixture node while the client still
+ * reported x=614, and the cost measured during that transit was 1.76 ms
+ * against 6.5 ms once it had arrived.
+ *
+ * So a reading is only a reading ABOUT A FIXTURE when the CLIENT's own
+ * view agrees -- the position AND the angles. The server's status is
+ * not enough, and never was: the server goes on believing the player is
+ * where it put it while the client is somewhere else entirely.
+ *
+ * MEASURED, on the same fixture with the same bot count: 16.63 ms with
+ * the camera at the fixture, 2.19 ms with the camera somewhere else.
+ * A 7.6x spread, and nothing in the output said so.
+ *
+ * @param {object|null} view         the client's own viewpoint
+ * @param {number[]} target          the fixture's position
+ * @param {number} yaw               the fixture's yaw
+ * @param {object} [opts]
+ * @param {number} [opts.tolerance]  how far off the fixture counts as off it
+ * @param {number} [opts.yawTolerance]  how far off the yaw counts as off it
+ * @returns {{held: boolean, why: string}}
+ */
+function fixtureHeld(view, target, yaw, opts = {}) {
+  const { tolerance = 24, yawTolerance = 5 } = opts;
+  if (!view || !view.origin) return { held: false, why: 'the client reported no view' };
+  const parts = String(view.origin)
+    .split(',')
+    .map((n) => Number.parseFloat(n));
+  if (parts.length < 2 || parts.some((n) => !Number.isFinite(n))) {
+    return { held: false, why: `the client's origin did not parse (${view.origin})` };
+  }
+  const dx = Math.abs(parts[0] - target[0]);
+  const dy = Math.abs(parts[1] - target[1]);
+  if (dx > tolerance || dy > tolerance) {
+    return { held: false, why: `the camera is ${dx.toFixed(0)}/${dy.toFixed(0)} units off the fixture` };
+  }
+  const angles = String(view.angles || '')
+    .split(',')
+    .map((n) => Number.parseFloat(n));
+  // THE ANGLES ARE "pitch, yaw, roll".
+  if (angles.length >= 2 && Number.isFinite(angles[1])) {
+    let delta = Math.abs(angles[1] - yaw) % 360;
+    if (delta > 180) delta = 360 - delta;
+    if (delta > yawTolerance) {
+      return { held: false, why: `the camera's yaw is ${delta.toFixed(1)} degrees off the fixture` };
+    }
+  }
+  return { held: true, why: '' };
+}
+
 function describeViewpoint(viewpoint) {
   if (!viewpoint) return 'unknown';
   const parts = [];
@@ -186,4 +240,4 @@ function describeViewpoint(viewpoint) {
   return parts.join(', ') || 'unknown';
 }
 
-module.exports = { readViewpoint, describeViewpoint, pinView, waitForArrival };
+module.exports = { readViewpoint, describeViewpoint, pinView, waitForArrival, fixtureHeld };
