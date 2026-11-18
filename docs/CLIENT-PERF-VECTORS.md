@@ -38,7 +38,7 @@ of seconds".
 
 The player was told the 41.94 ms frame "describes the engine at steady
 state and not its warm-up". It did not. The server rotates its map
-every **180 seconds**, and a map change makes the engine do at the
+roughly every **fifteen minutes**, and a map change makes the engine do at the
 start of a map everything it did at the start of a match: load the BSP,
 upload the textures, compile the shaders, rebuild the PVS.
 
@@ -168,8 +168,8 @@ them reaches 42 ms.**
 | 6 | A browser that is throttling | the idle panel rate vs the live tick rate | **RULED OUT** | the browser was delivering 120 refreshes a second |
 | 7 | `glGetError` round trips | `measure-geterror-ab.cjs` | **RULED OUT** (fixed earlier) | **8.89 ms -> 1.91 ms**; the patch is live |
 | 8 | Static map content | BSP lumps, parsed | **RULED OUT** (the map is still 1.46x the median) | `ts_lobbyduel` has **161 entities, 4095 faces, 29 KB of PVS, 3 lights** -- the second-lightest of the twenty maps with nav data. `ts_casa` has **3.4x** the entities and **4x** the faces and measured **CHEAPER** (4.31-4.52 ms vs 8.20-10.12 ms) |
-| 9 | Slow drift over a long session | a 13.7-minute session, 2026-11-09 | **RULED OUT** (for that session) | it stayed at or below **11.85 ms** with **0% late frames** |
-| 10 | The warm-up anchor | the map's load line on stdout | **THE FIX** (section 1) | the readout called a post-rotation window "settled"; a map load costs **274-1415 ms** |
+| 9 | Slow drift over a long session | a 13.7-minute session (2026-11-09) and an 8-minute sampled one on the rig (2026-11-17) | **RULED OUT** (for both) | the first stayed at or below **11.85 ms** with **0% late frames**; the second ran 16 bots on `ts_lobbyduel` for **479 s** with a median of **8.49 ms**, a p90 of **15.47 ms** and a maximum of **17.83 ms** -- and no upward drift |
+| 10 | The warm-up anchor | the map's load line on stdout | **THE FIX** (section 1), and the transient is now SMALLER than it looked | the readout called a post-rotation window "settled"; a map load costs **274-1415 ms**, and the rig's post-load warm-up peaked at **15.00 ms** -- so a rotation alone does not reach 42 ms |
 | 11 | The empty export | the exported file | **THE FIX** (section 2) | `timeline: []` on the landing page, by construction |
 | 12 | **The bot count** | the rig, 0 / 8 / 16 bots, same fixture, fixture verified | **MEASURED** | 16 bots add **+5.7 ms** at the heavy view on `ts_lobbyduel` and **+0.4 ms** on `ts_casa`; the late fraction goes 0% -> **6.8%** and the pacer engages (section 4) |
 | 13 | **TS 3.0 debris on breakables** | a long run with the entity and particle counters sampled over time, and a controlled "break 20 columns" run | **PRIME SUSPECT** | TS 3.0 has `break_debris_from_hit()` on and `debris_count_by_quality` on; every breakable that is shot makes debris, and nobody has ever counted the debris |
@@ -180,7 +180,8 @@ them reaches 42 ms.**
 | 18 | **Heap and GL-texture retention across rotations** | the WASM heap and the GL object count, sampled across three rotations | **UNMEASURED** | the match rotated three times, and a map load costs **274-1415 ms**; whether the previous map's textures are released is not known |
 | 19 | **The browser** | the same measurement in Vivaldi and in Chrome | **UNMEASURED** | the failing session was **Vivaldi** (UA `Chrome/152`); every controlled measurement was **Chrome 157** |
 | 20 | **What was on screen** | the fixture, checked against the server's own status | **THE FIXTURE WAS NOT THE FIXTURE** (section 3) | the engine's cost is **3-5x** different depending on the view; the failing window's view is not known, and the timeline now records the map so it can be found |
-| 21 | `r_lockpvs` | an A/B | **RULED OUT as a fix** | it HURT: the rAF rate fell by **5.7** at 1080p. It is a knob to leave alone |
+| 21 | **The map rotation's frequency** | the production's own logs | **CORRECTED** | the rotation is every **~15 minutes** (`ts-0`: 00:36 -> 00:51 -> 01:06), not every 3 minutes: `roundtime` is **INERT in FFA**, so the round does not end on a timer. So the 41.94 ms window at 513 s into a match was probably **not** next to a rotation |
+| 22 | `r_lockpvs` | an A/B | **RULED OUT as a fix** | it HURT: the rAF rate fell by **5.7** at 1080p. It is a knob to leave alone |
 
 ## 6. THE ORDER OF WORK
 

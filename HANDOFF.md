@@ -33,7 +33,7 @@ not. Two things were wrong, and both were about the same omission: the
 readout knew about the MATCH and not about the MAP.
 
 **THE WARM-UP WAS ANCHORED ON THE MATCH.** The server rotates its map
-every **180 seconds**, and a map change makes the engine do at the start
+roughly every **fifteen minutes**, and a map change makes the engine do at the start
 of a map everything it did at the start of a match: load the BSP, upload
 the textures, compile the shaders, rebuild the PVS. A reading taken in
 the seconds after one is a picture of that, not of the machine. But the
@@ -1608,7 +1608,7 @@ load. Measured: 8.18, then 6.12, then 6.16 ms on the same map and the
 same view. A 25% drop that is the engine warming up, not the map
 changing.
 
-**THE THIRD TRAP: THE SERVER ROTATES ITS MAP EVERY THREE MINUTES**
+**THE THIRD TRAP: THE SERVER ROTATES ITS MAP (EVERY FIFTEEN MINUTES, NOT EVERY THREE)**
 (`roundtime 180`, 22 entries in the cycle). A run that does not pin
 the map measures whichever map the rotation reached — and **that was
 the missing piece in the contradictory measurements above**: an earlier
