@@ -144,6 +144,50 @@ sixteen bots are in shot of a given viewpoint is not a thing the
 fixture controls. So the matrix's heavy-viewpoint numbers are solid, and
 its mid-range numbers are single samples of a scene.
 
+## 3b. THE CONTROLLED SCENE, AND WHAT IT KILLED
+
+**THE BOTS' PRESENCE IS FREE. THEIR ACTIVITY IS NOT.**
+
+With the bots **frozen** (`ts_bot_stop 1`, which skips their AI) and
+**placed at fixed positions around the camera** (`ts_tp` works on any
+client index), the scene is identical on every run. And the engine's
+cost at the heavy viewpoint, with all sixteen bots in view, is:
+
+| The scene | The engine's cost |
+|---|---|
+| 16 bots, frozen and placed in view | **2.76 ms** |
+| the same camera, the bots awake and fighting | **15.63 - 17.35 ms** |
+
+So the thirteen milliseconds are not the bots' models, their transforms
+or their place in the PVS. **They are the bots FIGHTING**: the shots,
+the blood, the gibs, the decals, the entities they spawn, the network
+messages, and the map changing under the camera as they move.
+
+**AND EVERY SWITCH IS WORTHLESS ON THAT SCENE.** The same controlled
+scene, swept, with a noise floor of **0.08 ms**:
+
+| The switch | The cost |
+|---|---|
+| baseline | 2.76 ms |
+| `hud_scale 1.0` | 2.81 ms |
+| `r_decals 0` | 2.77 ms |
+| `mp_decals 0` | 2.79 ms |
+| `cl_himodels 0` | 2.73 ms |
+| `r_drawviewmodel 0` | 2.76 ms |
+| no blood, no gibs | 2.80 ms |
+
+**Nothing. Not one of them.** Not the HUD, not the decals, not the
+detailed player models, not the blood. The earlier "4K sweep saw
+`hud_scale 1.0` save 8.6 ms" did not survive a controlled scene, and the
+project's own rule -- *a lever must win in EVERY appearance to be real*
+-- is why it was suspect in the first place.
+
+**THE SCENE VARIANCE WAS THE SCENE.** The same camera measured 17.35 ms
+in one run and 2.84 ms in another, with the camera verified in both.
+The difference was how many of the sixteen bots were awake and in the
+player's cluster. **A pinned camera does not pin a scene**, and the
+harness could not tell the difference until the bots were frozen.
+
 ## 4. THE BOT x MAP MATRIX
 
 **MEASURED. 2026-11-17, on the CI rig, with a fixture that holds.**
@@ -203,11 +247,11 @@ them reaches 42 ms.**
 | 10 | The warm-up anchor | the map's load line on stdout | **THE FIX** (section 1), and the transient is now SMALLER than it looked | the readout called a post-rotation window "settled"; a map load costs **274-1415 ms**, and the rig's post-load warm-up peaked at **15.00 ms** -- so a rotation alone does not reach 42 ms |
 | 11 | The empty export | the exported file | **THE FIX** (section 2) | `timeline: []` on the landing page, by construction |
 | 12 | **The bot count** | the rig, 0 / 8 / 16 bots, same fixture, fixture verified | **MEASURED** | 16 bots add **+5.7 ms** at the heavy view on `ts_lobbyduel` and **+0.4 ms** on `ts_casa`; the late fraction goes 0% -> **6.8%** and the pacer engages (section 4) |
-| 13 | **TS 3.0 debris on breakables** | a long run with the entity and particle counters sampled over time, and a controlled "break 20 columns" run | **PRIME SUSPECT** | TS 3.0 has `break_debris_from_hit()` on and `debris_count_by_quality` on; every breakable that is shot makes debris, and nobody has ever counted the debris |
-| 14 | **Decals** | `r_decals` / `mp_decals` sweep, with the decal count read back | **UNMEASURED** | the client ships `mp_decals 300` against the engine's `r_decals` default of **4096**, and TS is effect-heavy |
-| 15 | **HUD scale** | `hud_scale` A/B on the failing machine | **UNMEASURED** | the client ships `hud_scale 2.5`; an earlier 4K sweep saw `hud_scale 1.0` save **8.6 ms** |
-| 16 | **Violent effects** | `violence_hblood` / `violence_agibs` / `violence_hgibs` / `violence_ablood` A/B | **UNMEASURED** | never swept |
-| 17 | **Detailed player models** | `cl_himodels 0/1` A/B at 16 bots | **UNMEASURED** | the client ships `cl_himodels 1`, and production runs 16 bots |
+| 13 | **TS 3.0 debris on breakables** | the active-scene sweep, and a controlled "break 20 columns" run | **PRIME SUSPECT** | the thirteen milliseconds are the bots' ACTIVITY (section 3b), and debris is activity | TS 3.0 has `break_debris_from_hit()` on and `debris_count_by_quality` on; every breakable that is shot makes debris, and nobody has ever counted the debris |
+| 14 | **Decals** | `r_decals` / `mp_decals` on the controlled scene | **RULED OUT as a static cost** | 2.77 / 2.79 ms against a 2.76 ms baseline -- noise is 0.08 ms. What the bots SHOOT can still make decals; that is the active-scene sweep | the client ships `mp_decals 300` against the engine's `r_decals` default of **4096**, and TS is effect-heavy |
+| 15 | **HUD scale** | `hud_scale` on the controlled scene, and at the player's 6.7 MP | **RULED OUT** | 2.81 ms against 2.76 ms; and at 6.7 MP, `hud_scale 1.0` was 3.56 ms against 3.61 ms. The old "8.6 ms" did not survive | the client ships `hud_scale 2.5`; an earlier 4K sweep saw `hud_scale 1.0` save **8.6 ms** |
+| 16 | **Violent effects** | `violence_*` on the controlled scene | **RULED OUT as a static cost** | 2.80 ms against 2.76 ms -- but the bots were FROZEN, so no blood was being made. The active-scene sweep is the real test | never swept |
+| 17 | **Detailed player models** | `cl_himodels 0/1` on the controlled scene, 16 bots in view | **RULED OUT as a static cost** | 2.73 ms against 2.76 ms | the client ships `cl_himodels 1`, and production runs 16 bots |
 | 18 | **Heap and GL-texture retention across rotations** | the WASM heap and the GL object count, sampled across three rotations | **UNMEASURED** | the match rotated three times, and a map load costs **274-1415 ms**; whether the previous map's textures are released is not known |
 | 19 | **The browser** | the same measurement in Vivaldi and in Chrome | **UNMEASURED** | the failing session was **Vivaldi** (UA `Chrome/152`); every controlled measurement was **Chrome 157** |
 | 20 | **What was on screen** | the fixture, checked against the CLIENT's own view -- position and yaw | **THE FIXTURE WAS NOT THE FIXTURE, AND THE SCENE IS STILL LOOSE** (section 3) | the engine's cost is **3-5x** different depending on the view; the failing window's view is not known, and the timeline now records the map so it can be found |
