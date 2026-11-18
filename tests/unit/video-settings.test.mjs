@@ -171,6 +171,40 @@ test('a display that does not fit is scaled to the budget', () => {
   );
 });
 
+test('a 2x display is budgeted in DEVICE pixels, not CSS pixels', () => {
+  requireSubmodule();
+  // THE PLAYER'S CASE.
+  //
+  // A 1440p display at a device pixel ratio of 2 is a 2560x1440 CSS
+  // area and a 5120x2880 backing store -- 14.7 megapixels, against a
+  // budget of 2.07. The engine's mode is in CSS pixels and the ratio is
+  // applied on top, so the policy has to divide the budget by the ratio
+  // squared: the backing store has to come out at the budget.
+  const res = resolveRenderResolution('auto', display(2560, 1440, 2));
+  assert.deepEqual(res, { width: 960, height: 540 });
+  // AND THE BUDGET IN DEVICE PIXELS IS THE BUDGET.
+  const dpr = 2;
+  assert.ok(
+    res.width * res.height * dpr * dpr <= AUTO_MAX_PIXELS,
+    'the backing store must be inside the device-pixel budget'
+  );
+  // A 1x display is unaffected: the budget was already in its units.
+  assert.deepEqual(resolveRenderResolution('auto', display(2560, 1440, 1)), {
+    width: 1920,
+    height: 1080,
+  });
+});
+
+test('the display choice still asks for the sharp one', () => {
+  requireSubmodule();
+  // `display` is the player's way of saying "sharpness first", so the
+  // device-pixel budget must not touch it.
+  assert.deepEqual(resolveRenderResolution('display', display(2560, 1440, 2)), {
+    width: 2560,
+    height: 1440,
+  });
+});
+
 test('the aspect ratio survives the cap', () => {
   requireSubmodule();
   // A 3440x1440 ultrawide is 2.39:1. The capped resolution must stay
@@ -207,15 +241,31 @@ test('the policy asks for CSS pixels and never multiplies by the ratio', () => {
   // The policy's target is therefore the display's CSS size, with NO
   // ratio in it. The engine does the multiplying.
   const res = resolveRenderResolution('auto', display(1512, 982, 2));
-  assert.deepEqual(
-    res,
-    { width: 1512, height: 982 },
+  // THE TARGET IS THE ENGINE'S MODE, AND THE MODE IS IN CSS PIXELS.
+  //
+  // It is never the device resolution: that was the dpr-squared bug, and
+  // it wedged the engine past the GL limit.
+  assert.ok(
+    res.width < 1512 * 2 && res.height < 982 * 2,
     'the target must be the CSS resolution, not the device one'
   );
+  // AND THE BACKING STORE -- THE MODE TIMES THE RATIO, ONCE -- IS
+  // INSIDE THE BUDGET.
+  //
+  // The budget is 1920x1080 of PIXELS, and the pixels the engine fills
+  // are the backing store's. A 2x display was rendering 5.9 megapixels
+  // against a budget of 2.07, and the busy scene paid for it: the same
+  // viewpoint went from 15.63 ms to 25.15 ms.
+  const backing = res.width * res.height * 2 * 2;
   assert.ok(
-    res.width * res.height <= AUTO_MAX_PIXELS,
-    'the CSS budget is the budget'
+    backing <= AUTO_MAX_PIXELS,
+    'the backing store must be inside the device-pixel budget'
   );
+  // A 1x display is unchanged: the budget was already in its units.
+  assert.deepEqual(resolveRenderResolution('auto', display(1512, 982, 1)), {
+    width: 1512,
+    height: 982,
+  });
 });
 
 test('the device pixel ratio does not change the ASPECT', () => {
