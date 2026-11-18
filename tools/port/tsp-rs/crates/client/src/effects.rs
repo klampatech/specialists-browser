@@ -410,6 +410,23 @@ pub fn frame(time: f64, frametime: f64) {
     // TS compares the level name with `stricmp` (`0x1003ab5a`).
     let changed = with(|fx| !fx.level.eq_ignore_ascii_case(&level) || fx.map_effects != map_effects);
     if changed {
+        // THE MAP CHANGE, ANNOUNCED.
+        //
+        // The client's engine never prints "Loading map" -- that line is
+        // the SERVER's (FWGS `engine/server/sv_init.c`), so a client that
+        // joined a running server never sees it and a client that joins
+        // mid-map sees it far too late. The browser's frame pacer needs
+        // the moment the map changed: a map change is a different
+        // engine, and a reading taken on the far side of one is a
+        // reading of the wrong engine.
+        //
+        // The port already knows the level name and already notices the
+        // change -- it reloads the map's emitters here -- so this is the
+        // place to say so. The line is the server's own format, so the
+        // browser's listener needs no special case.
+        if !level.is_empty() {
+            goldsrc::client::engine().print(&format!("Loading map \"{level}\"\n"));
+        }
         let map = if level.is_empty() || !map_effects { None } else { r::load_file(&level) };
         let fxmap = map.as_deref().and_then(emitters::entity_lump).map(MapFx::from_lump).unwrap_or_default();
         for m in &fxmap.messages {

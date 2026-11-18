@@ -128,7 +128,21 @@ WASM_OPT_FLAGS=(
     # anyway, and we already get the size win we need without it. Re-evaluate
     # when chrome >= 124 is the floor.
 )
-wasm-opt "$WASM_OPT_LEVEL" --strip-debug "${WASM_OPT_FLAGS[@]}" "${WASM_OPT_FLAGS_EXTRA[@]}" "$SRC_TARGET" -o "$DEST"
+# THE NAMES.
+#
+# `--strip-debug` takes the name section with it, and the name section is
+# the only thing that says WHICH FUNCTION is which. A CPU profile of
+# the game names the port's hot functions "wasm-function[365]" without
+# it, which is a number and not a line of Rust.
+#
+# `KEEP_NAMES=1` keeps them. The build is then a few hundred kilobytes
+# bigger and the profile can be read, which is the trade worth making
+# for a build nobody ships.
+if [[ "${KEEP_NAMES:-0}" == "1" ]]; then
+  wasm-opt "$WASM_OPT_LEVEL" --debuginfo "${WASM_OPT_FLAGS[@]}" "${WASM_OPT_FLAGS_EXTRA[@]}" "$SRC_TARGET" -o "$DEST"
+else
+  wasm-opt "$WASM_OPT_LEVEL" --strip-debug "${WASM_OPT_FLAGS[@]}" "${WASM_OPT_FLAGS_EXTRA[@]}" "$SRC_TARGET" -o "$DEST"
+fi
 
 # Step 4: report.
 RAW=$(stat -c %s "$SRC_TARGET" 2>/dev/null || echo 0)
