@@ -698,6 +698,44 @@ names, because `wasm-opt -Oz` strips the name section ✓✓✓. The
 PORT's source has the names ✓✓✓; the WASM's symbol table has the
 indices ✓✓✓; the two together turn a number into a line of Rust ✓✓✓✓.
 
+## 5j. THE MAP-CHANGE FIX, VERIFIED
+
+The defect the player's export found: the pacer anchors its warm-up on
+the last map change, and it was listening for `Loading map "ts_lobbyduel"`
+on the CLIENT's stdout -- a line the client's engine never prints, because
+it is the SERVER's (`engine/server/sv_init.c:957`). So `mapName` was
+always empty and `mapChangedAt` always zero, and the map-rotation half
+of PR #57 did nothing.
+
+**THE FIX IS IN THE PORT ✓✓✓** -- and the port already had everything it
+needed. `crates/client/src/effects.rs` reads the level name every frame
+(`r::level_name()`), already notices when it changes (it reloads the
+map's emitters there), and can already print (`engine().print`). It now
+prints the change, in the server's own format:
+
+```
+[15:42:22] Loading map "ts_lobbyduel"
+```
+
+The browser's listener needs no special case: the regex it already had
+takes whatever is inside the quotes.
+
+**VERIFIED END TO END ✓✓✓** on the local bundle, the client's own stdout
+and the pacer's own state:
+
+```
+--- the map lines on the client stdout ---
+[15:42:22] Loading map "ts_lobbyduel"
+--- the pacer state ---
+{ "mapName": "ts_lobbyduel", "mapChangedAt": 1795038142204 }
+```
+
+Before: `mapName: ""`, `mapChangedAt: 0`.
+
+**⇒ THE PORT IS THE RIGHT PLACE FOR THIS ✓✓✓** -- it is the only thing
+in the stack that knows both the level name and the moment it changed,
+and the browser cannot get either from the engine's stdout.
+
 ## 6. THE ORDER OF WORK
 
 The cheap, certain ones first, because they are the ones that make
