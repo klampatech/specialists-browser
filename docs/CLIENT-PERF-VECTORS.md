@@ -509,6 +509,64 @@ differently in those runs. A setting that removes work can read as
 the instrument here, and why every earlier cost-based sweep of the same
 kind was noise.
 
+## 5f. THE COST IS THE SCENE — AND THE DRAW COUNT IS NOT THE COST
+
+Three measurements, two machines.
+
+**THE SAME SCENE, ONE SESSION, ONE MACHINE.** The toggle harness flips
+one engine command on and off in eight-second windows, so both arms are
+samples of the SAME fight, seconds apart.
+
+On the M3 Pro (`r_drawentities 1` vs `0`):
+
+| round | ON | OFF |
+|---|---|---|
+| 1 | 22.03 ms, 1,665 draws | **22.03 ms, 819 draws** |
+| 2 | 1.70 ms, 942 draws | 2.19 ms, 797 draws |
+| 3 | 4.12 ms, 1,681 draws | 1.90 ms, 2,617 draws |
+
+**Round 1 halved the draws and the cost did not move at all.** Round 3
+had MORE draws with less than half the cost. The cost in that session
+ranged **1.70 to 22.03 ms — thirteen times** — with the same map, the
+same bots and the same machine.
+
+**⇒ THE DRAW COUNT DOES NOT DRIVE THE COST. The attribution in 5e says
+where the geometry comes from; it does NOT say that removing geometry
+removes time.** Halving the entities, the decals, the gore or the
+viewmodel is worth nothing on its own.
+
+**THE FROZEN SCENE, THE SAME PLACEMENT.** Seventeen bots placed in the
+same ring, frozen and then awake:
+
+- frozen: **3.18 ms**
+- awake: **7.16 ms**, at only 619 draws
+
+Same geometry, same draws, 4 ms apart. **The difference is the engine's
+per-entity work — the animation and the interpolation.**
+
+**THE PROFILE OF A FIGHT** (12 s, the client forced into the game):
+
+- the main thread is **63.9% idle** — the frame is not CPU-bound
+- the engine's WASM: **0.85 ms a frame**
+- the Rust port's WASM: **1.56 ms a frame**
+- the rest: the JavaScript-side WebGL calls
+
+**⇒ THE PORT'S CODE IS NOT THE COST.** It is 1.56 ms of a 7 ms frame,
+and the build flags move it by 1.4%. The engine's own WASM is 0.85 ms.
+
+**⇒ SO THE COST IS PER-ENTITY, AND IT IS THE FIGHT.** More bots, more
+moving entities, more animation: 0 bots 2.43 ms, 8 bots 14.05 ms, 16 bots
+37-41.94 ms (on the M3 Pro). The scene swings an order of magnitude
+inside one match.
+
+**⇒ AND THAT IS WHAT THE PACER IS MEASURING.** It reads a cost, maps it
+to a sustainable rate, and pins a frame rate. A heavy moment therefore
+becomes the frame rate for the rest of the fight. `chooseFrameCap(120,
+53) = 30 fps` — one frame in four — from a single reading taken while
+the fight was at its worst. The pacer does recover when the engine
+speeds up, and the 40 fps added to the rate table means a 16-25 ms frame
+now lands on 40 rather than 30.
+
 ## 6. THE ORDER OF WORK
 
 The cheap, certain ones first, because they are the ones that make
