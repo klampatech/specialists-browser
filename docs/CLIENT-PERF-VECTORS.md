@@ -567,6 +567,98 @@ the fight was at its worst. The pacer does recover when the engine
 speeds up, and the 40 fps added to the rate table means a 16-25 ms frame
 now lands on 40 rather than 30.
 
+## 5g. WHAT THE PLAYER'S OWN EXPORT SHOWED (2026-11-18)
+
+The dev-server export from the M3 Pro, `ts_lobbyduel`, fullscreen, 126 Hz
+display, DPR 2, 3352x1990.
+
+**THE TIMELINE (five windows, twelve seconds apart):**
+
+| window | engine cost | late | gate |
+|---|---|---|---|
+| 1 | 18.56 ms | 73% | everyNth 3 (warm-up, provisional) |
+| 2 | 5.13 ms | 27% | everyNth 3 |
+| 3 | 5.22 ms | 44% | everyNth 3 |
+| 4 | 19.18 ms | 81% | everyNth 3 |
+| 5 | **3.60 ms** | 2.4% | everyNth 3 |
+
+**⇒ THE 40 FPS LANE IS LIVE AND WORKING.** The gate is everyNth 3 --
+one engine frame every three display ticks -- which is the 40 fps entry
+in the rate table. Before that entry existed, this same reading chose
+30 fps.
+
+**⇒ THE GATE NEVER MOVED, AND THE TIMELINE SAYS WHY.** The engine's cost
+swings 3.60 to 19.18 ms -- the fight -- and in the expensive windows the
+frames genuinely miss their slot: 73-81% late. The pacer is RIGHT to
+refuse to widen a gate whose engine is already missing its slots. It is
+the wrong kind of right: the cure for a frame that misses its slot is a
+cheaper frame, not a wider gate.
+
+**⇒ THE MACHINE IS NOT THE PROBLEM.** 3.60 ms a frame is 236 fps
+sustainable and 45% of the frame budget. The engine can do it; it is the
+fight that it cannot.
+
+**⇒ THE JUDDER IS THE TAIL.** The gaps at a 40 fps gate: p50 23.0 ms,
+p90 30.2 ms, p99 43.1 ms, max 125 ms. The p50 is BELOW the gate's
+nominal 25 ms, which means the browser's tick rate is degrading under
+load -- the frames are arriving every 30 ms when the cap says 25 --
+and the tail is the browser dropping ticks. That is what the player sees.
+
+**⇒ TWO DEFECTS IN MY OWN WORK, FOUND BY THE EXPORT:**
+
+1. **The map-change detection listens for a line the client never
+   prints.** `Loading map "%s"` is the SERVER's -- `engine/server/
+   sv_init.c:957`. The client's engine never emits it, so `mapName` is
+   always empty and `mapChangedAt` is always 0. **The map-rotation part
+   of PR #57 does not work in production.** The client has to learn the
+   map change from a source that actually fires: the port's client DLL
+   knows the level name (`r::level_name()`), and the engine changes its
+   level on a change.
+2. **The pacer uses two different display rates.** The gate is chosen
+   with `idleDisplayHz` (119.976 Hz -- the display's real rate, measured
+   while the page was idle) and the late-frame budget is computed with
+   `Math.max(browserHz, idleDisplayHz)` (126.3 Hz -- the browser's tick
+   rate under load). The budget is therefore 23.76 ms where the slot is
+   25.01 ms, and the readout reports a cap of 42.1 fps for a gate that
+   is actually 39.99. **One rate, used everywhere.**
+
+**⇒ THE READOUT'S OWN FINDINGS CONTRADICT EACH OTHER.** "The game was
+capped to 42 fps -- it could not finish a frame inside that" and "the
+game used 45% of your frame budget -- that was comfortable" are both
+true of different moments, and the resolution finding ("lowering the
+resolution buys blur, not frames") is measured on the engine's CPU
+cost, which says nothing about what the GPU is doing with 6.7
+megapixels.
+
+## 5h. THE RESOLUTION SWEEP, WITH THE GATE HELD STILL
+
+The M3 Pro, `ts_lobbyduel`, the gate FORCED to one frame in three ticks
+(the gate the player's own export was running on), and the engine's own
+`vid_setmode` changing the canvas:
+
+| canvas (device pixels) | engine cost | late frames | gap p50 | gap p99 |
+|---|---|---|---|---|
+| 3352x1990 (6.67 MP) | 2.71 ms | 0.0% | 25.0 ms | 26.4 ms |
+| 2400x1500 (3.60 MP) | 2.96 ms | 78.6% (a resize spike) | 25.0 ms | 33.4 ms |
+| 1800x1120 (2.02 MP) | 3.90 ms | 6.5% | 25.0 ms | 26.9 ms |
+
+**⇒ THE PIXEL COUNT DOES NOT DRIVE THE COST EITHER.** A third of the
+pixels cost nothing -- the cost went slightly UP, which is the noise of
+a scene moving. The gaps are identical in all three arms because the
+gate was held still, which is the point of forcing it: without a fixed
+gate the sweep compares two frame rates as well as two canvases.
+
+**⇒ SO THE COST IS NOT THE PIXELS, NOT THE DRAW CALLS, AND NOT THE
+PORT'S BUILD FLAGS.** It is the number of visible entities that are
+moving, and the engine's per-entity work on them.
+
+**⇒ AND THE REPORT'S RESOLUTION FINDING IS WRONG.** "Lowering the
+resolution buys blur, not frames" is measured on the engine's CPU cost,
+and it cannot see the GPU. `AUTO_MAX_PIXELS` in `video-settings.ts` is
+2.07 MP of CSS pixels -- and the pacer's own `auto` policy had a real
+bug (it budgeted CSS pixels while the engine multiplied by the device
+pixel ratio on both axes), which is fixed.
+
 ## 6. THE ORDER OF WORK
 
 The cheap, certain ones first, because they are the ones that make
