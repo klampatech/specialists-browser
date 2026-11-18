@@ -425,7 +425,21 @@ pub fn frame(time: f64, frametime: f64) {
         // place to say so. The line is the server's own format, so the
         // browser's listener needs no special case.
         if !level.is_empty() {
-            goldsrc::client::engine().print(&format!("Loading map \"{level}\"\n"));
+            // THE SERVER'S FORMAT, EXACTLY.
+            //
+            // The server prints the bare map name (`sv_init.c` prints the
+            // name it was given), and the browser's listener takes
+            // whatever is inside the quotes as the map's identity. The
+            // client's level name is the level's FILE PATH -- "maps/
+            // ts_lobbyduel.bsp" -- so it is trimmed to the name the
+            // server would have printed.
+            let bare = level
+                .rsplit('/')
+                .next()
+                .unwrap_or(&level)
+                .strip_suffix(".bsp")
+                .unwrap_or_else(|| level.rsplit('/').next().unwrap_or(&level));
+            goldsrc::client::engine().print(&format!("Loading map \"{bare}\"\n"));
         }
         let map = if level.is_empty() || !map_effects { None } else { r::load_file(&level) };
         let fxmap = map.as_deref().and_then(emitters::entity_lump).map(MapFx::from_lump).unwrap_or_default();
