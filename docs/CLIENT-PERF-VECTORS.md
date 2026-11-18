@@ -188,6 +188,24 @@ The difference was how many of the sixteen bots were awake and in the
 player's cluster. **A pinned camera does not pin a scene**, and the
 harness could not tell the difference until the bots were frozen.
 
+## 3c. THE ENGINE'S ACTUAL DEFAULTS, READ BACK
+
+**THE NOTES WERE WRONG ABOUT WHAT THE CLIENT SHIPS.** These were read
+out of the running engine, not assumed:
+
+| The cvar | The notes said | The engine says |
+|---|---|---|
+| `cl_himodels` | 1 | **0** -- the detailed player models are already OFF |
+| `mp_decals` | 300 | **999** |
+| `r_decals` | 4096 | **999** |
+| `cl_updaterate` | (not recorded) | **80** |
+| `cl_cmdrate` | (not recorded) | **80** |
+
+So the "detailed player models" vector was never switched on, and the
+decal budget was never the number in the notes. It also means the
+`cl_himodels 0` rows in the sweeps below were sweeping a setting that
+was **already off** -- which is why they showed nothing.
+
 ## 4. THE BOT x MAP MATRIX
 
 **MEASURED. 2026-11-17, on the CI rig, with a fixture that holds.**

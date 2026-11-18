@@ -54,6 +54,21 @@ const VIEWS = Number(arg('views', 6));
 const MAP = String(arg('map', 'ts_casa'));
 const LABEL = String(arg('label', 'tour'));
 const PLAYER_NAME = String(arg('name', 'PacerTour'));
+
+
+/**
+ * THE CANVAS THE TOUR RUNS AT.
+ *
+ * `--size 3276x2048` makes the engine render at that size, which is how
+ * the tour is run at the PLAYER's canvas (6.7 MP) instead of the rig's
+ * own (0.48 MP). It matters more than it looks: on a still scene the
+ * pixels are nearly free, and on a busy one they are not.
+ */
+const SIZE = (() => {
+  const raw = arg('size', '');
+  const m = /^(\d+)x(\d+)$/.exec(String(raw));
+  return m ? [Number(m[1]), Number(m[2])] : null;
+})();
 // THE MOVE IS OFF BY DEFAULT.
 //
 // The camera is a free-flying observer camera, so "walk forward" moves
@@ -244,6 +259,20 @@ const READ_STATE = () => {
       ? 'the camera is roaming: it stays where the fixture puts it'
       : `the camera could not be put in roaming mode (${roaming.reason})`,
   );
+
+  // ── THE CANVAS ──────────────────────────────────────────────────────
+  if (SIZE) {
+    await page.evaluate(
+      ([w, h]) => window.__xash.Cmd_ExecuteString(`vid_setmode ${w} ${h}`),
+      SIZE,
+    );
+    await sleep(4000); // the engine resizes its buffers
+    const canvas = await page.evaluate(() => {
+      const el = document.getElementById('canvas');
+      return el ? `${el.width}x${el.height}` : 'unknown';
+    });
+    log(`the canvas: ${canvas}`);
+  }
 
   // ── THE VIEWPOINTS ─────────────────────────────────────────────────
   //
