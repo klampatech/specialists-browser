@@ -23,7 +23,64 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
-**As of:** 2026-11-16, LATEST — **THE "YOUR CLIENT" PANEL IS NOW
+**As of:** 2026-11-17, LATEST — **THE READOUT WAS CALLING A POST-ROTATION
+WINDOW "STEADY STATE", AND THE EXPORT BUTTON EXPORTED NOTHING.**
+
+Kyle played a session and the "Your Client" panel said **41.94 ms**,
+**22 fps**, **78% of frames late**, **worst 134.3 ms**, and told him the
+number "describes the engine at steady state and not its warm-up". It did
+not. Two things were wrong, and both were about the same omission: the
+readout knew about the MATCH and not about the MAP.
+
+**THE WARM-UP WAS ANCHORED ON THE MATCH.** The server rotates its map
+every **180 seconds**, and a map change makes the engine do at the start
+of a map everything it did at the start of a match: load the BSP, upload
+the textures, compile the shaders, rebuild the PVS. A reading taken in
+the seconds after one is a picture of that, not of the machine. But the
+pacer anchored its warm-up on the engine's FIRST FRAME, so every window
+after the first rotation was labelled `settled` -- and the reading was
+taken **513 seconds into the match**, which is exactly where a
+post-rotation transient lands.
+
+The anchor is now the **later** of the first frame and the last map load.
+The engine announces every map it loads on stdout
+(`Loading map "ts_lobbyduel"`), and the loader hears that line. The map
+name rides on every timeline window and on the snapshot, and the readout
+now says **which map** a reading was taken on and **how long after the
+map changed**.
+
+**THE EXPORT BUILT ITS LOG FROM THE LANDING PAGE.** The button lives on
+the landing page, and the landing page has no engine: its live state is
+a 300x150 placeholder canvas. So the log was empty **by construction**,
+on the one page where a player would press it -- `timeline: []`,
+`pacing.reason: "not measured yet"` -- while the match's timeline died
+with the module state that the page load at the end of a match destroys.
+The timeline now travels in the session snapshot, and the export reads
+the session when the game is not running.
+
+**AND THE VECTORS ARE NOW WRITTEN DOWN.** `docs/CLIENT-PERF-VECTORS.md`
+is the list: every candidate, how it is measured, and what killed it.
+Ruled out so far: resolution and pixel count (an 8.4x sweep, flat),
+GPU fill (`gl.finish` 0.00 ms), the frame cap (22 fps was the engine's
+UNCAPPED rate), the pacer's own wait, the browser's throttle, and --
+the interesting one -- **static map content**. `ts_lobbyduel` has 161
+entities, 4095 faces and 29 KB of PVS: it is the second-lightest of the
+twenty maps with nav data, and `ts_casa` has 3.4x the entities and 4x
+the faces and measured **CHEAPER**. Still open: the bot count (the rig
+runs 0, production runs 16), TS 3.0 debris on breakables, decals, HUD
+scale, the violent effects, detailed player models, heap retention
+across rotations, and Vivaldi itself.
+
+**WHERE IT IS.** webXash **#57** (the anchor, the map name, the export).
+The parent's suite: **844 tests, all passing**. `vue-tsc -b` is clean.
+The parent's PR carries the pointer, the new test file, the rig's
+`CI_BOT_TARGET` parameter and the vector list -- and **webXash #57
+merges first**: the repo squashes, so the parent's pointer needs a
+one-line refresh to the squashed commit before the parent merges.
+
+---
+
+**As of:** 2026-11-16, EARLIER — **THE "YOUR CLIENT" PANEL IS NOW
 CHECKED AGAINST A SECOND INSTRUMENT, AND IT WAS WRONG FOUR TIMES.**
 
 Kyle asked whether there is any way to verify that everything on the

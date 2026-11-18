@@ -83,6 +83,19 @@ CI_BRIDGE_PORT="${CI_BRIDGE_PORT:-27018}"
 CI_PREFIX="${CI_PREFIX:-ts-ci}"
 CI_MAXPLAYERS="${CI_MAXPLAYERS:-32}"
 CI_MAP="${CI_MAP:-ts_casa}"
+# THE BOT TARGET FOR THE RIG.
+#
+# THE RIG RUNS WITH NO BOTS BY DEFAULT, and that default is unchanged:
+# a perf gate wants the quietest server it can measure, and the bots
+# are the loudest thing on it.
+#
+# But "HOW MUCH DO THE BOTS COST" is a question worth measuring
+# honestly, and the answer is only worth anything with the roster the
+# production server actually runs. So the target is a parameter.
+#
+# The registry keeps `BOT_TARGET - humans` bots, so a target of 9 is
+# EIGHT bots once the measurement's own player has joined.
+CI_BOT_TARGET="${CI_BOT_TARGET:-0}"
 CI_HOSTNAME="${CI_HOSTNAME:-bulletballet TS CI}"
 CI_ASSETS="${CI_ASSETS:-/srv/ts-data}"
 # Production's config directory — the SOURCE the CI config is derived
@@ -329,7 +342,7 @@ start_registry() {
     -e REGISTRY_FAILURES_BEFORE_DOWN=3 \
     -e BRIDGE_URL="http://127.0.0.1:$CI_BRIDGE_PORT/health" \
     -e TS_TARGET_TICKRATE=100 \
-    -e TS_BOT_TARGET=0 \
+    -e TS_BOT_TARGET="$CI_BOT_TARGET" \
     -e TS_HOST=127.0.0.1 \
     -e TS_PUBLIC="$CI_PUBLIC_ADDRESS" \
     -e LEADERBOARD_DATA=/data/leaderboard.json \
