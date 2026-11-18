@@ -206,6 +206,45 @@ decal budget was never the number in the notes. It also means the
 `cl_himodels 0` rows in the sweeps below were sweeping a setting that
 was **already off** -- which is why they showed nothing.
 
+## 3d. THE PIXELS, ON A SCENE THAT IS MOVING
+
+**THE RESOLUTION RESEARCH WAS MEASURED ON A STILL SCENE.**
+
+The engine's cost was flat across an 8.4x resolution sweep, `gl.finish`
+was 0.00 ms, and a 6.11 MP tour canvas ran the engine at 1-11 ms. So
+the note in the client's own source said a device-pixel budget would
+"cost sharpness for zero frames", and the sharp one was shipped.
+
+Every one of those measurements was taken with the scene **still**. With
+sixteen bots frozen and placed in view, 14x the pixels moved the
+engine's cost by **0.00 ms**. So the conclusion was true -- and useless.
+
+**THE SAME TOUR, THE SAME SIX VIEWPOINTS, THE SAME FIXTURE (verified
+6/6), AT THE PLAYER'S 6.7 MP INSTEAD OF THE RIG'S 0.48 MP:**
+
+| Viewpoint | at 0.48 MP | at 6.7 MP | |
+|---|---|---|---|
+| 1 | 14.24 ms | 13.64 ms | 0.96x |
+| 2 | 6.78 ms | 6.21 ms | 0.92x |
+| 3 | 5.10 ms | 6.85 ms | 1.34x |
+| 4 | 2.25 ms | 2.76 ms | 1.23x |
+| 5 | **15.63 ms** | **25.15 ms** | **1.61x** |
+| 6 | 2.41 ms | 5.11 ms | 2.12x |
+
+The heavy viewpoint goes from 60 FPS to **32**, with **60% of the frames
+late**. The quiet viewpoints barely move: it is the busy scene that
+pays for the pixels, because the busy scene is the one with work in it.
+
+**AND THE BUDGET WAS IN THE WRONG UNITS.** The engine's mode is in CSS
+pixels and the device pixel ratio is applied on top, so the backing
+store is the CSS size times the ratio in **both** dimensions. The
+`auto` policy budgeted the CSS size, so a 2x display rendered **four
+times** the pixels the budget allows: the player's session was **6.7
+megapixels** against a budget of **2.07**.
+
+So `auto` now budgets the backing store, and `display` is still there
+for the player who wants the sharpness.
+
 ## 4. THE BOT x MAP MATRIX
 
 **MEASURED. 2026-11-17, on the CI rig, with a fixture that holds.**
@@ -253,7 +292,7 @@ them reaches 42 ms.**
 
 | # | Vector | How it is measured | Verdict | Evidence |
 |---|---|---|---|---|
-| 1 | Resolution / pixel count | a resolution sweep, and `gl.finish` for the GPU's backlog | **RULED OUT for the ENGINE's cost** (but the rig's canvas is **0.48 MP** against the player's **6.7 MP** -- see section 7) | cost was flat across an **8.4x** sweep; `gl.finish` **0.00 ms**; a 6.11 MP tour canvas ran the engine at **1-11 ms** (`CLIENT-PERF-RESULTS.md`) |
+| 1 | Resolution / pixel count | a resolution sweep on a still scene, and then the same sweep on a busy one | **THE PIXELS ARE FREE ON A STILL SCENE AND NOT FREE ON A BUSY ONE** | with sixteen bots frozen, 14x the pixels moved the cost by **0.00 ms**; with them fighting, the same 14x cost **1.61x** at the heavy viewpoint -- **15.63 ms to 25.15 ms**, 60 FPS to 32 (section 3d) | cost was flat across an **8.4x** sweep; `gl.finish` **0.00 ms**; a 6.11 MP tour canvas ran the engine at **1-11 ms** (`CLIENT-PERF-RESULTS.md`) |
 | 2 | GPU fill / rasterisation | `gl.finish` in the same window | **RULED OUT** | the backlog was ~0, so the cost is CPU; the client was hardware accelerated (ANGLE Metal, M3 Pro) |
 | 3 | The frame cap | the pacer's own state | **RULED OUT** | 22 fps is the engine's UNCAPPED rate (1 / 0.04194 = 23.8 fps); no cap was in force |
 | 4 | The pacer's own wait | the callback's boundaries | **RULED OUT** | the deliberate alignment wait is OUTSIDE the timed callback, so it cannot inflate the frame cost |
