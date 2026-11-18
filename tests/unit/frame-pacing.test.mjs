@@ -74,9 +74,73 @@ const {
   decideFrameGate,
   frameIntervalMs,
   isLate,
+  panelRate,
   shouldCap,
   sustainableFps,
 } = pacing;
+
+// ═══════════════════════════════════════════════════════════════════
+// ONE DISPLAY RATE, USED EVERYWHERE.
+//
+// The M3 Pro's own export, 2026-11-18, found this. The pacer chose its
+// gate with the IDLE measurement -- the display's real rate, 119.976 Hz
+// -- and measured whether the engine's frames arrived on time with
+// `Math.max(browserHz, idleDisplayHz)`, which picked the browser's tick
+// rate (126.3 Hz) because that was the larger of the two.
+//
+// The browser's tick rate is not the display's rate. It is the
+// display's period plus the engine's work, so it moves with the load:
+// under load the browser misses vsyncs and the live rate reads LOW,
+// and when the engine is cheap the browser can tick faster than the
+// display can show and the live rate reads HIGH.
+//
+// The two numbers disagree, and the disagreement was worth 5% of the
+// frame slot: a 120 Hz display with a three-tick gate is a 25.01 ms
+// slot, and the budget was 23.76 ms.
+// ═══════════════════════════════════════════════════════════════════
+
+test('panelRate: the idle measurement is the display\'s real rate', () => {
+  // The M3 Pro, measured: the display runs at 120 Hz and the browser
+  // reported 126.3 Hz during the game.
+  assert.equal(panelRate(119.976, 126.3), 119.976);
+  // The browser's tick rate reading HIGH must not win.
+  assert.notEqual(panelRate(119.976, 126.3), 126.3);
+});
+
+test('panelRate: the browser\'s tick rate is the fallback', () => {
+  // A page where the idle measurement never happened still has to work.
+  assert.equal(panelRate(0, 126.3), 126.3);
+  assert.equal(panelRate(119.976, 0), 119.976);
+  assert.equal(panelRate(0, 0), 0);
+  assert.equal(panelRate(NaN, 126.3), 126.3);
+  assert.equal(panelRate(NaN, NaN), 0);
+});
+
+test('panelRate: the slot it produces is the display\'s own slot', () => {
+  // A 120 Hz display, a three-tick gate: one engine frame every 25.01 ms.
+  const panel = panelRate(119.976, 126.3);
+  const slot = 1000 / (panel / 3);
+  assert.ok(slot > 25 && slot < 25.05, `the slot was ${slot} ms`);
+
+  // The old expression -- the maximum of the two -- carved the slot out
+  // of the browser's tick rate instead, and the slot came out five per
+  // cent short of the one the gate was actually running on.
+  const old = Math.max(126.3, 119.976);
+  assert.ok(1000 / (old / 3) < 24, 'the old slot was short');
+  assert.ok(1000 / (old / 3) < slot);
+});
+
+test('panelRate: a frame that lands on its slot is not late', () => {
+  // The whole point of the budget: with a three-tick gate on a 120 Hz
+  // display the slot is 25.01 ms, and a frame that arrives 25.0 ms
+  // after the last one is ON TIME.
+  const panel = panelRate(119.976, 126.3);
+  const budget = frameIntervalMs(panel / 3);
+  assert.equal(isLate(25.0, budget), false);
+  // And a frame that is half a slot late still is not late -- the
+  // metric is about missing a slot, not about jitter.
+  assert.equal(isLate(30.0, budget), false);
+});
 
 test('sustainableFps: the engine holds 1000/workMs', () => {
   // 8 ms of work per frame -> 125 fps of headroom before safety.

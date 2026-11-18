@@ -80,6 +80,12 @@ const MOVE = arg('move', false) !== false;
 // THE ATTRIBUTION COMMAND: ONE ENGINE COMMAND, APPLIED ON THE FIXTURE
 // BEFORE THE MEASUREMENT, SO A ROW SAYS WHAT IT CHANGED.
 const CVAR = arg('cvar', '') && arg('cvar', '') !== true ? String(arg('cvar', '')) : '';
+// The gate in force, FORCED. The pacer picks the gate from the cost,
+// and the cost moves with the scene -- so a sweep without a fixed gate
+// compares two different FRAME RATES as well as two different
+// canvases, which is how a resolution measurement ends up "proving"
+// that the resolution does not matter.
+const FORCE_CAP = Number(arg('force-cap', 0));
 
 /**
  * THE VIEWPORT THE TOUR RUNS AT.
@@ -140,6 +146,13 @@ const READ_STATE = () => {
     browserHz: st?.browserHz ?? 0,
     panelHz: st?.panelHz ?? 0,
     lateFraction: st?.lateFraction ?? 0,
+    // THE GAPS. The engine's cost is the CPU's; the gaps are what the
+    // PLAYER sees -- the judder -- and on a machine whose frame is
+    // GPU-bound they say something the cost cannot.
+    gapP50: st?.pacing?.p50 ?? 0,
+    gapP90: st?.pacing?.p90 ?? 0,
+    gapP99: st?.pacing?.p99 ?? 0,
+    gapMax: st?.pacing?.max ?? 0,
     measuredFrames: st?.measuredFrames ?? 0,
     measuredAt: st?.measuredAt ?? 0,
     settled: st?.settled ?? false,
@@ -213,6 +226,26 @@ const READ_STATE = () => {
   log(`the identity: ${JSON.stringify(ident).slice(0, 140)}`);
   await page.waitForFunction(() => !!window.__xash, null, { timeout: 180_000 });
   log('the engine is up');
+
+  // THE GATE, FORCED.
+  //
+  // The pacer chooses the gate from the engine's cost, and the cost
+  // moves with the scene -- so two runs of the same tour can be at two
+  // different frame rates. When the thing under test is the CANVAS,
+  // the gate has to be the same in both arms or the comparison is
+  // measuring the frame rate as well as the pixels.
+  if (FORCE_CAP > 0) {
+    const forced = await page.evaluate((n) => {
+      try {
+        window.__xashForceFrameCap?.(n);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }, FORCE_CAP);
+    log(`the gate is forced to one frame in ${FORCE_CAP} ticks: ${forced ? 'yes' : 'no'}`);
+    await sleep(3000);
+  }
 
   // The WebSocket guard: the page must be talking to the CI bridge.
   const wsHosts = await page.evaluate(() =>
@@ -499,6 +532,9 @@ const READ_STATE = () => {
         costMed: median(cost),
         costMax: cost.length ? Math.max(...cost) : 0,
         lateMax: late.length ? Math.max(...late) : 0,
+        gapP50: median(samples.map((s) => s.gapP50).filter((v) => v > 0)),
+        gapP99: median(samples.map((s) => s.gapP99).filter((v) => v > 0)),
+        gapMax: samples.length ? Math.max(...samples.map((s) => s.gapMax)) : 0,
         caps: caps.join('/'),
         settled: samples[samples.length - 1]?.settled,
         at2: describeViewpoint(view),
@@ -523,6 +559,7 @@ const READ_STATE = () => {
         `engine ${row.engineFpsMed.toFixed(1).padStart(6)} fps (min ${row.engineFpsMin.toFixed(1)})  ` +
         `cost ${row.costMed.toFixed(2).padStart(6)} ms (max ${row.costMax.toFixed(2)})  ` +
         `late ${(row.lateMax * 100).toFixed(1).padStart(5)}%  ` +
+        `gap p50 ${row.gapP50.toFixed(1).padStart(6)} ms  p99 ${row.gapP99.toFixed(1).padStart(6)}  ` +
         `cap ${row.caps}  drift ${row.fixtureDrift}u` +
         (row.gl
           ? `  gl ${String(row.gl.calls).padStart(5)} calls (${row.gl.ms.toFixed(2).padStart(5)} ms)  ` +
