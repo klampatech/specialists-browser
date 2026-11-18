@@ -245,6 +245,59 @@ megapixels** against a budget of **2.07**.
 So `auto` now budgets the backing store, and `display` is still there
 for the player who wants the sharpness.
 
+## 3e. THE PLAYER'S OWN MACHINE, AND WHAT IT CHANGED
+
+**THE MACBOOK CAME BACK ONLINE, AND THE MEASUREMENT WAS TAKEN ON IT.**
+
+The rig is a Ryzen 7 5700U (a 2020 laptop APU) in headless Chromium.
+The player's machine is an M3 Pro, 3456x2234 Retina, in Vivaldi. Same
+map, same sixteen bots, same rig server, the client's camera pinned and
+verified:
+
+| viewpoint | the rig | the MacBook |
+|---|---|---|
+| the heavy one, at the rig's canvas | 15.63 - 17.35 ms | -- |
+| the heavy one, at 6.5 MP | 25.15 ms | 21.28 ms, 84% late |
+| the same viewpoint, the next run | -- | **2.82 ms**, 23% late |
+| the same viewpoint, at a 0.5 MP canvas | -- | **37.00 ms**, 89% late |
+| another viewpoint, the same run | -- | **59.54 ms**, 86% late |
+
+**THREE THINGS FELL OUT OF THAT, AND ONE OF THEM OVERTURNED A
+CONCLUSION.**
+
+**1. THE PIXELS ARE NOT THE STORY ON HIS MACHINE.** The 0.5 MP canvas
+measured SLOWER than the 6.5 MP one. The rig's 1.61x at the heavy
+viewpoint is real and repeatable (four runs at the small canvas within
+6%), but on the player's machine the scene's state swamps it. The
+resolution fix is still right -- the budget was in the wrong units -- but
+it is second order, not the headline.
+
+**2. THE SCENE'S STATE IS THE HEADLINE.** The same camera, the same
+canvas, the same sixteen bots measured 2.82 ms, 21.28 ms and 37.00 ms in
+three runs, and 59.54 ms at another viewpoint. That is a twenty-fold
+swing, and it is not the pixels, the map's content, or the cvar
+settings. It is what the bots are doing.
+
+**3. HIS DISPLAY IS 120 Hz, SO THE BUDGET IS 8.33 ms.** The original
+readout said "display budget 8.33 ms" -- it was measuring against a
+ProMotion refresh rate, not 60. The engine's best case on that machine
+is 2.1-2.4 ms (no bots), so 120 fps is reachable when nothing is
+happening. With sixteen bots fighting, the worst case is 40-60 ms --
+five to seven times the 120 fps budget, and two and a half to four times
+the 60 fps budget.
+
+**AND THE ENGINE ALREADY SCALES ITS PARTICLES WITH THE FRAME TIME.**
+`FX_AdaptQuality` (`0x10057a70`) samples the frame time every 0.1 s and
+maps the mean from 1.11..3.33 (of 1/100 s) onto a quality of 1..0,
+which scales the particle count (the multiplier is `max(2q, 0.1)`), the
+spawn interval, the muzzle dynamic lights, the shell life, and the
+physics divisor (the particles are updated every 6th frame below q =
+0.374). So the particles cannot be the whole story either: the engine
+has already scaled them down when the frames are slow.
+
+That leaves the drawing itself, the gore, the trails and the network --
+and the decomposition sweep is the test.
+
 ## 4. THE BOT x MAP MATRIX
 
 **MEASURED. 2026-11-17, on the CI rig, with a fixture that holds.**

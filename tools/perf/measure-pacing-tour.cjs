@@ -79,6 +79,25 @@ const SIZE = (() => {
 const MOVE = arg('move', false) !== false;
 
 /**
+ * THE VIEWPORT THE TOUR RUNS AT.
+ *
+ * `--viewport 960x540` resizes the BROWSER'S VIEWPORT, which is the only
+ * way to change the canvas reliably: the client re-applies the window's
+ * size on every resize, so `vid_setmode` alone is undone the moment the
+ * browser moves its window (which it did -- the canvas went back to
+ * 3362x1932 after the mode was set to 960x540).
+ *
+ * The device pixel ratio is untouched, so a 960x540 viewport on a
+ * 2x display is a 1920x1080 backing store: exactly what the fixed
+ * resolution policy hands a 2x display.
+ */
+const VIEWPORT = (() => {
+  const raw = arg('viewport', '');
+  const m = /^(\d+)x(\d+)$/.exec(String(raw));
+  return m ? { width: Number(m[1]), height: Number(m[2]) } : null;
+})();
+
+/**
  * HOW FAR THE CAMERA MAY BE FROM THE FIXTURE, IN X/Y UNITS.
  *
  * The server's `ts_tp` puts the player on the node and the floor is
@@ -261,6 +280,15 @@ const READ_STATE = () => {
   );
 
   // ── THE CANVAS ──────────────────────────────────────────────────────
+  if (VIEWPORT) {
+    await page.setViewportSize(VIEWPORT);
+    await sleep(4000); // the client re-applies the mode on the resize
+    const canvas = await page.evaluate(() => {
+      const el = document.getElementById('canvas');
+      return el ? `${el.width}x${el.height}` : 'unknown';
+    });
+    log(`the canvas: ${canvas} (the viewport is ${VIEWPORT.width}x${VIEWPORT.height})`);
+  }
   if (SIZE) {
     await page.evaluate(
       ([w, h]) => window.__xash.Cmd_ExecuteString(`vid_setmode ${w} ${h}`),
@@ -376,10 +404,23 @@ const READ_STATE = () => {
       const cost = samples.map((s) => s.engineWorkMs).filter((v) => v > 0);
       const late = samples.map((s) => s.lateFraction);
       const caps = [...new Set(samples.map((s) => `${s.capFps}`))];
+      // THE CANVAS THE MEASUREMENT HAPPENED ON.
+      //
+      // It is not decoration: on a still scene the pixels are free, and
+      // on a busy one they are 1.61x. A reading without the canvas is a
+      // reading without its multiplier.
+      const canvasBox = await page
+        .evaluate(() => {
+          const el = document.getElementById('canvas');
+          return el ? `${el.width}x${el.height}` : null;
+        })
+        .catch(() => null);
+
       row = {
         view: i + 1,
         yaw,
         at: [nx, ny, nz],
+        canvas: canvasBox,
         engineFpsMed: median(fps),
         engineFpsMin: fps.length ? Math.min(...fps) : 0,
         costMed: median(cost),
@@ -405,6 +446,7 @@ const READ_STATE = () => {
     rows.push(row);
     log(
       `view ${row.view} yaw ${String(yaw).padStart(3)}  ` +
+        `canvas ${String(row.canvas || '?').padStart(9)}  ` +
         `engine ${row.engineFpsMed.toFixed(1).padStart(6)} fps (min ${row.engineFpsMin.toFixed(1)})  ` +
         `cost ${row.costMed.toFixed(2).padStart(6)} ms (max ${row.costMax.toFixed(2)})  ` +
         `late ${(row.lateMax * 100).toFixed(1).padStart(5)}%  ` +
