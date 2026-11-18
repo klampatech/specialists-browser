@@ -54,7 +54,22 @@ const VIEWS = Number(arg('views', 6));
 const MAP = String(arg('map', 'ts_casa'));
 const LABEL = String(arg('label', 'tour'));
 const PLAYER_NAME = String(arg('name', 'PacerTour'));
-const MOVE = arg('move', true) !== false;
+// THE MOVE IS OFF BY DEFAULT.
+//
+// The camera is a free-flying observer camera, so "walk forward" moves
+// it HUNDREDS of units and the fixture is gone by the end of the
+// measurement. The tour's job is the cost AT a fixture, and the six
+// viewpoints are how it covers the map. Turn it on only when you want
+// the drift, and read the fixture column.
+const MOVE = arg('move', false) !== false;
+
+/**
+ * HOW FAR THE CAMERA MAY BE FROM THE FIXTURE, IN X/Y UNITS.
+ *
+ * The server's `ts_tp` puts the player on the node and the floor is
+ * below it, so Z is not comparable; X and Y are.
+ */
+const FIXTURE_TOLERANCE = 24;
 
 const log = (...a) => console.log(...a);
 
@@ -204,6 +219,32 @@ const READ_STATE = () => {
   }
   log(`the player's server index: ${index} (as "${playerName}")`);
 
+  // ── THE CAMERA MUST NOT CHASE A BOT ─────────────────────────────────
+  //
+  // THE FIXTURE WAS NOT THE FIXTURE WHEN THERE WERE BOTS ON THE MAP.
+  //
+  // The player joins as an OBSERVER, and an observer's camera follows a
+  // living player. With no bots on the server there was nobody to
+  // follow, so the camera stayed where `ts_tp` put it and the fixture
+  // held. With bots on the map the camera tracked a BOT -- and the
+  // measurement was taken at the bot's position, not at the fixture.
+  // Two runs of "the same" fixture measured two different places, and
+  // the bot count was measured against a moving camera.
+  //
+  // Mode 3 is ROAMING: the camera stays where it is put. Measured on
+  // the rig with sixteen bots: before, the camera moved 600+ units on
+  // its own between two status reads; after, `ts_tp` put it on the
+  // fixture and it stayed there.
+  const roaming = await serverCommand(`ts_observe ${index} 3`, {
+    expect: /ts_observe:/,
+    timeoutMs: 10_000,
+  });
+  log(
+    roaming.ok
+      ? 'the camera is roaming: it stays where the fixture puts it'
+      : `the camera could not be put in roaming mode (${roaming.reason})`,
+  );
+
   // ── THE VIEWPOINTS ─────────────────────────────────────────────────
   //
   // The map's own nav data is the ground truth for where a player can
@@ -226,60 +267,94 @@ const READ_STATE = () => {
   for (let i = 0; i < picks.length; i++) {
     const [nx, ny, nz] = picks[i];
     const yaw = Math.round((360 / picks.length) * i);
-    const tp = await serverCommand(`ts_tp ${index} ${nx} ${ny} ${nz} ${yaw} 0`, {
-      expect: /ts_tp: #\d+ at \(/,
-      timeoutMs: 10_000,
-    });
-    if (!tp.ok) {
-      log(`viewpoint ${i + 1}: the teleport failed (${tp.reason})`);
-      continue;
-    }
-    await pinView(page, 0, yaw);
-    // The server moves the player instantly; the client interpolates.
-    // Measuring during the transit measures the wrong place.
-    await waitForArrival(page, [nx, ny, nz], { tolerance: 12, timeoutMs: 20_000 }).catch(() => {});
-    await sleep(1200);
-
-    const samples = [];
-    const end = Date.now() + SECONDS * 1000;
-    let moved = false;
-    while (Date.now() < end) {
-      const st = await page.evaluate(READ_STATE);
-      samples.push(st);
-      if (MOVE && !moved && Date.now() > end - SECONDS * 1000 + 1500) {
-        // ACTUALLY PLAY: walk forward while the measurement runs.
-        moved = true;
-        page.keyboard.down('KeyW').catch(() => {});
+    let row = null;
+    // THE FIXTURE HAS TO HOLD, OR THE READING IS ABOUT SOMEWHERE ELSE.
+    //
+    // Two attempts. If the camera drifted off the fixture during the
+    // measurement -- it chased a bot, the player died and respawned --
+    // then the reading belongs to THAT place and not to this one. Put
+    // the player back and measure again.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const tp = await serverCommand(`ts_tp ${index} ${nx} ${ny} ${nz} ${yaw} 0`, {
+        expect: /ts_tp: #\d+ at \(/,
+        timeoutMs: 10_000,
+      });
+      if (!tp.ok) {
+        log(`viewpoint ${i + 1}: the teleport failed (${tp.reason})`);
+        break;
       }
-      await sleep(1000);
-    }
-    if (MOVE) await page.keyboard.up('KeyW').catch(() => {});
+      await pinView(page, 0, yaw);
+      // The server moves the player instantly; the client interpolates.
+      // Measuring during the transit measures the wrong place.
+      await waitForArrival(page, [nx, ny, nz], { tolerance: 12, timeoutMs: 20_000 }).catch(() => {});
+      await sleep(1200);
 
-    const view = await readViewpoint(page).catch(() => null);
-    const fps = samples.map((s) => s.engineFps).filter((v) => v > 0);
-    const cost = samples.map((s) => s.engineWorkMs).filter((v) => v > 0);
-    const late = samples.map((s) => s.lateFraction);
-    const caps = [...new Set(samples.map((s) => `${s.capFps}`))];
-    const row = {
-      view: i + 1,
-      yaw,
-      at: [nx, ny, nz],
-      engineFpsMed: median(fps),
-      engineFpsMin: fps.length ? Math.min(...fps) : 0,
-      costMed: median(cost),
-      costMax: cost.length ? Math.max(...cost) : 0,
-      lateMax: late.length ? Math.max(...late) : 0,
-      caps: caps.join('/'),
-      settled: samples[samples.length - 1]?.settled,
-      at2: describeViewpoint(view),
-    };
+      const samples = [];
+      const end = Date.now() + SECONDS * 1000;
+      let moved = false;
+      while (Date.now() < end) {
+        const st = await page.evaluate(READ_STATE);
+        samples.push(st);
+        if (MOVE && !moved && Date.now() > end - SECONDS * 1000 + 1500) {
+          // ACTUALLY PLAY: walk forward while the measurement runs.
+          moved = true;
+          page.keyboard.down('KeyW').catch(() => {});
+        }
+        await sleep(1000);
+      }
+      if (MOVE) await page.keyboard.up('KeyW').catch(() => {});
+
+      // WHERE DID THE MEASUREMENT HAPPEN?
+      //
+      // The SERVER's own status, not the client's: the server knows
+      // where the player is, and the client's camera is what the engine
+      // actually drew. If they disagree, the reading is about neither.
+      const where = await serverCommand('ts_status', {
+        expect: /\[ts\]\s+#\d+/,
+        timeoutMs: 8000,
+      });
+      const at = where.ok ? findPlayer(where.output, playerName) : null;
+      const drift = at
+        ? Math.max(Math.abs(at.origin[0] - nx), Math.abs(at.origin[1] - ny))
+        : Infinity;
+      const held = drift <= FIXTURE_TOLERANCE;
+
+      const view = await readViewpoint(page).catch(() => null);
+      const fps = samples.map((s) => s.engineFps).filter((v) => v > 0);
+      const cost = samples.map((s) => s.engineWorkMs).filter((v) => v > 0);
+      const late = samples.map((s) => s.lateFraction);
+      const caps = [...new Set(samples.map((s) => `${s.capFps}`))];
+      row = {
+        view: i + 1,
+        yaw,
+        at: [nx, ny, nz],
+        engineFpsMed: median(fps),
+        engineFpsMin: fps.length ? Math.min(...fps) : 0,
+        costMed: median(cost),
+        costMax: cost.length ? Math.max(...cost) : 0,
+        lateMax: late.length ? Math.max(...late) : 0,
+        caps: caps.join('/'),
+        settled: samples[samples.length - 1]?.settled,
+        at2: describeViewpoint(view),
+        // THE FIXTURE'S HONESTY, RECORDED WITH THE READING.
+        fixtureHeld: held,
+        fixtureDrift: Number.isFinite(drift) ? Math.round(drift) : -1,
+      };
+      if (held) break;
+      log(
+        `viewpoint ${i + 1}: the camera drifted ${row.fixtureDrift} units off the fixture` +
+          (attempt < 2 ? ' -- measuring it again' : ' -- the reading is NOT this viewpoint'),
+      );
+      row = null;
+    }
+    if (!row) continue;
     rows.push(row);
     log(
       `view ${row.view} yaw ${String(yaw).padStart(3)}  ` +
         `engine ${row.engineFpsMed.toFixed(1).padStart(6)} fps (min ${row.engineFpsMin.toFixed(1)})  ` +
         `cost ${row.costMed.toFixed(2).padStart(6)} ms (max ${row.costMax.toFixed(2)})  ` +
         `late ${(row.lateMax * 100).toFixed(1).padStart(5)}%  ` +
-        `cap ${row.caps}  ${row.at2}`,
+        `cap ${row.caps}  drift ${row.fixtureDrift}u  ${row.at2}`,
     );
   }
 
@@ -291,6 +366,10 @@ const READ_STATE = () => {
   const caps = [...new Set(rows.flatMap((r) => r.caps.split('/')))];
   log(`\n=== THE TOUR SUMMARY (${LABEL}, ${MAP}) ===`);
   log(`the viewpoints measured:     ${rows.length}`);
+  log(
+    `the fixture held for:        ${rows.filter((r) => r.fixtureHeld).length}/${rows.length}` +
+      ` (worst drift ${rows.length ? Math.max(...rows.map((r) => r.fixtureDrift)) : 0} units)`,
+  );
   log(`the engine's fps:            median ${median(allFps).toFixed(1)}, worst viewpoint ${Math.min(...allMin).toFixed(1)}`);
   log(`the engine's cost:           median ${median(rows.map((r) => r.costMed)).toFixed(2)} ms, worst ${Math.max(...allCost).toFixed(2)} ms`);
   log(`the late-frame fraction:     worst viewpoint ${(Math.max(...allLate) * 100).toFixed(1)}%`);
