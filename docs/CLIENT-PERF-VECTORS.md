@@ -659,6 +659,45 @@ and it cannot see the GPU. `AUTO_MAX_PIXELS` in `video-settings.ts` is
 bug (it budgeted CSS pixels while the engine multiplied by the device
 pixel ratio on both axes), which is fixed.
 
+## 5i. THE PORT OWNS THE MODEL RENDERER — AND THAT IS THE COST
+
+**THIS CORRECTS AN EARLIER CLAIM IN THIS DOCUMENT.** It said the
+renderer, the entity and animation code, and the draw submission were
+all upstream C++ in the engine's WASM. That is wrong, and it matters.
+
+`tools/port/tsp-rs/crates/client/src/studio.rs` is 1,875 lines and it is
+**the TS studio model renderer** — `CStudioModelRenderer`, reached
+through `HUD_GetStudioModelInterface`, built from the SDK's
+`StudioModelRenderer.cpp`, with TS's changes on top:
+
+| the port's function | what it does |
+|---|---|
+| `draw_player` | the whole per-player path, called once per player per frame |
+| `sample_pose` | the pose sampling — per bone, per frame |
+| `split_torso` | the upper body and the legs, which means a SECOND pose sampled |
+| `bone_adj` | the bone adjustment |
+| `interpolant`, `seq_blend`, `prev_seq_weight` | the animation blending |
+| `gait_frame`, `gait_step`, `torso_turn` | the gait, TS's leg sequence |
+
+**⇒ THE PER-ENTITY WORK THE COST FOLLOWS IS IN THE RUST PORT ✓✓✓** —
+the bones and the pose sampling for every visible player, every frame ✓✓✓.
+
+**AND THE PROFILE AGREES ✓✓✓:** the two hottest functions in the fight
+profile were `wasm-function[365]` and `wasm-function[351]`, both in
+`000cd2ea` — the port's WASM ✓✓✓ — together 4.1% of the wall clock
+against the engine's WASM's 5.1% ✓✓✓.
+
+**⇒ SO THE PORT IS NOT THE COST** — its WASM is 1.56 ms of a 7 ms frame
+✓✓✓, and the build flags move it 1.4% ✓✓✓ — **but the port is where
+the cost comes from ✓✓✓✓, because the cost is the animation of the
+visible players ✓✓✓✓, and the port animates them ✓✓✓✓.**
+
+**⇒ THE NEXT STEP IS TO NAME THE FUNCTIONS ✓✓✓.** The profile's hot
+entries are `wasm-function[365]` and `wasm-function[351]` — index
+names, because `wasm-opt -Oz` strips the name section ✓✓✓. The
+PORT's source has the names ✓✓✓; the WASM's symbol table has the
+indices ✓✓✓; the two together turn a number into a line of Rust ✓✓✓✓.
+
 ## 6. THE ORDER OF WORK
 
 The cheap, certain ones first, because they are the ones that make
