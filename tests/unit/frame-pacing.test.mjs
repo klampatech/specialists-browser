@@ -97,6 +97,7 @@ const {
 // The two numbers disagree, and the disagreement was worth 5% of the
 // frame slot: a 120 Hz display with a three-tick gate is a 25.01 ms
 // slot, and the budget was 23.76 ms.
+//
 // ═══════════════════════════════════════════════════════════════════
 
 test('panelRate: the idle measurement is the display\'s real rate', () => {
