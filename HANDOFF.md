@@ -23,6 +23,57 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-19, LATEST — **THE PROFILER NEVER PROFILED A FIGHT, AND
+NOW WE KNOW WHO ACTUALLY OWNS THE FRAME.**
+
+Kyle asked whether the upstream deps (webXash, Xash3D-FWGS) are the culprit
+of the perf work we have been chasing. Answered with a measurement instead of
+an inference: **upstream is 62% of the main thread; ours is ~5%.**
+
+**THE TOOL WAS THE PROBLEM.** `tools/perf/profile-client.cjs` polls the
+server for a player literally named `PerfProbe`, but the client joins under
+the identity it REMEMBERS (`localStorage['bulletballet.identity']`), so the
+force-join silently no-ops and the profile is taken as an OBSERVER -- no
+viewmodel, no fight. **The tell: the observer profile is 69.9% idle; a real
+fight is 26.2% idle.** Every number in `docs/CLIENT-PERF-VECTORS.md` 5f
+("engine WASM 0.85 ms", "63.9% idle") is an observer number and
+under-counts upstream by ~6x. A second bug in the same tool: `--url` has no
+reachable default -- `indexOf` returns -1, so `URL_` becomes
+`process.argv[0]` (the node binary path) and the tool dies with
+`Invalid URL`.
+
+**THE MEASUREMENT** (CI rig, `ts_lobbyduel`, 16 bots fighting, 20 s):
+upstream engine `xash.wasm` **30.5%** (5.10 ms/frame); the GL call path
+**31.7%** (5.29 ms/frame) with **`bufferData` alone 14.5%** -- the single
+biggest item in the whole profile; our Rust port **4.5%** (0.76 ms/frame);
+webXash's app JS **4.4%**, of which our own code is **0.04 ms/frame**; idle
+26.2%; program 2.7%. The main thread is fully accounted for.
+
+**THE BUCKET NAMES LIE** -- V8 splits ONE module across several
+`wasm://wasm/<id>` tier scripts, so a module is identified by its
+**function-index range**, not by its bucket: `xash.wasm` 9,424 (TWO buckets,
+30.5% together -- the same indices 299/1426 in both), our
+`client_emscripten` 3,672, `hl_emscripten` 2,396, `libref_webgl2` 436. And
+the renderer is NOT a separate line: the engine imports the GL entry points
+themselves as 392 `GOT.func::emscripten_gl*` symbols, so the renderer IS
+the upstream GL path.
+
+**AND IT RECONCILES WITH `docs/CLIENT-PERF-RESEARCH.md`** (the authority):
+the 42 ms frame is the SOFTWARE rasteriser -- on a real GPU the engine holds
+60 fps at 1080p/1440p/4K, so upstream is not why players see bad FPS on good
+hardware. Upstream's cost is STRUCTURAL (8,139 GL calls/frame, a
+`bufferData` per draw) and that is what bites WEAK machines. It also
+explains why the `-O3`/`-Oz` A/B found nothing: the port is 4.5% of the
+thread.
+
+**THE THREE NEXT ITEMS are in § NEXT TASK.** The runners and the full
+write-up live in the skill, not in this repo:
+`scripts/profile-module-attribution.cjs`,
+`scripts/wasm-module-fingerprint.cjs` and
+`references/upstream-dep-ownership-per-frame-cost.md`.
+
+---
+
 **As of:** 2026-11-17, LATEST — **THE READOUT WAS CALLING A POST-ROTATION
 WINDOW "STEADY STATE", AND THE EXPORT BUTTON EXPORTED NOTHING.**
 
@@ -6155,6 +6206,68 @@ full TS gameplay. All of this is still wanted — it is just wanted on the
 the parts that are known traps.
 
 # § NEXT TASK
+
+> ## THE FRAME'S OWNER: FIX THE PROFILER, THEN CUT THE GL UPLOADS (2026-11-19)
+>
+> **THE ONE TASK — IN THREE PARTS, IN THIS ORDER.** Kyle asked whether the
+> upstream deps are the culprit of the perf work we have been chasing. That
+> is now MEASURED, not guessed: **upstream is 62% of the main thread (the
+> engine 30.5% + the GL call path 31.7%); our Rust port is 4.5%; webXash's
+> app JS is 4.4%, of which our own code is 0.04 ms/frame.** The frontend is
+> not the problem and neither is the port.
+>
+> **PART 1 — FIX `tools/perf/profile-client.cjs`, BECAUSE EVERYTHING ELSE
+> DEPENDS ON IT.** Two bugs, both live in HEAD:
+>
+> 1. **The force-join can never find the player.** The tool polls the server
+>    for a player named `PerfProbe`, but the client joins under the identity
+>    it REMEMBERS (`localStorage['bulletballet.identity']`). So the join
+>    silently no-ops and the profile is of an OBSERVER — 69.9% idle where a
+>    fight is 26.2%. Seed the identity BEFORE the page loads, then the
+>    client joins as `PerfProbe` and the poll finds it. The proven pattern
+>    is in `tools/perf/measure-pacing-tour.cjs` (seed → reload → click PLAY
+>    → `confirmIdentity` → look the name up on the server).
+> 2. **`--url` has no reachable default.** `indexOf('--url') + 1` is 0 when
+>    the flag is absent, so `URL_` becomes `process.argv[0]` — the node
+>    binary path — and the tool dies with `Invalid URL`.
+>
+> **AND CARRY THE TOUR'S TWO GUARDS**, which the profiler lacks: refuse a
+> non-CI server list, and refuse a WebSocket to the PRODUCTION bridge. A
+> profiler that can point itself at production is a footgun.
+>
+> **PART 2 — PATCH THE VENDORED ARTIFACT TO STOP THE PER-DRAW
+> `bufferData`.** It is **14.5% of the main thread** and it is what drives
+> the GPU's call volume (8,139 GL calls/frame). Upstream re-uploads the
+> vertex data per draw; the lever is to skip the upload when the data has
+> not changed. Precedent: `patch-xash-gl-geterror.cjs` took the frame
+> 9.62 → 8.13 ms by stopping upstream's ~10/frame `glGetError()` round
+> trips.
+>
+> **PART 3 — TAKE THE PORT'S OPTIMISATION WIN ANYWAY.** Cached bone table,
+> split-limited legs pose, HashMap merge index: **-73.7% on `sample_pose`**,
+> worth ~0.3–0.5 ms/frame at 16 bots, ours to take, and it makes every
+> later measurement cleaner. **Do not lead with it** — it is 4.5% of the
+> thread.
+>
+> **DO NOT FILE UPSTREAM PERF ISSUES.** The npm artifact is deprecated and
+> upstream's Emscripten build was dismantled in `d9221c8491` — there is no
+> fix path for the maintainer. Patch the vendored artifact or own the code
+> in the port.
+>
+> **ALSO ON THE LIST, NOT IN THESE THREE:** `ts_pump`'s 16 ms `setInterval`
+> (`ts-pump.ts:92-105`) is the game's actual logic clock, and at a 42 ms
+> frame the browser clamps it — **game logic silently runs slower than the
+> render.** That is a fairness bug, not just a perf one.
+>
+> **THE TOOLS:** `scripts/profile-module-attribution.cjs` (seeds the
+> identity, forces the fight, attributes per module and per GL call) and
+> `scripts/wasm-module-fingerprint.cjs` (proves which modules the page
+> instantiates) in the skill, plus
+> `references/upstream-dep-ownership-per-frame-cost.md` for the full
+> write-up. **The repo's own `docs/CLIENT-PERF-VECTORS.md` 5f numbers are
+> OBSERVER numbers and should be corrected when Part 1 lands.**
+>
+> ---
 
 > ## THE MONITORING SESSION: KYLE PLAYS, EVO MEASURES (2026-11-09, PLANNED —
 > NOT YET RUN)
