@@ -909,3 +909,71 @@ test('decideFrameGate: the decision says what it was asked for', () => {
   assert.equal(d.targetEveryNth, 5, 'the window asked for one frame in five');
   assert.equal(d.everyNth, 2, 'and the gate did not move');
 });
+
+// ═══════════════════════════════════════════════════════════════════
+// THE SLOT HAS TO LEAVE THE HEADROOM THE CAP ASSUMED.
+//
+// The cap asks how many frames the engine could finish if it left
+// 15% of every frame for everything else -- the game's own clock, the
+// browser's timers, the compositor. `sustainableFps` answers with
+// `workMs / 0.85`. The slot is what the gate actually hands out: the
+// engine draws one frame every N ticks, and the slot is N/panelHz long.
+//
+// Until 2026-11-19 the slot only had to FIT the frame -- it could be
+// 100% engine. So the gate could hand out a rate the cap would never
+// have chosen, and the engine would use the whole main thread.
+//
+// Measured on Kyle's M3 Pro, 2026-11-19, from the client's own
+// telemetry: the engine cost 12.9 ms a frame, the browser was offering
+// 74 ticks a second, and the slot was 13.5 ms -- the frame fitted, and
+// the main thread was 95% busy anyway. The game's 16 ms logic clock
+// had no room left, so it ran late and then caught up in a clump: the
+// "little freezes that feel like ping lag as things catch up".
+// ═══════════════════════════════════════════════════════════════════
+
+test('computeFrameTarget: the slot leaves the headroom the cap assumed', () => {
+  const cases = [
+    // the measured machine: 74.1 ticks/s, a 12.9 ms frame
+    { panelHz: 74.1, workMs: 12.9 },
+    // Kyle's M3 Pro, the number the pacer's own comment is built on
+    { panelHz: 119.976, workMs: 15.94 },
+    // a 120 Hz panel with a frame that would fit in two ticks
+    { panelHz: 119.976, workMs: 8.1 },
+    // the rig, 60 Hz, cheap frames
+    { panelHz: 60, workMs: 2.51 },
+    { panelHz: 60, workMs: 6.61 },
+  ];
+  for (const c of cases) {
+    const target = computeFrameTarget(c.panelHz, c.workMs);
+    const slotMs = (target.everyNth * 1000) / c.panelHz;
+    const used = c.workMs / slotMs;
+    assert.ok(
+      used <= 0.85 + 1e-9,
+      `a ${c.panelHz} Hz page with a ${c.workMs.toFixed(2)} ms frame was given a ` +
+        `${slotMs.toFixed(2)} ms slot and used ${(used * 100).toFixed(0)}% of the main thread`,
+    );
+  }
+});
+
+test('computeFrameTarget: the M3 Pro is not asked to run 60 fps on a thread it cannot afford', () => {
+  // 15.94 ms a frame on a 120 Hz panel. The frame FITS in a two-tick
+  // slot (16.67 ms) -- and uses 96% of the main thread doing it. The
+  // gate must open the slot to three ticks, which is 40 fps with the
+  // engine at 64%.
+  const target = computeFrameTarget(119.976, 15.94);
+  assert.ok(
+    target.everyNth >= 3,
+    `the gate gave ${target.everyNth} ticks per frame; the engine would use ` +
+      `${((15.94 / ((target.everyNth * 1000) / 119.976)) * 100).toFixed(0)}% of the main thread`,
+  );
+  assert.ok(target.fps <= 40.5, `the gate delivered ${target.fps.toFixed(1)} fps`);
+});
+
+test('computeFrameTarget: a cheap engine on a 120 Hz panel still gets 60 fps', () => {
+  // The fix must not cost the machines that were fine. 8 ms a frame on
+  // a 120 Hz panel: two ticks is a 16.67 ms slot, and the engine uses
+  // 48% of it.
+  const target = computeFrameTarget(119.976, 8.1);
+  assert.equal(target.everyNth, 2);
+  assert.ok(Math.abs(target.fps - 59.988) < 0.1, `the gate delivered ${target.fps.toFixed(2)} fps`);
+});
