@@ -152,18 +152,76 @@ const INIT = `
   const { chromium } = loadPlaywright();
   const browser = await chromium.connectOverCDP(CDP);
   const ctx = browser.contexts()[0];
-  const page = await ctx.newPage();
+  let page = await ctx.newPage();
 
   // BEFORE THE ENGINE'S SCRIPTS RUN.
   await ctx.addInitScript(INIT);
 
-  console.log(`  the page: ${URL_}`);
-  await page.goto(URL_, { waitUntil: 'domcontentloaded' });
+  // ATTACH OR JOIN.
+  //
+  // On Kyle's own machine there is already a client in a fight, and a
+  // second client would share the main thread with it and make both
+  // numbers meaningless. So `--attach` measures the game tab that is
+  // ALREADY THERE, and waits for the engine to be running before it
+  // counts anything.
+  const ATTACH = process.argv.includes('--attach');
+  if (ATTACH) {
+    const found = ctx.pages().find((p) => /bulletballet\.dev/.test(p.url()));
+    if (!found) {
+      console.error('  no bulletballet.dev tab to attach to');
+      process.exit(1);
+    }
+    console.log(`  attached to: ${found.url()}`);
+    // THE PATCH GOES IN HERE, NOT AS AN INIT SCRIPT. The tab is already
+    // loaded -- an init script would never run in it -- but the engine
+    // calls bufferData on EVERY FRAME, so patching the prototype now
+    // catches every call that matters. The calls already made are the
+    // ones we do not care about.
+    await found.evaluate(INIT);
+    await found.waitForTimeout(2000);
+    await page.close().catch(() => {});
+    page = found;
+    console.log('  waiting for the engine to come up (up to 10 minutes)...');
+    let live = false;
+    const until = Date.now() + 600_000;
+    while (Date.now() < until) {
+      const s = await page
+        .evaluate(() => {
+          const c = document.getElementById('canvas');
+          const em = window.__xash && window.__xash.em;
+          let heap = 0;
+          try {
+            heap = em && em.HEAPU8 ? em.HEAPU8.buffer.byteLength : 0;
+          } catch (e) {}
+          const p = window.__xashPacing ? window.__xashPacing() : null;
+          return {
+            has: !!window.__xash,
+            canvas: c ? [c.width, c.height] : null,
+            heap,
+            fps: p && p.engineFps ? p.engineFps : 0,
+          };
+        })
+        .catch(() => ({ has: false }));
+      if (s.has && s.canvas && s.canvas[0] > 300 && s.heap > 0 && s.fps > 0) {
+        live = true;
+        console.log(`  the engine is running: ${s.fps.toFixed(1)} fps`);
+        break;
+      }
+      await page.waitForTimeout(1000);
+    }
+    if (!live) {
+      console.error('  the engine never started -- get into a fight and try again');
+      process.exit(1);
+    }
+  } else {
+    console.log(`  the page: ${URL_}`);
+    await page.goto(URL_, { waitUntil: 'domcontentloaded' });
 
-  // THE GAME. The landing page's play button, then the identity modal.
-  await page.waitForSelector('.ts-landing__play', { timeout: 30_000 });
-  await page.click('.ts-landing__play');
-  await confirmIdentity(page, 'GlProbe');
+    // THE GAME. The landing page's play button, then the identity modal.
+    await page.waitForSelector('.ts-landing__play', { timeout: 30_000 });
+    await page.click('.ts-landing__play');
+    await confirmIdentity(page, 'GlProbe');
+  }
 
   console.log('  booting...');
   let up = false;
