@@ -23,7 +23,67 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
-**As of:** 2026-11-19, LATEST — **THE PROFILER NEVER PROFILED A FIGHT, AND
+**As of:** 2026-11-19, LATER — **THE FREEZES ARE THE GAME'S CLOCK CATCHING
+UP, AND TWO SMALL FIXES TAKE THEM OUT.**
+
+Kyle played production and said: *"it seems like now overall it's smoother, but
+between those smooth frames you get little freezes that feel like ping lag as
+things catch up sometimes. I don't know if this is worse than before or not.
+Seems like we're limiting something that maybe we don't need to?"* — and then
+offered his MacBook. **His machine, measured, in a live `ts_lobbyduel` fight:**
+
+```
+the engine cost 12.9 ms a frame
+the browser was offering 74 ticks a second
+the slot was 13.5 ms -- the frame FIT
+the main thread was 95% busy anyway
+the game's 16 ms logic clock stalled for 41-70 ms and then fired
+ticks 3.22 ms and 4.40 ms apart
+```
+
+**THE SLOT ONLY HAD TO FIT THE FRAME.** The cap asks how many frames the
+engine could finish leaving 15% of every frame for everything else --
+`sustainableFps` = `workMs / 0.85`. The slot is what the gate hands out:
+`N/panelHz` long. It only had to FIT the frame, so it could be 100% engine:
+the gate could hand out a rate the cap would never have chosen, and the
+engine used the whole main thread -- with nothing left for the clock that
+advances the game. **Now the slot leaves the same headroom** (`ENGINE_HEADROOM`,
+one number used everywhere, the way the display rate already is).
+
+**THE CLOCK WAS A `setInterval`, AND A `setInterval` CATCHES UP.** It queues
+the intervals it misses and hands them back in a clump: the game advances by
+several ticks at once -- a rubber band, not a clock. It is now a
+self-correcting `setTimeout` (one callback pending at a time; the delay
+measured from the last tick's own START), so a stall **costs the game the time
+that passed** instead of lurching forward. A frame that is late is a frame that
+is late, not a second of catching up.
+
+**THE MEASUREMENT TOOL: `tools/perf/monitor-pacing.cjs`.** It talks to the
+browser's own target list over raw CDP -- no Playwright, because Playwright
+enumerates a DIFFERENT set of targets than `/json/list` does and sat waiting
+for a tab that was never in its list. It samples `window.__xashPacing()` four
+times a second (the pacer's own frame-spacing distribution, the gate, the
+late fraction, the engine's cost) and wraps `Cmd_ExecuteString` to time the
+`ts_pump_think` calls -- **the logic clock, measured directly.** It only
+attaches: it never navigates, clicks or resizes.
+
+**THE TRAP THAT COST US TWO PLAY TESTS: TWO VIVALDIS.** Kyle plays in the
+normal one (no debug flags); the instance with `--remote-debugging-port=9223`
+is a separate `/tmp/evo-vivaldi` profile. The tunnel pointed at the wrong
+browser, so two entire play sessions were invisible. **To watch his real
+browser: quit Vivaldi, then `open -a Vivaldi --args
+--remote-debugging-port=9223 --no-first-run --no-default-browser-check`** --
+that works with the DEFAULT profile, and the tunnel is
+`ssh -L 9224:127.0.0.1:9223 kylelampa@100.79.235.118`.
+
+**WHAT IS STILL TRUE, AND STILL THE NEXT BIG THING:** upstream is 62% of the
+main thread, and `bufferData` alone is 14.5%. The frame cost on his machine
+(12.9 ms) is what stops his browser ticking at 120 Hz; below ~8 ms a frame his
+120 Hz panel could sustain 60 fps with the headroom to spare. **The upstream
+GL upload volume is the unlock. This PR only makes the gate honest about the
+cost.**
+
+**As of:** 2026-11-19, EARLIER — **THE PROFILER NEVER PROFILED A FIGHT, AND
 NOW WE KNOW WHO ACTUALLY OWNS THE FRAME.**
 
 Kyle asked whether the upstream deps (webXash, Xash3D-FWGS) are the culprit
@@ -6206,6 +6266,37 @@ full TS gameplay. All of this is still wanted — it is just wanted on the
 the parts that are known traps.
 
 # § NEXT TASK
+
+> ## THE FREEZES ARE GONE; THE FRAME COST IS WHAT IS LEFT (2026-11-19, LATER)
+>
+> **webXash #58 + the parent PR fix the two defects Kyle FELT**, both measured
+> on his own machine against production:
+>
+> 1. **The slot the gate hands out now leaves the headroom the cap assumed**
+>    (`ENGINE_HEADROOM = 0.85`, one number used everywhere). Before, the slot
+>    only had to FIT the frame, so the engine could use 100% of the main
+>    thread -- measured 95% -- with nothing left for the game's own clock.
+> 2. **The game's clock no longer catches up.** It was a `setInterval`, which
+>    queues the ticks it misses and hands them back in a clump; it is now a
+>    self-correcting `setTimeout`. A stall costs the game the time that
+>    passed instead of lurching forward.
+>
+> **WHAT THE NEXT BIG THING STILL IS: THE FRAME COST.** Upstream is 62% of
+> the main thread and `bufferData` alone is 14.5%. Kyle's engine costs
+> 12.9 ms a frame, which is what stops his browser ticking at 120 Hz (it
+> offers 74). Below ~8 ms his 120 Hz panel could sustain **60 fps** with the
+> headroom to spare -- that is the "buttery" he is after, and it is upstream
+> work, not pacing work. **The gate is now honest about the cost; the cost
+> is the thing to cut.**
+>
+> **THE MEASUREMENT LOOP, NOW THAT IT WORKS:** `tools/perf/monitor-pacing.cjs`
+> against `http://127.0.0.1:9224` (the tunnel to his MacBook). It reads the
+> pacer's own spacing distribution, the gate, the late fraction and the
+> engine's cost, and it times the `ts_pump_think` calls -- **the logic clock,
+> measured directly, which is how the catch-up bursts were caught.**
+>
+> **AND THE OLDER TASK, STILL THE RIGHT ORDER:** fix the profiler, then cut
+> the GL uploads, then take the Rust-port studio wins. Details below.
 
 > ## THE FRAME'S OWNER: FIX THE PROFILER, THEN CUT THE GL UPLOADS (2026-11-19)
 >
