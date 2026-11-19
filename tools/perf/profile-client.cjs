@@ -44,20 +44,131 @@ const URL_ =
     : 'https://ci.bulletballet.dev/';
 const SECONDS = Number(process.argv[process.argv.indexOf('--seconds') + 1] || 8);
 
+// WHICH BROWSER, AND WHETHER TO JOIN OR TO ATTACH.
+//
+// `--cdp` says which browser to measure. `--attach` says: do not join
+// anything, profile the game tab that is ALREADY THERE.
+//
+// The rig runs with NO BOTS -- a perf gate wants the quietest server it
+// can measure, and the bots are the loudest thing on it -- so a fight
+// only exists where there are players: PRODUCTION, with people in it.
+// And production has no dev commands, so there is nothing to force a
+// join with. The player joins, and the profiler watches them fight.
+const argOf = (name, fallback) => {
+  const i = process.argv.indexOf(name);
+  return i > -1 && process.argv[i + 1] && !process.argv[i + 1].startsWith('--')
+    ? process.argv[i + 1]
+    : fallback;
+};
+const CDP = argOf('--cdp', 'http://localhost:9223');
+const ATTACH = process.argv.includes('--attach');
+
 (async () => {
   // Playwright cannot connect to a browser that has NO pages open, and it
   // says so in a way that never mentions pages. One blank tab fixes it.
-  await ensureAtLeastOnePage('http://localhost:9223');
+  await ensureAtLeastOnePage(CDP);
 
-  const browser = await chromium.connectOverCDP('http://localhost:9223');
+  const browser = await chromium.connectOverCDP(CDP);
   const ctx = browser.contexts()[0];
   // Refuse to measure beside another live game instance: they share
   // the main thread and the contention makes the number meaningless.
   await assertSingleGameInstance(browser, 'profile-client');
 
-  const page = await ctx.newPage();
+  // THE PAGE. In attach mode it is the game tab that is already
+  // running -- the player's own fight -- and nothing else.
+  const page = ATTACH
+    ? ctx.pages().find((p) => /bulletballet\.dev/.test(p.url())) || null
+    : await ctx.newPage();
+  if (!page) {
+    console.error(
+      '  no bulletballet.dev tab to attach to -- open the game and get into a fight first',
+    );
+    process.exit(1);
+  }
+  if (ATTACH) {
+    console.log(`  attached to the live tab: ${page.url()}`);
+    // WAIT FOR THE FIGHT TO START. An attached tab is usually sitting
+    // at the landing page or in a finished round, and a CPU profile of
+    // a page with no engine running measures nothing at all -- which is
+    // how the last one came out 73% idle.
+    console.log('  waiting for the engine to come up (up to 10 minutes)...');
+    let live = false;
+    const until = Date.now() + 600_000;
+    while (Date.now() < until) {
+      const s = await page
+        .evaluate(() => {
+          const c = document.getElementById('canvas');
+          const em = window.__xash && window.__xash.em;
+          let heap = 0;
+          try {
+            heap = em && em.HEAPU8 ? em.HEAPU8.buffer.byteLength : 0;
+          } catch (e) {}
+          const p = window.__xashPacing ? window.__xashPacing() : null;
+          return {
+            has: !!window.__xash,
+            canvas: c ? [c.width, c.height] : null,
+            heap,
+            fps: p && p.engineFps ? p.engineFps : 0,
+            map: p ? p.map : '',
+          };
+        })
+        .catch(() => ({ has: false }));
+      if (s.has && s.canvas && s.canvas[0] > 300 && s.heap > 0 && s.fps > 0) {
+        live = true;
+        console.log(`  the engine is running: ${s.fps.toFixed(1)} fps in ${s.map}`);
+        break;
+      }
+      await page.waitForTimeout(1000);
+    }
+    if (!live) {
+      console.error('  the engine never started -- get into a fight and try again');
+      process.exit(1);
+    }
+    await page.waitForTimeout(2000);
+  } else {
 
-  await page.goto(URL_, { waitUntil: 'domcontentloaded', timeout: 90_000 });
+  // THE IDENTITY MUST BE FORGETTABLE, OR THE PROFILE IS AN OBSERVER'S.
+  //
+  // The client REMEMBERS who it is -- `localStorage['bulletballet.identity']`
+  // -- and joins under that name without ever showing the identity
+  // modal. So `confirmIdentity(page, 'PerfProbe')` waits 30 seconds for
+  // a modal that never appears, returns "not confirmed", and the
+  // client joins as whoever it was last time. The force-join for
+  // "PerfProbe" then matches nothing, the client sits in the game as
+  // an OBSERVER -- no viewmodel, no fight -- and every number in the
+  // profile is the wrong shape. The tell: the observer profile was
+  // 69.9% idle; a real fight is 26.2% idle.
+  //
+  // So the identity is cleared BEFORE the page's scripts run. The modal
+  // then appears, the name goes in, and the profile is taken in a real
+  // fight.
+  await ctx.addInitScript(() => {
+    try {
+      localStorage.removeItem('bulletballet.identity');
+    } catch (e) {
+      /* the origin is not ours yet; the next navigation will do it */
+    }
+  });
+
+  // THE WASM MUST BE THE ONE ON DISK.
+  //
+  // A profile of the wrong build is a profile of nothing. Chrome keeps
+  // a compiled WASM module alive by its URL, so a rebuilt client WASM
+  // at the same URL is not picked up -- and the symptom is a profile
+  // full of "wasm-function[365]" when the build on disk has names in
+  // it. The cache is cleared, and the URL carries a stamp, so the
+  // module is compiled from the bytes that are on disk right now.
+  try {
+    const cdp = await ctx.newCDPSession(page);
+    await cdp.send('Network.enable');
+    await cdp.send('Network.clearBrowserCache');
+    await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
+  } catch (e) {
+    console.log(`  (the cache could not be cleared: ${e.message})`);
+  }
+  const stamped = URL_ + (URL_.includes('?') ? '&' : '?') + 'build=' + Date.now().toString(36);
+
+  await page.goto(stamped, { waitUntil: 'domcontentloaded', timeout: 90_000 });
   await page.waitForSelector('.ts-landing__play', { timeout: 30_000 });
   const fleet = await waitForFleet(page);
   if (!fleet.ok) {
@@ -124,6 +235,7 @@ const SECONDS = Number(process.argv[process.argv.indexOf('--seconds') + 1] || 8)
       console.log('  the client never showed up on the server');
     }
     await page.waitForTimeout(8000);
+  }
   }
 
   // --- the profile -------------------------------------------------------
