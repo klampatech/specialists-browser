@@ -98,6 +98,24 @@ const {
 // frame slot: a 120 Hz display with a three-tick gate is a 25.01 ms
 // slot, and the budget was 23.76 ms.
 //
+// WHAT CHANGED, 2026-11-19: the rate the slot is carved out of is now
+// the LOWER of the two, not the display's rate alone. The gate counts
+// the browser's ticks, so the slot has to be the browser's. The
+// original objection was that a live rate that reads LOW under load
+// would shorten the slot -- but a live rate that reads low because the
+// engine's frame overruns the tick is EXACTLY the case the slot has
+// to accommodate, and the frame still fits: the browser cannot tick
+// while the engine is busy. Measured on the M3 Pro (a 15.94 ms frame
+// on a 120 Hz panel, so the browser offers 62.7 ticks a second):
+//
+//     the display's rate   a two-tick slot is 16.67 ms, the engine
+//                          uses 95.6% of it, the player gets 31.4 fps
+//     the browser's rate   a two-tick slot is 31.9  ms, the engine
+//                          uses 50%,      the player gets 31.4 fps
+//
+// The same rate, and the difference between a main thread with
+// nothing left for the game's clock and one with half of it spare.
+//
 // ═══════════════════════════════════════════════════════════════════
 
 test('panelRate: the idle measurement is the display\'s real rate', () => {
@@ -106,6 +124,46 @@ test('panelRate: the idle measurement is the display\'s real rate', () => {
   assert.equal(panelRate(119.976, 126.3), 119.976);
   // The browser's tick rate reading HIGH must not win.
   assert.notEqual(panelRate(119.976, 126.3), 126.3);
+});
+
+test('panelRate: the rate the page is given is the lower of the two', () => {
+  // The gate counts the BROWSER's ticks. A page that is only being
+  // offered 62.7 of the display's 120 ticks a second has a two-tick
+  // slot of 31.9 ms, not 16.67 -- and a slot computed against the
+  // display's rate is a slot the frames do not fit in.
+  assert.equal(panelRate(119.976, 62.7), 62.7);
+  // and the display's rate is still the ceiling when the browser can
+  // tick faster than the panel can show
+  assert.equal(panelRate(119.976, 126.3), 119.976);
+});
+
+test('computeFrameTarget: the gate is carved out of the ticks the page is given', () => {
+  // THE M3 PRO, AND THE PATH THE MACHINERY ACTUALLY TAKES.
+  //
+  // A 15.94 ms frame on a 120 Hz panel: the browser cannot tick faster
+  // than the frame allows, so it offers 62.7 ticks a second, not 120.
+  // The slot is carved out of the browser's ticks, so it has to be
+  // carved out of 62.7.
+  //
+  //     against the display's rate   N=3   20.9 fps   the engine at 64%
+  //     against the page's rate      N=2   31.4 fps   the engine at 50%
+  //
+  // The second is the same frame rate the first gives, with the main
+  // thread half free instead of a third free -- and the main thread is
+  // where the game's own clock has to live.
+  const effective = panelRate(119.976, 62.7);
+  assert.equal(effective, 62.7);
+
+  const target = computeFrameTarget(effective, 15.94);
+  assert.equal(target.everyNth, 2);
+  const slotMs = (target.everyNth * 1000) / effective;
+  assert.ok(
+    15.94 / slotMs <= 0.85 + 1e-9,
+    `the engine used ${((15.94 / slotMs) * 100).toFixed(0)}% of a ${slotMs.toFixed(2)} ms slot`,
+  );
+  // and the player gets the rate the browser can deliver, divided by
+  // the gate -- not the display's rate divided by it
+  assert.ok(Math.abs(62.7 / target.everyNth - target.fps) < 0.01);
 });
 
 test('panelRate: the browser\'s tick rate is the fallback', () => {
