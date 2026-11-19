@@ -37,7 +37,11 @@ const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
 const { describeMaps } = require('./lib/fleet-map.cjs');
 const { chromium } = loadPlaywright();
 
-const URL_ = 'https://ci.bulletballet.dev/';
+const URL_ =
+  process.argv[process.argv.indexOf('--url') + 1] &&
+  !process.argv[process.argv.indexOf('--url') + 1].startsWith('--')
+    ? process.argv[process.argv.indexOf('--url') + 1]
+    : 'https://ci.bulletballet.dev/';
 const SECONDS = Number(process.argv[process.argv.indexOf('--seconds') + 1] || 8);
 
 (async () => {
@@ -90,6 +94,37 @@ const SECONDS = Number(process.argv[process.argv.indexOf('--seconds') + 1] || 8)
   }
   console.log('  engine is up; letting it settle into the map...');
   await page.waitForTimeout(20_000);
+
+  // A PROFILE OF A FIGHT.
+  //
+  // The observer's camera follows a living player, but the profile that
+  // matters is of a CLIENT that is IN the fight: an observer that is
+  // not spawned has no viewmodel, no weapon, and often nothing in front
+  // of it, and a profile of an empty view is how the last one came out
+  // with "no hot function" and "69% idle".
+  if (process.argv.includes('--alive')) {
+    const { serverCommand } = require('./lib/server-console.cjs');
+    let index = null;
+    for (let attempt = 0; attempt < 40 && index === null; attempt++) {
+      await page.waitForTimeout(1500);
+      const res = await serverCommand('ts_status', { expect: /\[ts\]\s+#\d+/, timeoutMs: 8000 });
+      if (!res.ok) continue;
+      for (const line of res.output.split('\n')) {
+        const m = line.match(/\[ts\]\s+#(\d+)\s+(\S+)/);
+        if (m && m[2] === 'PerfProbe') {
+          index = Number(m[1]);
+          break;
+        }
+      }
+    }
+    if (index !== null) {
+      const joined = await serverCommand(`ts_dev_forcejoin ${index}`, { timeoutMs: 12_000 });
+      console.log(`  the client was forced into the game: ${joined.ok ? 'yes' : joined.reason}`);
+    } else {
+      console.log('  the client never showed up on the server');
+    }
+    await page.waitForTimeout(8000);
+  }
 
   // --- the profile -------------------------------------------------------
   const cdp = await page.context().newCDPSession(page);

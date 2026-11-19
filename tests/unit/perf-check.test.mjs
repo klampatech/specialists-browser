@@ -1165,3 +1165,59 @@ test('the frame spacing is reported, and uneven spacing is called uneven', () =>
   const nothing = buildPerfReport(healthy());
   assert.equal(nothing.findings.some((f) => f.id === 'frame-spacing'), false);
 });
+
+test('a reading taken after a MAP CHANGE is named after the map, not the match', () => {
+  // THE CASE THAT WAS WRONG.
+  //
+  // The server rotates its map every three minutes, and the engine's
+  // warm-up restarts with it: a new map costs the engine everything a
+  // match start does. The readout used to anchor the warm-up on the
+  // MATCH, so a reading taken seconds after a rotation was described
+  // as "steady state" -- and the 42 ms frame Kyle hit 513 seconds into
+  // a match was exactly that.
+  const afterMap = buildPerfReport(
+    healthy({
+      engineWorkMs: 41.94,
+      costMeasuredAt: 1760000513000,
+      costSettled: false,
+      gameStartAt: 1760000000000,
+      costAnchorAt: 1760000510000,
+      mapName: 'ts_lobbyduel',
+      mapChangedAt: 1760000510000,
+    }),
+  );
+  const finding = afterMap.findings.find((f) => f.id === 'cost-age');
+  assert.ok(finding, 'the reading carries its age');
+  assert.match(finding.title, /map changed to ts_lobbyduel/);
+  assert.match(finding.title, /before the engine had warmed up/);
+  assert.match(finding.detail, /streaming ts_lobbyduel/);
+
+  // AND A SETTLED READING AFTER A MAP CHANGE SAYS SO TOO, in the map's
+  // name -- because "42 ms at steady state on ts_lobbyduel" and "42 ms
+  // at steady state on ts_kissmeyerbasic" are different facts.
+  const settledAfterMap = buildPerfReport(
+    healthy({
+      engineWorkMs: 41.94,
+      costMeasuredAt: 1760000530000,
+      costSettled: true,
+      gameStartAt: 1760000000000,
+      costAnchorAt: 1760000510000,
+      mapName: 'ts_lobbyduel',
+      mapChangedAt: 1760000510000,
+    }),
+  );
+  const settledFinding = settledAfterMap.findings.find(
+    (f) => f.id === 'cost-age',
+  );
+  assert.match(
+    settledFinding.title,
+    /20 seconds after the map changed to ts_lobbyduel/,
+  );
+  assert.match(settledFinding.detail, /after it loaded ts_lobbyduel/);
+
+  // AND A READING WITH NO MAP CHANGE STILL SAYS "INTO YOUR GAME" --
+  // the wording players already know.
+  const plain = buildPerfReport(healthy());
+  const plainFinding = plain.findings.find((f) => f.id === 'cost-age');
+  assert.match(plainFinding.title, /32 seconds into your game/);
+});

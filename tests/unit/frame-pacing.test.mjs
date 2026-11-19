@@ -74,9 +74,73 @@ const {
   decideFrameGate,
   frameIntervalMs,
   isLate,
+  panelRate,
   shouldCap,
   sustainableFps,
 } = pacing;
+
+// ═══════════════════════════════════════════════════════════════════
+// ONE DISPLAY RATE, USED EVERYWHERE.
+//
+// The M3 Pro's own export, 2026-11-18, found this. The pacer chose its
+// gate with the IDLE measurement -- the display's real rate, 119.976 Hz
+// -- and measured whether the engine's frames arrived on time with
+// `Math.max(browserHz, idleDisplayHz)`, which picked the browser's tick
+// rate (126.3 Hz) because that was the larger of the two.
+//
+// The browser's tick rate is not the display's rate. It is the
+// display's period plus the engine's work, so it moves with the load:
+// under load the browser misses vsyncs and the live rate reads LOW,
+// and when the engine is cheap the browser can tick faster than the
+// display can show and the live rate reads HIGH.
+//
+// The two numbers disagree, and the disagreement was worth 5% of the
+// frame slot: a 120 Hz display with a three-tick gate is a 25.01 ms
+// slot, and the budget was 23.76 ms.
+// ═══════════════════════════════════════════════════════════════════
+
+test('panelRate: the idle measurement is the display\'s real rate', () => {
+  // The M3 Pro, measured: the display runs at 120 Hz and the browser
+  // reported 126.3 Hz during the game.
+  assert.equal(panelRate(119.976, 126.3), 119.976);
+  // The browser's tick rate reading HIGH must not win.
+  assert.notEqual(panelRate(119.976, 126.3), 126.3);
+});
+
+test('panelRate: the browser\'s tick rate is the fallback', () => {
+  // A page where the idle measurement never happened still has to work.
+  assert.equal(panelRate(0, 126.3), 126.3);
+  assert.equal(panelRate(119.976, 0), 119.976);
+  assert.equal(panelRate(0, 0), 0);
+  assert.equal(panelRate(NaN, 126.3), 126.3);
+  assert.equal(panelRate(NaN, NaN), 0);
+});
+
+test('panelRate: the slot it produces is the display\'s own slot', () => {
+  // A 120 Hz display, a three-tick gate: one engine frame every 25.01 ms.
+  const panel = panelRate(119.976, 126.3);
+  const slot = 1000 / (panel / 3);
+  assert.ok(slot > 25 && slot < 25.05, `the slot was ${slot} ms`);
+
+  // The old expression -- the maximum of the two -- carved the slot out
+  // of the browser's tick rate instead, and the slot came out five per
+  // cent short of the one the gate was actually running on.
+  const old = Math.max(126.3, 119.976);
+  assert.ok(1000 / (old / 3) < 24, 'the old slot was short');
+  assert.ok(1000 / (old / 3) < slot);
+});
+
+test('panelRate: a frame that lands on its slot is not late', () => {
+  // The whole point of the budget: with a three-tick gate on a 120 Hz
+  // display the slot is 25.01 ms, and a frame that arrives 25.0 ms
+  // after the last one is ON TIME.
+  const panel = panelRate(119.976, 126.3);
+  const budget = frameIntervalMs(panel / 3);
+  assert.equal(isLate(25.0, budget), false);
+  // And a frame that is half a slot late still is not late -- the
+  // metric is about missing a slot, not about jitter.
+  assert.equal(isLate(30.0, budget), false);
+});
 
 test('sustainableFps: the engine holds 1000/workMs', () => {
   // 8 ms of work per frame -> 125 fps of headroom before safety.
@@ -148,6 +212,47 @@ test('chooseFrameCap: a display measured a hair under its nominal rate still get
 
   const at144 = chooseFrameCap(143.88, 435);
   assert.equal(at144.fps, 144, 'a 144 Hz panel measured at 143.88 must still be able to run at 144');
+});
+
+test('chooseFrameCap: a 120 Hz panel gets 40 fps when 40 is what it can hold', () => {
+  requireSubmodule();
+  //
+  // THE GAP.
+  //
+  // A 120 Hz panel's even rates are 20, 24, 30, 40, 60 and 120. The
+  // list was missing 40, so when the engine's cost made 60
+  // unsustainable the chooser fell to 30 -- skipping a rate that
+  // divides the display by three and that a 25 ms frame holds.
+  //
+  // These are the measured numbers from Kyle's own M3 Pro: sixteen bots
+  // on ts_lobbyduel, the camera verified, 16.14 ms a frame.
+  const at120 = chooseFrameCap(119.976, sustainableFps(16.14));
+  assert.equal(at120.fps, 40, 'sixteen bots on a 120 Hz panel must hold 40, not 30');
+  // AND THE PACER'S OWN DOCUMENTED EXAMPLE, WHICH IS THE SAME CASE.
+  const documented = chooseFrameCap(120, sustainableFps(15.94));
+  assert.equal(documented.fps, 40, 'the boot reading of 15.94 ms must cap at 40, not 30');
+  // The cheaper scenes must not move: 40 divides 120 by three, so the
+  // chooser still prefers the highest rate that fits.
+  assert.equal(chooseFrameCap(119.976, sustainableFps(14.05)).fps, 60, 'eight bots still hold 60');
+  assert.equal(chooseFrameCap(119.976, sustainableFps(2.43)).fps, 120, 'an empty map still holds 120');
+  //
+  // AND A 60 Hz PANEL MUST NOT BE AFFECTED.
+  //
+  // 40 does not divide 60 -- it is a frame and a half, which is the
+  // judder the even-division rule exists to prevent -- so a 60 Hz
+  // display keeps 30 and the change is confined to the high-refresh
+  // panels it was meant for.
+  assert.equal(chooseFrameCap(59.94, sustainableFps(16.14)).fps, 30, 'a 60 Hz panel keeps 30');
+  // 144 Hz gains 36 (four refreshes) and 90 Hz gains 45 (two).
+  assert.equal(chooseFrameCap(143.88, sustainableFps(22)).fps, 36, 'a slow 144 Hz panel gets 36');
+  // 45 divides 90 by two, so a 90 Hz panel gets it once the engine can
+  // sustain it: 16 ms of work sustains 53 fps, which is above 45.
+  assert.equal(chooseFrameCap(89.98, sustainableFps(16)).fps, 45, 'a 90 Hz panel gets 45');
+  // AND THE FLOOR: the even rate is a preference, not a command. A 100
+  // Hz panel divides evenly by 20, 25 and 50 -- and 25 is a slideshow
+  // next to the 90 fps the engine can hold. The rate wins when the
+  // even rate would cost more than a fifth of it.
+  assert.equal(chooseFrameCap(99.9, sustainableFps(8.95)).fps, 90, 'a 100 Hz panel keeps 90, not 25');
 });
 
 test('chooseFrameCap: the measurement drift does not change the cap', () => {
@@ -594,7 +699,11 @@ test('decideFrameGate: a measurement that cannot be used changes nothing', () =>
 test('decideFrameGate: a warm-up window adopts the target as a PROVISIONAL gate', () => {
   // The boot reading, three seconds in, on a 120 Hz panel.
   //
-//   15.94 ms -> 53 fps -> chooseFrameCap(120, 53) = 30 fps -> 1 in 4
+  //   15.94 ms -> 53 fps -> chooseFrameCap(120, 53) = 40 fps -> 1 in 3
+  //
+  // FORTY, not thirty: 40 divides 120 by three, and the rate table
+  // used to skip it. The same reading asked for one frame in four and
+  // the player got 30 fps out of a machine drawing 52.
   const d = decideFrameGate({
     panelHz: 120,
     engineWorkMs: BOOT_WORK_MS,
@@ -603,8 +712,8 @@ test('decideFrameGate: a warm-up window adopts the target as a PROVISIONAL gate'
     consecutiveSame: 1,
     lateFraction: 0.5,
   });
-  assert.equal(d.everyNth, 4, 'the boot reading asks for one frame in four');
-  assert.equal(d.capFps, 30);
+  assert.equal(d.everyNth, 3, 'the boot reading asks for one frame in three');
+  assert.equal(d.capFps, 40);
   assert.equal(d.changed, true);
   assert.equal(
     d.provisional,
@@ -631,15 +740,18 @@ test('decideFrameGate: a warm-up window NEVER moves a gate that is in force', ()
 });
 
 test('decideFrameGate: a settled window that agrees with the gate clears the provisional flag', () => {
+  // The gate in force is the one the boot reading asked for: 40 fps on
+  // a 120 Hz panel is one frame in three. The settled window asks for
+  // the same thing, so the gate is confirmed and NOT moved.
   const d = decideFrameGate({
     panelHz: 120,
     engineWorkMs: BOOT_WORK_MS,
-    currentEveryNth: 4,
+    currentEveryNth: 3,
     settled: true,
     consecutiveSame: 2,
     lateFraction: 0,
   });
-  assert.equal(d.everyNth, 4, 'the gate is confirmed, not moved');
+  assert.equal(d.everyNth, 3, 'the gate is confirmed, not moved');
   assert.equal(d.changed, false);
   assert.equal(
     d.provisional,

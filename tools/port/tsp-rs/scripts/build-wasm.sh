@@ -33,6 +33,39 @@ DIST="$REPO_ROOT/dist"
 SRC_TARGET="$REPO_ROOT/target/wasm32-unknown-emscripten/release/client.wasm"
 DEST="$DIST/ts-client_emscripten_wasm32.wasm"
 
+#
+# THE TWO OPTIMIZATION LEVELS, AS VARIABLES.
+#
+# The shipping build optimizes for SIZE at BOTH stages: rustc's
+# `opt-level = "z"` and wasm-opt's `-Oz`. That is the right trade for a
+# download every player pays, and it is the right trade for a game
+# DLL that spends most of its time waiting on the engine.
+#
+# It is also a guess about the frame cost, and the guess has never been
+# measured: a 20-year-old game's rendering is exactly the kind of work
+# an optimizing compiler helps, and `opt-level = "z"` throws that help
+# away to save bytes nobody counts.
+#
+# So both stages are overridable, and the experiment is a command:
+#
+#   WASM_OPT_LEVEL=-O3 SIMD=1 \
+#   CARGO_PROFILE_RELEASE_OPT_LEVEL=3 \
+#   RUSTFLAGS="-C target-feature=+multivalue,+reference-types,+simd128 -C link-arg=-sSIDE_MODULE=1" \
+#   bash scripts/build-wasm.sh
+#
+# The RUSTFLAGS have to be spelled out in full because an environment
+# RUSTFLAGS REPLACES the target's rustflags in .cargo/config.toml rather
+# than adding to them -- dropping `+multivalue` breaks the emcc side
+# module handshake, and dropping `-sSIDE_MODULE=1` changes what the
+# linker emits.
+WASM_OPT_LEVEL="${WASM_OPT_LEVEL:--Oz}"
+SIMD="${SIMD:-0}"
+if [[ "$SIMD" == "1" ]]; then
+    WASM_OPT_FLAGS_EXTRA=(--enable-simd)
+else
+    WASM_OPT_FLAGS_EXTRA=()
+fi
+
 # Step 1: env. Order matters — emsdk first, build-deps second.
 : "${EMSDK_ROOT:=/home/kyle/emsdk}"
 if [[ ! -x "$EMSDK_ROOT/upstream/bin/wasm-opt" ]]; then
@@ -95,7 +128,21 @@ WASM_OPT_FLAGS=(
     # anyway, and we already get the size win we need without it. Re-evaluate
     # when chrome >= 124 is the floor.
 )
-wasm-opt -Oz --strip-debug "${WASM_OPT_FLAGS[@]}" "$SRC_TARGET" -o "$DEST"
+# THE NAMES.
+#
+# `--strip-debug` takes the name section with it, and the name section is
+# the only thing that says WHICH FUNCTION is which. A CPU profile of
+# the game names the port's hot functions "wasm-function[365]" without
+# it, which is a number and not a line of Rust.
+#
+# `KEEP_NAMES=1` keeps them. The build is then a few hundred kilobytes
+# bigger and the profile can be read, which is the trade worth making
+# for a build nobody ships.
+if [[ "${KEEP_NAMES:-0}" == "1" ]]; then
+  wasm-opt "$WASM_OPT_LEVEL" --debuginfo "${WASM_OPT_FLAGS[@]}" "${WASM_OPT_FLAGS_EXTRA[@]}" "$SRC_TARGET" -o "$DEST"
+else
+  wasm-opt "$WASM_OPT_LEVEL" --strip-debug "${WASM_OPT_FLAGS[@]}" "${WASM_OPT_FLAGS_EXTRA[@]}" "$SRC_TARGET" -o "$DEST"
+fi
 
 # Step 4: report.
 RAW=$(stat -c %s "$SRC_TARGET" 2>/dev/null || echo 0)

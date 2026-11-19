@@ -341,7 +341,25 @@ pub fn change_level() {
     if next_map.is_empty() || !eng.is_map_valid(&next_map) {
         next_map = first;
     }
-    eng.alert(ALERT_TYPE::at_console, &format!("CHANGE LEVEL: {next_map}\n"));
+    //
+    // THE LINE IS FOR THE CHANGE THAT HAPPENS, NOT FOR THE CALL.
+    //
+    // The intermission calls this every frame until the engine takes
+    // the change (`intermission_think`), and the engine ignores a
+    // change to the map it is already on. So the same-map case printed
+    // the same line sixty times a second, for as long as the
+    // intermission lasted -- and an intermission with nowhere to go
+    // lasts forever. A perf rig with an empty map cycle ended up
+    // logging "CHANGE LEVEL: hldm1" thousands of times a minute, on a
+    // server that was supposed to be holding still for a measurement.
+    //
+    // The original prints this through `Con_DPrintf`, which is the
+    // developer's console and not the server's log at all. What is
+    // worth keeping is the one line for the change that really
+    // happens.
+    if next_map != current {
+        eng.alert(ALERT_TYPE::at_console, &format!("CHANGE LEVEL: {next_map}\n"));
+    }
     if min != 0 || max != 0 {
         eng.alert(ALERT_TYPE::at_console, &format!("PLAYER COUNT:  min {min} max {max} current {players}\n"));
     }
