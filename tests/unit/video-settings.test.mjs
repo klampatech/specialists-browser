@@ -102,21 +102,34 @@ function stripComments(src) {
 const video = await import(VIDEO_TS);
 const {
   AUTO_MAX_PIXELS,
+  AUTO_BUDGET_COOLDOWN_MS,
+  AUTO_BUDGET_MAX_STEP,
+  AUTO_BUDGET_WINDOWS,
+  AUTO_TARGET_FPS,
+  ENGINE_HEADROOM,
+  ENGINE_MIN_HEIGHT,
+  ENGINE_MIN_WIDTH,
   MAX_DEVICE_DIMENSION,
   RESOLUTION_CHOICES,
   applyRenderResolution,
   armRenderResolution,
+  autoTargetFps,
+  createAutoBudgetState,
   currentRenderResolution,
+  decideAutoBudget,
   describeResolutionChoice,
   detectDisplay,
   disarmRenderResolution,
+  getAutoBudget,
   isRenderResolutionArmed,
   renderResolutionArgs,
   renderResolutionCommand,
   renderResolutionNeedsApplying,
   effectiveRenderResolution,
+  resetAutoBudget,
   resolveRenderResolution,
   setRenderResolutionTarget,
+  updateAutoBudget,
 } = video;
 
 /** A display, for the policy to work on. */
@@ -709,4 +722,486 @@ test('the player\'s choice is remembered', () => {
     /'renderResolution',/,
     'the choice must be persisted'
   );
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// THE MEASURED BUDGET
+//
+// WHY THIS FILE IS STILL ABOUT A BUDGET AT ALL
+// ---------------------------------------------
+// A fixed pixel count is a statement about the ART, not about the
+// machine, and the machine is the thing that has to hold the frame
+// rate. Measured on Kyle's M3 Pro, production, 2026-11-19, in a dense
+// fight:
+//
+//     IDLE (the GPU wait)   48.6% of the wall
+//     the wasm engine       23.5%
+//     the GL call path      20.1%  (bufferData 10.83%)
+//     our own app JS         0.3%
+//
+// The engine's frame cost was 32.66 ms against a browser ticking at
+// 29.2 Hz, 21.2% of the frames late, and the frame period swinging
+// between 34 ms and 132 ms.
+//
+// So 'auto' now spends what the machine can MEASURE it can hold:
+//
+//     pixels_target = pixels_now * (target_frame_ms / measured_frame_ms)
+//
+// where `target_frame_ms` is the slot at the rate the client is aiming
+// for, with the pacer's own headroom, and `measured_frame_ms` is the
+// engine's measured frame cost.
+//
+// THE RULES THESE TESTS PIN
+// -------------------------
+//   1. a machine that is comfortably inside its budget is left ALONE;
+//   2. a machine that is measurably over budget gets a SMALLER budget;
+//   3. the budget is bounded by the engine's floor and by the fixed
+//      policy's ceiling, and never asks for more pixels than the
+//      display has;
+//   4. one expensive window does not move it, a flicker does not move
+//      it, and each move is a bounded step;
+//   5. an explicit preset is never overridden.
+// ═══════════════════════════════════════════════════════════════════════
+
+/** The display the budget tests use: a 1440p panel at 1x. */
+function budgetDisplay() {
+  return display(2560, 1440);
+}
+
+/**
+ * A measurement of a machine that is comfortably inside its budget.
+ *
+ * 12.9 ms is the engine's measured frame cost on the M3 Pro in a
+ * normal fight, against a 14.17 ms target (60 fps with the pacer's
+ * 0.85 headroom).
+ */
+function comfortableMeasurement() {
+  return { engineWorkMs: 12.9, targetFps: AUTO_TARGET_FPS };
+}
+
+/**
+ * A measurement of a machine that is measurably over budget.
+ *
+ * 32.66 ms is the engine's measured frame cost on the M3 Pro in a DENSE
+ * fight -- the reading the measured budget was built for.
+ */
+function overBudgetMeasurement() {
+  return { engineWorkMs: 32.66, targetFps: AUTO_TARGET_FPS };
+}
+
+test('a comfortable machine is left alone by the measured budget', () => {
+  requireSubmodule();
+  // THE MOST IMPORTANT TEST IN THE FILE.
+  //
+  // The measurement may only make the resolution SMALLER, and only
+  // when the machine is measurably over budget. A machine holding a
+  // smooth frame rate keeps the fixed policy's full resolution -- the
+  // measurement must never make everyone blurry.
+  const d = budgetDisplay();
+  const state = createAutoBudgetState(d);
+  const decision = decideAutoBudget(state, comfortableMeasurement(), {
+    now: 1000,
+  });
+  assert.equal(decision.changed, false, 'a comfortable machine moves nothing');
+  assert.equal(decision.overBudget, false);
+  assert.equal(
+    decision.devicePixels,
+    state.devicePixels,
+    'the budget in force is untouched'
+  );
+  assert.deepEqual(
+    resolveRenderResolution('auto', d, {
+      devicePixels: decision.devicePixels,
+    }),
+    { width: 1920, height: 1080 },
+    'the resolution is the fixed policy\'s own answer'
+  );
+});
+
+test('the measured budget never asks for more pixels than the display has', () => {
+  requireSubmodule();
+  // The display is the ceiling on the DISPLAY side: the policy never
+  // asks the engine for more pixels than the panel has, because the
+  // browser scales the surplus away on every frame.
+  const d = display(1366, 768);
+  const state = createAutoBudgetState(d);
+  assert.deepEqual(resolveRenderResolution('auto', d), {
+    width: 1366,
+    height: 768,
+  });
+  assert.ok(
+    state.ceilingDevicePixels <= 1366 * 768,
+    'the ceiling cannot be more pixels than the display has'
+  );
+  // And a measurement that claims a huge budget cannot raise it.
+  const decision = decideAutoBudget(state, comfortableMeasurement(), {
+    now: 1000,
+  });
+  assert.ok(decision.devicePixels <= 1366 * 768);
+});
+
+test('an over-budget machine gets a smaller budget', () => {
+  requireSubmodule();
+  // THE FORMULA. The frame cost scales with the pixel count, so the
+  // pixels that fit the target frame time are the pixels now, scaled
+  // by the ratio of the target frame time to the measured one.
+  //
+  //     pixels_target = pixels_now * (target_frame_ms / measured_frame_ms)
+  //
+  // 32.66 ms measured against a 14.17 ms target is 2.3x over, so the
+  // budget has to come down -- by a bounded step, and only once the
+  // evidence supports it.
+  const d = budgetDisplay();
+  const state = createAutoBudgetState(d);
+  const first = decideAutoBudget(state, overBudgetMeasurement(), {
+    now: 1000,
+  });
+  const second = decideAutoBudget(first.state, overBudgetMeasurement(), {
+    now: 11000,
+  });
+  assert.equal(second.changed, true, 'two windows in a row must move it');
+  assert.ok(
+    second.devicePixels < state.devicePixels,
+    `the budget must fall: ${second.devicePixels} against ${state.devicePixels}`
+  );
+  assert.equal(second.overBudget, true);
+
+  const res = resolveRenderResolution('auto', d, {
+    devicePixels: second.devicePixels,
+  });
+  assert.ok(
+    res.width < 1920 && res.height < 1080,
+    `the resolution must come down: ${res.width}x${res.height}`
+  );
+  assert.ok(
+    res.width * res.height <= second.devicePixels,
+    'the resolution must be inside the budget that was measured for it'
+  );
+  // AND THE ASPECT SURVIVES: the picture is the display's shape.
+  const before = 2560 / 1440;
+  const after = res.width / res.height;
+  assert.ok(
+    Math.abs(before - after) / before < 0.02,
+    `the aspect must survive the measured budget: ${before} -> ${after}`
+  );
+});
+
+test('the measured budget is bounded by the floor and by the ceiling', () => {
+  requireSubmodule();
+  // THE FLOOR. The engine falls back to 320x240 below
+  // VID_MIN_WIDTH x VID_MIN_HEIGHT, so the mode is never asked to go
+  // below that -- not even for a machine that cannot hold 60 fps at
+  // any resolution.
+  const d = budgetDisplay();
+  let state = createAutoBudgetState(d);
+  let now = 1000;
+  // A machine so slow that nothing can help it.
+  const hopeless = { engineWorkMs: 5000, targetFps: AUTO_TARGET_FPS };
+  for (let i = 0; i < 40; i++) {
+    const decision = decideAutoBudget(state, hopeless, { now });
+    state = decision.state;
+    now += AUTO_BUDGET_COOLDOWN_MS + 1000;
+    if (!decision.changed && i > 2) break;
+  }
+  const res = resolveRenderResolution('auto', d, {
+    devicePixels: state.devicePixels,
+  });
+  assert.ok(
+    res.width >= ENGINE_MIN_WIDTH && res.height >= ENGINE_MIN_HEIGHT,
+    `the mode must never go below the engine's floor: ${res.width}x${res.height}`
+  );
+  assert.ok(
+    state.devicePixels >= state.floorDevicePixels,
+    'the budget must never go below the engine\'s floor'
+  );
+
+  // THE CEILING. The fixed policy's own answer is the ceiling, and a
+  // measurement may not raise it -- a fast machine keeps its full
+  // resolution.
+  const huge = resolveRenderResolution('auto', d, {
+    devicePixels: 999_999_999,
+  });
+  assert.deepEqual(huge, { width: 1920, height: 1080 });
+});
+
+test('one expensive window does not move the budget', () => {
+  requireSubmodule();
+  // A firefight, a shader compilation, a GC pause -- one expensive
+  // window must not take the resolution with it. A scene is not a
+  // regression.
+  const d = budgetDisplay();
+  const state = createAutoBudgetState(d);
+  const decision = decideAutoBudget(state, overBudgetMeasurement(), {
+    now: 1000,
+  });
+  assert.equal(decision.changed, false);
+  assert.equal(decision.overBudget, true, 'but it IS over budget');
+  assert.equal(
+    decision.devicePixels,
+    state.devicePixels,
+    'the budget in force is left in place'
+  );
+  assert.match(decision.reason, /in a row/);
+});
+
+test('a flicker does not move the budget', () => {
+  requireSubmodule();
+  // The hysteresis is what makes "inside" and "over" different words.
+  // A reading that straddles the threshold -- and a machine that
+  // alternates between the two -- must not pump the resolution.
+  const d = budgetDisplay();
+  let state = createAutoBudgetState(d);
+  let now = 1000;
+  for (let i = 0; i < 20; i++) {
+    const measurement =
+      i % 2 === 0 ? overBudgetMeasurement() : comfortableMeasurement();
+    const decision = decideAutoBudget(state, measurement, { now });
+    assert.equal(
+      decision.changed,
+      false,
+      `a flicker must not move the budget (window ${i})`
+    );
+    state = decision.state;
+    now += 10000;
+  }
+  assert.equal(state.devicePixels, createAutoBudgetState(d).devicePixels);
+});
+
+test('each move of the budget is a bounded step', () => {
+  requireSubmodule();
+  // The budget walks down; it does not fall off a cliff. One move may
+  // not take more than a quarter of the pixels away.
+  const d = budgetDisplay();
+  let state = createAutoBudgetState(d);
+  let now = 1000;
+  for (let i = 0; i < 5; i++) {
+    const before = state.devicePixels;
+    const decision = decideAutoBudget(state, overBudgetMeasurement(), { now });
+    state = decision.state;
+    now += AUTO_BUDGET_COOLDOWN_MS + 1000;
+    if (!decision.changed) continue;
+    assert.ok(
+      decision.devicePixels >= before * AUTO_BUDGET_MAX_STEP,
+      `a move may not take more than ${(1 - AUTO_BUDGET_MAX_STEP) * 100}% ` +
+        `of the pixels: ${before} -> ${decision.devicePixels}`
+    );
+  }
+});
+
+test('the budget is stable over a long fight', () => {
+  requireSubmodule();
+  // Sixty measurement windows -- ten minutes -- of the same expensive
+  // fight. The budget may walk down, but it must CONVERGE: it must stop
+  // moving, and it must never move back up.
+  //
+  // THE MEASUREMENT FOLLOWS THE PIXELS, because that is the premise
+  // the budget is built on: the frame cost scales with the pixel count.
+  // A machine that is cut to 75% of its pixels costs 75% of its frame.
+  const d = budgetDisplay();
+  const start = createAutoBudgetState(d);
+  const baseCost = 32.66;
+  let state = start;
+  let now = 1000;
+  let changes = 0;
+  let previous = state.devicePixels;
+  for (let i = 0; i < 60; i++) {
+    const pixels = state.devicePixels;
+    const cost = baseCost * (pixels / start.devicePixels);
+    const decision = decideAutoBudget(
+      state,
+      {
+        engineWorkMs: cost,
+        targetFps: AUTO_TARGET_FPS,
+        currentDevicePixels: pixels,
+      },
+      { now },
+    );
+    state = decision.state;
+    now += 10000;
+    if (decision.changed) {
+      changes++;
+      assert.ok(
+        decision.devicePixels < previous,
+        'the budget must never move UP'
+      );
+      previous = decision.devicePixels;
+    }
+  }
+  assert.ok(changes > 0, 'a machine that is over budget must be helped');
+  assert.ok(
+    changes <= 8,
+    `the budget must converge, not pump: ${changes} moves in sixty windows`
+  );
+  // AND THE LAST WINDOW MUST NOT HAVE MOVED IT: the budget has
+  // reached the point where the machine can hold the target, and from
+  // there the resolution is stable for the rest of the match.
+  const pixels = state.devicePixels;
+  const last = decideAutoBudget(
+    state,
+    {
+      engineWorkMs: baseCost * (pixels / start.devicePixels),
+      targetFps: AUTO_TARGET_FPS,
+      currentDevicePixels: pixels,
+    },
+    { now },
+  );
+  assert.equal(last.changed, false);
+  assert.equal(last.overBudget, false, 'the machine is inside its budget');
+});
+
+test('the budget never gives the pixels back', () => {
+  requireSubmodule();
+  // The engine's cost is scene-dependent, and a fight that ends is not
+  // a reason to churn the resolution back up: the pixels are cheap to
+  // keep and the churn is what the player sees.
+  const d = budgetDisplay();
+  let state = createAutoBudgetState(d);
+  let now = 1000;
+  const first = decideAutoBudget(state, overBudgetMeasurement(), { now });
+  state = first.state;
+  now += AUTO_BUDGET_COOLDOWN_MS + 1000;
+  const second = decideAutoBudget(state, overBudgetMeasurement(), { now });
+  assert.equal(second.changed, true);
+  state = second.state;
+  // The scene gets easy again.
+  const easy = decideAutoBudget(state, comfortableMeasurement(), { now });
+  assert.equal(easy.changed, false);
+  assert.equal(easy.devicePixels, state.devicePixels);
+});
+
+test('an explicit preset is never overridden', () => {
+  requireSubmodule();
+  // The player's choice is the player's choice. A measurement may only
+  // speak about 'auto'.
+  const d = budgetDisplay();
+  const tiny = { devicePixels: 1000 };
+  for (const choice of RESOLUTION_CHOICES) {
+    if (choice === 'auto') continue;
+    const res = resolveRenderResolution(choice, d, tiny);
+    if (choice === 'display') {
+      assert.deepEqual(res, { width: 2560, height: 1440 });
+      continue;
+    }
+    const [w, h] = choice.split('x').map(Number);
+    assert.deepEqual(
+      res,
+      { width: w, height: h },
+      `${choice} must be exactly ${w}x${h}, whatever the measurement says`
+    );
+  }
+});
+
+test('a warm-up reading never moves the budget', () => {
+  requireSubmodule();
+  // The first window of a match is the most expensive one the engine
+  // will ever produce -- it is compiling shaders and streaming the map
+  // -- and so is the first window after a map change. A warm-up reading
+  // is not a measurement of the machine, so it may not move the
+  // budget: a resolution cut for the warm-up would be cut for the
+  // whole match.
+  const d = budgetDisplay();
+  const state = createAutoBudgetState(d);
+  const decision = decideAutoBudget(
+    state,
+    { ...overBudgetMeasurement(), settled: false },
+    { now: 1000 },
+  );
+  assert.equal(decision.changed, false);
+  assert.equal(decision.devicePixels, state.devicePixels);
+  assert.match(decision.reason, /warm-up/);
+});
+
+test('a measurement that cannot be used changes nothing', () => {
+  requireSubmodule();
+  // A readout that guesses is worse than no readout.
+  const d = budgetDisplay();
+  const state = createAutoBudgetState(d);
+  for (const measurement of [
+    { engineWorkMs: 0, targetFps: AUTO_TARGET_FPS },
+    { engineWorkMs: 32.66, targetFps: 0 },
+    { engineWorkMs: Number.NaN, targetFps: AUTO_TARGET_FPS },
+  ]) {
+    const decision = decideAutoBudget(state, measurement, { now: 1000 });
+    assert.equal(decision.changed, false);
+    assert.equal(decision.devicePixels, state.devicePixels);
+  }
+});
+
+test('the measured budget uses the pacer\'s own headroom', () => {
+  requireSubmodule();
+  // THE MODULE HAS NO IMPORTS, ON PURPOSE, so the pacer's headroom is
+  // MIRRORED rather than imported -- and this is the test that keeps
+  // the two from drifting apart. `frame-pacing.ts` owns the number:
+  // the budget asks the same question the pacer asks, and it has to
+  // ask it with the same room left over.
+  const pacer = readFileSync(
+    join(WEBXASH, 'src', 'services', 'frame-pacing.ts'),
+    'utf8',
+  );
+  const match = pacer.match(/export const ENGINE_HEADROOM = ([0-9.]+)/);
+  assert.ok(match, 'the pacer must export ENGINE_HEADROOM');
+  assert.equal(
+    Number(match[1]),
+    ENGINE_HEADROOM,
+    'the two headrooms must be the same number, not two numbers'
+  );
+});
+
+test('the target rate is 60 fps, or the display\'s rate when it is slower', () => {
+  requireSubmodule();
+  // The pacer picks its cap from the rate the engine can sustain, so
+  // on a 120 Hz panel it hands out 120 fps when the frame is cheap and
+  // 40 fps when it is not. A budget measured against the PANEL's rate
+  // would cut a machine that is holding a smooth 60 fps by 45%, on a
+  // machine that is doing nothing wrong.
+  assert.equal(autoTargetFps(120), AUTO_TARGET_FPS);
+  assert.equal(autoTargetFps(60), AUTO_TARGET_FPS);
+  assert.equal(autoTargetFps(30), 30, 'a slow display cannot show 60');
+  assert.equal(autoTargetFps(0), AUTO_TARGET_FPS, 'an unknown display');
+});
+
+test('the loader feeds the measurement into the budget', () => {
+  requireSubmodule();
+  // The budget is only real if the client measures and feeds it. The
+  // loader's measurement loop is where the engine's frame cost is
+  // known.
+  const loader = stripComments(readFileSync(LOADER_TS, 'utf8'));
+  assert.match(
+    loader,
+    /updateAutoBudget\(/,
+    'the loader must feed the measurement into the render budget'
+  );
+  assert.match(
+    loader,
+    /autoTargetFps\(/,
+    'the loader must turn the display rate into the target rate'
+  );
+  assert.match(
+    loader,
+    /renderResolution !== 'auto'/,
+    "an explicit choice must never be touched by the measurement"
+  );
+});
+
+test('the budget in force is the session\'s, and it can be forgotten', () => {
+  requireSubmodule();
+  // The module keeps process-wide state, so the test says where it
+  // starts from.
+  resetAutoBudget();
+  try {
+    assert.equal(getAutoBudget(), null, 'nothing is decided yet');
+    const d = budgetDisplay();
+    const decision = updateAutoBudget(overBudgetMeasurement(), d, 1000);
+    assert.equal(decision.changed, false, 'one window is not enough');
+    const budget = getAutoBudget();
+    assert.ok(budget, 'the budget in force must be readable');
+    assert.equal(budget.devicePixels, decision.devicePixels);
+    // A COPY: a caller cannot edit the policy's own state.
+    budget.devicePixels = 1;
+    assert.notEqual(getAutoBudget().devicePixels, 1);
+    resetAutoBudget();
+    assert.equal(getAutoBudget(), null);
+  } finally {
+    resetAutoBudget();
+  }
 });
