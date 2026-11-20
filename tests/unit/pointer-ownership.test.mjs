@@ -56,10 +56,7 @@ function requireSubmodule() {
   }
 }
 
-/** Strip comments, so an assertion cannot trip on its own documentation. */
-function stripComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-}
+import { stripComments } from './lib/strip-comments.mjs';
 
 function pointerSource() {
   return readFileSync(POINTER_TS, 'utf8');

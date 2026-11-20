@@ -80,10 +80,7 @@ function requireSubmodule() {
   }
 }
 
-/** Strip comments, so an assertion cannot trip on its own documentation. */
-function stripComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-}
+import { stripComments } from './lib/strip-comments.mjs';
 
 // The chord module is TypeScript with no imports, so node's type
 // stripping can load it directly (node 22.6+, and the CI runner is on
