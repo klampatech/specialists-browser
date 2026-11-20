@@ -23,6 +23,135 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-20, LATEST — **THE BUDGET SPENDS ITS PIXELS ON A FRAME THAT
+IS WAITING FOR THEM, AND THE UPLOAD FIX IS WORTH ABOUT ONE PER CENT, NOT
+SIX.** All four PRs are approved and merged: webXash **#61** (`2cb46e3`) and
+**#62** (`ceb439e`, now webXash's `main`), specialists-browser **#165** and
+**#166**. The parent's submodule pointer names webXash's `main` (`ceb439e`).
+
+**THE POLICY WAS BLIND TO THE GPU.** Kyle's M3 Pro, production, 415 sampled
+seconds of his own play session. The engine's CPU cost and the frame the
+player is given are not the same number:
+
+    the engine's cost   the player is given
+    0-5 ms              105 fps
+    10-14.2 ms           77 fps
+    14.2-20 ms           37 fps
+    30+ ms               23 fps
+
+In the middle of a fight it read **2.80 ms** for the engine while the player
+was being given **24.5 ms**: the frame was slow because the PIXELS were too
+many, and the budget, which read only the engine's cost, saw a machine with
+five times the headroom it needed and did nothing. And the pixels are not
+what makes a frame slow -- the cost follows the SCENE (1.50 MP: 20.16 ms;
+2.00 MP: 3.15 ms), so cutting the pixels when the ENGINE is the problem buys
+sharpness lost and no frames gained. The old policy cut them anyway, 25% at
+a time, for the rest of the match, because it had no upward path.
+
+**WHAT THE POLICY DOES NOW** (`webxash/src/services/video-settings.ts`):
+
+  1. it reads the DELIVERED frame time as well as the engine's cost, and
+     splits the frame into the CPU's share and the GPU's share;
+  2. it spends pixels only on the GPU's share:
+     `pixels_target = pixels_now * (target_frame_ms - cpu_ms) /
+     (delivered_frame_ms - cpu_ms)` -- the CPU's work is in both, because it
+     is the part of the frame the pixels cannot shorten AND the part of the
+     target they get to keep;
+  3. it leaves the resolution alone when the engine's own work is over the
+     target, and says so in the log, in words;
+  4. it leaves it alone when the pacer's GATE is dropping ticks -- the frame
+     rate is then the pacer's decision, not the pixels';
+  5. it gives the pixels BACK after two comfortable readings, one bounded
+     step at a time, never above the display's own resolution. One heavy
+     fight no longer costs the session its sharpness;
+  6. a measurement with NO delivered frame time changes NOTHING. It cannot
+     tell "the engine is slow" from "the pixels are too many" without it,
+     and it must not guess.
+
+**THE DEEPER FIX WAS FOUND, PATCHED, AND PRICED.** The call site is
+`ref/gl/gl2_shim/gl2_shim.c`: `GL2_UploadBufferData` and the two
+`glBufferData` calls in the immediate-mode path (where the 48-byte quad
+uploads come from). It reallocates because the shipped glue has **no
+`MapBufferRange` and no `BufferStorage`** (0 occurrences of either in
+`xash3d-DopHvWf3.js`), so the shim's config ends up with `incremental =
+false` and `supports_mapbuffer = false`. The patch allocates the storage
+once and updates it in place with `glBufferSubData`, tracking the capacity
+per ring. Committed locally in `~/Development/xash3d-fwgs`
+(`fix/one-buffer-per-attribute`).
+
+**THE PATCH IS CORRECT AGAINST THE SHIPPED GLUE, AND THAT WAS CHECKED, NOT
+ASSUMED.** The glue's own dispatch:
+`_emscripten_glBufferData = (e,r,t,n) => { t && r ?
+GLctx.bufferData(e, HEAPU8, n, t, r) : GLctx.bufferData(e, r, n); }` -- so
+a NULL data pointer takes the `bufferData(target, size, usage)` path
+(allocate-without-data), and `glBufferSubData` treats the C pointer as an
+offset into the wasm heap, which is what it is.
+
+**AND THE HONEST PRICE TAG, MEASURED ON THE M3 PRO at the shapes the census
+saw** (`tools/perf/gl-upload-benchmark.cjs`):
+
+    the shape                     bufferData  bufferSubData   saved
+    48 bytes  (a quad position)  0.335 us    0.260 us        0.075 us
+    32 bytes  (a quad texcoord)  0.221 us    0.203 us        0.018 us
+    1 KiB     (a small mesh)     0.290 us    0.258 us        0.032 us
+
+At the census's 116,192 calls a second the 48-byte case saves **8.8 ms of
+the wall per second -- about 0.9%**. **THE CENSUS SAID 5.8% AND WAS WRONG BY
+SIX**: it multiplied the call COUNT by a per-call cost measured in a
+different shape (a 64 KiB view). The defect is real and the fix removes
+116,192 reallocations a second, but it is NOT the answer to the frame cost:
+20-48 ms a frame in a dense fight is mostly the engine's own work and the
+GPU wait. See `docs/UPSTREAM-ISSUES.md`.
+
+**THE BUILD IS THE MISSING PIECE.** The engine is published as the npm
+package `xash3d-fwgs`, built by a Docker image in a repository that is NOT
+public. The FWGS tree does carry the emscripten branches, but this waf
+(2.1.9) has no `--dest-os` option; `cc_load_tools` does `if not
+conf.env.DEST_OS: conf.env.DEST_OS = ...`, so DEST_OS can be set BEFORE the
+tools load -- that is the way in, not a flag. emscripten 6.0.12 is
+installed and working (`~/emsdk/upstream/emscripten/emcc`).
+
+**ALSO FIXED, AND IT WAS AN INSTRUMENT FAULT, NOT A PRODUCT FAULT.** The
+client's fallback renderer probe created a fresh WebGL context on EVERY
+call: 40 calls produced 186 Chrome "Too many active WebGL contexts"
+warnings, and Chrome evicts the OLDEST context past about sixteen -- which
+is the ENGINE's. That is how the game went white twice while it was being
+measured. The probe now runs once per session (webXash #61), with a
+regression test that is RED on the old code.
+
+**THE COMMENT STRIPPER WAS LYING TOO.** Six test files each grew their own
+copy of a comment stripper, and the copies took block comments first: the
+loader has a line comment mentioning `resource/*.res`, whose `/*` starts a
+block comment that never ends, so the stripper swallowed the rest of the
+file -- including the code the tests were looking for. It worked by luck
+until a doc comment moved the pairing and a test counting the unload guard
+began reporting zero. There is now ONE stripper
+(`tests/unit/lib/strip-comments.mjs`), and it recognises strings before
+comments.
+
+**THE MEASUREMENT DOCS:** `docs/RENDER-BUDGET-MEASUREMENT.md` (the M3 Pro
+session, the CPU/GPU split, the video cross-check at r = -0.58),
+`docs/UPSTREAM-ISSUES.md` (the upload issue, the price tag, the build).
+
+**THE NEXT TASK IS TWO THINGS, IN THIS ORDER.**
+
+  1. **MEASURE THE NEW POLICY ON THE M3 PRO IN A REAL PLAY SESSION.**
+     `node tools/perf/measure-render-budget.cjs --cdp <the Mac's CDP>
+     --attach bulletballet.dev --wait 1500 --seconds 1200`. What to look
+     for: the budget cuts only when the frame is GPU-bound, and the pixels
+     COME BACK when the fight eases. The log line says which case it was.
+     A/B/A, with the baseline at the end.
+  2. **FIND THE ENGINE'S OWN 20-48 ms.** The uploads are ~1% of it. The
+     engine's work is the rest, and the repo can already build a profile
+     with names (`build-wasm.sh KEEP_NAMES=1`) instead of
+     `wasm-function[72]`. Do the same attribution: CPU share vs GPU share,
+     then price the fix before promising it.
+
+**DO NOT RE-DERIVE THE UPLOAD NUMBER.** It is measured: 0.9%. The next
+session should hunt the engine's own work, not the uploads.
+
+---
+
 **As of:** 2026-11-20, LATEST — **THE 512 MiB UPLOAD NEVER HAPPENED. IT WAS
 OUR OWN CENSUS, AND THE INSTRUMENT IS NOW FIXED AND TESTED.**
 
