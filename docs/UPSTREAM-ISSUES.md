@@ -7,6 +7,34 @@
 
 ---
 
+
+## THE UPLOAD FIX IS WORTH ABOUT ONE PER CENT. MEASURED, 2026-11-20.
+
+The upload defect is real -- 116,192 reallocating `glBufferData` calls a
+second, about 1,937 a frame -- and the fix (allocate the storage once,
+update it in place with `glBufferSubData`) removes every one of them.
+But the price tag, measured on Kyle's M3 Pro at the shapes the census
+saw (`tools/perf/gl-upload-benchmark.cjs`):
+
+    the shape                     bufferData  bufferSubData   saved
+    48 bytes  (a quad position)  0.335 us    0.260 us        0.075 us
+    32 bytes  (a quad texcoord)  0.221 us    0.203 us        0.018 us
+    1 KiB     (a small mesh)     0.290 us    0.258 us        0.032 us
+
+At 116,192 calls a second the 48-byte case saves **8.8 ms of the wall
+per second -- about 0.9%** -- and the smaller shapes less.
+
+**THE CENSUS SAID ABOUT 5.8%, AND IT WAS WRONG BY SIX.** It multiplied
+the call COUNT by a per-call cost measured in a different shape (a
+64 KiB view). The direct measurement is the one that counts.
+
+So: the fix is worth doing -- it removes 116,192 reallocations a second
+and the driver-side allocation churn that happens off the JS thread --
+but it is NOT the answer to the frame cost. The engine's cost in a
+dense fight is 20-48 ms a frame (measured on the M3 Pro, 415 sampled
+seconds), and the uploads are a few per cent of that at most. The rest
+is the engine's own work and the GPU wait.
+
 ## WITHDRAWN: "the WASM build never drains the SDL event queue"
 
 **Formerly:** the root cause of three symptoms, blocked on upstream, with
