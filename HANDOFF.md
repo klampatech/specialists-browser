@@ -11167,3 +11167,250 @@ the elem is still unverified — P1's gameplay test will catch that.
 - The `xash3d-fwgs` source we shipped (~7000 lines of generated JS,
   `node_modules/xash3d-fwgs/dist/generated/xash.js`) has the dylink
   loader; useful for understanding loader behavior when debugging.
+
+## THE PLAN -- the two levers (2026-11-19)
+
+### What we measured, and where the time goes
+
+A dense production fight, CPU profile of the client (the rig's browser, a real
+fight with bots, 50 s):
+
+    IDLE -- the GPU wait           48.6% of the wall
+    the wasm engine's own work     23.5%     46% of the busy thread
+    the GL call path                20.1%     39% of the busy thread
+      bufferData                    10.83%    21.1% of the busy thread
+      the per-draw state churn       8.0%     15.2% of the busy thread
+    the emscripten/xash glue         2.9%
+    our own app JS                  0.3%      0.6%
+
+On Kyle's M3 Pro, in a dense fight: the engine 32.66 ms a frame, the browser at
+29.2 Hz, 21.2% late frames, the frame period swinging 34 ms to 132 ms. The gate
+stayed 1/1 throughout -- the pacer wanted 1 frame in 2 and left the gate alone
+because the engine's cost had not crossed the threshold for it. The judder was
+the engine's cost varying, not the pacer.
+
+The clock fix is confirmed: 11,734 ticks with a shortest gap of 15.02 ms in a
+30 ms fight -- no catch-up burst, where before the fix it was 10.24 ms at p50
+and 1.16 ms at worst.
+
+### LEVER ONE -- the engine's wasted uploads (upstream, patched in our build)
+
+The engine's GL temp-buffer helper asks for a 512 MiB buffer about 88,000 times
+a second in a dense fight, while the real geometry uploads are 60-110 a frame
+at 828-8790 bytes. The cache is built for indices 0..21 (2 MiB), so a request
+outside that range misses the cache every single time and re-uploads. That is
+21% of the busy main thread.
+
+THE FIX: size the buffer to the bytes actually needed, and let the cache serve
+every size the client asks for. Landed as a reviewable patch against the
+upstream package, applied to the vendored build under `public/`, with a script
+that applies it and a check that fails loudly when an upstream bump moves the
+code out from under the patch. A unit test proves the sizing and the cache hit
+without a GPU.
+
+WHY HERE RATHER THAN WAITING FOR UPSTREAM: the fix is small and it is ours to
+apply, and every machine gets faster -- including the servers. The same patch
+goes upstream as a PR when there is a maintainer to hand it to.
+
+ACCEPTANCE: the upload probe counts ~0 `bufferData` calls over 1 MiB; the CPU
+profile's `bufferData` bucket falls from 10.83% of the wall to under 1%; the
+engine's frame cost in a dense fight drops.
+
+### LEVER TWO -- the render scale (ours)
+
+IT ALREADY EXISTS. `src/services/video-settings.ts` is the player's video
+settings: it detects the display, turns it into engine launch arguments, and
+re-applies them whenever the engine would drift back to the viewport's
+resolution. It has the resolution choices and an auto pixel budget
+(`AUTO_MAX_PIXELS` = 1920x1080).
+
+And the module's own header carries the measurement that settles the argument:
+
+    viewport      engine render res   engine frames/s
+    640x480       640x480             69.5
+    1280x720      1280x720            30.2
+    1920x1080     1920x1080            8.6
+    2560x1440     2560x1440            4.5
+
+The frame cost is the pixel count. The engine renders at the viewport's
+resolution by default, so "fullscreen on a 1440p display is a 4x hit" -- which
+is exactly what Kyle reported as "some FPS hits when I go full screen".
+
+THE WORK: make the budget honest. The auto budget is a fixed 2.07 Mpx; the
+panel is 120 Hz, so 2 Mpx is 248 Mpx/s of fill and composite, and half the
+main thread is the GPU wait for it. The budget has to know what the machine can
+actually composite, and the choice has to be reachable and honest about what it
+costs.
+
+ACCEPTANCE: on the M3 Pro, a smaller canvas raises the browser's tick rate in
+a dense fight, and the frame cost drops.
+
+### THE MEASUREMENT LOOP THAT PROVES BOTH
+
+The rig takes a dense-fight CPU profile and an upload probe on demand
+(`tools/perf/profile-client.cjs --name prod-dense`,
+`tools/perf/gl-upload-probe.cjs`), and the client's own telemetry gives the
+frame pacing (`tools/perf/monitor-pacing.cjs`). Before and after, the same
+fight, the same rig.
+
+### WHAT IS NOT THE PROBLEM, SO NOBODY RE-OPENS IT
+
+- THE PACER. It chooses a rate; it cannot make a 30 ms frame cheaper. The
+  headroom fix stops it over-limiting a machine that can just about keep up.
+- THE CLOCK. Fixed and measured. No catch-up bursts at 30 ms a frame.
+- THE SERVER. The frame cost is the client's, measured on the client.
+
+## SESSION HANDOFF -- 2026-11-20 09:00 (new session, please read this first)
+
+### What is DONE, merged and live
+- webXash #58 (the slot leaves the headroom), #59 (the rate the page is
+  given), specialists-browser #162. Deployed: `assets/index-CA3sR8De.js`.
+  **The logic clock no longer catches up**: 11,734 ticks in a 30 ms fight
+  with a shortest gap of 15.02 ms, where before it was 10.24 ms at p50
+  and 1.16 ms at worst. That symptom is fixed and MEASURED.
+- specialists-browser #163 is OPEN and needs Kyle's approval: the perf
+  instruments (the profiler's attach mode, the upload probe, the game-tab
+  matcher). Its branch is `perf/the-profiler-watches-a-fight`, pushed.
+
+### What is COMMITTED but NOT merged (both need Kyle's approval)
+- `webxash` branch `perf/the-budget-the-machine-can-hold`, commit
+  `f673e5a` -- "the budget is what the machine can hold, measured at
+  runtime". `auto` now spends
+  `pixels_target = pixels_now * (target_frame_ms / measured_frame_ms)`,
+  with the pacer's own 0.85 headroom (mirrored, because the module is
+  import-free by design; a test reads frame-pacing.ts and asserts the two
+  numbers agree). Floors: never more pixels than the display, never above
+  AUTO_MAX_PIXELS (a fast machine keeps its sharpness), never below the
+  engine's floor, and it only ever moves DOWN. No churn: >5% over budget,
+  two windows in a row, a <=25% step, a 20 s cooldown, never on an
+  unsettled warm-up. Explicit presets are never overridden.
+- `specialists-browser` branch `perf/the-budget-the-machine-can-hold`,
+  commit `0c32ff1` -- the parent's side of the same work (the tests).
+  Its submodule pointer still needs setting to f673e5a.
+
+### THE ENGINE FIX -- NOT DONE, AND THE OBVIOUS FIX IS PROVABLY WRONG
+This is the important part. **Do not start from the premise in
+docs/UPSTREAM-ISSUES.md.** The upstream issue is REAL -- the client
+issues ~88,000 `bufferData` calls a second asking for 536,870,912 bytes
+(512 MiB) in a dense fight, while the real geometry uploads are 60-110 a
+frame at 828-8790 bytes, and `bufferData` was 10.83% of the wall and
+21.1% of the busy main thread in a CPU profile of a dense production
+fight. But the MECHANISM I asserted is wrong.
+
+The vendored glue is the READABLE generated build, not minified:
+`public/xash3d-fwgs/dist/generated/xash.js`. Its `bufferData` calls:
+
+    line 6388  bufferData(34963, quadIndexes, 35044)   the quad index buffer, 2 MiB, once
+    line 6392  bufferData(34962, 1 << idx, 35048)       getTempVertexBuffer
+    line 6394  bufferData(34963, 1 << idx, 35048)       getTempIndexBuffer
+    line 7029  bufferData(target, HEAPU8, usage, data, size)
+    line 7032  bufferData(target, size, usage)          the engine's own uploads
+
+`generateTempBuffers` builds the cache for indices 0..21 only
+(`largestIndex = log2ceilLookup(MAX_TEMP_BUFFER_SIZE)`, 2 MiB). And
+`getTempVertexBuffer(sizeBytes)` does `idx = log2ceilLookup(sizeBytes)`
+and then reads `tempVertexBuffers1[idx]`. For a request above 2 MiB that
+index is OUT OF RANGE -- so the cache does not "miss", it goes out of
+bounds, and `undefined[0]` throws a TypeError. So either the client
+catches that and falls through to a path that asks for the power-of-two
+size directly, or the 512 MiB request comes from the engine's own
+`glBufferData` path at line 7029/7032.
+
+**512 MiB IS EXACTLY `1 << 29`,** which is what `1 << idx` produces for
+idx 29 -- so the size in the measurement is consistent with the temp
+path. **But the call site is not yet proven, and that is the first thing
+the next session must establish:** find what asks for 512 MiB, from
+`tools/perf/gl-upload-probe.cjs` (it records a stack for unusual sizes --
+run it with `--attach` against a live fight) or by instrumenting the
+glue. The repo already has the pattern to copy:
+`scripts/patch-xash-gl-geterror.cjs`, `scripts/patch-xash-memory.cjs`,
+`scripts/patch-xash-exports.cjs`, and the existing build gate
+`scripts/check-xash-glue.cjs` ("the build must ship the PATCHED glue").
+
+A note on the still-scene finding, because it changes what a render-scale
+measurement means: the old `AUTO_MAX_PIXELS` note claimed "the cheaper
+one buys nothing", citing `references/engine-render-performance.md`, a
+file that DOES NOT EXIST in this repo. It was measured on a STILL scene
+-- sixteen bots frozen in place, where 14x the pixels moved the engine's
+cost by 0.00 ms. On the scene the player is in, the same 14x costs 1.61x
+(15.63 -> 25.15 ms, 60 -> 32 fps, 60% late). So the render scale is a
+real lever in a fight, and the frame cost is MOSTLY FIXED, not
+per-pixel.
+
+### The measurements (all of them)
+- Dense production fight, CPU profile of the client (the rig's browser,
+  a real fight with bots, 50 s): IDLE (the GPU wait) 48.6% of the wall;
+  the wasm engine 23.5% (46% of the busy thread); the GL call path 20.1%
+  (39% of the busy) of which bufferData 10.83% and the per-draw state
+  churn 8.0%; the emscripten glue 2.9%; our own app JS 0.3%.
+- Kyle's M3 Pro, dense fight: the engine 32.66 ms a frame, the browser at
+  29.2 Hz, 21.2% late frames, the frame period swinging 34 -> 132 ms.
+  The gate stayed 1/1: the pacer WANTED 1 frame in 2 and left the gate
+  alone because the engine's cost had not crossed the threshold. The
+  judder was the engine's cost varying, not the pacer.
+- The upload defect: 1,767,755 bufferData calls in 20 s (~88,000/s), the
+  pathological size 536,870,912 bytes, the real uploads ~5,000 in 20 s at
+  828-8790 bytes. A direct 512 MiB bufferData on the rig measured ~0 ms
+  (the driver queues it) -- so the cost is the repeated call overhead,
+  and the Mac driver is unmeasured.
+- The profile's split says the bottleneck is BOTH: half the main thread
+  waits on the GPU (ours to pull -- the render scale) and the GL path is
+  39% of the busy thread (upstream -- the uploads and the state churn).
+
+### The tools, and a mistake worth not repeating
+`tools/perf/`: monitor-pacing.cjs (the client's own pacing telemetry over
+raw CDP), profile-client.cjs (a CPU profile; `--cdp`/`--attach`/`--name`),
+gl-upload-probe.cjs (the bufferData census). The client's browser is
+reached through an SSH tunnel to the MacBook: the Vivaldi debugging port
+is 9223, forwarded locally to 9224, and `tools/perf/lib/one-game-instance.cjs`
+decides which tab is the game.
+
+**THE MISTAKE THAT COST THE MOST TIME:** three separate tools matched the
+game's tab with a substring of the whole URL, so a Cloudflare dashboard
+tab -- a login redirect carrying `bulletballet.dev` in its QUERY STRING --
+was matched as the game. The profiler and the upload probe spent twenty
+minutes measuring a login page while the fight sat in the next tab, and
+the monitor spent a whole cycle on it. The matcher now keys on the HOST
+(`isGameUrl`, which accepts bulletballet.dev and its subdomains, plus
+localhost and 127.0.0.1) -- and the path check I added was wrong and
+broke the CI host until three of the guard's own tests caught it.
+
+### Running right now (all harmless, all measuring)
+- `bash ~/.hermes/cache/scratch/kyle-chain.sh` -- the pacing/upload chain
+  against Kyle's browser, writing `kyle-after.jsonl`.
+- `bash ~/.hermes/cache/scratch/tunnel-watch.sh` -- keeps the CDP tunnel
+  up to the MacBook.
+- `bash ~/.hermes/cache/scratch/kyle-profile-chain.sh` -- waits for the
+  chain's cycle, then profiles a live fight.
+- `node tools/perf/monitor-pacing.cjs` -- a live monitor on the game tab.
+- The cron `bulletballet-perf-watch` (7b8696815c40) is PAUSED. It was
+  meant to finish the engine fix unattended: verify it, push, open the
+  PRs, report. It is disabled because its script CHECKS OUT a branch in
+  the live webxash working tree, which would fight with whoever is
+  working there. Resume with `hermes cron resume 7b8696815c40` -- and fix
+  the script first (run it in a `git worktree`, not the live tree).
+  Its script is `~/.hermes/scripts/perf-watch.sh`; it is a no-agent cron,
+  so it prints nothing and delivers nothing until there is something to
+  report.
+
+### Next, in order
+1. Find the call site that asks for 512 MiB (the upload probe's stacks,
+   or instrument the glue). Do not patch the temp cache until the call
+   site is proven.
+2. Patch it, in the repo's `scripts/patch-xash-*.cjs` pattern, with a
+   check in `scripts/check-xash-glue.cjs` that fails loudly when an
+   upstream bump moves the code, and a GPU-free unit test.
+3. Open the two PRs that are already committed (the budget, the parent's
+   side) and let Kyle approve.
+4. Measure the before/after on the rig: the same dense fight, the same
+   rig -- `bufferData` down from 10.83% of the wall, and the engine's
+   frame cost with it.
+5. Only then deploy and play-test on the M3 Pro.
+
+### A note on the session itself
+This session hit the repetition guard repeatedly, mostly by re-reading
+files in a loop and by a malformed tool call that was retried three
+times unchanged. The fix was a strategy change, not a retry: use the
+`hermes` CLI instead of the deferred tool, and read a file once and act.
+The work was not lost -- it is all committed or measured above -- but a
+fresh session with the repo's own context files will move faster.

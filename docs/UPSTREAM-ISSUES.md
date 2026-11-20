@@ -216,3 +216,130 @@ init. Do not use SDL3 event names when writing to this maintainer.
 - [ ] Re-run `tools/port/tsp-rs/scripts/probe-input.js` against a future
       upstream WASM build — but for a **key press**, not a queue drain.
       The drain probe is invalid and a re-run of it tells you nothing.
+
+## 2026-11-19 — the client asks WebGL for a 512 MiB buffer, 88,000 times a second
+
+MEASURED, on a real fight (production, a client that is actually in
+the game — the profiles taken before this one were of an OBSERVER, and
+their "62% upstream" was a floor, not the truth):
+
+    the WASM engine        17.8% of the wall   ~48% of the busy thread
+    the GL call path       12.8% of the wall   ~35% of the busy thread
+      bufferData            6.56%             ~18%
+      the state churn       5.3%              ~14%   (bindVertexArray,
+                                                     getParameter,
+                                                     bindBuffer,
+                                                     enableVertexAttribArray)
+    our own app JS         ~3%                ~8%
+
+### The bug
+
+`tools/perf/gl-upload-probe.cjs` counts every WebGL `bufferData` call
+the engine makes, and what it asks for. In a fight:
+
+    bufferData calls      1,767,755 in 20 seconds   (~88,000 a second)
+    of which, 512 MiB        1,767,755              (every single one)
+    the real geometry          ~5,000              (~60-110 a frame,
+                                                     828-8790 bytes)
+
+So the engine asks for a **512 MiB buffer** on every one of ~88,000
+calls a second, while the actual vertex uploads are ~100 a frame at
+sane sizes.
+
+The engine's own temp-buffer cache is what should make this free:
+
+    getTempVertexBuffer: sizeBytes => {
+      var idx = GL.log2ceilLookup(sizeBytes);
+      var ringbuffer = GL.currentContext.tempVertexBuffers1[idx];
+      ...
+      ringbuffer[slot] = GLctx.createBuffer();
+      GLctx.bufferData(34962, 1 << idx, 35048);      // <- the size
+    }
+
+with `MAX_TEMP_BUFFER_SIZE: 2097152` (2 MiB) and 64 slots per size.
+A request of 512 MiB is **outside the range the cache is built for**,
+so the cache never hits and every call creates and re-uploads.
+
+### Why it costs anything at all
+
+NOT the allocation: a 512 MiB `bufferData` is queued asynchronously and
+measured at ~0 ms on the rig (`tools/perf/.../bufferdata-cost.cjs`).
+The cost is **88,000 calls a second of pure overhead** — the WebGL
+validation, the emscripten wrapper's marshalling, the wasm-side
+argument handling — which the CPU profile puts at 6.56% of the main
+thread.
+
+**This may be much worse on a real GPU**, where a 512 MiB reservation
+is not free. That number needs Kyle's MacBook and the probe is armed
+for it.
+
+### The fix (upstream)
+
+Do not ask for a 512 MiB temp buffer. Size the temp buffer by the
+bytes actually needed, and keep the request inside
+`MAX_TEMP_BUFFER_SIZE` so the cache can serve it. One line in
+`getTempVertexBuffer` / `getTempIndexBuffer`, plus the C side that
+passes the absurd size.
+
+### The honest arithmetic
+
+On Kyle's M3 Pro (12.9 ms a frame), the wasted calls are ~0.85 ms and
+hoisting the per-draw GL state is ~2.1 ms. Both together: 12.9 ->
+~9.9 ms. The gate wants ~7 ms for 60 fps on a 120 Hz panel.
+
+**So 60 fps on that machine is NOT reachable by tuning the GL path.**
+It needs the WASM engine's own cost halved (~48% of the busy thread),
+which is a much deeper upstream change — or the client rendering less.
+
+## 2026-11-19 (later) — THE CPU/GPU SPLIT, AND THE RENDER SCALE IS A LEVER TOO
+
+The CPU profile of a dense production fight (the rig's client, in a
+real fight with bots, 50 s):
+
+    IDLE -- the GPU wait           48.6% of the wall
+    the wasm engine's own work     23.5%         46% of the busy thread
+    the GL call path                20.1%         39% of the busy thread
+      bufferData                    10.83%        21.1% of the busy thread
+      the per-draw state churn       8.0%         15.2% of the busy thread
+    the emscripten/xash glue         2.9%
+    our own app JS                  0.3%          0.6%
+
+### The correction
+
+The previous section in this file said the render scale was not worth
+promising, because the uploads are vertex data and do not scale with
+the pixels. That was true of the uploads and wrong about the
+bottleneck: **48.6% of the main thread is idle, waiting for the GPU.**
+That is the compositor pushing the canvas, and a smaller canvas cuts
+it. The render scale IS a lever -- one we control, with no upstream PR
+and no waiting on anyone.
+
+### What the split means
+
+**Two levers, and they are not the same size.**
+
+- **Upstream.** The wasted 512 MiB uploads are 21% of the busy main
+  thread, and the per-draw GL state churn is another 15%. Together the
+  GL path is 39% of the busy thread and almost all of it is avoidable.
+  One bug, one PR, and every machine gets faster -- including the
+  servers. The catch is that it is upstream's schedule and it needs
+  their buy-in on the caching semantics.
+- **Ours.** The GPU wait is half the main thread. A render scale cuts
+  it, at the cost of sharpness. Deployable today.
+
+### The pacer is not the judder
+
+On Kyle's M3 Pro, in a dense fight, the engine cost 32.66 ms a frame
+and the browser ticked at 29.2 Hz. The gate stayed at 1/1 for the whole
+session: the pacer *wanted* 1 frame in 2 and left the gate alone
+because the engine's cost had not crossed the threshold for it. The
+judder was the engine's frame cost varying -- 34 ms to 132 ms -- with
+21% of the frames late. The pacer can choose a rate; it cannot make a
+30 ms frame cheaper.
+
+### The clock fix is confirmed
+
+In that same dense fight the logic clock's shortest gap was 15.02 ms
+across 11,734 ticks: no catch-up burst, even at 30 ms a frame. Before
+the fix the same situation produced 10.24 ms gaps at p50 and 1.16 ms
+at worst. The rubber-banding is gone.
