@@ -54,9 +54,15 @@ function isGameUrl(url) {
   }
   if (/^localhost(:\d+)?$/.test(host) || /^127\.0\.0\.1(:\d+)?$/.test(host)) return true;
   if (/^100\.95\.111\.112(:\d+)?$/.test(host)) return true;
-  if (!/^bulletballet\.dev(:\d+)?$/.test(host)) return false;
-  // and on the game's own host, it has to BE the game
-  return path === '/' || path.startsWith('/index') || path.startsWith('/?') || path.startsWith('/#');
+  // ON THE GAME'S OWN HOST, IT IS THE GAME. The false positive that
+  // started this was a Cloudflare dashboard tab whose login redirect
+  // carried the game's domain in its QUERY STRING -- the HOST was
+  // dash.cloudflare.com, not the game's. The host check alone settles
+  // it, and a path check only broke the guard's own tests (the game
+  // serves real paths, and a URL's pathname never begins with '?').
+  // AND THE GAME'S OWN SUBDOMAINS COUNT: the CI stack lives on
+  // ci.bulletballet.dev and it is the same game.
+  return /(^|\.)bulletballet\.dev(:\d+)?$/.test(host);
 }
 
 /**
