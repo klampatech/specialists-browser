@@ -39,7 +39,24 @@
  */
 function isGameUrl(url) {
   if (!url) return false;
-  return /bulletballet\.dev|localhost|127\.0\.0\.1|100\.95\.111\.112/.test(url);
+  // THE HOST, NOT THE WHOLE URL. A Cloudflare dashboard tab whose login
+  // redirect carries `bulletballet.dev` in its QUERY STRING is not a
+  // game instance, and treating it as one stopped the profiler from
+  // looking at a fight that was sitting right there.
+  let host = '';
+  let path = '';
+  try {
+    const u = new URL(url);
+    host = u.host;
+    path = u.pathname;
+  } catch (e) {
+    return false;
+  }
+  if (/^localhost(:\d+)?$/.test(host) || /^127\.0\.0\.1(:\d+)?$/.test(host)) return true;
+  if (/^100\.95\.111\.112(:\d+)?$/.test(host)) return true;
+  if (!/^bulletballet\.dev(:\d+)?$/.test(host)) return false;
+  // and on the game's own host, it has to BE the game
+  return path === '/' || path.startsWith('/index') || path.startsWith('/?') || path.startsWith('/#');
 }
 
 /**

@@ -29,6 +29,8 @@
  * answer is "the renderer costs X ms a frame and the Rust client
  * costs Y" rather than a list of 4000 functions.
  */
+const fs = require('fs');
+const path = require('path');
 const { loadPlaywright } = require('../deploy/lib/browser.cjs');
 const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
@@ -68,11 +70,25 @@ const ATTACH = process.argv.includes('--attach');
   // says so in a way that never mentions pages. One blank tab fixes it.
   await ensureAtLeastOnePage(CDP);
 
-  const browser = await chromium.connectOverCDP(CDP);
+  // THE HANDSHAKE CAN BE SLOW THROUGH A TUNNEL. The CDP connect has a
+  // 30 second default, and over an SSH tunnel to a laptop that has
+  // just woken up, the websocket connects and then the handshake
+  // dribbles in -- which reads as a connect failure when it is just
+  // slow.
+  const browser = await chromium.connectOverCDP(CDP, { timeout: 120_000 });
   const ctx = browser.contexts()[0];
   // Refuse to measure beside another live game instance: they share
   // the main thread and the contention makes the number meaningless.
-  await assertSingleGameInstance(browser, 'profile-client');
+  //
+  // BUT NOT WHEN ATTACHING. The guard exists to stop the harness from
+  // STARTING a second instance beside the one it measures -- in attach
+  // mode there is no second instance, there is exactly the one we were
+  // asked to measure, and refusing to look at it is refusing to do the
+  // job. (The browser also keeps the tabs it had before we ever
+  // connected, and the guard counted those as contention.)
+  if (!ATTACH) {
+    await assertSingleGameInstance(browser, 'profile-client');
+  }
 
   // THE PAGE. In attach mode it is the game tab that is already
   // running -- the player's own fight -- and nothing else.
@@ -246,6 +262,18 @@ const ATTACH = process.argv.includes('--attach');
   await page.waitForTimeout(SECONDS * 1000);
   const { profile } = await cdp.send('Profiler.stop');
 
+  // KEEP THE RAW PROFILE. The printout is a summary; the summary is
+  // what people read; the raw file is what gets re-analyzed when the
+  // summary turns out to have cut the interesting part off.
+  const profileDir = path.join(__dirname, '..', '..', 'profiles');
+  fs.mkdirSync(profileDir, { recursive: true });
+  const profilePath = path.join(
+    profileDir,
+    `${argOf('--name', 'profile')}-${new Date().toISOString().replace(/[:.]/g, '-')}.cpuprofile`,
+  );
+  fs.writeFileSync(profilePath, JSON.stringify(profile));
+  console.log(`  the raw profile: ${profilePath}`);
+
   // --- aggregate ---------------------------------------------------------
   const byId = new Map();
   for (const n of profile.nodes) byId.set(n.id, n);
@@ -311,7 +339,12 @@ const ATTACH = process.argv.includes('--attach');
   console.log(`  total sampled: ${total.toFixed(0)} ms  (${(total / SECONDS).toFixed(1)} ms per second of wall clock)\n`);
   console.log('   self ms   %      bucket');
   console.log('  ' + '-'.repeat(78));
-  const shown = rows.slice(0, 12);
+  // EVERY BUCKET, not the top twelve. The GL call path is spread over a
+  // dozen entries -- bufferData six times over, bindBuffer twice,
+  // bindVertexArray, enableVertexAttribArray, getParameter -- and a
+  // top-twelve cut hid most of the thing that matters.
+  const TOP = Number(argOf('--top', 0)) || rows.length;
+  const shown = rows.slice(0, TOP);
   for (const r of shown) {
     const pct = total > 0 ? (r.ms / total) * 100 : 0;
     console.log(
