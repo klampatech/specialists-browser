@@ -35,6 +35,7 @@ const { loadPlaywright } = require('../deploy/lib/browser.cjs');
 const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { waitForFleet } = require('../deploy/lib/fleet.cjs');
 const { assertSingleGameInstance } = require('./lib/one-game-instance.cjs');
+const { isGameUrl } = require('./lib/one-game-instance.cjs');
 const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
 const { describeMaps } = require('./lib/fleet-map.cjs');
 const { chromium } = loadPlaywright();
@@ -93,7 +94,7 @@ const ATTACH = process.argv.includes('--attach');
   // THE PAGE. In attach mode it is the game tab that is already
   // running -- the player's own fight -- and nothing else.
   const page = ATTACH
-    ? ctx.pages().find((p) => /bulletballet\.dev/.test(p.url())) || null
+    ? ctx.pages().find((p) => isGameUrl(p.url())) || null
     : await ctx.newPage();
   if (!page) {
     console.error(

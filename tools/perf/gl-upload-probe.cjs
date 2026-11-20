@@ -36,6 +36,7 @@ const path = require('path');
 const { loadPlaywright } = require('../deploy/lib/browser.cjs');
 const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
+const { isGameUrl } = require('./lib/one-game-instance.cjs');
 
 const argOf = (name, fallback) => {
   const i = process.argv.indexOf(name);
@@ -166,7 +167,7 @@ const INIT = `
   // counts anything.
   const ATTACH = process.argv.includes('--attach');
   if (ATTACH) {
-    const found = ctx.pages().find((p) => /bulletballet\.dev/.test(p.url()));
+    const found = ctx.pages().find((p) => isGameUrl(p.url()));
     if (!found) {
       console.error('  no bulletballet.dev tab to attach to');
       process.exit(1);
