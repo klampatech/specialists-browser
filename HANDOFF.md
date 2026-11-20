@@ -49,13 +49,21 @@ so a test can run it
 (`tests/unit/gl-upload-accounting.test.mjs`,
 `tests/unit/gl-upload-probe-init.test.mjs`).
 
-**WHAT IS REAL:** the call COUNT. ~88,000 `bufferData` calls a second
-(1,467 a frame), each a full re-allocation of the renderer's vertex
-buffer, costing 6.56% of the wall in a fight and 10.83% in a dense one.
-The CPU profile's own stacks put the calls in `_emscripten_glBufferData`
--> the renderer module -> `xash.wasm`, NOT in the glue's temp-buffer
-cache, so the old "one line in `getTempVertexBuffer`" fix was aimed at
-the wrong function.
+**WHAT IS REAL:** the call COUNT. **116,192 `bufferData` calls a second**
+(~1,937 a frame), each a full re-allocation of the renderer's vertex
+buffer — and **53% of them carry 48 bytes**, which is four vertices of
+position+normal+texcoord, a quad. The bytes are 122 MB a second; the
+calls are the cost (about 0.5 us of fixed cost each, about 0.32 us per
+KiB). 6.56% of the wall in a fight, 10.83% in a dense one, and the
+split is 5.8% fixed and 3.9% bytes. The CPU profile's own stacks put
+the calls in `_emscripten_glBufferData` -> the renderer module ->
+`xash.wasm`, NOT in the glue's temp-buffer cache, so the old "one line
+in `getTempVertexBuffer`" fix was aimed at the wrong function.
+
+Measured again on the CI rig with the FIXED census (16 bots, a real
+fight, 20 s): 2,323,843 calls, 2,494,098,812 bytes, 28,686 buffers
+CREATED. The raw numbers are in `profiles/` (gitignored) and the
+analysis is in `docs/UPSTREAM-ISSUES.md`.
 
 **AND THE FIX IS NOT OURS TO SHIP.** Measured in a real browser: the
 carrier's size does not matter (a 512 MiB view with a 1 KiB range costs

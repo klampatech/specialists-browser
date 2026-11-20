@@ -276,12 +276,35 @@ not the glue's temp-buffer cache. The old section's quote of
 `getTempVertexBuffer` was a guess at a call site that the profile
 disproves.
 
-What the census got RIGHT is the part that matters: the call COUNT.
+**MEASURED AGAIN, WITH THE FIXED CENSUS**, on the CI rig (16 bots, a
+real fight, `ts_casa`, 20 s, canvas 897x534, the engine at 60.0 fps):
 
-    bufferData calls     1,767,755 in 20 seconds   (~88,000 a second)
-    the real uploads     34,164 bufferSubData calls, 828-8790 bytes
-                         (the element/index geometry)
-    the vertex uploads   1,767,751 bufferData calls, ~1 KB each
+    bufferData calls        2,323,843   (116,192 a second)
+    bytes uploaded          2,494,098,812   (122 MB a second)
+    per engine frame        ~1,937 calls, ~2.0 MB
+    bufferSubData calls        44,156   (2,208 a second), 258 MB
+    buffers CREATED           28,686   (1,434 a second)
+
+**AND THE PAYLOADS ARE TINY.** The census of sizes:
+
+    48 bytes      1,233,110 calls   (53% of every call)
+    32 bytes        510,777 calls   (22%)
+    72 bytes         74,702
+    60 bytes         70,522
+    40 bytes         70,522
+    36 bytes         62,289
+    24 bytes         62,289
+    ... every size under 130 bytes
+
+**So the renderer uploads a 48-byte vertex buffer 61,655 times a second.**
+A 48-byte payload is four vertices of position+normal+texcoord — a quad.
+The bytes are not the problem: at the measured 0.32 us per KiB, 122 MB
+a second is **3.9% of the wall**, while 116,192 calls at ~0.5 us of
+fixed cost each is **5.8%**. Together, ~10%, which is exactly what the
+CPU profile finds (10.83% in a dense fight).
+
+**THE COST IS THE CALL COUNT, NOT THE DATA.** That is the whole finding,
+and it is a different finding from the one the old census reported.
 
 ### Why they cost anything — measured, not argued
 
@@ -306,19 +329,24 @@ reservation.
 
 ### What this leaves, and where the fix has to live
 
-The defect is REAL, and it is the call COUNT: ~1,467 `glBufferData`
-calls a frame, each a full re-allocation of the buffer (the renderer
-uses `GL_STREAM_DRAW` and `glBufferData`, never a sub-data update),
-costing 6.56% of the wall in a fight and 10.83% in a dense one.
+The defect is REAL, and it is the call COUNT: **116,192 `bufferData`
+calls a second — ~1,937 a frame — each a full re-allocation of the
+renderer's vertex buffer**, and 53% of them carrying 48 bytes. The
+renderer uses `GL_STREAM_DRAW` and `glBufferData`, never a sub-data
+update, so every one of those calls re-allocates a buffer to carry a
+quad's worth of vertices. It costs 6.56% of the wall in a fight and
+10.83% in a dense one, and the split is 5.8% fixed cost per call and
+3.9% for the bytes.
 
-**The fix is upstream, in the renderer, and not in the glue.** The
+**THE FIX IS UPSTREAM, IN THE RENDERER, AND NOT IN THE GLUE.** The
 renderer is a separate wasm module (`libref_webgl2.wasm`, built from
 `ref/gl/gl2_shim/gl2_shim.c` in FWGS/xash3d-fwgs); its
 `GL2_UploadBufferData` re-uploads an attribute buffer with
 `glBufferData` on every update. There is no persistent-mapping path on
 WebGL2 (`glBufferStorage` does not exist there), so the shim falls back
-to re-allocating. A cached VBO with `glBufferSubData`, or one buffer
-per attribute reused across frames, is the upstream shape of the fix.
+to re-allocating. The upstream shape of the fix is one buffer per
+attribute, reused, updated with `glBufferSubData` — which would take
+the cost from "per call" to "per byte" and give back most of the 5.8%.
 
 **We cannot ship that fix.** The engine is a prebuilt artifact
 (`tools/deploy/fetch-engine.sh`), and the renderer is C inside it. The
