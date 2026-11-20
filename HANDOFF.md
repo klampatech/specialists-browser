@@ -23,6 +23,68 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-20, LATEST — **THE RESOLUTION IS THE PLAYER'S NOW. THE
+MEASURED BUDGET IS GONE, AND THERE IS A SWITCHER IN THE ESC MENU.**
+
+Kyle played lobby duel on his gaming rig and came back with the verdict
+on the work this session shipped:
+
+> the resolution switching was weird and eventually upscaled it so much
+> the text was massive. I think we should just auto set it to whatever
+> the native desktop resolution is using and maybe add a resolution
+> switcher to the ESC options menu for people who want to change it.
+> The scaling based on performance measuring seems over engineered and
+> was interupting the experience by having the HUD (crosshair) disappear
+> for a bit on the switch.
+
+**THE MEASURED BUDGET IS GONE** — the pacing measurement, the CPU/GPU
+split, the formula, the growth path, the ceiling and the floor. About
+700 lines of client and tests, out of the client. webXash **#63**.
+
+**THE HUD IS WHY THE SECOND COMPLAINT MATTERS, and it was not obvious.**
+The engine draws the HUD in VIEWPORT units, so the HUD's size on screen
+is `H * (the canvas's CSS box / the canvas's backing store)` — a smaller
+backing store means the browser upscales more, and the HUD inflates
+with the picture. **Measured on the player's own recording, in the same
+session: before the policy's cuts the crosshair was the size it should
+be; after them it was about 20% BIGGER, and the picture was soft.**
+Cutting the resolution to save frames made the game look worse in a way
+nobody asked for.
+
+**'AUTO' IS NOW THE DISPLAY'S OWN RESOLUTION.** No cap, no measurement.
+The old 'auto' was the display's size capped at 1920x1080 of CSS
+pixels, which on a 1440p display is a picture the browser stretches.
+
+**AND THE PLAYER GETS A SWITCHER**, in the ESC menu: Native, 1920x1080,
+1600x900, 1280x720, 960x540, 640x360. Picking one applies it at once:
+the store keeps the choice for the next session, the engine is told
+now, and the target is parked so the resize watchdog re-applies it
+after the engine's own resizes.
+
+**WHAT IS LEFT IS THE PACER**, which holds the frame rate by deciding
+how many ticks the engine draws in. It does not move the resolution.
+
+**THE RECORD OF THE POLICY IS `docs/RENDER-BUDGET-MEASUREMENT.md`** — the
+M3 Pro session, the CPU/GPU split, the video cross-check at r = -0.58,
+the second session that showed the policy was nearly inert, and why it
+went.
+
+**THE UPSTREAM RENDERER PATCH IS STILL UNBUILT.** The call site is
+`ref/gl/gl2_shim/gl2_shim.c` (three sites), the fix allocates the
+vertex storage once and updates it in place with `glBufferSubData`, and
+it is checked against the shipped glue's dispatch. **The measured price
+tag is about 0.9% of the main thread** — the census's 5.8% was wrong by
+six, because it multiplied a call COUNT by a per-call cost measured in a
+different shape. The build recipe lives in a private repo; see
+`docs/UPSTREAM-ISSUES.md` for exactly what it needs.
+
+**THE NEXT TASK IS TO FIND THE ENGINE'S OWN 20-48 ms.** The uploads are
+about 1% of it. The engine's work is the rest, and the repo can already
+build a profile with names (`build-wasm.sh KEEP_NAMES=1`) instead of
+`wasm-function[72]`. Do the same attribution: CPU share vs GPU share,
+then price the fix before promising it.
+
+---
 **As of:** 2026-11-20, LATEST — **THE BUDGET SPENDS ITS PIXELS ON A FRAME THAT
 IS WAITING FOR THEM, AND THE UPLOAD FIX IS WORTH ABOUT ONE PER CENT, NOT
 SIX.** All four PRs are approved and merged: webXash **#61** (`2cb46e3`) and
