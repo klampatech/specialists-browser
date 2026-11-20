@@ -166,3 +166,8 @@ docs/REBRAND-PLAN.md
 tools/decompile/analysis/
 tools/decompile/chunks/
 tools/decompile/cross-vendor/
+
+# The perf instruments' raw output: CPU profiles and upload censuses.
+# They are MEASUREMENTS OF A RUN, not sources -- tens of MB each, and the
+# committed write-up (docs/CLIENT-PERF-RESULTS.md) is the record.
+profiles/
