@@ -251,3 +251,43 @@ change, is most sessions.
 Neither was fixed in this session: the session was a measurement, and
 what it measured is that the policy needs a finer signal than the one
 it is given.
+## THE POLICY WAS REMOVED. 2026-11-20, after the player's own play test.
+
+Kyle played lobby duel on his gaming rig and came back with:
+
+> the resolution switching was weird and eventually upscaled it so much
+> the text was massive. I think we should just auto set it to whatever
+> the native desktop resolution is using and maybe add a resolution
+> switcher to the ESC options menu for people who want to change it.
+> The scaling based on performance measuring seems over engineered and
+> was interupting the experience by having the HUD (crosshair) disappear
+> for a bit on the switch.
+
+**THE MEASURED BUDGET IS GONE** — the pacing measurement, the CPU/GPU
+split, the formula, the growth path, the ceiling and the floor. About
+700 lines of client and tests, out of the client.
+
+**THE HUD IS WHY THE SECOND COMPLAINT MATTERS**, and it was not obvious.
+The engine draws the HUD in VIEWPORT units, so the HUD's size on screen
+is
+
+    H * (the canvas's CSS box / the canvas's backing store)
+
+— a smaller backing store means the browser upscales more, and the HUD
+inflates with the picture. Measured on the player's own recording, in
+the same session: before the policy's cuts the crosshair was the size
+it should be; **after them it was about 20% BIGGER**, and the picture
+was soft.
+
+**'AUTO' IS NOW THE DISPLAY'S OWN RESOLUTION.** No cap, no measurement.
+The old 'auto' was the display's size capped at 1920x1080 of CSS pixels,
+which on a 1440p display is a picture the browser stretches.
+
+**AND THE PLAYER GETS A SWITCHER**, in the ESC menu: Native, 1920x1080,
+1600x900, 1280x720, 960x540, 640x360.
+
+**WHAT IS LEFT IS THE PACER**, which holds the frame rate by deciding
+how many ticks the engine draws in, and does not move the resolution.
+
+This document is the record of what the policy was and why it went. The
+measurements in it are still true; the policy is not.
