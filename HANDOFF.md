@@ -6448,6 +6448,47 @@ the parts that are known traps.
 
 # § NEXT TASK
 
+> ## THE RENDER BUDGET IS LIVE AND MEASURED; ITS LEVER IS HALF (2026-11-20)
+>
+> **THE BUDGET IS MERGED AND LIVE.** webXash #60 -> `8952b96`; the parent's
+> #164 (the pointer) and #163 (the instruments) squash-merged; both deploys
+> green; the SHIPPED bundle carries the new policy (checked by
+> `ceilingDevicePixels`, which the old source does not have).
+>
+> **WATCHED IT RUN, ON KYLE'S M3 PRO, IN PRODUCTION** (his own play session):
+> three decisions, each a 25% cut (the step limit), each with the reason --
+> "the engine costs 19.85 ms a frame against a 14.17 ms target (60 fps at
+> 0.85 headroom); the machine is measurably over budget, so the render
+> budget falls by 25%". **The signal is right** (the engine's cost against the
+> delivered rate: 0-5 ms -> 105 fps, 10-14.2 -> 77, 14.2-20 -> 37, 30+ -> 23
+> -- the threshold sits at the knee). **The lever is half**: the canvas size
+> against the cost (1.50 MP -> 20.16 ms, 2.00 MP -> 3.15 ms) says the cost
+> tracks the SCENE, not the pixel count, so cutting pixels cannot recover the
+> cost that trips the threshold -- and `decideAutoBudget` has NO upward path,
+> so one heavy fight permanently degrades the rest of the session.
+>
+> **THE TWO CANDIDATE CHANGES ARE KYLE'S CALL** (he was asked; no answer yet):
+> cut pixels only while the frame is pixel-bound (the pacer has both numbers:
+> the delivered frame time against the engine's CPU cost), and give the pixels
+> back. **The deeper fix stays upstream** -- the CPU cost in a dense fight is
+> the engine's own work (116,192 `bufferData` calls a second), and no
+> resolution policy reaches that.
+>
+> **THE FULL WRITE-UP: `docs/RENDER-BUDGET-MEASUREMENT.md`.** The two new
+> instruments are in PR #165 (`measure-render-budget.cjs`,
+> `watch-context.cjs`, `gl-context-leak-check.cjs`); the client's renderer
+> probe fix is webXash **#61** (it created a WebGL context per call once the
+> engine's context was gone -- 40 calls -> 186 eviction warnings -- which made
+> a lost context permanent).
+>
+> **AND THE LESSON THAT COST THE MOST:** a probe that creates a WebGL context
+> per call evicts the ENGINE's context (Chrome keeps ~16 live contexts and
+> evicts the oldest), and the page goes WHITE with the engine still running at
+> 120 fps. It happened TWICE -- the second time because killing the wrapper
+> PID left the node child alive and still leaking. **Never create a WebGL
+> context to measure a WebGL context; ask the engine's own canvas. Verify
+> with `ps` that a watcher is really stopped.**
+>
 > ## THE FREEZES ARE GONE; THE FRAME COST IS WHAT IS LEFT (2026-11-19, LATER)
 >
 > **webXash #58 + the parent PR fix the two defects Kyle FELT**, both measured

@@ -7,6 +7,34 @@
 
 ---
 
+
+## THE UPLOAD FIX IS WORTH ABOUT ONE PER CENT. MEASURED, 2026-11-20.
+
+The upload defect is real -- 116,192 reallocating `glBufferData` calls a
+second, about 1,937 a frame -- and the fix (allocate the storage once,
+update it in place with `glBufferSubData`) removes every one of them.
+But the price tag, measured on Kyle's M3 Pro at the shapes the census
+saw (`tools/perf/gl-upload-benchmark.cjs`):
+
+    the shape                     bufferData  bufferSubData   saved
+    48 bytes  (a quad position)  0.335 us    0.260 us        0.075 us
+    32 bytes  (a quad texcoord)  0.221 us    0.203 us        0.018 us
+    1 KiB     (a small mesh)     0.290 us    0.258 us        0.032 us
+
+At 116,192 calls a second the 48-byte case saves **8.8 ms of the wall
+per second -- about 0.9%** -- and the smaller shapes less.
+
+**THE CENSUS SAID ABOUT 5.8%, AND IT WAS WRONG BY SIX.** It multiplied
+the call COUNT by a per-call cost measured in a different shape (a
+64 KiB view). The direct measurement is the one that counts.
+
+So: the fix is worth doing -- it removes 116,192 reallocations a second
+and the driver-side allocation churn that happens off the JS thread --
+but it is NOT the answer to the frame cost. The engine's cost in a
+dense fight is 20-48 ms a frame (measured on the M3 Pro, 415 sampled
+seconds), and the uploads are a few per cent of that at most. The rest
+is the engine's own work and the GPU wait.
+
 ## WITHDRAWN: "the WASM build never drains the SDL event queue"
 
 **Formerly:** the root cause of three symptoms, blocked on upstream, with
@@ -415,3 +443,46 @@ In that same dense fight the logic clock's shortest gap was 15.02 ms
 across 11,734 ticks: no catch-up burst, even at 30 ms a frame. Before
 the fix the same situation produced 10.24 ms gaps at p50 and 1.16 ms
 at worst. The rubber-banding is gone.
+## THE BUILD RECIPE FOR THE PATCHED ENGINE IS NOT PUBLIC. 2026-11-20.
+
+The patch is written and it is correct; what is missing is the BUILD.
+
+**WHAT THE PATCH NEEDS.** `ref/gl/gl2_shim/gl2_shim.c`, three call sites
+(`GL2_UploadBufferData` and the two `glBufferData` calls in the
+immediate-mode path): allocate the storage once, update it in place with
+`glBufferSubData`. The capacity is tracked per buffer in the ring.
+
+**THE PATCH IS CORRECT AGAINST THE SHIPPED GLUE**, and that was checked
+rather than assumed. The glue's own dispatch:
+
+    _emscripten_glBufferData = (e,r,t,n) => {
+      t && r ? GLctx.bufferData(e, HEAPU8, n, t, r) : GLctx.bufferData(e, r, n);
+    }
+
+so a NULL data pointer takes the `bufferData(target, size, usage)` path
+-- allocate-without-data -- and `glBufferSubData(target, offset, HEAPU8,
+pointer, size)` treats the C pointer as an offset into the wasm heap,
+which is what it is. Both are what the patch needs.
+
+**WHY THE BUILD IS NOT JUST A FLAG.** The engine is published as the npm
+package `xash3d-fwgs` (1.2.2+commit.7c58854), built by a Docker image
+in a repository that is NOT public (`yohimik/webxash3d-fwgs`:
+"Repository not found"). The FWGS source tree does carry the
+emscripten branches (`conf.env.DEST_OS == 'emscripten'`), so the build
+system was extended for it -- but:
+
+  - `waf configure --dest-os=emscripten` is rejected: this waf (2.1.9)
+    has no `--dest-os` option, and `DEST_OS` comes from
+    `Utils.unversioned_sys_platform()` -- 'linux' here;
+  - waf's own `cc_load_tools` does `if not conf.env.DEST_OS:
+    conf.env.DEST_OS = ...`, so DEST_OS CAN be set before the tools
+    load -- which means a patched wscript (or a waf with emscripten
+    support) is the way in, not a flag;
+  - emscripten 6.0.12 IS installed and working (`~/emsdk/upstream/
+    emscripten/emcc`).
+
+**SO THE NEXT STEP IS:** set `DEST_OS = 'emscripten'` before the c/cxx
+tools load, point the compiler at `emcc`, and build -- then measure the
+upload census again. The census is the proof: `glBufferData` calls
+should go from 116,192 a second to nearly nothing, and `bufferSubData`
+should take their place.
