@@ -217,79 +217,121 @@ init. Do not use SDL3 event names when writing to this maintainer.
       upstream WASM build — but for a **key press**, not a queue drain.
       The drain probe is invalid and a re-run of it tells you nothing.
 
-## 2026-11-19 — the client asks WebGL for a 512 MiB buffer, 88,000 times a second
+## WITHDRAWN: "the client asks WebGL for a 512 MiB buffer, 88,000 times a second"
 
-MEASURED, on a real fight (production, a client that is actually in
-the game — the profiles taken before this one were of an OBSERVER, and
-their "62% upstream" was a floor, not the truth):
+**WITHDRAWN 2026-11-20. THE 512 MiB DOES NOT EXIST.** It was our own
+census that invented it, and the mistake was in the instrument, not in
+the engine. Everything downstream of it — the patch that was about to be
+written, the upstream issue that was about to be filed, the arithmetic
+that said 60 fps was unreachable — was built on that number.
 
-    the WASM engine        17.8% of the wall   ~48% of the busy thread
-    the GL call path       12.8% of the wall   ~35% of the busy thread
-      bufferData            6.56%             ~18%
-      the state churn       5.3%              ~14%   (bindVertexArray,
-                                                     getParameter,
-                                                     bindBuffer,
-                                                     enableVertexAttribArray)
-    our own app JS         ~3%                ~8%
+### What the census actually measured
 
-### The bug
+`tools/perf/gl-upload-probe.cjs` counted the bytes of every `bufferData`
+call by reading the byteLength of the SOURCE ARGUMENT. WebGL2 has two
+overloads, and they say different things:
 
-`tools/perf/gl-upload-probe.cjs` counts every WebGL `bufferData` call
-the engine makes, and what it asks for. In a fight:
+    bufferData(target, size, usage)                        -- `size` is the
+                                                             byte count
+    bufferData(target, srcData, usage, srcOffset, length)  -- `length` is
+                                                             the byte count,
+                                                             and `srcData` is
+                                                             only a CARRIER
 
-    bufferData calls      1,767,755 in 20 seconds   (~88,000 a second)
-    of which, 512 MiB        1,767,755              (every single one)
-    the real geometry          ~5,000              (~60-110 a frame,
-                                                     828-8790 bytes)
+The emscripten glue uses the second one and passes the WHOLE wasm heap
+as the carrier:
 
-So the engine asks for a **512 MiB buffer** on every one of ~88,000
-calls a second, while the actual vertex uploads are ~100 a frame at
-sane sizes.
+    GLctx.bufferData(target, HEAPU8, usage, data, size)
 
-The engine's own temp-buffer cache is what should make this free:
+The wasm heap is 512 MiB. So the census read the carrier's size and
+reported **536,870,912 bytes for every call** — 1,767,755 of them in 20
+seconds. The engine never asked for 512 MiB of anything.
 
-    getTempVertexBuffer: sizeBytes => {
-      var idx = GL.log2ceilLookup(sizeBytes);
-      var ringbuffer = GL.currentContext.tempVertexBuffers1[idx];
-      ...
-      ringbuffer[slot] = GLctx.createBuffer();
-      GLctx.bufferData(34962, 1 << idx, 35048);      // <- the size
-    }
+The old census was wrong in a second way, and it is worse: it read
+`stats.stacks` before it had ever been initialised, so every call over
+1 MiB raised a **TypeError inside the engine's own upload**. The real
+uploads never reached WebGL while the census ran — the census measured
+a client whose geometry was not being uploaded at all — and the stack it
+was supposed to capture was never captured.
 
-with `MAX_TEMP_BUFFER_SIZE: 2097152` (2 MiB) and 64 slots per size.
-A request of 512 MiB is **outside the range the cache is built for**,
-so the cache never hits and every call creates and re-uploads.
+Both faults are fixed, and both are held by tests that run the exact
+script the browser runs (`tools/perf/lib/gl-upload-init.cjs`,
+`tests/unit/gl-upload-accounting.test.mjs`,
+`tests/unit/gl-upload-probe-init.test.mjs`).
 
-### Why it costs anything at all
+### What the calls really are
 
-NOT the allocation: a 512 MiB `bufferData` is queued asynchronously and
-measured at ~0 ms on the rig (`tools/perf/.../bufferdata-cost.cjs`).
-The cost is **88,000 calls a second of pure overhead** — the WebGL
-validation, the emscripten wrapper's marshalling, the wasm-side
-argument handling — which the CPU profile puts at 6.56% of the main
-thread.
+The CPU profile's own stacks say where they come from, and they do not
+say `getTempVertexBuffer`:
 
-**This may be much worse on a real GPU**, where a 512 MiB reservation
-is not free. That number needs Kyle's MacBook and the probe is armed
-for it.
+    bufferData
+     <- _emscripten_glBufferData      (xash3d-<hash>.js)
+     <- wasm-to-js
+     <- wasm-function[72]             (the renderer module)
+     <- wasm-function[121]
+     <- wasm-function[8958]           (xash.wasm)
 
-### The fix (upstream)
+So these are the ENGINE'S OWN uploads — the renderer's vertex buffers —
+not the glue's temp-buffer cache. The old section's quote of
+`getTempVertexBuffer` was a guess at a call site that the profile
+disproves.
 
-Do not ask for a 512 MiB temp buffer. Size the temp buffer by the
-bytes actually needed, and keep the request inside
-`MAX_TEMP_BUFFER_SIZE` so the cache can serve it. One line in
-`getTempVertexBuffer` / `getTempIndexBuffer`, plus the C side that
-passes the absurd size.
+What the census got RIGHT is the part that matters: the call COUNT.
 
-### The honest arithmetic
+    bufferData calls     1,767,755 in 20 seconds   (~88,000 a second)
+    the real uploads     34,164 bufferSubData calls, 828-8790 bytes
+                         (the element/index geometry)
+    the vertex uploads   1,767,751 bufferData calls, ~1 KB each
 
-On Kyle's M3 Pro (12.9 ms a frame), the wasted calls are ~0.85 ms and
-hoisting the per-draw GL state is ~2.1 ms. Both together: 12.9 ->
-~9.9 ms. The gate wants ~7 ms for 60 fps on a 120 Hz panel.
+### Why they cost anything — measured, not argued
 
-**So 60 fps on that machine is NOT reachable by tuning the GL path.**
-It needs the WASM engine's own cost halved (~48% of the busy thread),
-which is a much deeper upstream change — or the client rendering less.
+A/B, in a real browser, one call shape at a time (`gl.finish()` after
+each block, so the driver's work is included):
+
+    view 64 KiB, range 256          0.60 us/call
+    view 64 KiB, range 1024         1.40 us/call
+    view 64 KiB, range 4096         3.85 us/call
+    view 64 KiB, range 16384        9.20 us/call
+    view 64 KiB, range 65536       21.75 us/call
+    view 512 MiB, range 1024        1.40 us/call
+    view 512 MiB, WHOLE view      102.6 ms/call
+
+**The carrier's size does not matter.** A 512 MiB view with a 1 KiB
+range costs the same as a 64 KiB view with the same range. The cost is
+the UPLOADED bytes: about 0.5 us fixed per call and about 0.32 us per
+KiB. So there is no cheap trick in the glue — passing a smaller view
+changes nothing, and the old section's hope that "a 512 MiB reservation
+is not free on a real GPU" was chasing a number that was never a
+reservation.
+
+### What this leaves, and where the fix has to live
+
+The defect is REAL, and it is the call COUNT: ~1,467 `glBufferData`
+calls a frame, each a full re-allocation of the buffer (the renderer
+uses `GL_STREAM_DRAW` and `glBufferData`, never a sub-data update),
+costing 6.56% of the wall in a fight and 10.83% in a dense one.
+
+**The fix is upstream, in the renderer, and not in the glue.** The
+renderer is a separate wasm module (`libref_webgl2.wasm`, built from
+`ref/gl/gl2_shim/gl2_shim.c` in FWGS/xash3d-fwgs); its
+`GL2_UploadBufferData` re-uploads an attribute buffer with
+`glBufferData` on every update. There is no persistent-mapping path on
+WebGL2 (`glBufferStorage` does not exist there), so the shim falls back
+to re-allocating. A cached VBO with `glBufferSubData`, or one buffer
+per attribute reused across frames, is the upstream shape of the fix.
+
+**We cannot ship that fix.** The engine is a prebuilt artifact
+(`tools/deploy/fetch-engine.sh`), and the renderer is C inside it. The
+emsdk is on this box, so building the engine from upstream source is
+possible — and it is a project of its own, not a patch.
+
+### The lesson worth keeping
+
+**An instrument that has never been executed will confidently report a
+number that does not exist.** The census was written, run, and believed
+for a day. The one assertion that would have caught it — "a 1 KiB upload
+must not be counted as 512 MiB" — is a single line in a test, and it
+now exists.
 
 ## 2026-11-19 (later) — THE CPU/GPU SPLIT, AND THE RENDER SCALE IS A LEVER TOO
 
@@ -318,12 +360,14 @@ and no waiting on anyone.
 
 **Two levers, and they are not the same size.**
 
-- **Upstream.** The wasted 512 MiB uploads are 21% of the busy main
+- **Upstream.** The renderer's buffer uploads are 21% of the busy main
   thread, and the per-draw GL state churn is another 15%. Together the
   GL path is 39% of the busy thread and almost all of it is avoidable.
   One bug, one PR, and every machine gets faster -- including the
   servers. The catch is that it is upstream's schedule and it needs
-  their buy-in on the caching semantics.
+  their buy-in on the caching semantics. (The "512 MiB" framing of this
+  was withdrawn above; the upload volume was never the size of the
+  buffer, only the number of the calls.)
 - **Ours.** The GPU wait is half the main thread. A render scale cuts
   it, at the cost of sharpness. Deployable today.
 

@@ -23,6 +23,50 @@
 > a new agent needs are still tracked: `docs/CI-CD.md`,
 > `docs/FE-MOD-PLAN.md` and `docs/UPSTREAM-ISSUES.md`.
 
+**As of:** 2026-11-20, LATEST — **THE 512 MiB UPLOAD NEVER HAPPENED. IT WAS
+OUR OWN CENSUS, AND THE INSTRUMENT IS NOW FIXED AND TESTED.**
+
+The last session's next task was "find the call site that asks for
+512 MiB". **There is no such call site.** The engine never asked for
+512 MiB of anything. `tools/perf/gl-upload-probe.cjs` counted the bytes
+of a `bufferData` call by reading the byteLength of its SOURCE
+ARGUMENT, and the emscripten glue passes the WHOLE 512 MiB wasm heap
+as the carrier:
+
+    GLctx.bufferData(target, HEAPU8, usage, data, size)
+
+WebGL2's five-argument overload says the byte count is the LAST
+argument, and the carrier is only a carrier. So every one of the
+1,767,755 calls in 20 seconds was counted as 536,870,912 bytes.
+
+**THE CENSUS ALSO BROKE THE CLIENT IT WAS MEASURING.** It read
+`stats.stacks` before it had ever been initialised, so every call over
+1 MiB raised a TypeError INSIDE the engine's upload: the engine's real
+geometry never reached WebGL during the census, and the stack the tool
+was built to capture was never captured. Both faults are fixed, and the
+script the browser runs now lives in `tools/perf/lib/gl-upload-init.cjs`
+so a test can run it
+(`tests/unit/gl-upload-accounting.test.mjs`,
+`tests/unit/gl-upload-probe-init.test.mjs`).
+
+**WHAT IS REAL:** the call COUNT. ~88,000 `bufferData` calls a second
+(1,467 a frame), each a full re-allocation of the renderer's vertex
+buffer, costing 6.56% of the wall in a fight and 10.83% in a dense one.
+The CPU profile's own stacks put the calls in `_emscripten_glBufferData`
+-> the renderer module -> `xash.wasm`, NOT in the glue's temp-buffer
+cache, so the old "one line in `getTempVertexBuffer`" fix was aimed at
+the wrong function.
+
+**AND THE FIX IS NOT OURS TO SHIP.** Measured in a real browser: the
+carrier's size does not matter (a 512 MiB view with a 1 KiB range costs
+the same as a 64 KiB view with the same range); the cost is the
+uploaded bytes, about 0.5 us a call plus about 0.32 us per KiB. So
+there is no glue trick. The renderer is C inside a prebuilt engine
+(`ref/gl/gl2_shim/gl2_shim.c` in FWGS/xash3d-fwgs), and the fix is
+upstream: cache the vertex buffer and update it in place instead of
+re-allocating it 1,467 times a frame. The full write-up, with the
+withdrawn claim and the evidence, is in `docs/UPSTREAM-ISSUES.md`.
+
 **As of:** 2026-11-19, LATER — **THE FREEZES ARE THE GAME'S CLOCK CATCHING
 UP, AND TWO SMALL FIXES TAKE THEM OUT.**
 
@@ -11394,17 +11438,27 @@ broke the CI host until three of the guard's own tests caught it.
   report.
 
 ### Next, in order
-1. Find the call site that asks for 512 MiB (the upload probe's stacks,
-   or instrument the glue). Do not patch the temp cache until the call
-   site is proven.
-2. Patch it, in the repo's `scripts/patch-xash-*.cjs` pattern, with a
-   check in `scripts/check-xash-glue.cjs` that fails loudly when an
-   upstream bump moves the code, and a GPU-free unit test.
+1. ~~Find the call site that asks for 512 MiB~~. **DONE, and the answer
+   is that there is none** — the 512 MiB was our own census reading the
+   size of the carrier. The census is fixed and tested
+   (`tools/perf/lib/gl-upload-accounting.cjs`,
+   `tools/perf/lib/gl-upload-init.cjs` and the two tests). The real
+   defect is the CALL COUNT (~88,000 a second, each a re-allocation),
+   and the fix is upstream in the renderer's C — see
+   `docs/UPSTREAM-ISSUES.md`, where the old claim is withdrawn with the
+   evidence.
+2. Re-run the census with the fixed probe against a real fight, so the
+   numbers in the record come from an instrument that works: the real
+   per-call upload sizes, and the call site of each distinct size (the
+   probe now records a stack per distinct size).
 3. Open the two PRs that are already committed (the budget, the parent's
-   side) and let Kyle approve.
-4. Measure the before/after on the rig: the same dense fight, the same
-   rig -- `bufferData` down from 10.83% of the wall, and the engine's
-   frame cost with it.
+   side) and let Kyle approve. The webXash PR can be opened now; the
+   parent's pointer has to name a commit on webXash's `main`, and a
+   squash merge renames it, so the parent PR waits for the merge.
+4. The upstream fix (cache the renderer's vertex buffer and update it in
+   place) needs the engine built from source with the emsdk on this box.
+   That is a project, not a patch — do not start it without Kyle's
+   go-ahead.
 5. Only then deploy and play-test on the M3 Pro.
 
 ### A note on the session itself

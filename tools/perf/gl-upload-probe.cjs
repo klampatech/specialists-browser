@@ -37,6 +37,7 @@ const { loadPlaywright } = require('../deploy/lib/browser.cjs');
 const { confirmIdentity } = require('../deploy/lib/identity-modal.cjs');
 const { ensureAtLeastOnePage } = require('./lib/cdp-targets.cjs');
 const { isGameUrl } = require('./lib/one-game-instance.cjs');
+const { ACCOUNTING_SOURCE } = require('./lib/gl-upload-accounting.cjs');
 
 const argOf = (name, fallback) => {
   const i = process.argv.indexOf(name);
@@ -48,105 +49,9 @@ const CDP = argOf('--cdp', 'http://localhost:9223');
 const URL_ = argOf('--url', 'https://ci.bulletballet.dev/');
 const SECONDS = Number(argOf('--seconds', 20));
 
-// THE PAGE-SIDE PATCH.
-const INIT = `
-(() => {
-  const stats = {
-    frames: 0,
-    calls: 0,
-    bytes: 0,
-    subCalls: 0,
-    subBytes: 0,
-    deleteCalls: 0,
-    createCalls: 0,
-    shapes: [],      // one signature per frame
-    frameCalls: 0,
-    frameBytes: 0,
-  };
-  window.__glProbe = stats;
-
-  const sizeOf = (arg) => {
-    if (typeof arg === 'number') return arg;
-    if (arg && typeof arg.byteLength === 'number') return arg.byteLength;
-    if (arg && typeof arg.length === 'number') return arg.length;
-    return 0;
-  };
-
-  const patch = (Ctor, label) => {
-    if (!Ctor || !Ctor.prototype) return;
-    const proto = Ctor.prototype;
-    if (proto.__glProbePatched) return;
-    proto.__glProbePatched = true;
-
-    const origData = proto.bufferData;
-    proto.bufferData = function (target, sizeOrData, usage) {
-      const bytes = sizeOf(sizeOrData);
-      stats.calls++;
-      stats.bytes += bytes;
-      stats.frameCalls++;
-      stats.frameBytes += bytes;
-      stats.shapes[stats.frames] = stats.shapes[stats.frames] || [];
-      stats.shapes[stats.frames].push(target + ':' + bytes);
-      // THE STACK, FOR THE FIRST FEW CALLS OF AN UNUSUAL SIZE. The
-      // caller is what names the bug: the glue's own temp-buffer path
-      // shows getTempVertexBuffer, the emscripten wrapper shows
-      // _emscripten_glBufferData, and those are two different fixes.
-      if (bytes >= 1048576 && stats.stacks.length < 6 && !stats.stacks.length) {
-        try {
-          stats.stacks.push(new Error().stack || '(no stack)');
-        } catch (e) {
-          stats.stacks.push('(no stack)');
-        }
-      }
-      return origData.apply(this, arguments);
-    };
-
-    const origSub = proto.bufferSubData;
-    if (origSub) {
-      proto.bufferSubData = function (target, offset, sizeOrData) {
-        const bytes = sizeOf(sizeOrData);
-        stats.subCalls++;
-        stats.subBytes += bytes;
-        stats.frameCalls++;
-        stats.frameBytes += bytes;
-        stats.shapes[stats.frames] = stats.shapes[stats.frames] || [];
-        stats.shapes[stats.frames].push('sub:' + target + ':' + bytes);
-        return origSub.apply(this, arguments);
-      };
-    }
-
-    const origCreate = proto.createBuffer;
-    if (origCreate) {
-      proto.createBuffer = function () {
-        stats.createCalls++;
-        return origCreate.apply(this, arguments);
-      };
-    }
-
-    const origDelete = proto.deleteBuffer;
-    if (origDelete) {
-      proto.deleteBuffer = function () {
-        stats.deleteCalls++;
-        return origDelete.apply(this, arguments);
-      };
-    }
-  };
-
-  patch(window.WebGL2RenderingContext, 'webgl2');
-  patch(window.WebGLRenderingContext, 'webgl1');
-
-  // THE FRAME ROLL-OVER. The engine's frames are vsync-driven and so is
-  // this, so the two counters line up -- and the pacer's own frame
-  // count is the check on that.
-  const tick = () => {
-    stats.frames++;
-    stats.frameCalls = 0;
-    stats.frameBytes = 0;
-    requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-})();
-`;
+// THE PAGE-SIDE PATCH lives in tools/perf/lib/gl-upload-init.cjs, so a test
+// can run the very script the browser runs.
+const { INIT } = require('./lib/gl-upload-init.cjs');
 
 (async () => {
   await ensureAtLeastOnePage(CDP);
@@ -268,6 +173,7 @@ const INIT = `
       deleteCalls: s.deleteCalls || 0,
       shapes: s.shapes || [],
       stacks: s.stacks || [],
+      sizes: s.sizes || {},
       canvas: canvas ? [canvas.width, canvas.height] : null,
       engineFps: p ? p.engineFps : 0,
       engineWorkMs: p ? p.engineWorkMs : 0,
@@ -321,17 +227,35 @@ const INIT = `
     for (const entry of shapes[0]) counts.set(entry, (counts.get(entry) || 0) + 1);
     const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
     console.log('');
-    console.log('  what a frame uploads (target:bytes), the busiest first:');
+    console.log('  what a frame uploads (target:bytes:shape), the busiest first:');
     for (const [k, v] of top) {
-      console.log(`     ${k.padEnd(24)} x${v}`);
+      console.log(`     ${k.padEnd(30)} x${v}`);
+    }
+  }
+
+  // THE CENSUS OF SIZES, over the whole run -- this is the number that
+  // matters, and it is the one the old census got wrong. It reported the
+  // size of the CARRIER (the whole 512 MiB wasm heap) instead of the
+  // size of the UPLOAD, and that mistake is what made a defect that does
+  // not exist look like the biggest one in the project.
+  const sizeRows = Object.entries(stats.sizes || {}).sort((a, b) => b[1] - a[1]);
+  if (sizeRows.length) {
+    console.log('');
+    console.log(`  ${sizeRows.length} distinct (target, bytes) pairs over the run, the busiest first:`);
+    for (const [k, v] of sizeRows.slice(0, 12)) {
+      console.log(`     ${k.padEnd(30)} x${v}`);
     }
   }
 
   if (stats.stacks && stats.stacks.length) {
     console.log('');
-    console.log('  the stack of the first big upload:');
-    for (const line of stats.stacks[0].split('\n').slice(0, 8)) {
-      console.log(`     ${line.trim()}`);
+    console.log('  the CALL SITE of each distinct size -- this is what names the bug:');
+    for (const entry of stats.stacks.slice(0, 6)) {
+      console.log('');
+      console.log(`     ${entry.key}`);
+      for (const line of String(entry.stack).split('\n').slice(0, 6)) {
+        console.log(`        ${line.trim()}`);
+      }
     }
   }
 
