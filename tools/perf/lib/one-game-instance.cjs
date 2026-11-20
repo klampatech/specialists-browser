@@ -39,7 +39,30 @@
  */
 function isGameUrl(url) {
   if (!url) return false;
-  return /bulletballet\.dev|localhost|127\.0\.0\.1|100\.95\.111\.112/.test(url);
+  // THE HOST, NOT THE WHOLE URL. A Cloudflare dashboard tab whose login
+  // redirect carries `bulletballet.dev` in its QUERY STRING is not a
+  // game instance, and treating it as one stopped the profiler from
+  // looking at a fight that was sitting right there.
+  let host = '';
+  let path = '';
+  try {
+    const u = new URL(url);
+    host = u.host;
+    path = u.pathname;
+  } catch (e) {
+    return false;
+  }
+  if (/^localhost(:\d+)?$/.test(host) || /^127\.0\.0\.1(:\d+)?$/.test(host)) return true;
+  if (/^100\.95\.111\.112(:\d+)?$/.test(host)) return true;
+  // ON THE GAME'S OWN HOST, IT IS THE GAME. The false positive that
+  // started this was a Cloudflare dashboard tab whose login redirect
+  // carried the game's domain in its QUERY STRING -- the HOST was
+  // dash.cloudflare.com, not the game's. The host check alone settles
+  // it, and a path check only broke the guard's own tests (the game
+  // serves real paths, and a URL's pathname never begins with '?').
+  // AND THE GAME'S OWN SUBDOMAINS COUNT: the CI stack lives on
+  // ci.bulletballet.dev and it is the same game.
+  return /(^|\.)bulletballet\.dev(:\d+)?$/.test(host);
 }
 
 /**

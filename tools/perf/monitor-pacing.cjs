@@ -61,7 +61,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function targets() {
   const res = await fetch(`${CDP}/json/list`, { signal: AbortSignal.timeout(8000) });
   const list = await res.json();
-  return list.filter((t) => t.type === 'page' && String(t.url || '').includes(URL_MATCH));
+  // THE HOST, NOT THE WHOLE URL. A Cloudflare dashboard tab -- a login
+  // redirect whose QUERY STRING carries bulletballet.dev -- matched
+  // /includes/, and the monitor spent a whole cycle measuring a page
+  // with no game on it while the fight sat in the next tab.
+  return list.filter((t) => {
+    if (t.type !== 'page') return false;
+    try {
+      const u = new URL(String(t.url || ''));
+      const m = new URL(URL_MATCH.includes('://') ? URL_MATCH : `https://${URL_MATCH}`);
+      if (u.host !== m.host) return false;
+      // and on the game's own host, the path has to be the game
+      if (m.pathname && m.pathname !== '/' && !u.pathname.startsWith(m.pathname)) return false;
+      return true;
+    } catch (e) {
+      return String(t.url || '').includes(URL_MATCH);
+    }
+  });
 }
 
 // ── ONE CDP SESSION ON ONE TARGET ────────────────────────────────────
