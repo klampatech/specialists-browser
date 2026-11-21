@@ -168,3 +168,126 @@ screen they would not be.
   and the client's console
 - `profiles/render-budget-1795192220278.json` — 833 readings, an earlier capture
 - the recording: `~/Documents/bulletballetplaytest.mov` on the MacBook (1.9 GB)
+
+## THE SECOND MEASUREMENT: THE M3 PRO, A REAL FIGHT, 2026-11-20 (evening)
+
+**The session.** Kyle played a fight on the M3 Pro against production,
+with the new policy live (webXash `ceb439e`, specialists-browser
+`f5bafac`). The watcher ran for 20 minutes
+(`tools/perf/measure-render-budget.cjs`), sampling every second; the
+fight itself was **225 seconds and 210 readings**; the capture is
+`profiles/render-budget-render-budget-1795216585090.json`.
+
+**WHAT THE POLICY DID: NOTHING. And that is the first finding.**
+
+The canvas held at **1802x1130 device pixels (2.04 MP)** for the whole
+fight. There is not one `[video]` decision line in the console -- and
+that is not because the console was missed: the policy's CHANGED
+decisions are logged with `console.log`, so a single cut would have
+shown up. The policy made **zero** changes.
+
+**AND THE OLD POLICY WOULD HAVE MADE ZERO TOO.** The old rule was "the
+engine's cost is over the target -> cut 25%", and the engine's cost WAS
+over the target for **72 of the 210 readings** -- in five bursts:
+
+    32 ms (5 readings)   46 ms (9)   37 ms (12)   56 ms (10)
+    45 ms (11)           27 ms (11)
+
+But the policy does not read those per-second samples: it reads the
+PACER'S MEASUREMENT, which arrives every `REMEASURE_MS` -- about 10 to
+18 seconds -- and it needs **two in a row** before it moves. The bursts
+lasted 9 to 12 seconds each, so most of them contained a single
+measurement. **This session did not distinguish the two policies.** Both
+would have held the resolution.
+
+**THE NEW GUARD DID WHAT IT WAS BUILT TO DO.** In every one of those
+bursts the frame was waiting on the CPU, not on the pixels: the
+delivered frame time tracked the engine's own work almost exactly
+(45.94 ms of engine work -> 52.0 ms delivered; 56.15 -> 57.2; 45.31 ->
+50.9). The GPU's share in those moments was 1 to 6 ms. The old policy
+read the engine's cost and would have cut the pixels for a problem the
+pixels were not causing. The new one read the difference and left the
+resolution alone.
+
+**THE REAL FINDING: THE POLICY IS NEARLY INERT IN A REAL FIGHT.**
+
+The engine's cost is tiny almost all the time (median **3.29 ms**) and
+the GPU's share is the rest (median **11.39 ms**, p90 18.84 ms). The
+delivered frame time was **outside** the 14.17 ms target in **175 of the
+210 readings** (median 20.44 ms) -- so in most readings the machine
+genuinely was not holding its 60 fps target and the pixels WERE the
+bottleneck.
+
+So the policy had the right verdict and did not act, for one reason:
+**the evidence window is the pacing measurement (10-18 s), not the
+second.** Two windows of evidence is 20 to 35 seconds of sustained
+pressure, and a fight's structure -- alternating bursts and calm --
+never sustains that long. The last session's policy cut three times
+because those periods were long; this session's were not.
+
+**THE GROWTH PATH WAS NOT EXERCISED, AND IT CANNOT BE, ON ITS OWN.**
+
+The growth fires only when `devicePixels < ceilingDevicePixels` -- and
+the ceiling is the client's own fixed "auto" resolution, which is where
+the budget STARTS. So the budget begins at the ceiling, and the growth
+can only ever undo a cut. That is coherent ("one heavy fight does not
+cost the whole session its sharpness"), but it means the growth is
+unreachable in a session where nothing was cut -- which, after this
+change, is most sessions.
+
+**SO THERE ARE TWO THINGS TO FIX, AND NEITHER IS THE FORMULA:**
+
+  1. **The decision should run on the pacer's rolling frame timeline**
+     (the p50/p90 the pacer already keeps), not on the sparse
+     pacing measurement. Then "two windows in a row" means two SECONDS,
+     and the policy can see a GPU-bound stretch of 3 seconds instead of
+     needing 20.
+  2. **The growth needs a way to exist without a cut.** Either the
+     ceiling should be the display's own resolution (the measured
+     budget may then rise above the client's fixed half-resolution
+     default), or the growth should be measured against the ceiling as
+     a reference rather than as a hard stop.
+
+Neither was fixed in this session: the session was a measurement, and
+what it measured is that the policy needs a finer signal than the one
+it is given.
+## THE POLICY WAS REMOVED. 2026-11-20, after the player's own play test.
+
+Kyle played lobby duel on his gaming rig and came back with:
+
+> the resolution switching was weird and eventually upscaled it so much
+> the text was massive. I think we should just auto set it to whatever
+> the native desktop resolution is using and maybe add a resolution
+> switcher to the ESC options menu for people who want to change it.
+> The scaling based on performance measuring seems over engineered and
+> was interupting the experience by having the HUD (crosshair) disappear
+> for a bit on the switch.
+
+**THE MEASURED BUDGET IS GONE** — the pacing measurement, the CPU/GPU
+split, the formula, the growth path, the ceiling and the floor. About
+700 lines of client and tests, out of the client.
+
+**THE HUD IS WHY THE SECOND COMPLAINT MATTERS**, and it was not obvious.
+The engine draws the HUD in VIEWPORT units, so the HUD's size on screen
+is
+
+    H * (the canvas's CSS box / the canvas's backing store)
+
+— a smaller backing store means the browser upscales more, and the HUD
+inflates with the picture. Measured on the player's own recording, in
+the same session: before the policy's cuts the crosshair was the size
+it should be; **after them it was about 20% BIGGER**, and the picture
+was soft.
+
+**'AUTO' IS NOW THE DISPLAY'S OWN RESOLUTION.** No cap, no measurement.
+The old 'auto' was the display's size capped at 1920x1080 of CSS pixels,
+which on a 1440p display is a picture the browser stretches.
+
+**AND THE PLAYER GETS A SWITCHER**, in the ESC menu: Native, 1920x1080,
+1600x900, 1280x720, 960x540, 640x360.
+
+**WHAT IS LEFT IS THE PACER**, which holds the frame rate by deciding
+how many ticks the engine draws in, and does not move the resolution.
+
+This document is the record of what the policy was and why it went. The
+measurements in it are still true; the policy is not.
